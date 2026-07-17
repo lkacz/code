@@ -148,6 +148,14 @@ async function main(){
 	const proc = spawn(edge, [
 		'--headless=new', '--disable-gpu', '--no-first-run', '--hide-scrollbars',
 		'--force-device-scale-factor=1',
+		// a tab left backgrounded for minutes (ghost4 idles from scene 10o to 10v)
+		// gets SUSPENDED by Edge's sleeping-tabs/renderer-backgrounding — CDP evals
+		// then hang until the transport deadline: the "ghost4 unresponsive" class
+		// reproduced even on a QUIET machine. The throwaway browser opts out.
+		'--disable-background-timer-throttling',
+		'--disable-backgrounding-occluded-windows',
+		'--disable-renderer-backgrounding',
+		'--disable-features=IntensiveWakeUpThrottling,TabFreezing,HighEfficiencyModeAvailable,msSleepingTabs',
 		'--remote-debugging-port=0',
 		`--user-data-dir=${profile}`,
 		`--window-size=${winW},${winH}`,
@@ -623,6 +631,10 @@ async function main(){
 		// The lane must also be DEEP: a backgrounded watcher drains its message queue on
 		// its throttled pump (~1 Hz), so the arrows have to still be airborne a second
 		// after the volley or the watcher only ever sees them already stuck.
+		// And the HOST must be the front tab: arrows advance in its rAF sim — whichever
+		// tab the PREVIOUS scene left focused decides this, and the invasion scene
+		// sometimes ends ghost-front (arrows then fly with vx=14 and move nowhere).
+		await host.front();
 		await host.eval(`(()=>{
 			const y0=Math.floor(player.y)-3, x0=Math.floor(player.x);
 			for(let x=x0; x<x0+200; x++) for(let y=y0-9; y<=y0+14; y++) MM.world.setTile(x,y,0);
@@ -1971,16 +1983,6 @@ async function main(){
 		// --- uranium charge: the contract's "feature parity for free" template — a
 		// hero-side system added to both frames charges the GUEST from its replica
 		// ore with zero multiplayer plumbing (energy is guest-local truth)
-		const uran = await host.eval(`(()=>{
-			const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
-			// the body's proximity scan spans floor(x-hw)-1 .. floor(x+hw)+1: seed BOTH
-			// adjacent columns so a fractional x that rounds either way still lands an
-			// ore inside the scan (round() put the ore one tile past the scan edge)
-			const fx=Math.floor(b.x), y=Math.floor(b.y);
-			MM.world.setTile(fx-1, y, 50); MM.world.setTile(fx+1, y, 50); // RADIOACTIVE_ORE flanking the body
-			return {x:fx+1, y};
-		})()`);
-		await sleep(600); // the ore reaches the guest replica on the tile stream
 		const en0 = await ghost.eval(`(()=>{ MM.ghostBridge.player.energy=5; window.player.energy=5; return MM.ghostBridge.player.energy; })()`);
 		// runHeroStep is rAF-driven — and a headless tab sometimes resumes rAF LATE
 		// after bringToFront under CPU load. Prove the hero frame actually TICKS
@@ -1993,24 +1995,43 @@ async function main(){
 			ticking=(await ghost.eval(`window.__mmHeroSteps|0`))>st0+10;
 		}
 		if(!ticking) throw new Error('the guest hero frame never resumed after front()');
-		try{
-			await ghost.poll(`+MM.ghostBridge.player.energy.toFixed(3)`, v => v > en0 + 0.05,
-				'the guest charges from replica uranium (hero-side system, no MP plumbing)', 40, 250);
-		}catch(e){
+		// plant flanking the GUEST'S OWN hero — the charging system scans the guest
+		// replica around the guest player, and the host-tracked shadow can lag the
+		// local hero by tiles (clamped pose catch-up): ore flanked around the SHADOW
+		// missed the scan entirely (seed BOTH columns — fractional x rounds either way).
+		// RETRIED: the guest has twice been found TELEPORTED ~6 tiles mid-scene with
+		// a frozen hero frame (the resync/applyGameData signature) — re-front, read
+		// the NEW position and re-plant instead of failing on one displacement.
+		let charged = false, uran = null, lastGpos = null;
+		for(let attempt = 0; attempt < 3 && !charged; attempt++){
+			await ghost.front();
+			const gpos = await ghost.eval(`(()=>{ const p=window.player; p.vx=0; p.vy=0; return {fx:Math.floor(p.x), y:Math.floor(p.y)}; })()`);
+			lastGpos = gpos;
+			uran = await host.eval(`(()=>{ MM.world.setTile(${gpos.fx}-1, ${gpos.y}, 50); MM.world.setTile(${gpos.fx}+1, ${gpos.y}, 50); return {x:${gpos.fx}+1, y:${gpos.y}}; })()`);
+			await sleep(600); // the ore reaches the guest replica on the tile stream
+			try{
+				await ghost.poll(`+MM.ghostBridge.player.energy.toFixed(3)`, v => v > en0 + 0.05,
+					'the guest charges from replica uranium (hero-side system, no MP plumbing)', 16, 250);
+				charged = true;
+			}catch(e){
+				const moved = await ghost.eval(`Math.abs(window.player.x - (${gpos.fx} + 0.5))`);
+				console.log('uranium attempt ' + attempt + ': no charge yet (moved ' + (+moved).toFixed(1) + ' tiles from the ore)');
+			}
+			await host.eval(`(()=>{ MM.world.setTile(${gpos.fx}-1, ${gpos.y}, MM.T.AIR); MM.world.setTile(${gpos.fx}+1, ${gpos.y}, MM.T.AIR); return 1; })()`);
+		}
+		if(!charged){
 			const d = await ghost.eval(`(()=>{ const bp=MM.ghostBridge.player;
 				return {en:+window.player.energy.toFixed(2), enB:+bp.energy.toFixed(2), same:window.player===bp,
-				px:+bp.x.toFixed(1), py:+bp.y.toFixed(1), maxEn:bp.maxEnergy,
-				ore:MM.world.getTile(${uran.x},${uran.y}), steps:window.__mmHeroSteps|0, stepsEnd:window.__mmHeroStepsEnd|0, errs:window.__mmLoopErrors|0,
+				px:+bp.x.toFixed(1), py:+bp.y.toFixed(1), hp:+(bp.hp||0).toFixed(1), maxEn:bp.maxEnergy,
+				steps:window.__mmHeroSteps|0, errs:window.__mmLoopErrors|0,
 				intents:!!MM.ghostHeroIntents, driving:!!MM.ghostHeroDriving,
-				uranX:${uran.x}, uranY:${uran.y},
-				scan:(function(){const p=bp;const hw=(p.w||0.7)/2,hh=(p.h||0.95)/2;
-					const x0=Math.floor(p.x-hw)-1,x1=Math.floor(p.x+hw)+1,y0=Math.floor(p.y-hh)-1,y1=Math.floor(p.y+hh)+1;
-					const ids=[];for(let ty=y0;ty<=y1;ty++)for(let tx=x0;tx<=x1;tx++)ids.push(MM.world.getTile(tx,ty));
-					return {x0,x1,y0,y1,w:p.w,h:p.h,px:+p.x.toFixed(3),py:+p.y.toFixed(3),ids:ids.join('/')};})()}; })()`);
-			throw new Error('uranium charge never landed: ' + JSON.stringify(d));
+				state:MM.ghostClient.metrics().state, snaps:MM.ghostClient.metrics().stats.snapsApplied,
+				spawned:MM.ghostClient.metrics().hero.spawned,
+				finaleOpen:document.body.classList.contains('mmFinaleOpen'),
+				plantedAt:${lastGpos ? lastGpos.fx : -1}}; })()`);
+			throw new Error('uranium charge never landed after retries: ' + JSON.stringify(d));
 		}
 		await host.front(); // the host sim resumes for the scenes that follow
-		await host.eval(`MM.world.setTile(${uran.x}, ${uran.y}, MM.T.AIR)`); // clean the scene
 		console.log('uranium charge: ok (guest energy rose beside replica ore — parity came free)');
 
 		// death keeps the guest inventory whole (no grave halving, no replica spill)
@@ -2040,40 +2061,69 @@ async function main(){
 			if(a && b && Math.abs(a.x-b.x)<0.2 && Math.abs(a.y-b.y)<0.2){ settled=b; break; }
 		}
 		if(!settled) throw new Error('the guest body never settled after the death travel');
-		const cab = await host.eval(`(()=>{
-			const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
-			const bx=Math.round(b.x), by=Math.round(b.y);
-			const mx=bx+3, floor=by+1;
-			// the runway must cover the TELEPORTED hull (bx-1) and its drive path
-			for(let x=bx-6;x<=bx+18;x++){ for(let yy=floor-7;yy<floor;yy++) MM.world.setTile(x,yy,MM.T.AIR); MM.world.setTile(x,floor,MM.T.STONE); }
-			// force a WALKER: a tracked hull refuses to drive without a wired copper
-			// circuit (consumeRiderEnergy zeroes dir) — stripping the TRACK cells
-			// leaves plain legs (bounds/physics recompute from cells each call)
-			const m=MM.mechs._debug.makeMech('forge', mx, MM.world.getTile, 'qa-cab');
-			if(!m) return {err:'makeMech-null'};
-			m.cells=(m.cells||[]).filter(c=>c.t!==MM.T.TRACK);
-			if(!m.cells.length) return {err:'no-cells'};
-			m.pilotAlive=false; m.pilotHp=0; m.energy=m.maxEnergy;
-			// the hull stays where spawnYFor settled it (teleporting it wedged the
-			// cells into the floor lip) — the GUEST walks to the hull instead
-			MM.mechs._debug.mechs().push(m);
-			return {id:m.id, x:+m.x.toFixed(2), y:+m.y.toFixed(2)};
-		})()`);
-		if(cab.err) throw new Error('mech staging failed: ' + JSON.stringify(cab));
+		// makeMech derives its BLUEPRINT from Math.floor(x) — the body's per-run
+		// position used to pick a different blueprint every time, and some die on
+		// their FIRST update after the TRACK strip (the staged hull vanished at
+		// t=0.5s with the body perfectly converged). Pin the blueprint via
+		// seedOverride and keep the first hull that survives its first second.
+		let cab = null;
+		const cabTries = [];
+		for(const bpSeed of [7, 11, 23, 42, 101, 313]){
+			const attempt = await host.eval(`(()=>{
+				const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
+				const bx=Math.round(b.x), by=Math.round(b.y);
+				const mx=bx+3, floor=by+1;
+				// the runway must cover the hull and its drive path
+				for(let x=bx-6;x<=bx+18;x++){ for(let yy=floor-7;yy<floor;yy++) MM.world.setTile(x,yy,MM.T.AIR); MM.world.setTile(x,floor,MM.T.STONE); }
+				// force a WALKER: a tracked hull refuses to drive without a wired copper
+				// circuit (consumeRiderEnergy zeroes dir) — stripping the TRACK cells
+				// leaves plain legs (bounds/physics recompute from cells each call)
+				const m=MM.mechs._debug.makeMech('forge', mx, MM.world.getTile, 'qa-cab', ${bpSeed});
+				if(!m) return {err:'makeMech-null'};
+				m.cells=(m.cells||[]).filter(c=>c.t!==MM.T.TRACK);
+				if(!m.cells.length) return {err:'no-cells'};
+				m.pilotAlive=false; m.pilotHp=0; m.energy=m.maxEnergy;
+				MM.mechs._debug.mechs().push(m);
+				return {id:m.id, x:+m.x.toFixed(2), y:+m.y.toFixed(2)};
+			})()`);
+			if(attempt.err){ cabTries.push({ seed: bpSeed, err: attempt.err }); continue; }
+			await sleep(900);
+			// mech ids are NUMBERS — an earlier quoted interpolation compared 17==='17'
+			// and reported every perfectly healthy hull as vanished (three runs chased
+			// a phantom); the compare stays UNQUOTED here and below
+			const alive = await host.eval(`(()=>{ const m=MM.mechs._debug.mechs().find(x=>x.id===${attempt.id});
+				return m?{y:+m.y.toFixed(2),hp:m.hp}:null; })()`);
+			if(alive && alive.hp > 0){ cab = attempt; break; }
+			// clear the failed hull so attempts never accumulate boardable strays
+			await host.eval(`(()=>{ const a=MM.mechs._debug.mechs(); const i=a.findIndex(x=>x.id===${attempt.id}); if(i>=0) a.splice(i,1); return 1; })()`);
+			cabTries.push({ seed: bpSeed, died: true, alive });
+		}
+		if(!cab) throw new Error('no forge blueprint survived the walker strip: ' + JSON.stringify(cabTries));
 		// walk the GUEST to the hull (guest-authoritative), the body follows the claims.
 		// Wait for the host body to reach BOARD_RADIUS of the hull before boarding —
 		// a fixed sleep lost the race under CPU contention (the pose stream lags).
 		await ghost.eval(`(()=>{ const p=window.player; p.x=${cab.x}+0.5; p.y=${cab.y}-0.5; p.vx=0; p.vy=0; return 1; })()`);
-		await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}'); return b && Math.abs(b.x-(${cab.x}+0.5))<1.5 ? 1 : 0; })()`,
-			v => v === 1, 'the guest body reaches the hull', 80, 300);
-		// retry the board intent: a single one can arrive a beat before the body settles
+		// BOARD_RADIUS (2.2) measures to the hull's CENTER, which the TRACK-cell
+		// filter offsets from m.x — a body parked at the loose edge of a wide
+		// convergence gate intermittently lands outside the radius. Demand a TIGHT
+		// settle (reconciliation pulls the body onto the claim within a second)
+		// and give the board retries room to ride out one late pose packet.
+		await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}'); return b && Math.abs(b.x-(${cab.x}+0.5))<0.8 ? 1 : 0; })()`,
+			v => v === 1, 'the guest body settles at the hull', 80, 300);
 		let boarded = false;
-		for(let i = 0; i < 5 && !boarded; i++){
+		for(let i = 0; i < 12 && !boarded; i++){
 			await ghost.eval(`MM.ghostClient._heroBoard()`);
 			await sleep(700);
 			boarded = await ghost.eval(`!!(MM.ghostClient.metrics().hero.driveId)`);
 		}
-		if(!boarded) throw new Error('the guest never boarded the hull');
+		if(!boarded){
+			const bdiag = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
+				const m=MM.mechs._debug.mechs().find(x=>x.id===${cab.id});
+				return {body:b?{x:+b.x.toFixed(2),y:+b.y.toFixed(2),dead:b.dead}:null,
+					mech:m?{x:+m.x.toFixed(2),y:+m.y.toFixed(2),guestGid:m.guestGid||null,rider:!!m.rider,pilotAlive:m.pilotAlive,hp:m.hp,cells:(m.cells||[]).length}:null,
+					cab:{x:${cab.x},y:${cab.y}}}; })()`);
+			throw new Error('the guest never boarded the hull: ' + JSON.stringify(bdiag));
+		}
 		const gidDrv = gidHero;
 		await host.poll(`MM.mechs.guestDriveInfo('${gidDrv}') ? 1 : 0`, v => v === 1, 'the host binds the cab to the guest', 40, 250);
 		const drv0 = await host.eval(`MM.mechs.guestDriveInfo('${gidDrv}').x`);
@@ -2198,29 +2248,53 @@ async function main(){
 			+ tpResult.e0 + '→' + tpResult.e1 + ' spent host-side — the guest never pays)');
 
 		// --- Scene 10v: HERO DUEL — the body-level handshake serves the full-game rung ----------------
-		await host.eval(`MM.ghostHost.setViewerMode('${duelists.g4}', 'hero')`);
-		await ghost4.poll(`MM.ghostClient.metrics().mode`, v => v === 'hero', 'the second player goes hero', 60, 300);
-		await ghost4.poll(`MM.ghostClient.metrics().hero.spawned`, v => v === true, 'the second hero spawns', 80, 300);
+		// THE ROOT CAUSE of every "ghost4 unresponsive" verdict, load or no load:
+		// the duel wave's gift+forfeit scene ends with a CLEAN LEAVE + ghost4.close()
+		// — the tab is GONE. Every four-tab scene added later talked to a closed
+		// socket and could never have passed. The hero-duel stretch now spawns a
+		// FRESH late joiner (also the truer test: join, get promoted, fight —
+		// minutes into a live session with real history behind it).
+		const g5url = url + `?watch=${ROOM}&via=bc&name=Widmo5`;
+		const created5 = await host.send('Target.createTarget', { url: g5url });
+		let ghost5Ws = null;
+		for(let i = 0; i < 40 && !ghost5Ws; i++){
+			await sleep(250);
+			try{
+				const list5 = await (await fetch(`http://127.0.0.1:${dtPort}/json/list`, { signal: AbortSignal.timeout(3000) })).json();
+				const t5 = list5.find(x => x.id === created5.targetId);
+				if(t5) ghost5Ws = t5.webSocketDebuggerUrl;
+			}catch(e){ /* endpoint busy — retry */ }
+		}
+		if(!ghost5Ws) throw new Error('the late-joiner tab never surfaced');
+		const ghost5 = new Tab(ghost5Ws, 'ghost5');
+		await ghost5.init();
+		await ghost5.eval(BOOT_WAIT, 60000);
+		await host.front(); // createTarget foregrounded the newcomer — the sim lives on the host rAF
+		await ghost5.poll(`MM.ghostClient.metrics().state`, v => v === 'live', 'the late joiner is live', 80, 250);
+		const gid5 = await ghost5.eval(`MM.ghostClient.metrics().gid`);
+		await host.eval(`MM.ghostHost.setViewerMode('${gid5}', 'hero')`);
+		await ghost5.poll(`MM.ghostClient.metrics().mode`, v => v === 'hero', 'the second player goes hero', 60, 300);
+		await ghost5.poll(`MM.ghostClient.metrics().hero.spawned`, v => v === true, 'the second hero spawns', 80, 300);
 		// place the challenger where the host body actually is, then converge g4 next
 		// to it and WAIT for the host to see them adjacent — a fixed sleep lost the
 		// race under load (g4's hero frame is rAF-driven; front it so it steps)
-		await ghost4.front();
+		await ghost5.front();
 		const meet = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}'); return {x:+b.x.toFixed(2), y:+b.y.toFixed(2)}; })()`);
-		await ghost4.eval(`(()=>{ const p=window.player; p.x=${meet.x}+1.0; p.y=${meet.y}; p.vx=0; p.vy=0; return 1; })()`);
-		await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${duelists.g4}'); return b && Math.abs(b.x-(${meet.x}+1.0))<0.9 && Math.abs(b.y-${meet.y})<1 ? 1 : 0; })()`,
+		await ghost5.eval(`(()=>{ const p=window.player; p.x=${meet.x}+1.0; p.y=${meet.y}; p.vx=0; p.vy=0; return 1; })()`);
+		await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gid5}'); return b && Math.abs(b.x-(${meet.x}+1.0))<0.9 && Math.abs(b.y-${meet.y})<1 ? 1 : 0; })()`,
 			v => v === 1, 'the second hero stands beside the challenger', 80, 300);
-		const g4hp0 = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${duelists.g4}'); return b ? +b.hp.toFixed(1) : null; })()`);
+		const g4hp0 = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gid5}'); return b ? +b.hp.toFixed(1) : null; })()`);
 		// no consent yet: repeated blows right at the fellow hero scratch NOTHING
 		for(let i=0;i<3;i++){ await ghost.eval(`MM.ghostClient._heroDmg(${meet.x}+1.0, ${meet.y}, 12)`); await sleep(300); }
-		const g4hpNoDuel = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${duelists.g4}'); return b ? +b.hp.toFixed(1) : null; })()`);
+		const g4hpNoDuel = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gid5}'); return b ? +b.hp.toFixed(1) : null; })()`);
 		if(g4hpNoDuel !== g4hp0) throw new Error('a hero blow hurt a NON-consenting player: ' + JSON.stringify({ g4hp0, g4hpNoDuel }));
 		// the mutual handshake — both embodied rungs may ask (retry: the challenge
 		// TTL is generous but the two asks must both register)
 		let dueling = false;
 		for(let i=0;i<5 && !dueling;i++){
-			await ghost.eval(`MM.ghostClient._playDuel('${duelists.g4}')`);
+			await ghost.eval(`MM.ghostClient._playDuel('${gid5}')`);
 			await sleep(400);
-			await ghost4.eval(`MM.ghostClient._playDuel('${gidHero}')`);
+			await ghost5.eval(`MM.ghostClient._playDuel('${gidHero}')`);
 			await sleep(500);
 			dueling = await ghost.eval(`!!(MM.ghostClient.metrics().play.duelWith)`);
 		}
@@ -2231,7 +2305,7 @@ async function main(){
 		for(let i=0;i<8 && !g4Wounded;i++){
 			await ghost.eval(`MM.ghostClient._heroDmg(${meet.x}+1.0, ${meet.y}, 12)`);
 			await sleep(350);
-			g4Wounded = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${duelists.g4}'); return !!(b && b.hp < ${g4hp0}); })()`);
+			g4Wounded = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gid5}'); return !!(b && b.hp < ${g4hp0}); })()`);
 		}
 		if(!g4Wounded) throw new Error('the consenting hero partner never took the duel blow');
 		const hostHpDuel = await host.eval(`+player.hp.toFixed(1)`);
@@ -2249,32 +2323,32 @@ async function main(){
 		// --- Scene 10x: WORLD FORK — the guest takes the shared moment home ---------------------------
 		// Host consent (forkGrant) arms the ONE narrow storage exit; the guest
 		// commits the replica it is already rendering as its OWN solo save and
-		// reboots into it. Runs on ghost4 (expendable — the primary ghost still
+		// reboots into it. Runs on ghost5 (expendable — the primary ghost still
 		// carries scenes 11/12). NOTE the QA-only wrinkle: every tab shares ONE
 		// origin here, so localStorage is common — the host's own autosave lives
 		// beside the fork. Asserts pick the fork apart by the GUEST's position.
-		const hatchClosed = await ghost4.eval(`MM.ghostForkWrite ? (MM.ghostForkWrite('mm_save_v7','{}') === false) : false`);
+		const hatchClosed = await ghost5.eval(`MM.ghostForkWrite ? (MM.ghostForkWrite('mm_save_v7','{}') === false) : false`);
 		if(!hatchClosed) throw new Error('the fork hatch accepted a write WITHOUT a grant');
 		// the pinned '--seed' is the INPUT STRING — worldgen hashes it; compare the
 		// fork against the host's actual numeric world seed
 		const hostSeed10x = await host.eval(`MM.worldGen.worldSeed`);
-		const forkSpot = await ghost4.eval(`(()=>{ const p=window.player; const x=Math.floor(p.x), y=Math.floor(p.y);
+		const forkSpot = await ghost5.eval(`(()=>{ const p=window.player; const x=Math.floor(p.x), y=Math.floor(p.y);
 			const cells=[]; for(let dx=-6;dx<=6;dx++) for(let dy=-4;dy<=4;dy++) cells.push(MM.world.getTile(x+dx,y+dy));
 			return {x:+p.x.toFixed(2), tx:x, ty:y, cells:cells.join(',')}; })()`);
-		await host.eval(`MM.ghostHost.forkGrant('${duelists.g4}')`);
-		await ghost4.poll(`MM.ghostClient.metrics().forkOffered ? 1 : 0`, v => v === 1, 'the fork offer reaches the guest', 40, 300);
-		const offerCard = await ghost4.eval(`!!document.getElementById('ghostForkOffer')`);
+		await host.eval(`MM.ghostHost.forkGrant('${gid5}')`);
+		await ghost5.poll(`MM.ghostClient.metrics().forkOffered ? 1 : 0`, v => v === 1, 'the fork offer reaches the guest', 40, 300);
+		const offerCard = await ghost5.eval(`!!document.getElementById('ghostForkOffer')`);
 		if(!offerCard) throw new Error('the fork offer card never showed');
-		await ghost4.eval(`MM.ghostClient._forkAccept()`);
+		await ghost5.eval(`MM.ghostClient._forkAccept()`);
 		// the committed save must be the GUEST's moment (its hero position), not the
 		// host autosave that shares this QA origin — read it from the host tab
 		await host.poll(`(()=>{ try{ const s=JSON.parse(localStorage.getItem('mm_save_v7')||'null');
 			return (s&&s.player)?+(+s.player.x).toFixed(2):null; }catch(e){ return null; } })()`,
 			v => v != null && Math.abs(v - forkSpot.x) < 8, 'the fork save carries the guest position', 20, 250);
 		// the accept navigates to the bare path: wait through the SOLO boot
-		await ghost4.poll(`!!(window.MM && MM.worldGen && window.player && !MM.ghostMode && MM.world && MM.world.getTile) ? 1 : 0`,
+		await ghost5.poll(`!!(window.MM && MM.worldGen && window.player && !MM.ghostMode && MM.world && MM.world.getTile) ? 1 : 0`,
 			v => v === 1, 'the forked world boots solo', 90, 400);
-		const forked = await ghost4.eval(`(()=>{ const x=${forkSpot.tx}, y=${forkSpot.ty};
+		const forked = await ghost5.eval(`(()=>{ const x=${forkSpot.tx}, y=${forkSpot.ty};
 			const cells=[]; for(let dx=-6;dx<=6;dx++) for(let dy=-4;dy<=4;dy++) cells.push(MM.world.getTile(x+dx,y+dy));
 			return {seed:MM.worldGen.worldSeed, px:+window.player.x.toFixed(2), cells:cells.join(','),
 				save:localStorage.getItem('mm_save_v7')!==null}; })()`);

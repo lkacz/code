@@ -94,6 +94,7 @@ import { finale as FINALE } from './engine/finale.js';
 import { ghostHost as GHOST_HOST } from './engine/ghost_host.js';
 import { ghostClient as GHOST_CLIENT } from './engine/ghost_client.js';
 import './engine/party_hud.js'; // co-op roster + off-screen teammate arrows (MM.partyHud)
+import { createRenderHealth, blitProbe as renderBlitProbe, HINTS as RENDER_HINTS } from './engine/render_health.js';
 import './engine/ui.js';
 import './inventory_ui.js';
 // Bind global MM into a module-scoped constant for convenience
@@ -12939,6 +12940,7 @@ function draw(){ // Background first
 		const lines=[
 			'FPS: '+(currentFps||'~')+' ('+lastFrameMs.toFixed(1)+'ms)  Zoom: '+zoom.toFixed(2)+'  Detail: '+currentRenderDetail.label,
 			'Perf: sim '+framePerf.simMs.toFixed(1)+'ms  draw '+framePerf.drawMs.toFixed(1)+'ms  pace '+framePerf.avgFrameMs.toFixed(1)+'+/-'+framePerf.jitterMs.toFixed(1)+'ms  max '+framePerf.maxFrameMs.toFixed(1)+'ms  long '+framePerf.longFrames,
+			'Raster: '+RENDER_HEALTH.verdict()+(RENDER_HEALTH.hint()?' — '+RENDER_HEALTH.hint():''),
 			'Pos: '+player.x.toFixed(2)+','+player.y.toFixed(2)+'  Tile: '+(Math.floor(player.x))+','+(Math.floor(player.y)),
 			'Cam: '+camX.toFixed(2)+','+camY.toFixed(2)+'  View: '+vx+'x'+vy+' tiles',
 			'Biome: '+biomeName+'  Chunks: '+visChunks+' vis / '+chunkCanvases.size+' cache  rebuild '+chunkCacheRebuiltThisFrame+' partial '+chunkCachePartialRebuiltThisFrame+' def '+chunkCacheDeferredThisFrame
@@ -15306,7 +15308,26 @@ window.scanMeteorCrater = function(){ return METEORITES && METEORITES.scanNeares
 let frames=0,lastFps=performance.now(), currentFps=0; function updateFps(now){ frames++; if(now-lastFps>1000){ currentFps=frames; const budget = (GRASS && GRASS.getBudgetInfo)? GRASS.getBudgetInfo():''; el.fps.textContent=currentFps+' FPS'+ (budget? (' '+budget):''); frames=0; lastFps=now; }}
 const framePerf={simMs:0,drawMs:0,frameMs:0,avgFrameMs:0,jitterMs:0,maxFrameMs:0,longFrames:0,samples:0};
 function framePerfNow(){ return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); }
+// Render health: names the CAUSE when FPS locks at ~30 — browser energy-saver
+// throttling vs software rasterization vs honest sim load (engine/render_health.js).
+// The verdict rides the F3 perf HUD; a stable bad verdict raises ONE toast per
+// kind per session, with the blit probe confirming a software-raster suspicion.
+const RENDER_HEALTH=createRenderHealth();
+const renderHealthNotified={};
+MM.renderHealth={ verdict:()=>RENDER_HEALTH.verdict(), hint:()=>RENDER_HEALTH.hint(), blitProbe:()=>renderBlitProbe(document), _debug:()=>RENDER_HEALTH._debug() };
+function noteRenderHealth(frameMs,simMs,drawMs){
+	const before=RENDER_HEALTH.verdict();
+	const now=RENDER_HEALTH.sample(frameMs,simMs,drawMs);
+	if(now===before || renderHealthNotified[now]) return;
+	if(now==='throttled'){ renderHealthNotified[now]=1; msg('🐢 ~30 FPS: '+RENDER_HINTS.throttled); }
+	else if(now==='software'){
+		renderHealthNotified[now]=1;
+		const probe=renderBlitProbe(document);
+		msg('🐢 '+RENDER_HINTS.software+(probe?' (blit '+probe.perBlitMs+' ms'+(probe.gpuLikely?' — GPU jednak odpowiada':' — potwierdzone')+')':''));
+	}
+}
 function recordFramePerf(frameMs,simMs,drawMs){
+	noteRenderHealth(frameMs,simMs,drawMs);
 	framePerf.frameMs=Number.isFinite(frameMs) ? frameMs : 0;
 	framePerf.simMs=Number.isFinite(simMs) ? simMs : 0;
 	framePerf.drawMs=Number.isFinite(drawMs) ? drawMs : 0;
