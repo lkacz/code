@@ -93,6 +93,7 @@ const ghostClient = (function(){
 	let timers = { hello: 0, pose: 0, needMobs: 0 };
 	let veil = null, bar = null, barTick = null;
 	let hostIdle = false, staleBanner = null, lastHostMsgAt = 0, bootAt = 0, connectFailShown = false;
+	let finRelayed = false; // the finale relay fires once per host ceremony opening
 	let drag = null;
 	let pump = null;
 	let lockedConn = null;
@@ -496,6 +497,9 @@ const ghostClient = (function(){
 				syncSince = nowMs();
 				hostName = String(pl.host || 'Gospodarz').slice(0, 24);
 				if(NET.validPermissionMode(pl.mode)) mode = pl.mode;
+				// the host's challenge mods are remote input: setRemoteMods re-whitelists
+				// against OUR table before mirroring the world's laws (night lock etc.)
+				if(Array.isArray(pl.chal) && MMR && MMR.challenge && MMR.challenge.setRemoteMods) MMR.challenge.setRemoteMods(pl.chal);
 				lockedConn = c;
 				api.lock(c);
 				showVeil('Połączono z warstwą gracza <b>' + esc(hostName) + '</b>.<br>Pobieram świat…');
@@ -999,6 +1003,16 @@ const ghostClient = (function(){
 					bridge.restoreDrops(pl.data);
 				} else if(pl.t === 'seasons'){
 					bridge.restoreSeasons(pl.data);
+				} else if(pl.t === 'story'){
+					// shared story: quests + arc stage are DISPLAY truth (the validating
+					// save restores apply them); the finale flag relays the ceremony ONCE
+					// per opening — open-only, a spectator never mints layer completions
+					if(pl.data && typeof pl.data === 'object'){
+						if(bridge.restoreStory) bridge.restoreStory(pl.data);
+						if(pl.data.fin && !finRelayed){ finRelayed = true; if(bridge.finaleOpen) bridge.finaleOpen(); }
+						if(!pl.data.fin) finRelayed = false;
+						stats.story = (stats.story || 0) + 1;
+					}
 				} else if(pl.t === 'infra'){
 					if(pl.data) bridge.restoreInfra(pl.data);
 					if(pl.bg) bridge.restoreConstructionBackground(pl.bg);

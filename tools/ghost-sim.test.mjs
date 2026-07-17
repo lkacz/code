@@ -932,7 +932,8 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	// the hero frame must never grow a world system: the stream is the world
 	const heroStep = mainSrc.slice(mainSrc.indexOf('function runHeroStep'), mainSrc.indexOf('function runHeroStep') + 3200);
 	for(const banned of ['MOBS.update', 'WATER.update', 'FIRE.update', 'INVASIONS.update', 'SEASONS.update',
-		'FALLING.update', 'BOSSES.update', 'GUARDIANS.update', 'MECHS.update(', 'BOATS.update', 'CLOUDS.update']){
+		'FALLING.update', 'BOSSES.update', 'GUARDIANS.update', 'MECHS.update(', 'BOATS.update', 'CLOUDS.update',
+		'STORY_PROGRESSION.update']){
 		assert.ok(!heroStep.includes(banned), 'runHeroStep must not simulate the world (' + banned + ' found)');
 	}
 	// the repo-level contract document travels with the code
@@ -966,6 +967,29 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/if\(Number\.isFinite\(pl\.hp\)\) remoteHost\.hp = pl\.hp;/.test(clientSrc),
 		'the embodied guest keeps the host hp as DISPLAY truth on remoteHost (never applied to its own player)');
 }
+
+// --- shared story plane: broadcast-only display truth + the finale relay ------------------
+// Guests see the host's quest list and arc stage (the join snapshot already
+// carries them — this plane keeps them LIVE), and the closing ceremony plays on
+// guest screens. No client packet may ever advance host story, and a spectator
+// never mints its own layer completion from a watched world.
+{
+	assert.ok(/if\(t - s\.last\.story >= CAD\.story\) storyTick\(s, t\);/.test(hostSrc) && CADHasStory(hostSrc),
+		'the story plane ticks on its own cadence');
+	assert.ok(/if\(json === s\.lastStoryJson\) return; \/\/ sig-skip/.test(hostSrc), 'story silence costs nothing (sig-skip)');
+	assert.ok(!/pl\.t === 'story'/.test(hostSrc), 'no client packet reaches host story — the plane is broadcast-only');
+	assert.ok(/snapshotStory:\(\)=>\(\{/.test(mainSrc) && /fin:\(FINALE&&FINALE\.isOpen&&FINALE\.isOpen\(\)\)\?1:0/.test(mainSrc),
+		'the story snapshot reuses the SAVE shapes (save codec = wire codec) + the finale flag');
+	assert.ok(/if\(d\.tasks&&TASKS&&TASKS\.restore\) TASKS\.restore\(d\.tasks\);/.test(mainSrc)
+		&& /if\(d\.story&&STORY_PROGRESSION&&STORY_PROGRESSION\.restore\) STORY_PROGRESSION\.restore\(d\.story\);/.test(mainSrc),
+		'guest story state applies through the validating save restores');
+	assert.ok(/finaleOpen:\(\)=>\{ try\{ if\(FINALE&&FINALE\.open&&!FINALE\.isOpen\(\)\) FINALE\.open\(\); \}catch\(e\)\{\} \}/.test(mainSrc),
+		'the ceremony relay is OPEN-only');
+	assert.ok(!/FINALE\.unlock|finale\.unlock/.test(clientSrc), 'a guest never unlocks its own layer from the stream');
+	assert.ok(/if\(pl\.data\.fin && !finRelayed\)\{ finRelayed = true;/.test(clientSrc) && /if\(!pl\.data\.fin\) finRelayed = false;/.test(clientSrc),
+		'the finale relay fires once per host ceremony opening and re-arms after it closes');
+}
+function CADHasStory(src){ return /story: \d+ \}/.test(src.slice(src.indexOf('const CAD = {'), src.indexOf('const CAD = {') + 400)); }
 
 // …which is exactly why Kopiuj must RELEASE the focus it took: select() leaves the
 // caret in the link INPUT, the guard above then freezes the panel body forever and

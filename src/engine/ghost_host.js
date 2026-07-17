@@ -31,7 +31,7 @@ if(MMR && !MMR.ghostDreadAt){
 	};
 }
 
-const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500, mach: 800 };
+const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500, mach: 800, story: 4000 };
 const CHAT_MIN_MS = NET.CHAT.MIN_MS; // per-peer chat floor (shared with the client's local mirror)
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const ELECTRIC_CAUSE = /shock|electric|lightning|laser/; // wet bodies conduct these
@@ -71,7 +71,7 @@ const ghostHost = (function(){
 			snapCacheAt: 0,
 			sinceCache: [],
 			lastSnapAt: 0,
-			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0, pwat: 0 },
+			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0, pwat: 0, story: 0 },
 			auraOwners: [],
 			lastMobSig: null,
 			lastInvSig: null,
@@ -236,7 +236,10 @@ const ghostHost = (function(){
 				entry.name = String(pl.name || 'Duch').slice(0, 24);
 				if(NET.validAvatar(pl.avatar)) entry.avatar = pl.avatar;
 				if(Number.isFinite(pl.lvl)) entry.level = Math.max(1, Math.min(NET.PROG.MAX_LEVEL, Math.floor(pl.lvl)));
-				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room, mode: entry.mode });
+				// active challenge mods ride the welcome: guests mirror the world's laws
+				// (endless night, doubled wounds) — display/law parity, re-whitelisted there
+				const chalMods = (MMR && MMR.challenge && MMR.challenge.list) ? MMR.challenge.list() : [];
+				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room, mode: entry.mode, chal: chalMods.length ? chalMods : undefined });
 				entry.lastSnapAt = now();
 				sendSnapshot(s, entry.peer);
 				sendInvFull(s, entry.peer); // the world save carries invasions, but a fresh
@@ -486,6 +489,7 @@ const ghostHost = (function(){
 		if(t - s.last.body >= CAD.body) bodyTick(s, t);
 		if(t - s.last.drops >= CAD.drops) dropTick(s, t);
 		if(t - s.last.seasons >= CAD.seasons) seasonTick(s, t);
+		if(t - s.last.story >= CAD.story) storyTick(s, t);
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
 		if(t - s.last.presence >= CAD.presence) presenceTick(s, t);
 		if(t - s.last.pwat >= CAD.pwat) pwatTick(s, t);
@@ -569,6 +573,21 @@ const ghostHost = (function(){
 		try{
 			const data = bridge.snapshotSeasons ? bridge.snapshotSeasons() : null;
 			if(data) broadcast({ t: 'seasons', data });
+		}catch(e){ /* skip tick */ }
+	}
+	// Shared story: the quest list + arc stage stream to every ghost so the guest
+	// task chip stays live between resyncs, and the finale trigger relays so the
+	// closing ceremony plays on guest screens too. BROADCAST-ONLY by contract —
+	// no client packet may ever advance host story (display truth, like pvit).
+	function storyTick(s, t){
+		s.last.story = t;
+		try{
+			const data = bridge.snapshotStory ? bridge.snapshotStory() : null;
+			if(!data) return;
+			const json = JSON.stringify(data);
+			if(json === s.lastStoryJson) return; // sig-skip: silence costs nothing
+			s.lastStoryJson = json;
+			broadcast({ t: 'story', data });
 		}catch(e){ /* skip tick */ }
 	}
 	function infraTick(s, t){

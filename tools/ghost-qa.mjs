@@ -1771,6 +1771,21 @@ async function main(){
 		await ghost.poll(`(MM.ghostClient.partyMembers&&MM.ghostClient.partyMembers().length)||0`,
 			v => v >= 2, 'the embodied guest party feed lists itself + the host', 40, 250);
 		console.log('party HUD: ok (host roster DOM >=2 rows, off-screen arrow classified, guest feed lists the team)');
+		// --- shared story plane: a task minted on the host reaches the guest's list
+		// (the join snapshot seeded it; THIS proves the live plane), and the closing
+		// ceremony relays to the guest screen. Open-only: the guest closes its own.
+		await host.eval(`MM.tasks.upsert({id:'qa_story_probe', title:'Sygnał fabuły QA', source:'qa'})`);
+		await ghost.poll(`(MM.tasks&&MM.tasks.activeList&&MM.tasks.activeList().some(t=>t.id==='qa_story_probe'))?1:0`,
+			v => v === 1, 'the story plane carries a freshly minted host task to the guest', 40, 300);
+		await host.eval(`MM.finale.open()`);
+		await ghost.poll(`(MM.finale&&MM.finale.isOpen&&MM.finale.isOpen())?1:0`,
+			v => v === 1, 'the host ceremony opens on the guest screen too', 40, 300);
+		await host.eval(`MM.finale.close()`);
+		await ghost.eval(`MM.finale.close()`);
+		await host.eval(`MM.tasks.remove('qa_story_probe')`);
+		await ghost.poll(`(MM.tasks&&MM.tasks.activeList&&MM.tasks.activeList().some(t=>t.id==='qa_story_probe'))?1:0`,
+			v => v === 0, 'a completed host task leaves the guest list on the next tick', 40, 300);
+		console.log('shared story: ok (live task relay both ways of its lifecycle, ceremony played on the guest)');
 		// --- mining through the hact channel: host validates, tile breaks on the
 		// stream, the YIELD lands in the guest's own inv via its local awardTileDrops
 		const heroDig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');

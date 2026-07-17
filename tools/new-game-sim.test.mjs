@@ -98,6 +98,10 @@ assert.match(indexSrc,/id="menuPanel" class="devOnly"[^>]*aria-label="Narzędzia
 assert.match(uiSrc,/document\.getElementById\('debugMenuBtn'\)/,'debug menu wiring no longer owns the player hamburger');
 assert.match(mainSrc,/function flushPendingSave\(\)\{[\s\S]*if\(_startingNewGame\)\{[\s\S]*clearActiveGameStorage\(localStorage\)/,'unload cannot resurrect the abandoned profile');
 assert.match(mainSrc,/if\(PLANTS && PLANTS\.reset\) PLANTS\.reset\(\)/,'plant pagehide persistence is neutralized before reset');
-assert.match(worldgenSrc,/consumeFreshWorldSeed\([^)]*sessionStorage[^)]*\) \|\| 12345/,'world generation consumes the one-shot new-game seed');
+assert.match(worldgenSrc,/const QUEUED_SEED = consumeFreshWorldSeed\([^)]*sessionStorage[^)]*\);/,'world generation consumes the one-shot new-game seed');
+assert.match(worldgenSrc,/WG\.worldSeed = QUEUED_SEED \|\| 12345;/,'the queued seed (or the Node default) seeds the generator');
+// the boot branch must HONOR the consumed seed: it used to call setSeedFromInput
+// unconditionally, and the 'auto' input rerolled the player's explicit choice
+assert.match(worldgenSrc,/if\(QUEUED_SEED \|\| activeChallenge\)\{/,'an explicit seed survives the browser boot branch');
 
 console.log('new-game-sim: all assertions passed');

@@ -2854,6 +2854,9 @@ window.damageHero=function(amount, opts){
 	if(immunityMode){ player.hp=player.maxHp; return false; }
 	const now=performance.now();
 	if(player.hpInvul && now<player.hpInvul) return false;
+	// Challenge 'glass': every wound doubles at the single hero damage inlet, so
+	// the curse covers hosts and embodied guests (their pdmg forwards land here)
+	if(MM.challenge && MM.challenge.combatTuning){ const ct=MM.challenge.combatTuning(); if(ct) amount*=ct.heroDamageInMult; }
 	// Elemental matrix against the player: a soaked hero conducts electricity
 	// (EEL shocks, robot lasers, lightning all hit x1.5 while wet).
 	const incomingElement=combatElementFromDetail(opts);
@@ -4142,7 +4145,10 @@ function startNewGame(requestedSeed){
 		msg('Nie udało się wyczyścić bieżącej gry');
 		return false;
 	}
-	window.location.reload();
+	// challenge URL params must not haunt the NEXT world: a reset from a cursed
+	// link navigates to the bare path (the pending handoff rides sessionStorage)
+	if(/[?&](seed|mods)=/.test(window.location.search)) window.location.href=window.location.pathname;
+	else window.location.reload();
 	return true;
 }
 // The game's bookends: the title overlay greets a human boot (auto-skips under
@@ -8689,9 +8695,29 @@ function ensurePausePanel(){
 		}catch(e){ msg('Ziarno: '+value); }
 	});
 	currentSeedControl.appendChild(currentSeed); currentSeedControl.appendChild(copySeed); currentSeedRow.appendChild(currentSeedControl); pausePanel.appendChild(currentSeedRow);
+	// Challenge link: this world's seed + active modifiers as one shareable URL
+	// ("watch me suffer in my cursed seed" — spectating rides the usual 👁 link)
+	const chalRow=buildPauseRow('🎯 Wyzwanie');
+	const chalControl=document.createElement('div'); chalControl.className='pauseSeedControl';
+	const chalInfo=document.createElement('code'); chalInfo.className='pauseChallengeMods';
+	const chalList=(MM.challenge && MM.challenge.list)? MM.challenge.list() : [];
+	chalInfo.textContent=chalList.length ? chalList.map(m=>((MM.challenge.MODS[m]&&MM.challenge.MODS[m].label)||m)).join(', ') : 'bez modyfikatorów';
+	const copyChallenge=document.createElement('button'); copyChallenge.type='button'; copyChallenge.textContent='Skopiuj wyzwanie';
+	copyChallenge.addEventListener('click',()=>{
+		const link=(MM.challenge && MM.challenge.link)? MM.challenge.link(location.origin+location.pathname) : null;
+		if(!link){ msg('Nie udało się zbudować linku wyzwania'); return; }
+		try{
+			if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(link).then(()=>msg('Skopiowano wyzwanie: '+link)).catch(()=>msg('Wyzwanie: '+link)); }
+			else msg('Wyzwanie: '+link);
+		}catch(e){ msg('Wyzwanie: '+link); }
+	});
+	chalControl.appendChild(chalInfo); chalControl.appendChild(copyChallenge); chalRow.appendChild(chalControl); pausePanel.appendChild(chalRow);
 	const seedRow=buildPauseRow('🌱 Ziarno nowego świata');
 	const seedControl=document.createElement('div'); seedControl.className='pauseSeedControl';
 	const seedInput=document.createElement('input'); seedInput.id='newWorldSeedInput'; seedInput.type='number'; seedInput.min='1'; seedInput.max='999999999'; seedInput.step='1'; seedInput.placeholder='losowe'; seedInput.inputMode='numeric';
+	// a challenge link opened over an existing save never destroys it — the seed
+	// waits here and the mods ride queueNext through the confirmed restart
+	if(MM.challenge && MM.challenge.pending) seedInput.value=String(MM.challenge.pending.seed);
 	const randomSeed=document.createElement('button'); randomSeed.type='button'; randomSeed.textContent='🎲'; randomSeed.title='Wylosuj ziarno'; randomSeed.setAttribute('aria-label','Wylosuj ziarno nowego świata');
 	randomSeed.addEventListener('click',()=>{ seedInput.value=String(randomWorldSeed()); });
 	seedControl.appendChild(seedInput); seedControl.appendChild(randomSeed); seedRow.appendChild(seedControl); pausePanel.appendChild(seedRow);
@@ -8714,6 +8740,9 @@ function ensurePausePanel(){
 		const confirmed=window.confirm('Rozpocząć nową grę?\n\nZiarno: '+seedDescription+'\nBieżący świat, ekwipunek, postęp i statystyki zostaną usunięte. Ręczne zapisy i ustawienia zostaną zachowane.');
 		if(!confirmed) return;
 		newGame.disabled=true; newGame.textContent='Uruchamiam…';
+		// restarting INTO the offered challenge carries its modifiers across the
+		// reload (session-scoped one-shot — localStorage is purged on this path)
+		if(MM.challenge && MM.challenge.pending && chosenSeed===MM.challenge.pending.seed) MM.challenge.queueNext(MM.challenge.pending);
 		if(!startNewGame(chosenSeed)){ newGame.disabled=false; newGame.textContent='Rozpocznij od nowa'; }
 	});
 	newGameRow.appendChild(newGame); pausePanel.appendChild(newGameRow);
@@ -16042,6 +16071,21 @@ MM.ghostBridge={
 	restoreDrops:(d)=>{ try{ if(DROPS&&DROPS.restore) DROPS.restore(d); }catch(e){} },
 	snapshotSeasons:()=>((SEASONS&&SEASONS.snapshot)?SEASONS.snapshot():null),
 	restoreSeasons:(d)=>{ try{ if(SEASONS&&SEASONS.restore) SEASONS.restore(d); }catch(e){} },
+	// shared story plane: the SAME snapshot shapes the save uses (save codec = wire
+	// codec), plus the finale-open flag; restores are the validating save restores
+	snapshotStory:()=>({
+		tasks:(TASKS&&TASKS.snapshot)?TASKS.snapshot():null,
+		story:(STORY_PROGRESSION&&STORY_PROGRESSION.snapshot)?STORY_PROGRESSION.snapshot():null,
+		fin:(FINALE&&FINALE.isOpen&&FINALE.isOpen())?1:0
+	}),
+	restoreStory:(d)=>{ try{
+		if(!d||typeof d!=='object') return;
+		if(d.tasks&&TASKS&&TASKS.restore) TASKS.restore(d.tasks);
+		if(d.story&&STORY_PROGRESSION&&STORY_PROGRESSION.restore) STORY_PROGRESSION.restore(d.story);
+	}catch(e){} },
+	// the ceremony relay is OPEN-only: unlock() (layer completion credit) stays a
+	// host achievement — a spectator's own layer tally must never count this world
+	finaleOpen:()=>{ try{ if(FINALE&&FINALE.open&&!FINALE.isOpen()) FINALE.open(); }catch(e){} },
 	restoreBoats:(d)=>{ try{ if(BOATS&&BOATS.restore) BOATS.restore(d); }catch(e){} },
 	restoreMechs:(d)=>{ try{ if(MECHS&&MECHS.restore) MECHS.restore(d,getTile); }catch(e){} },
 	snapshotInfra:()=>((WORLD&&WORLD.snapshotInfrastructure)?WORLD.snapshotInfrastructure():null),

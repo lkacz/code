@@ -5920,9 +5920,12 @@ const mobs = (function(){
   if(!player || !finiteCoord(player.x) || !finiteCoord(player.y) || typeof getTile!=='function') return;
   if(now < nextSpawnCheck) return; // throttle globally
   if(now < spawnFreezeUntil) { nextSpawnCheck = now + 500; return; }
-    nextSpawnCheck = now + ECO_SPAWN_MIN_MS + Math.random()*ECO_SPAWN_JITTER_MS;
+    // challenge 'swarm' tunes the eco pass through one derived knob (null when
+    // no challenge — solo/Node cost is a guarded property read, like coopBodies)
+    const chalSpawn=(window.MM && MM.challenge && MM.challenge.spawnTuning) ? MM.challenge.spawnTuning() : null;
+    nextSpawnCheck = now + (ECO_SPAWN_MIN_MS + Math.random()*ECO_SPAWN_JITTER_MS)/(chalSpawn ? chalSpawn.intervalDiv : 1);
     const host=mobHostilityAt(player.x);
-    const totalLocalCap=Math.max(ECO_TOTAL_LOCAL_CAP, Math.round(ECO_TOTAL_LOCAL_CAP * (host.mobLocalCapMult || 1)));
+    const totalLocalCap=Math.round(Math.max(ECO_TOTAL_LOCAL_CAP, Math.round(ECO_TOTAL_LOCAL_CAP * (host.mobLocalCapMult || 1))) * (chalSpawn ? chalSpawn.capMult : 1));
     const local=localMobCounts(player,ECO_LOCAL_RADIUS);
     if(local.total>=totalLocalCap) return;
     const biome=biomeAt(Math.floor(player.x));

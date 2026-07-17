@@ -10,9 +10,13 @@
 import { WORLD_H } from '../constants.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
 import { consumeFreshWorldSeed } from './new_game.js';
+import { activeChallenge, applyWorldMods } from './challenge.js';
 window.MM = window.MM || {};
 const WG = {};
-WG.worldSeed = consumeFreshWorldSeed(typeof sessionStorage!=='undefined' ? sessionStorage : null) || 12345;
+// the one-shot new-game seed is captured here and honored again at the boot
+// branch below — the 'auto' seed input must never reroll an explicit choice
+const QUEUED_SEED = consumeFreshWorldSeed(typeof sessionStorage!=='undefined' ? sessionStorage : null);
+WG.worldSeed = QUEUED_SEED || 12345;
 
 // Persistent world generation settings (tunable via UI). v2 storage key — v1 values
 // belong to the old inverted height model and must not leak into this one.
@@ -671,8 +675,27 @@ WG.diamondChance = function(y){
 	return (0.000015 + Math.pow(bedrockward,3.6)*0.0038) * (1-contactEase*0.40);
 };
 
-// Node sims import this module without a DOM; the seed input only exists in the browser
-if(typeof document!=='undefined') WG.setSeedFromInput();
+// Node sims import this module without a DOM; the seed input only exists in the browser.
+// Boot seed priority: a queued new-game choice > the active challenge link > the
+// #seedInput field (QA interceptor / debug panel; 'auto' rolls a random world).
+// The queued seed used to be silently rerolled by the 'auto' input right after
+// being consumed — an explicitly chosen new-world seed never reached the world.
+if(typeof document!=='undefined'){
+	if(QUEUED_SEED || activeChallenge){
+		if(!QUEUED_SEED) WG.worldSeed = activeChallenge.seed;
+		const inp=document.getElementById('seedInput');
+		if(inp) inp.value=String(WG.worldSeed);
+		WG.clearCaches();
+	} else {
+		WG.setSeedFromInput();
+	}
+	// challenge modifiers patch the generator IN MEMORY only — never persisted,
+	// so leaving the challenge world restores the player's own settings
+	if(activeChallenge && activeChallenge.mods.length){
+		WG.settings = applyWorldMods(WG.settings, activeChallenge.mods);
+		WG.clearCaches();
+	}
+}
 MM.worldGen = WG;
 // ES module exports (progressive migration): allow importing as a module
 export const worldGen = WG;
