@@ -41,6 +41,7 @@ const SNAP_REQ_MIN_MS = 5000; // per-peer floor for needSnap re-sends
 const SNAP_CACHE_MS = 3000; // one save serialization serves every join/resync inside the window
 const MOBS_REQ_MIN_MS = 1000; // needMobs costs a full mob serialize — per-peer floor
 const PEER_MSG_WINDOW_MS = 2000, PEER_MSG_MAX = 240; // ~120 msg/s ceiling; a legit ghost sends ~5/s
+const MODE_MEMORY_MS = 10 * 60 * 1000; // a transport blip must not demote a player mid-session
 const BUFF_FX = { cheer: { tier: 'rare', sound: 'milestone' }, bless: { tier: 'epic', sound: 'heal' }, energy: { tier: 'epic', sound: 'charge' } };
 
 const ghostHost = (function(){
@@ -91,6 +92,7 @@ const ghostHost = (function(){
 			lastChargeAt: 0,
 			lastSimAt: now(), // a fresh session is not "idle" before its first sim frame
 			duelAsks: new Map(), // 'challenger>target' → ts; a duel starts only on MUTUAL asks
+			modeMemory: new Map(), // gid → {mode, ts}: embodied rungs survive a reconnect (auto-regrant)
 			listen: null
 		};
 		s.listen = NET.hostListen(room, { rtc: opts.rtc !== false, onPeer: (peer) => onPeer(s, peer) });
@@ -224,7 +226,19 @@ const ghostHost = (function(){
 				// chosen body colors, so a late joiner paints every player right away
 				for(const other of entries()){ if(other !== entry && other.look){ try{ entry.peer.send({ t: 'plook', gid: other.gid, c: other.look }); }catch(e){ /* fine */ } } }
 				sendDeed(entry, 'join', 1);
-				try{ bridge.msg('👻 ' + entry.name + ' obserwuje twoją warstwę'); }catch(e){ /* fine */ }
+				// auto-regrant: a returning embodied guest gets its rung back — the ban
+				// path above already refused anyone the host threw out
+				const kept = s.modeMemory ? s.modeMemory.get(entry.gid) : null;
+				if(kept && now() - kept.ts < MODE_MEMORY_MS && (kept.mode === 'play' || kept.mode === 'hero')){
+					s.modeMemory.delete(entry.gid);
+					entry.mode = kept.mode;
+					entry.heroMode = kept.mode === 'hero';
+					if(!entry.body) spawnBody(s, entry);
+					entry.peer.send({ t: 'perm', mode: kept.mode });
+					try{ bridge.msg('🎮 ' + entry.name + ' wraca do gry po zerwaniu'); }catch(e){ /* fine */ }
+				} else {
+					try{ bridge.msg('👻 ' + entry.name + ' obserwuje twoją warstwę'); }catch(e){ /* fine */ }
+				}
 				updateUi();
 			}
 		} else if(pl.t === 'prog'){
@@ -316,6 +330,7 @@ const ghostHost = (function(){
 					if(Number.isFinite(pl.hp)) b.hp = Math.max(0, Math.min(NET.HERO_RULES.HP_MAX, +pl.hp));
 					if(Number.isFinite(pl.mhp)) b.maxHp = Math.max(1, Math.min(NET.HERO_RULES.HP_MAX, +pl.mhp));
 					b.dead = b.hp <= 0;
+					if(b.dead && b.duelWith) endDuel(s, entry); // a hero death settles the duel too
 				}
 			}
 			if(Number.isFinite(pl.x) && Number.isFinite(pl.y)) entry.cam = { x: +pl.x, y: +pl.y };
@@ -337,6 +352,9 @@ const ghostHost = (function(){
 	}
 	function dropPeer(s, entry, silent){
 		if(!s.peers.has(entry.peer)) return;
+		// remember the embodied rung: the grant was the HOST's own decision for this
+		// gid, and a transport blip must not demote a player mid-session
+		if(entry.hello && (entry.mode === 'play' || entry.mode === 'hero') && s.modeMemory) s.modeMemory.set(entry.gid, { mode: entry.mode, ts: now() });
 		if(entry.body) keepBody(entry); // a vanished player's pouch survives its connection
 		s.peers.delete(entry.peer);
 		if(entry.hello) s.watchers = Math.max(0, s.watchers - 1);
@@ -912,7 +930,9 @@ const ghostHost = (function(){
 	function handlePlayAct(s, entry, pl){
 		markActive(entry);
 		const b = entry.body;
-		if(!b || entry.mode !== 'play'){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'perm' }); return; }
+		// the pouch-mode intents demand 'play' exactly — EXCEPT the duel handshake,
+		// which is a body-level contract and serves hero-mode guests too
+		if(!b || (entry.mode !== 'play' && !(entry.mode === 'hero' && pl.a === 'duel'))){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'perm' }); return; }
 		if(b.dead){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'dead' }); return; }
 		// a flash-frozen body is a block of ice: EVERY intent bounces until it thaws
 		// (movement is guest-authoritative — the client honors the stun, a rigged one
@@ -1134,6 +1154,16 @@ const ghostHost = (function(){
 			if(Math.abs(x - b.x) > NET.HERO_RULES.DMG_RADIUS || Math.abs(y - b.y) > NET.HERO_RULES.DMG_RADIUS) return;
 			const amt = Math.max(1, Math.min(NET.HERO_RULES.DMG_MAX, Number(pl.n) || 1));
 			const kind = (pl.k === 'ignite' || pl.k === 'chill') ? pl.k : 'hit'; // element whitelist — host picks its own safe params
+			// consensual duel (hero rung): a blow landing near the CONSENTING partner
+			// wounds it too — symmetry re-checked here, the host hero never a target
+			if(b.duelWith && kind === 'hit'){
+				for(const e of entries()){
+					if(e.gid !== b.duelWith || !e.body || e.body.dead) continue;
+					if(e.body.duelWith !== entry.gid) break; // symmetry or nothing
+					if(Math.abs(e.body.x - x) < 1.4 && Math.abs(e.body.y - y) < 1.6) hurtBody(s, e, Math.min(20, amt), b.x, b.y, 'duel');
+					break;
+				}
+			}
 			let hits = 0;
 			try{ hits = bridge.ghostHeroDamage ? (bridge.ghostHeroDamage(x, y, amt, kind) | 0) : 0; }catch(e){ hits = 0; }
 			if(hits) s.stats.heroDmg = (s.stats.heroDmg || 0) + 1;
@@ -1150,6 +1180,8 @@ const ghostHost = (function(){
 			if(res && res.ok){
 				b.x = res.x; b.y = res.y; // the body lands with the guest — claims will match
 				entry.peer.send({ t: 'hact', a: 'tp', ok: true, x: +res.x.toFixed(2), y: +res.y.toFixed(2) });
+			} else {
+				entry.peer.send({ t: 'hact', a: 'tp', ok: false }); // an honest refusal beats silence
 			}
 			return;
 		}
@@ -1186,7 +1218,10 @@ const ghostHost = (function(){
 			b.lastHeroShootAt = t;
 			const spec = { vx: Number(pl.vx) || 0, vy: Number(pl.vy) || 0,
 				dmg: Math.max(1, Math.min(NET.HERO_RULES.DMG_MAX, Number(pl.n) || 1)),
-				fire: !!pl.f2, snowball: !!pl.sb, rock: !!pl.rk, thrown: !!pl.th, harpoon: !!pl.hp2 };
+				fire: !!pl.f2, snowball: !!pl.sb, rock: !!pl.rk, thrown: !!pl.th, harpoon: !!pl.hp2,
+				sticky: !!pl.sk, // special throws keep their fuse — host-owned params in the resolver
+				splat: (pl.sp === 'wet' || pl.sp === 'gascloud') ? pl.sp : null, // balloon/grenade bursts, host-owned radii
+				ownerGid: entry.gid, duelGid: b.duelWith || null }; // duel arrows re-check consent at impact
 			try{ if(bridge.ghostHeroShoot) bridge.ghostHeroShoot({ x: b.x, y: b.y }, spec); }catch(e){ /* fine */ }
 			return;
 		}
@@ -1213,7 +1248,8 @@ const ghostHost = (function(){
 			b.lastHeroUseAt = t;
 			let res = null;
 			try{ res = bridge.ghostHeroUseAt ? bridge.ghostHeroUseAt(tx, ty) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
-			entry.peer.send({ t: 'hact', a: 'use', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty });
+			entry.peer.send({ t: 'hact', a: 'use', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty,
+				loot: (res && res.loot) || null, note: (res && res.note) ? String(res.note).slice(0, 80) : null });
 			return;
 		}
 		if(pl.a === 'mine'){
@@ -2014,7 +2050,7 @@ const ghostHost = (function(){
 			+ '<div id="ghostPanelQueue" style="display:none;flex-direction:column;gap:4px;"></div>'
 			+ '<div id="ghostPanelViewers" style="color:#9fd6ae;"></div>'
 			+ '<div id="ghostPanelPerks" style="line-height:1.45;color:#8fa4bb;font-size:11px;"></div>'
-			+ '<div style="color:#7d8fa6;font-size:10px;line-height:1.4;">🌐 Połączenie jest bezpośrednie (P2P, tylko STUN — bez serwera pośredniczącego). W restrykcyjnych sieciach (niektóre NAT-y firmowe/komórkowe) widz może nie zdołać się połączyć — wtedy pomaga inna sieć lub hotspot.</div>'
+			+ '<div style="color:#7d8fa6;font-size:10px;line-height:1.4;">🌐 Połączenie jest bezpośrednie (P2P); w restrykcyjnych sieciach ruch przechodzi przez publiczny przekaźnik TURN. Gdy mimo to widz nie może dołączyć, pomaga inna sieć lub hotspot.</div>'
 			+ '<button id="ghostPanelToggle" style="border:none;border-radius:10px;background:#21a366;color:#fff;font-weight:800;padding:9px 12px;cursor:pointer;">Rozpocznij transmisję</button>';
 		document.body.appendChild(el);
 		el.querySelector('#ghostPanelClose').addEventListener('click', () => togglePanel(false));
@@ -2159,6 +2195,13 @@ const ghostHost = (function(){
 		let took = null;
 		try{ took = bridge.ghostGiftTake ? bridge.ghostGiftTake(key, count) : null; }catch(e){ took = null; }
 		if(!took || !took.ok){ try{ bridge.msg('🎁 Nie masz tylu: ' + key); }catch(e){ /* fine */ } return false; }
+		if(te.heroMode){
+			// a hero guest banks the gift into its REAL inventory via the ack —
+			// the pouch is play-mode state it never reads
+			try{ te.peer.send({ t: 'gift', key, n: count, label: took.label || key, hero: 1 }); }catch(e){ /* fine */ }
+			try{ bridge.msg('🎁 Podarowano ' + (took.label || key) + ' ×' + count + ' → ' + (te.name || 'Duch')); }catch(e){ /* fine */ }
+			return true;
+		}
 		NET.pouchAdd(te.body.pouch, key, count);
 		keepBody(te);
 		sendVitals(s, te);

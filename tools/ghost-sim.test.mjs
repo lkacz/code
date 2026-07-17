@@ -867,6 +867,8 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	// client: the fresh-kit rule (the HOST’s riches must not become guest-local truth)
 	assert.ok(/if\(!returning && bridge\.ghostHeroFresh\) bridge\.ghostHeroFresh\(\);/.test(clientSrc),
 		'a first-time hero starts FRESH — applyGameData’s host inventory never leaks into guest truth');
+	assert.ok(/const hadPose = !!\(play\.on && play\.spawned\);/.test(clientSrc) && /hero\.spawned = hadPose;/.test(clientSrc),
+		'a play→hero promotion claims its pose IMMEDIATELY — waiting for the pb echo raced and silenced the ppose uplink');
 	assert.ok(/window\.damageHero\(amt, \{ cause:/.test(clientSrc), 'forwarded wounds run the real hero damage pipeline (armor parity)');
 	assert.ok(/if\(hero\.on\)\{ held\.add\(\(e\.key \|\| ''\)\.toLowerCase\(\)\); return; \}/.test(clientSrc),
 		'hero mode hands the input back to the real game (mirroring only the steering bits)');
@@ -877,8 +879,29 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/ghostHeroGain:\(key,qty\)=>\{/.test(mainSrc) && /RESOURCE_DEFS\.find\(r=>r\.key===key\)/.test(mainSrc),
 		'the pickup yield credits guest inventory through a whitelisted key');
 	assert.ok(/if\(MM\.ghostHeroIntents\) return MM\.ghostHeroIntents\.use\(tx,ty\);/.test(mainSrc)
-		&& /if\(!\(info && info\.chestTier\)\) return \{ok:false, reason:'use'\}/.test(mainSrc),
+		&& /if\(info && info\.chestTier\) return \{ok:!!tryOpenChestAt\(tx,ty\)\};/.test(mainSrc),
 		'chest tiles open via the use intent — the HOST runs its real chest pipeline');
+	// vending: the machine is WORLD economy — the vend runs host-side with a
+	// CAPTURING loot sink and the ack banks the roll into the guest inventory
+	assert.ok(/tId===T\.VENDING_MACHINE && VENDING && VENDING\.vendAt/.test(mainSrc)
+		&& /gained\.push\(\[key,a\]\); return true;/.test(mainSrc),
+		'guest vending captures the loot for the ack instead of the host inventory');
+	assert.ok(/pl\.a === 'use' && pl\.ok && Array\.isArray\(pl\.loot\)/.test(clientSrc),
+		'the guest banks the vend roll through the whitelisted-key gain seam');
+	// gifts for hero guests land in the REAL inventory, not the play-mode pouch
+	assert.ok(/if\(te\.heroMode\)\{/.test(hostSrc) && /t: 'gift', key, n: count, label: took\.label \|\| key, hero: 1/.test(hostSrc),
+		'a gift to a hero guest rides the ack (the pouch is play-mode state it never reads)');
+	assert.ok(/if\(pl\.hero && hero\.on && pl\.key\)/.test(clientSrc), 'the hero guest banks host gifts via ghostHeroGain');
+	// hero duels: the handshake is a BODY-level contract open to both embodied rungs
+	assert.ok(/entry\.mode !== 'play' && !\(entry\.mode === 'hero' && pl\.a === 'duel'\)/.test(hostSrc),
+		'the pact gate admits ONLY the duel handshake for hero guests');
+	assert.ok(/if\(b\.duelWith && kind === 'hit'\)\{/.test(hostSrc) && /if\(e\.body\.duelWith !== entry\.gid\) break; \/\/ symmetry or nothing/.test(hostSrc),
+		'a hero blow near the consenting partner wounds it — symmetry re-checked host-side');
+	assert.ok(/if\(b\.dead && b\.duelWith\) endDuel\(s, entry\); \/\/ a hero death settles the duel too/.test(hostSrc),
+		'a hero death settles the duel');
+	assert.ok(/ownerGid: entry\.gid, duelGid: b\.duelWith \|\| null/.test(hostSrc)
+		&& /splat:\(spec\.splat==='wet'\|\|spec\.splat==='gascloud'\)\?spec\.splat:undefined/.test(wsrcH),
+		'hero projectiles carry host-stamped duel identity and whitelisted burst kinds');
 	// death: the grave is a WORLD mechanic — a hero guest keeps its inventory
 	// (a replica-local grave would be stream-wiped and the halved resources lost)
 	assert.ok(/if\(MM\.ghostHeroIntents\)\{\s*updateInventory\(\);\s*startDeathTravelFx\(cause\);\s*return;/.test(mainSrc),
@@ -1505,7 +1528,9 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/frame\(0\.25, now\(\), true\)/.test(hostSrc), 'the host pump declares itself when driving the frame');
 	assert.ok(/broadcast\(\{ t: 'ghosts', list, idle: \(t - \(s\.lastSimAt \|\| t\)\) > 1500 \? 1 : 0 \}\);/.test(hostSrc),
 		'a backgrounded host self-reports idle on the presence plane');
-	assert.ok(/STUN/.test(hostSrc), 'the invite panel documents the STUN-only NAT limitation');
+	assert.ok(/przekaźnik TURN/.test(hostSrc), 'the invite panel documents the P2P + TURN-relay connectivity story');
+	assert.ok(/turn:openrelay/.test(netSrc) && /turns:openrelay/.test(netSrc),
+		'the RTC config carries a TURN relay for restrictive NATs (STUN-only left some guests unable to join)');
 	assert.ok(/hostIdle = !!pl\.idle;/.test(clientSrc) && /function updateStaleBanner\(\)/.test(clientSrc)
 		&& /const stale = state === 'live' && \(hostIdle \|\| \(lastHostMsgAt > 0 && nowMs\(\) - lastHostMsgAt > 8000\)\);/.test(clientSrc),
 		'the watcher banner rises on host-idle or an 8 s stream gap, and only while live');

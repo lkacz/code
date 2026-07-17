@@ -173,7 +173,8 @@ const ghostClient = (function(){
 			conn.send({ t: 'hact', a: 'shoot',
 				vx: +(Number(a.vx) || 0).toFixed(2), vy: +(Number(a.vy) || 0).toFixed(2),
 				n: Math.max(1, Math.min(45, Math.round(Number(a.dmg) || 1))),
-				f2: a.fire ? 1 : 0, sb: a.snowball ? 1 : 0, rk: a.rock ? 1 : 0, th: a.thrown ? 1 : 0, hp2: a.harpoon ? 1 : 0 });
+				f2: a.fire ? 1 : 0, sb: a.snowball ? 1 : 0, rk: a.rock ? 1 : 0, th: a.thrown ? 1 : 0, hp2: a.harpoon ? 1 : 0, sk: a.stickyFuse ? 1 : 0,
+				sp: (a.splat === 'wet' || a.splat === 'gascloud') ? a.splat : 0 });
 			return true;
 		}
 	};
@@ -221,8 +222,13 @@ const ghostClient = (function(){
 	}
 	function enterHero(){
 		if(hero.on) return;
+		// a guest promoted FROM play already holds a valid pose — claim it
+		// immediately (movement is guest-authoritative). Waiting for the pb echo
+		// here lost a race in ~half the runs: no seed → no ppose uplink → the
+		// host body parked at the host hero, 26 tiles from the real player.
+		const hadPose = !!(play.on && play.spawned);
 		if(play.on) exitPlay();
-		hero.on = true; hero.spawned = false;
+		hero.on = true; hero.spawned = hadPose;
 		// the host hero leaves the local `player` (it becomes OUR full hero) and
 		// moves into remoteHost, exactly like play mode
 		const p = bridge.player;
@@ -250,6 +256,7 @@ const ghostClient = (function(){
 		saveHeroState(true); // nothing earned may be lost on demotion
 		hero.on = false; hero.spawned = false;
 		hero.driveId = null;
+		play.duelWith = null; // shared duel display state — a demoted duelist forfeits
 		if(MMR){ MMR.ghostHeroIntents = null; MMR.ghostHeroDriving = null; }
 		unwrapHeroDamage();
 		document.body.classList.remove('mmGhostHero');
@@ -512,6 +519,15 @@ const ghostClient = (function(){
 					bridge.msg('🧱 Gospodarz odrzucił postawienie (' + (pl.reason || '?') + ') — surowiec wraca');
 				}
 				else if(pl.a === 'mine' && !pl.ok && pl.reason === 'chest') bridge.msg('🎁 Skrzynię otwórz kliknięciem — nie kilofem');
+				else if(pl.a === 'use' && pl.ok && Array.isArray(pl.loot)){
+					// vending: the machine's roll lands in the guest's own inventory
+					let banked = 0;
+					for(const row of pl.loot.slice(0, 8)){
+						if(Array.isArray(row) && typeof row[0] === 'string'){ try{ if(bridge.ghostHeroGain && bridge.ghostHeroGain(row[0], row[1] || 1)) banked++; }catch(e){ /* fine */ } }
+					}
+					if(banked) bridge.msg('🎰 Automat: wygrana w sakwie!');
+				}
+				else if(pl.a === 'use' && !pl.ok && pl.note) bridge.msg('🎰 ' + String(pl.note).slice(0, 80));
 				else if(pl.a === 'pickup' && pl.ok && pl.item){
 					// gear travels as the item object — grantItem SANITIZES it again
 					// (a hostile host must not smuggle a poisoned item into the bag)
@@ -636,6 +652,8 @@ const ghostClient = (function(){
 		if(pl.t === 'gift'){
 			if(pl.weapon) bridge.msg('🎁 Gospodarz wręcza ci broń: ' + String(pl.label || pl.weapon).slice(0, 24));
 			else bridge.msg('🎁 Gospodarz podarował: ' + String(pl.label || pl.key || '?').slice(0, 24) + ' ×' + (Number(pl.n) || 0));
+			// hero mode: the gift lands in the REAL inventory (whitelisted key, clamped)
+			if(pl.hero && hero.on && pl.key){ try{ if(bridge.ghostHeroGain) bridge.ghostHeroGain(pl.key, pl.n || 1); }catch(e){ /* fine */ } }
 			return;
 		}
 		if(pl.t === 'pdmg'){
@@ -1039,7 +1057,7 @@ const ghostClient = (function(){
 			// spinner — STUN-only P2P legitimately fails on some networks (no TURN)
 			if(state === 'connect' && !connectFailShown && bootAt > 0 && t - bootAt > 25000){
 				connectFailShown = true;
-				showVeil('Nie można połączyć się z gospodarzem 😞<br><small>Transmisja mogła się skończyć, albo sieć blokuje bezpośrednie połączenia (restrykcyjny NAT — pomaga inna sieć/hotspot).</small><br>'
+				showVeil('Nie można połączyć się z gospodarzem 😞<br><small>Transmisja mogła się skończyć, albo sieć blokuje i P2P, i przekaźnik TURN — pomaga inna sieć lub hotspot.</small><br>'
 					+ '<button id="gvRetry" style="margin-top:10px;border:none;border-radius:8px;background:#21a366;color:#fff;font-weight:700;padding:8px 14px;cursor:pointer;">🔄 Spróbuj ponownie</button>');
 				const btn = veil && veil.querySelector('#gvRetry');
 				if(btn) btn.addEventListener('click', () => { try{ location.reload(); }catch(e){ /* fine */ } });
@@ -1466,7 +1484,9 @@ const ghostClient = (function(){
 	// Duels are CONSENT: this only registers/accepts a challenge — the host starts
 	// the duel exclusively on a mutual handshake and resolves every blow itself.
 	function sendDuel(targetGid){
-		if(state !== 'live' || !play.on || !play.spawned || play.dead) return false;
+		// duels are a BODY-level contract: both embodied rungs may challenge
+		const embodied = (play.on && play.spawned && !play.dead) || (hero.on && hero.spawned);
+		if(state !== 'live' || !embodied) return false;
 		if(typeof targetGid !== 'string' || !targetGid) return false;
 		conn.send({ t: 'pact', a: 'duel', gid: targetGid });
 		noteInput();
@@ -1837,7 +1857,7 @@ const ghostClient = (function(){
 		renderCraft();
 		const duelBtn = bar.querySelector('#gbDuel');
 		if(duelBtn){
-			duelBtn.style.display = (play.on && bodies.length) ? 'inline-block' : 'none';
+			duelBtn.style.display = ((play.on || hero.on) && bodies.length) ? 'inline-block' : 'none';
 			duelBtn.textContent = play.duelWith ? '⚔ w pojedynku' : '⚔ Pojedynek';
 		}
 		const lookBtn = bar.querySelector('#gbLook');
@@ -2198,6 +2218,7 @@ const ghostClient = (function(){
 		_heroUnboard: () => heroIntents.unboard(),
 		_heroRow: (dir, strong) => heroIntents.row(dir, strong !== false),
 		_heroTp: (dir) => heroIntents.tp(dir),
+		_heroDmg: (x, y, n) => { if(state === 'live' && conn){ conn.send({ t: 'hact', a: 'dmg', x: +x, y: +y, n: Math.max(1, Math.min(45, n | 0)) }); return true; } return false; },
 		_heroSave: () => { saveHeroState(true); },
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).
 		// Synthetic keyup events do not reliably clear `held` under headless CDP.

@@ -749,7 +749,16 @@ export const MQTT_BROKERS = [
 	'wss://broker.hivemq.com:8884/mqtt',
 	'wss://test.mosquitto.org:8081'
 ];
-const RTC_CONFIG = { iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }] };
+// STUN finds the direct path; the TURN relay is the LAST-RESORT carrier for
+// restrictive NATs (mobile hotspots, corporate networks) where hole-punching
+// fails outright — without it those guests simply cannot join. Public
+// openrelay tier: fine for a hobby P2P game, swap for own creds if it ever
+// rate-limits. WebRTC ICE is not CSP-gated, so no index.html change needed.
+const RTC_CONFIG = { iceServers: [
+	{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+	{ urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turns:openrelay.metered.ca:443?transport=tcp'],
+		username: 'openrelayproject', credential: 'openrelayproject' }
+] };
 const SIG_NS = 'mmg1/';
 
 function mqttOpen(url, opts){

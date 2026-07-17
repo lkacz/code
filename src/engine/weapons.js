@@ -3728,7 +3728,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
       life:ARROW_LIFE*0.85, stuck:false, stuckT:ARROW_STUCK,
       tier:'wood', color:'#caa472', headColor:'#dfe6f1',
       recoverable:false, coopOwner:true, windCap:cap*1.35,
-      fire:!!spec.fire, snowball:!!spec.snowball, rock:!!spec.rock, thrown:!!spec.thrown, harpoon:!!spec.harpoon
+      fire:!!spec.fire, snowball:!!spec.snowball, rock:!!spec.rock, thrown:!!spec.thrown, harpoon:!!spec.harpoon,
+      stickyFuse:spec.sticky?2.5:0, // the fuse length is the HOST's, the guest only names the kind
+      splat:(spec.splat==='wet'||spec.splat==='gascloud')?spec.splat:undefined, // burst kind only — radii/durations are the handlers' own
+      // duel identity, HOST-stamped: consent is re-verified at impact time
+      ownerGid:(typeof spec.ownerGid==='string')?spec.ownerGid.slice(0,20):null,
+      duelGid:(typeof spec.duelGid==='string')?spec.duelGid.slice(0,20):null
     });
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow',{x:body.x,y:body.y}); }catch(e){}
     return true;

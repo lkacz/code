@@ -11068,6 +11068,9 @@ function currentGameDayFloat(){
 }
 function tryUseVendingAt(tx,ty){
 	if(getTile(tx,ty)!==T.VENDING_MACHINE || !VENDING || !VENDING.vendAt) return false;
+	// hero-mode guest: the machine is WORLD economy (stock, daily draw, breakage)
+	// — the host runs the vend and the ack banks the loot into the guest inventory
+	if(MM.ghostHeroIntents) return MM.ghostHeroIntents.use(tx,ty);
 	if(!withinReach(tx,ty,MINE_REACH)){ msg('Za daleko'); return true; }
 	const addResource=(key,n)=>{
 		const amount=Math.max(0,n|0);
@@ -16352,9 +16355,28 @@ MM.ghostBridge={
 	// pipeline runs (loot bursts as world drops on the stream, first-come wins)
 	ghostHeroUseAt:(tx,ty)=>{
 		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
-		const info=INFO[getTile(tx,ty)];
-		if(!(info && info.chestTier)) return {ok:false, reason:'use'};
-		return {ok:!!tryOpenChestAt(tx,ty)};
+		const tId=getTile(tx,ty);
+		const info=INFO[tId];
+		if(info && info.chestTier) return {ok:!!tryOpenChestAt(tx,ty)};
+		if(tId===T.VENDING_MACHINE && VENDING && VENDING.vendAt){
+			// the vend runs with a CAPTURING sink: world state (stock, daily draw,
+			// breakage + its lifecycle hooks) is the host's, the loot is the caller's
+			const gained=[];
+			const onBreak=(x,y)=>{
+				notifyStructureTileChanged(x,y,T.VENDING_MACHINE,T.AIR);
+				if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(x,y,getTile,{radius:22});
+				if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(x,y);
+				if(WATER && WATER.onTileChanged) WATER.onTileChanged(x,y,getTile);
+			};
+			const res=VENDING.vendAt(tx,ty,{getTile,setTile,inv:{},
+				addResource:(key,n)=>{ const a=Math.max(0,n|0); if(!key||a<=0||!RESOURCE_KEY_SET.has(key)) return false; gained.push([key,a]); return true; },
+				onBreak,dynamo:DYNAMO,solar:SOLAR,teleporters:TELEPORTERS,getElectricNetworkTile,gameDayFloat:currentGameDayFloat});
+			if(!res || !res.ok) return {ok:false, reason:'vend', note:(res && res.message)||'Automat milczy'};
+			try{ if(MM.audio && MM.audio.play) MM.audio.play(res.broke?'break':'chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+			noteSaveActivity();
+			return {ok:true, vend:1, loot:gained.slice(0,8)};
+		}
+		return {ok:false, reason:'use'};
 	},
 	// HOST-side: a hero guest's teleporter jump — tryTeleport is driver-agnostic
 	// (it mutates the passed body), the pad's own energy accounting and cooldowns
@@ -16362,7 +16384,14 @@ MM.ghostBridge={
 	ghostHeroTeleport:(body,dir)=>{
 		if(!TELEPORTERS || !TELEPORTERS.tryTeleport) return {ok:false};
 		const proxy={x:body.x, y:body.y, vx:(dir<0?-1:1)*2, vy:0, w:body.w||0.62, h:body.h||0.92};
-		const ok=TELEPORTERS.tryTeleport(proxy,getElectricNetworkTile,{dynamo:DYNAMO, heroEnergy:null});
+		// Base-tile reader + STORED-energy-only opts: passing the dynamo network into
+		// the jump made connectedDynamoEnergy traverse raw tiles and quietly refuse
+		// the whole teleport. A guest jumps on the pad's OWN stored charge (and any
+		// energy the host's own play keeps it topped with) — no heroEnergy (a guest
+		// can never drain the host's pool), no cross-network dynamo pull. Documented
+		// limitation: a pad fed ONLY live through a wire, with zero stored charge,
+		// won't carry a guest until it banks a little.
+		const ok=TELEPORTERS.tryTeleport(proxy,getTile,{});
 		return ok ? {ok:true, x:proxy.x, y:proxy.y} : {ok:false};
 	},
 	// HOST-side: mech boarding for hero guests — the guest may take any pilotless,
@@ -16650,6 +16679,7 @@ function runHeroStep(dt,ts){
 	updateMining(dt);
 	updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt);
 	updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+	window.__mmHeroStepsEnd=(window.__mmHeroStepsEnd|0)+1; // debug seam: a stall here while __mmHeroSteps grows = a mid-frame throw
 }
 let lastLoopErrAt=0; function loop(ts){
 	if(shouldSkipFrameForCap(ts)){ requestAnimationFrame(loop); return; }
