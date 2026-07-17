@@ -10,7 +10,7 @@ globalThis.window = globalThis;
 globalThis.MM = {};
 
 const HUD = await import('../src/engine/party_hud.js');
-const { partyPointers, partyRoster, hpColor } = HUD;
+const { partyPointers, partyRoster, hpColor, focusPulse, FOCUS_MS } = HUD;
 
 assert.ok(globalThis.MM.partyHud && typeof globalThis.MM.partyHud.draw === 'function',
 	'module registers MM.partyHud with a draw entry point');
@@ -87,6 +87,16 @@ assert.equal(hpColor(0.26), '#f4c05a', 'above quarter is amber');
 assert.equal(hpColor(0.25), '#e5533d', 'quarter is red');
 assert.equal(hpColor(0), '#e5533d', 'empty is red');
 assert.equal(hpColor(7), '#58d68d', 'clamped high stays green');
+
+// --- focus pulse: click-to-highlight contract ------------------------------------------
+assert.ok(FOCUS_MS >= 2000, 'the focus pulse lives long enough to spot');
+assert.equal(focusPulse(1000, 1000), null, 'an expired pulse is null (the painter clears it)');
+assert.equal(focusPulse(2000, 1000), null, 'past-deadline is null');
+{
+	const a = focusPulse(500, 3500);
+	assert.ok(a > 0 && a <= 1, 'a live pulse is a drawable alpha');
+}
+assert.equal(focusPulse(NaN, 100), null, 'garbage clocks are inert');
 
 // --- painters stay inert under Node ---------------------------------------------------
 HUD.draw(null, { members: [{ id: 'a', name: 'Ala', x: 20, y: 15, hpFrac: 0.8 }], W: 800, H: 600, tile: 20, zoom: 1, camX: 0, camY: 0 });

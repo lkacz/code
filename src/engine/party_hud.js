@@ -65,22 +65,34 @@ export function hpColor(frac){
 	if(f > 0.25) return '#f4c05a';
 	return '#e5533d';
 }
+// Click-to-focus: a roster row click highlights that teammate's arrow/marker
+// for a short pulse. Pure: alpha in (0,1] while alive, null when expired.
+export const FOCUS_MS = 3000;
+export function focusPulse(nowMs, until){
+	if(!Number.isFinite(nowMs) || !Number.isFinite(until) || nowMs >= until) return null;
+	return 0.55 + 0.45 * Math.sin(nowMs / 120);
+}
 
 // ============================ RENDER (browser) ============================
 
 let bar = null, rows = new Map(), lastSig = '';
+let focus = null; // {id, until} — set by a roster row click, read by the painters
 function ensureBar(){
 	if(bar || typeof document === 'undefined') return bar;
 	bar = document.createElement('div');
 	bar.id = 'partyBar';
 	bar.style.cssText = 'position:fixed; left:10px; top:92px; z-index:95; display:none; flex-direction:column; gap:4px;'
 		+ ' padding:7px 9px; border-radius:12px; border:1px solid rgba(120,180,255,.28); background:rgba(10,15,24,.72);'
-		+ ' color:#dcebff; font:11.5px system-ui; box-shadow:0 6px 18px rgba(0,0,0,.4); pointer-events:none; max-width:180px;';
+		+ ' color:#dcebff; font:11.5px system-ui; box-shadow:0 6px 18px rgba(0,0,0,.4); pointer-events:auto; max-width:180px;';
 	const head = document.createElement('div');
 	head.id = 'partyBarHead';
 	head.style.cssText = 'font-weight:800;color:#8fc7ff;letter-spacing:.3px;';
 	head.textContent = '👥 Drużyna';
 	bar.appendChild(head);
+	// touch layouts wrap the top bar taller — nudge the roster below it
+	const st = document.createElement('style');
+	st.textContent = 'html[data-input-mode="touch"] #partyBar{ top:128px; max-width:150px; }';
+	document.head.appendChild(st);
 	document.body.appendChild(bar);
 	return bar;
 }
@@ -99,8 +111,9 @@ function syncRoster(roster){
 		rows.clear();
 		for(const r of roster){
 			const row = document.createElement('div');
-			row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+			row.style.cssText = 'display:flex;align-items:center;gap:6px;' + (r.self ? '' : 'cursor:pointer;');
 			const nm = document.createElement('span');
+			nm.className = 'partyName';
 			nm.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700;'
 				+ (r.self ? 'color:#aef0c2;' : '');
 			nm.textContent = r.name;
@@ -111,6 +124,12 @@ function syncRoster(roster){
 			fill.style.cssText = 'display:block;height:100%;border-radius:99px;transition:width .2s ease;';
 			barWrap.appendChild(fill);
 			row.append(nm, barWrap);
+			// clicking a teammate's row pulses its marker/arrow for a moment —
+			// display-only, both ends, zero protocol (self has nothing to point at)
+			if(!r.self){
+				const id = r.id;
+				row.addEventListener('click', () => { focus = { id, until: Date.now() + FOCUS_MS }; });
+			}
 			b.appendChild(row);
 			rows.set(r.id, row);
 		}
@@ -121,6 +140,10 @@ function syncRoster(roster){
 		const fill = el.querySelector('.partyHpFill');
 		if(fill){ fill.style.width = Math.round(r.hpFrac * 100) + '%'; fill.style.background = r.dead ? '#555' : hpColor(r.hpFrac); }
 		el.style.opacity = r.dead ? '0.5' : '1';
+		// a dead teammate keeps its row, marked with a skull until respawn
+		const nm = el.querySelector('.partyName');
+		const label = (r.dead ? '💀 ' : '') + r.name;
+		if(nm && nm.textContent !== label) nm.textContent = label;
 	}
 }
 // Screen-space edge arrows to off-screen teammates — drawn in draw() after the
@@ -152,17 +175,39 @@ function drawArrows(ctx, data){
 	// existing body painters (paintBodyTag) — the HUD owns only the edge arrows
 	// and the roster, so the two never double up.
 }
+// The clicked teammate's marker pulses briefly: a ring at its on-screen spot
+// or around its edge arrow, so "where is Bob" is one roster click.
+function drawFocus(ctx, data){
+	if(!ctx || !focus) return;
+	const a = focusPulse(Date.now(), focus.until);
+	if(a == null){ focus = null; return; }
+	const on = data.onScreen.find(p => p.id === focus.id);
+	const off = on ? null : data.offScreen.find(p => p.id === focus.id);
+	const px = on ? on.sx : (off ? off.ex : null);
+	const py = on ? on.sy : (off ? off.ey : null);
+	if(px == null) return; // the teammate left the feed mid-pulse
+	ctx.save();
+	ctx.globalAlpha = a;
+	ctx.strokeStyle = '#8fc7ff';
+	ctx.lineWidth = 3;
+	ctx.beginPath();
+	ctx.arc(px, py, 22 + 6 * a, 0, Math.PI * 2);
+	ctx.stroke();
+	ctx.restore();
+}
 // The one entry point main.js calls each frame: gather-free — it takes the
 // already-built member list and the view, updates the roster and paints arrows.
 export function draw(ctx, opts){
 	if(!opts) return;
 	const members = Array.isArray(opts.members) ? opts.members : [];
 	syncRoster(partyRoster(members));
-	drawArrows(ctx, partyPointers(members, opts));
+	const data = partyPointers(members, opts);
+	drawArrows(ctx, data);
+	drawFocus(ctx, data);
 }
 export function hide(){ if(bar) bar.style.display = 'none'; lastSig = ''; }
 
-const api = { draw, hide, partyPointers, partyRoster, hpColor };
+const api = { draw, hide, partyPointers, partyRoster, hpColor, focusPulse, FOCUS_MS };
 if(MMR) MMR.partyHud = api;
 export const partyHud = api;
 export default partyHud;
