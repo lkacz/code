@@ -991,6 +991,38 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 }
 function CADHasStory(src){ return /story: \d+ \}/.test(src.slice(src.indexOf('const CAD = {'), src.indexOf('const CAD = {') + 400)); }
 
+// --- world fork: consent-only grant, ONE narrow storage exit, nothing syncs back ----------
+// The guest already holds the entire world (the join snapshot IS the host's
+// save object) — a fork is host consent + a local commit + a solo reboot. The
+// storage lockdown's allowlist stays closed: the commit rides a dedicated
+// armed hatch, and only the host-granted dispatcher branch can arm it.
+{
+	const grantSlice = hostSrc.slice(hostSrc.indexOf('function forkGrant'), hostSrc.indexOf('// Host gifting'));
+	assert.ok(/te\.peer\.send\(\{ t: 'forkGrant' \}\)/.test(grantSlice), 'the host grant sends consent and nothing else');
+	assert.ok(/lastForkGrantAt/.test(grantSlice), 'the grant is deduped per viewer');
+	assert.ok(!/setTile|buildSave|\binv\b|pouch/.test(grantSlice), 'the grant moves no state — consent only');
+	// exactly one site arms the hatch, and it is the host-granted branch
+	assert.equal([...clientSrc.matchAll(/MMR\.ghostForkArmed = true/g)].length, 1, 'exactly one site arms the fork hatch');
+	assert.ok(/pl\.t === 'forkGrant'/.test(clientSrc), 'and it is the forkGrant dispatcher branch (locked host connection only)');
+	assert.ok(/if\(!MMR\.ghostForkArmed\) return false;/.test(clientSrc)
+		&& /if\(k !== 'mm_save_v7' && k !== 'mm_challenge_v1'\) return false;/.test(clientSrc),
+		'the hatch admits exactly the main save + the challenge run marker, only while armed');
+	assert.ok(/origSet\.call\(window\.localStorage, k, String\(v\)\)/.test(clientSrc),
+		'the hatch uses the ORIGINAL setItem — the lockdown allowlist stays closed');
+	assert.ok(/MMR\.ghostForkArmed = false; \/\/ one-shot: used or failed, the hatch closes/.test(clientSrc)
+		&& /MMR\.ghostForkArmed = false; \/\/ a declined offer leaves the hatch closed/.test(clientSrc),
+		'accepting or declining disarms the hatch');
+	// main.js: the audited commit is the only ghost-mode main-save writer
+	assert.ok(/commitForkSave:\(\)=>\{/.test(mainSrc) && /MM\.ghostForkWrite\(SAVE_KEY, JSON\.stringify\(withHash\)\)/.test(mainSrc),
+		'the commit seam writes the hash-stamped LIVE save through the hatch');
+	assert.ok(/if\(MM\.ghostMode\) return false; \/\/ ghost sessions never write saves/.test(mainSrc),
+		'the regular save path still refuses ghost mode (the hatch is the only exit)');
+	assert.ok(/mods\.length\) MM\.ghostForkWrite\('mm_challenge_v1'/.test(mainSrc),
+		'a cursed world forks WITH its curse (the run marker rides along)');
+	assert.ok(/location\.href = location\.pathname;/.test(clientSrc),
+		'the accepted fork reboots into the bare path — solo play on the committed save');
+}
+
 // …which is exactly why Kopiuj must RELEASE the focus it took: select() leaves the
 // caret in the link INPUT, the guard above then freezes the panel body forever and
 // the host never sees the joining viewer's row (the field-report screenshot bug)

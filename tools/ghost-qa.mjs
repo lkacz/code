@@ -2129,8 +2129,45 @@ async function main(){
 		if(!(invAfterBlip >= 1)) throw new Error('the reconnect lost the guest-local inventory: stone=' + invAfterBlip);
 		console.log('auto-regrant: ok (blip → rejoin → hero rung and inventory intact)');
 
+		// --- Scene 10x: WORLD FORK — the guest takes the shared moment home ---------------------------
+		// Host consent (forkGrant) arms the ONE narrow storage exit; the guest
+		// commits the replica it is already rendering as its OWN solo save and
+		// reboots into it. Runs on ghost4 (expendable — the primary ghost still
+		// carries scenes 11/12). NOTE the QA-only wrinkle: every tab shares ONE
+		// origin here, so localStorage is common — the host's own autosave lives
+		// beside the fork. Asserts pick the fork apart by the GUEST's position.
+		const hatchClosed = await ghost4.eval(`MM.ghostForkWrite ? (MM.ghostForkWrite('mm_save_v7','{}') === false) : false`);
+		if(!hatchClosed) throw new Error('the fork hatch accepted a write WITHOUT a grant');
+		const forkSpot = await ghost4.eval(`(()=>{ const p=window.player; const x=Math.floor(p.x), y=Math.floor(p.y);
+			const cells=[]; for(let dx=-6;dx<=6;dx++) for(let dy=-4;dy<=4;dy++) cells.push(MM.world.getTile(x+dx,y+dy));
+			return {x:+p.x.toFixed(2), tx:x, ty:y, cells:cells.join(',')}; })()`);
+		await host.eval(`MM.ghostHost.forkGrant('${duelists.g4}')`);
+		await ghost4.poll(`MM.ghostClient.metrics().forkOffered ? 1 : 0`, v => v === 1, 'the fork offer reaches the guest', 40, 300);
+		const offerCard = await ghost4.eval(`!!document.getElementById('ghostForkOffer')`);
+		if(!offerCard) throw new Error('the fork offer card never showed');
+		await ghost4.eval(`MM.ghostClient._forkAccept()`);
+		// the committed save must be the GUEST's moment (its hero position), not the
+		// host autosave that shares this QA origin — read it from the host tab
+		await host.poll(`(()=>{ try{ const s=JSON.parse(localStorage.getItem('mm_save_v7')||'null');
+			return (s&&s.player)?+(+s.player.x).toFixed(2):null; }catch(e){ return null; } })()`,
+			v => v != null && Math.abs(v - forkSpot.x) < 8, 'the fork save carries the guest position', 20, 250);
+		// the accept navigates to the bare path: wait through the SOLO boot
+		await ghost4.poll(`!!(window.MM && MM.worldGen && window.player && !MM.ghostMode && MM.world && MM.world.getTile) ? 1 : 0`,
+			v => v === 1, 'the forked world boots solo', 90, 400);
+		const forked = await ghost4.eval(`(()=>{ const x=${forkSpot.tx}, y=${forkSpot.ty};
+			const cells=[]; for(let dx=-6;dx<=6;dx++) for(let dy=-4;dy<=4;dy++) cells.push(MM.world.getTile(x+dx,y+dy));
+			return {seed:MM.worldGen.worldSeed, px:+window.player.x.toFixed(2), cells:cells.join(','),
+				save:localStorage.getItem('mm_save_v7')!==null}; })()`);
+		if(!forked.save) throw new Error('the fork never committed the main save');
+		if(forked.seed !== 777) throw new Error('the forked world lost the shared seed: ' + forked.seed);
+		if(forked.cells !== forkSpot.cells) throw new Error('the forked world diverged from the shared moment around the hero');
+		if(!(Math.abs(forked.px - forkSpot.x) < 8)) throw new Error('the forked hero woke far from the shared moment: ' + JSON.stringify({ at: forked.px, was: forkSpot.x }));
+		console.log('world fork: ok (grant → commit → solo reboot: seed 777 kept, world slice identical, hero at the shared spot)');
+
 		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
-		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
+		// select by gid from the tab's OWN card: after the fork, ghost4's dead entry
+		// may linger unreaped, so viewers[0] would point at a random participant
+		const gidOnHost = await ghost.eval(`MM.ghostClient.metrics().gid`);
 		await host.eval(`MM.ghostHost.setViewerMode('${gidOnHost}', 'watch')`);
 		await ghost.poll(`MM.ghostClient.metrics().mode`, v => v === 'watch', 'client learns the downgrade', 30, 250);
 		const buffRefused = await ghost.eval(`MM.ghostClient.sendBuff('cheer')`);

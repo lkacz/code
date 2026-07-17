@@ -38,6 +38,16 @@ if(WATCH && MMR){
 			if(typeof window !== 'undefined' && this === window.localStorage && !allow.has(String(k))) return;
 			return origRemove.call(this, k);
 		};
+		// The world fork's ONE narrow exit: a host-granted fork commits the main
+		// save (+ the challenge run marker) through the ORIGINAL setItem. The
+		// allowlist above stays closed — this hatch only opens while armed, and
+		// the only site that arms it is the forkGrant branch of the dispatcher
+		// (a packet that can only arrive on the locked host connection).
+		MMR.ghostForkWrite = (k, v) => {
+			if(!MMR.ghostForkArmed) return false;
+			if(k !== 'mm_save_v7' && k !== 'mm_challenge_v1') return false;
+			try{ origSet.call(window.localStorage, k, String(v)); return true; }catch(e){ return false; }
+		};
 	}catch(e){ /* storage may be unavailable altogether — fine */ }
 }
 
@@ -94,6 +104,7 @@ const ghostClient = (function(){
 	let veil = null, bar = null, barTick = null;
 	let hostIdle = false, staleBanner = null, lastHostMsgAt = 0, bootAt = 0, connectFailShown = false;
 	let finRelayed = false; // the finale relay fires once per host ceremony opening
+	let forkOffered = false, forkCard = null; // world-fork offer (host-granted, player-confirmed)
 	let drag = null;
 	let pump = null;
 	let lockedConn = null;
@@ -284,6 +295,63 @@ const ghostClient = (function(){
 				hpFrac: b.maxHp > 0 ? Math.max(0, b.hp || 0) / b.maxHp : 0, self: false, dead: !!b.dead, facing: b.f || 1 });
 		}
 		return out;
+	}
+	// --- world fork (guest side): the host granted it; the PLAYER decides -----------
+	function showForkOffer(){
+		if(forkCard || typeof document === 'undefined') return;
+		forkCard = document.createElement('div');
+		forkCard.id = 'ghostForkOffer';
+		forkCard.style.cssText = 'position:fixed; left:50%; top:64px; transform:translateX(-50%); z-index:130;'
+			+ ' display:flex; flex-direction:column; gap:8px; padding:12px 14px; border-radius:14px;'
+			+ ' border:1px solid rgba(140,220,140,.5); background:rgba(12,20,14,.95); color:#e8fbe8;'
+			+ ' font:12px system-ui; box-shadow:0 10px 30px rgba(0,0,0,.55); pointer-events:auto; max-width:min(430px,86vw);';
+		const txt = document.createElement('div');
+		txt.textContent = '🌱 Gospodarz zgodził się na rozwidlenie świata: zapiszesz TĘ chwilę jako własny świat, rozłączysz się i dalej grasz sam. Nic nie wraca do gospodarza.';
+		// reads are not locked down — warn LOUDLY when the fork would overwrite an
+		// existing solo world (a misclick here must never cost a save silently)
+		let warn = null;
+		try{
+			if(localStorage.getItem('mm_save_v7')){
+				warn = document.createElement('div');
+				warn.style.cssText = 'color:#ffd27a;font-weight:700;';
+				warn.textContent = '⚠ Masz już własny zapis solo — rozwidlenie go NADPISZE. (Ręczne zapisy nazwane zostają.)';
+			}
+		}catch(e){ warn = null; }
+		const rowB = document.createElement('div');
+		rowB.style.cssText = 'display:flex; gap:8px; justify-content:flex-end;';
+		const no = document.createElement('button');
+		no.textContent = 'Nie teraz';
+		no.style.cssText = 'border:none;border-radius:8px;background:rgba(255,255,255,.14);color:#fff;padding:6px 10px;font-weight:700;cursor:pointer;';
+		no.addEventListener('click', () => dismissForkOffer());
+		const go = document.createElement('button');
+		go.id = 'ghostForkGo';
+		go.textContent = '🌱 Rozwidlij świat';
+		go.style.cssText = 'border:none;border-radius:8px;background:rgba(74,180,90,.75);color:#fff;padding:6px 10px;font-weight:800;cursor:pointer;';
+		go.addEventListener('click', () => acceptFork());
+		rowB.append(no, go);
+		if(warn) forkCard.append(txt, warn, rowB);
+		else forkCard.append(txt, rowB);
+		document.body.appendChild(forkCard);
+	}
+	function dismissForkOffer(){
+		forkOffered = false;
+		if(MMR) MMR.ghostForkArmed = false; // a declined offer leaves the hatch closed
+		if(forkCard){ try{ forkCard.remove(); }catch(e){ /* fine */ } forkCard = null; }
+	}
+	function acceptFork(){
+		// the commit itself is main.js's AUDITED seam (the only ghost-mode main-save
+		// writer); this side only relays the player's choice and reboots into solo
+		let ok = false;
+		try{ ok = !!(bridge && bridge.commitForkSave && bridge.commitForkSave()); }catch(e){ ok = false; }
+		if(MMR) MMR.ghostForkArmed = false; // one-shot: used or failed, the hatch closes
+		if(!ok){
+			try{ bridge.msg('🌱 Nie udało się zapisać rozwidlenia — spróbuj ponownie za chwilę.'); }catch(e){ /* fine */ }
+			dismissForkOffer();
+			return;
+		}
+		try{ if(hero.on) saveHeroState(true); }catch(e){ /* the room copy is a bonus */ }
+		// drop ?watch: the bare path boots the committed save as a normal solo game
+		location.href = location.pathname;
 	}
 	let timersPlay = { pose: 0, mine: 0 };
 	// Lag-compensated reconciliation: every pose uplink carries a sequence number
@@ -1012,6 +1080,15 @@ const ghostClient = (function(){
 						if(pl.data.fin && !finRelayed){ finRelayed = true; if(bridge.finaleOpen) bridge.finaleOpen(); }
 						if(!pl.data.fin) finRelayed = false;
 						stats.story = (stats.story || 0) + 1;
+					}
+				} else if(pl.t === 'forkGrant'){
+					// host consent to fork: ARM the narrow storage hatch and ask the
+					// PLAYER. A guest can never self-grant — this branch is the only
+					// arming site, and only the locked host connection reaches it.
+					if(!forkOffered){
+						forkOffered = true;
+						if(MMR) MMR.ghostForkArmed = true;
+						showForkOffer();
 					}
 				} else if(pl.t === 'infra'){
 					if(pl.data) bridge.restoreInfra(pl.data);
@@ -2224,6 +2301,7 @@ const ghostClient = (function(){
 			stats: Object.assign({}, stats),
 			queued: queue.length,
 			barTick: !!barTick,
+			forkOffered,
 			hostIdle,
 			staleBannerShown: !!(staleBanner && staleBanner.style.display !== 'none'),
 			connectFailShown
@@ -2263,6 +2341,9 @@ const ghostClient = (function(){
 		// 2 s throttle window would otherwise not be on disk when the reload reads it.
 		// Returns whether the profile is STILL dirty (a swallowed write leaves it so).
 		_flushForTest: () => { flushProgress(true); return progDirty; },
+		// QA: accept a pending fork offer through the REAL accept path (the offer
+		// card's button handler) without a headless click on a floating card.
+		_forkAccept: () => acceptFork(),
 		// QA: age the join start past the connect-failure deadline without a 25 s stall.
 		_debugAgeJoin: () => { bootAt = 1; },
 		// QA: age this watcher's last input past IDLE_MS without waiting 30 real seconds.

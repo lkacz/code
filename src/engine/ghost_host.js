@@ -2180,6 +2180,12 @@ const ghostHost = (function(){
 		ban.title = 'Wyrzuć i zablokuj tego widza do końca sesji';
 		ban.addEventListener('click', () => banViewer(entry.gid));
 		row.append(dot, nm, badge, sel, asst, mute, ban);
+		// world fork (owner consent): this viewer may take the CURRENT moment home
+		// as its own solo save — a one-way copy, nothing ever syncs back
+		const fork = styledButton('🌱', 'border:none;border-radius:6px;background:rgba(90,160,220,.4);color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;');
+		fork.title = 'Rozwidlenie świata: pozwól temu widzowi zapisać TĘ chwilę jako własny, osobny świat (odłączy się; nic nie wraca do ciebie)';
+		fork.addEventListener('click', () => forkGrant(entry.gid));
+		row.append(fork);
 		// gifting (owner ruling: host gifts only) — the host hands ITS OWN resources
 		// to an embodied guest's pouch; guests cannot move items between themselves
 		if(entry.body){
@@ -2196,6 +2202,23 @@ const ghostHost = (function(){
 			row.append(gift);
 		}
 		return row;
+	}
+	// World fork (owner consent): the host authorizes ONE guest to take the shared
+	// moment home. CONSENT ONLY — the packet carries no state; the guest commits
+	// the replica it is already rendering through main.js's audited seam, then
+	// leaves. The host world is untouched and nothing ever syncs back.
+	function forkGrant(gid){
+		const s = session;
+		if(!s) return false;
+		let te = null;
+		for(const e of entries()){ if(e.gid === gid){ te = e; break; } }
+		if(!te) return false;
+		const t = now();
+		if(t - (te.lastForkGrantAt || 0) < 10000) return false; // dedupe the double-click
+		te.lastForkGrantAt = t;
+		try{ te.peer.send({ t: 'forkGrant' }); }catch(e){ return false; }
+		try{ bridge.msg('🌱 Zgoda na rozwidlenie świata → ' + (te.name || 'Duch')); }catch(e){ /* fine */ }
+		return true;
 	}
 	// Host gifting (owner ruling): host-authoritative end to end — the resource must
 	// really leave the HOST inventory (bridge seam validates key + count) before it
@@ -2342,7 +2365,7 @@ const ghostHost = (function(){
 		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
 	}
 
-	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource, giftWeapon, partyMembers,
+	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource, giftWeapon, forkGrant, partyMembers,
 		// QA seam: the LIVE body object for a gid (host page only — the host owns every
 		// body anyway; this just spares QA the private-scope gymnastics)
 		_debugBody: (gid) => { if(!session) return null; for(const e of entries()) if(e.gid === gid) return e.body; return null; } };

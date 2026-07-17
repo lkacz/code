@@ -16050,6 +16050,23 @@ const remoteBodyCustScratch={}; // reused by drawHeroAt's per-body customization
 MM.ghostBridge={
 	applyGameData:(data,opts)=>applyGameData(data,Object.assign({ignoreCritical:true},opts||{})),
 	buildSave:()=>buildSaveObject({perf:{parts:[]}}),
+	// AUDITED world-fork commit: the ONLY main-save write path in ghost mode.
+	// Reachable solely while the lockdown hatch is armed by a host forkGrant.
+	// The save is the LIVE state this guest is rendering — for a hero guest the
+	// local player/inventory IS its earned truth, so it forks with the world for
+	// free (no merge step to forget). One-way: nothing ever syncs back.
+	commitForkSave:()=>{
+		if(!MM.ghostMode || !MM.ghostForkWrite) return false;
+		try{
+			const data=buildSaveObject({perf:{parts:[]}});
+			const withHash=attachHash(data).object;
+			if(!MM.ghostForkWrite(SAVE_KEY, JSON.stringify(withHash))) return false;
+			// a cursed (challenge) world forks WITH its curse: the run marker keeps
+			// the modifiers alive in the solo continuation
+			try{ const mods=(MM.challenge&&MM.challenge.list)?MM.challenge.list():[]; if(mods.length) MM.ghostForkWrite('mm_challenge_v1', JSON.stringify({seed:data.seed, mods})); }catch(e){}
+			return true;
+		}catch(e){ return false; }
+	},
 	player,
 	getTile,
 	setTile,
