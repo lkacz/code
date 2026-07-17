@@ -192,8 +192,8 @@ assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NE
 assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
 // hero-mode contract: the guest player state is guest-local truth; the world is
 // protected here — actions, rates and envelopes
-assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard'],
-	'the nine hero world-intents');
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp'],
+	'the ten hero world-intents');
 assert.ok(NET.HERO_RULES.PICKUP_MS === 150 && NET.HERO_RULES.USE_MS === 400 && NET.HERO_RULES.SHOOT_MS === 220
 	&& NET.HERO_RULES.ROW_MS === 250 && NET.HERO_RULES.BOARD_MS === 400, 'pickup/use/shoot/row/board rate floors pinned');
 assert.ok(NET.validHeroAction('mine') && !NET.validHeroAction('craft') && !NET.validHeroAction('__proto__'), 'hero action whitelist holds');
@@ -892,7 +892,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 // silent guest-only breakage in production; here it is a loud test failure.
 {
 	const FLOOR_OF = { mine: 'MINE_MS', place: 'PLACE_MS', dmg: 'DMG_MS', pickup: 'PICKUP_MS',
-		use: 'USE_MS', shoot: 'SHOOT_MS', row: 'ROW_MS', board: 'BOARD_MS', unboard: 'BOARD_MS' };
+		use: 'USE_MS', shoot: 'SHOOT_MS', row: 'ROW_MS', board: 'BOARD_MS', unboard: 'BOARD_MS', tp: 'TP_MS' };
 	for(const a of NET.HERO_ACTIONS){
 		assert.ok(new RegExp("pl\\.a === '" + a + "'").test(hostSrc),
 			"hero action '" + a + "' has a handleHeroAct branch on the host");

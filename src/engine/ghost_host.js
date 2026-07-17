@@ -1139,6 +1139,20 @@ const ghostHost = (function(){
 			if(hits) s.stats.heroDmg = (s.stats.heroDmg || 0) + 1;
 			return;
 		}
+		if(pl.a === 'tp'){
+			// teleporter jump: the HOST resolves the pad under its tracked body and
+			// spends the MACHINE's energy (world economy); the ack hands the guest
+			// its landing spot — the movement itself stays guest-authoritative
+			if(t - (b.lastHeroTpAt || 0) < NET.HERO_RULES.TP_MS) return;
+			b.lastHeroTpAt = t;
+			let res = null;
+			try{ res = bridge.ghostHeroTeleport ? bridge.ghostHeroTeleport({ x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }, pl.d < 0 ? -1 : 1) : null; }catch(e){ res = null; }
+			if(res && res.ok){
+				b.x = res.x; b.y = res.y; // the body lands with the guest — claims will match
+				entry.peer.send({ t: 'hact', a: 'tp', ok: true, x: +res.x.toFixed(2), y: +res.y.toFixed(2) });
+			}
+			return;
+		}
 		if(pl.a === 'board' || pl.a === 'unboard'){
 			// mech cab handoff: boarding inverts movement authority — the host
 			// simulates the hull on the guest's streamed keys and the body rides it

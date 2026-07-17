@@ -16356,6 +16356,15 @@ MM.ghostBridge={
 		if(!(info && info.chestTier)) return {ok:false, reason:'use'};
 		return {ok:!!tryOpenChestAt(tx,ty)};
 	},
+	// HOST-side: a hero guest's teleporter jump — tryTeleport is driver-agnostic
+	// (it mutates the passed body), the pad's own energy accounting and cooldowns
+	// apply; heroEnergy is withheld so a guest can never drain the HOST's pool
+	ghostHeroTeleport:(body,dir)=>{
+		if(!TELEPORTERS || !TELEPORTERS.tryTeleport) return {ok:false};
+		const proxy={x:body.x, y:body.y, vx:(dir<0?-1:1)*2, vy:0, w:body.w||0.62, h:body.h||0.92};
+		const ok=TELEPORTERS.tryTeleport(proxy,getElectricNetworkTile,{dynamo:DYNAMO, heroEnergy:null});
+		return ok ? {ok:true, x:proxy.x, y:proxy.y} : {ok:false};
+	},
 	// HOST-side: mech boarding for hero guests — the guest may take any pilotless,
 	// unridden hull within the module's own board radius of its tracked body;
 	// the cab then drives with rider-grade handling on the guest's streamed keys
@@ -16616,6 +16625,15 @@ function runHeroStep(dt,ts){
 		return;
 	}
 	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
+	// teleporters: walking onto a pad works exactly like solo — the JUMP resolves
+	// on the host (the pad's energy, its cooldowns), the landing is ours (ack)
+	if(TELEPORTERS && TELEPORTERS.teleporterUnderPlayer && Math.abs(player.vx||0)>0.18){
+		const tpNow=performance.now();
+		if(!(MM.ghostHeroIntents._tpAt>tpNow-1300) && TELEPORTERS.teleporterUnderPlayer(player,getTile)){
+			MM.ghostHeroIntents._tpAt=tpNow;
+			MM.ghostHeroIntents.tp(player.vx<0?-1:1);
+		}
+	}
 	const heldWeapon=activeWeaponItem();
 	if(heldWeapon && ((weaponPointerId!=null && lastPointer.has)||fireBtnHeld) && WEAPONS && WEAPONS.fireHeld){
 		const aim=(weaponPointerId!=null && lastPointer.has && !fireBtnHeld)? screenToWorld(lastPointer.x,lastPointer.y) : {x:player.x+player.facing*5, y:player.y-0.4};

@@ -1917,6 +1917,32 @@ async function main(){
 		await ghost.poll(`MM.ghostClient.metrics().hero.driveId || 0`, v => !v, 'the guest resumes its own legs', 40, 250);
 		console.log('mech driving: ok (boarded, drove ' + (drv1 - drv0).toFixed(2) + ' tiles on streamed keys, body glued, unboarded clean)');
 
+		// --- Scene 10t: SAILING — the row intent moves the host's raft --------------------------------
+		// A raft is staged under the guest body (wood on water); the row intent
+		// resolves against the boat under the HOST-tracked body — the impulse and
+		// speed cap live in the boats module, the guest only picks the stroke.
+		const raft = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
+			const bx=Math.round(b.x), wy=Math.round(b.y)+1; // water line right under the body
+			for(let x=bx-6;x<=bx+12;x++){ for(let yy=wy-6;yy<wy;yy++) MM.world.setTile(x,yy,MM.T.AIR); MM.world.setTile(x,wy+1,MM.T.STONE); }
+			MM.world.setTile(bx-7,wy,MM.T.STONE); MM.world.setTile(bx+13,wy,MM.T.STONE); // tub walls
+			for(let x=bx-6;x<=bx+12;x++) MM.world.setTile(x,wy,MM.T.WATER);
+			const placed=MM.boats.placeWood(bx,wy,MM.world.getTile,{hasSupport:false,water:MM.water});
+			if(!placed || !placed.ok) return {err:'no-raft', placed};
+			const boat=MM.boats.metrics ? null : null;
+			return {bx, wy};
+		})()`);
+		if(raft.err) throw new Error('raft staging failed: ' + JSON.stringify(raft));
+		// park the GUEST hero on the raft deck (guest-authoritative move; the body follows)
+		await ghost.eval(`(()=>{ const p=window.player; p.x=${raft.bx}+0.5; p.y=${raft.wy}-0.7; p.vx=0; p.vy=0; return 1; })()`);
+		await sleep(900); // the claimed pose reaches the host body
+		const boat0 = await host.eval(`(()=>{ const s=MM.boats.snapshot(); const b=s && s.boats && s.boats.find(r=>Math.abs(r.x-${raft.bx})<8); return b ? +b.x.toFixed(2) : null; })()`);
+		if(boat0 == null) throw new Error('the staged raft vanished before the stroke');
+		for(let i=0;i<4;i++){ await ghost.eval(`MM.ghostClient._heroRow(1, true)`); await sleep(350); }
+		const boat1 = await host.eval(`(()=>{ const s=MM.boats.snapshot(); const b=s && s.boats && s.boats.find(r=>Math.abs(r.x-${raft.bx})<9); return b ? +b.x.toFixed(2) : null; })()`);
+		if(!(boat1 != null && boat1 - boat0 > 0.3)) throw new Error('the raft never moved on row intents: ' + JSON.stringify({ boat0, boat1 }));
+		console.log('sailing: ok (guest strokes moved the host raft ' + (boat1 - boat0).toFixed(2) + ' tiles)');
+
 		// --- Scene 11: permission downgrade — watch-only means watch-only ------------------------------
 		const gidOnHost = (await host.eval(`MM.ghostHost.metrics().viewers`))[0].gid;
 		await host.eval(`MM.ghostHost.setViewerMode('${gidOnHost}', 'watch')`);

@@ -153,6 +153,11 @@ const ghostClient = (function(){
 			conn.send({ t: 'hact', a: 'board' });
 			return true;
 		},
+		tp(dir){
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'tp', d: dir < 0 ? -1 : 1 });
+			return true;
+		},
 		unboard(){
 			if(state !== 'live' || !conn) return false;
 			conn.send({ t: 'hact', a: 'unboard' });
@@ -519,6 +524,13 @@ const ghostClient = (function(){
 						if(MMR) MMR.ghostHeroDriving = { id: pl.id };
 						bridge.msg('🤖 Prowadzisz mecha! A/D = jazda, W = para, E = wysiądź');
 					} else if(pl.reason === 'no-mech') bridge.msg('🤖 Brak wolnego mecha w zasięgu (bez pilota, nie zajęty)');
+				}
+				else if(pl.a === 'tp' && pl.ok && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
+					const p = bridge.player;
+					p.x = +pl.x; p.y = +pl.y; p.vy = 0;
+					poseLog.length = 0;
+					bridge.snapCameraToPlayer();
+					bridge.msg('🌀 Teleport!');
 				}
 				else if(pl.a === 'unboard'){
 					hero.driveId = null;
@@ -2184,6 +2196,8 @@ const ghostClient = (function(){
 		_heroShoot: (vx, vy, dmg) => heroIntents.shoot({ vx, vy, dmg }),
 		_heroBoard: () => heroIntents.board(),
 		_heroUnboard: () => heroIntents.unboard(),
+		_heroRow: (dir, strong) => heroIntents.row(dir, strong !== false),
+		_heroTp: (dir) => heroIntents.tp(dir),
 		_heroSave: () => { saveHeroState(true); },
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).
 		// Synthetic keyup events do not reliably clear `held` under headless CDP.
