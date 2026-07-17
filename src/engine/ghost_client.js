@@ -264,8 +264,26 @@ const ghostClient = (function(){
 		poseLog.length = 0;
 		updateBar();
 	}
-	const remoteHost = { has: false, x: 0, y: 0, vx: 0, vy: 0, f: 1, dx: 0, dy: 0 };
+	const remoteHost = { has: false, x: 0, y: 0, vx: 0, vy: 0, f: 1, dx: 0, dy: 0, hp: 0, mhp: 0 };
 	const bodies = []; // fellow embodied guests, eased like the spirits
+	// Party HUD feed (guest side): self (when embodied) + the host hero + every
+	// fellow embodied guest. Display truth only; empty for pure spectators.
+	function partyMembers(){
+		if(!(play.on || hero.on)) return [];
+		const out = [];
+		const p = bridge ? bridge.player : null;
+		if(p) out.push({ id: 'self', name: ghostName(), x: p.x, y: p.y,
+			hpFrac: p.maxHp > 0 ? Math.max(0, p.hp || 0) / p.maxHp : 0, self: true,
+			dead: play.on ? !!play.dead : (p.hp || 0) <= 0, facing: p.facing || 1 });
+		if(remoteHost.has) out.push({ id: 'host', name: hostName || 'Gospodarz', x: remoteHost.dx, y: remoteHost.dy,
+			hpFrac: remoteHost.mhp > 0 ? Math.max(0, remoteHost.hp) / remoteHost.mhp : 1, self: false, dead: false, facing: remoteHost.f });
+		for(const b of bodies){
+			const bx = Number.isFinite(b.x) ? b.x : b.tx, by = Number.isFinite(b.y) ? b.y : b.ty;
+			out.push({ id: b.id, name: b.name || 'Gracz', x: bx, y: by,
+				hpFrac: b.maxHp > 0 ? Math.max(0, b.hp || 0) / b.maxHp : 0, self: false, dead: !!b.dead, facing: b.f || 1 });
+		}
+		return out;
+	}
 	let timersPlay = { pose: 0, mine: 0 };
 	// Lag-compensated reconciliation: every pose uplink carries a sequence number
 	// and the host echoes it in our own pb row. Divergence is measured against the
@@ -848,6 +866,9 @@ const ghostClient = (function(){
 						remoteHost.x = pl.x; remoteHost.y = pl.y;
 						remoteHost.vx = Number.isFinite(pl.vx) ? pl.vx : 0; remoteHost.vy = Number.isFinite(pl.vy) ? pl.vy : 0;
 						remoteHost.f = pl.f < 0 ? -1 : 1;
+						// display truth for the party roster — never applied to OUR player
+						if(Number.isFinite(pl.hp)) remoteHost.hp = pl.hp;
+						if(Number.isFinite(pl.mhp) && pl.mhp > 0) remoteHost.mhp = pl.mhp;
 						continue;
 					}
 					heroTarget.x = pl.x; heroTarget.y = pl.y;
@@ -2195,7 +2216,7 @@ const ghostClient = (function(){
 		};
 	}
 
-	const api = { boot, frame, active: () => !!WATCH && state !== 'idle', state: () => state, drawSpirits, sendBuff, sendChat, sendPower, sendPing, sendAssist, setAvatar, setFollow, setCam, noteInput, leave, metrics,
+	const api = { boot, frame, active: () => !!WATCH && state !== 'idle', state: () => state, drawSpirits, sendBuff, sendChat, sendPower, sendPing, sendAssist, setAvatar, setFollow, setCam, noteInput, leave, metrics, partyMembers,
 		openProgress: () => toggleProgPanel(),
 		_debugConnLost: scheduleReconnect, // QA: exercises the real drop→rejoin→resnapshot cycle
 		// QA seams for play mode: fire an intent / arm a pouch resource without the

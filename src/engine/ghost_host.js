@@ -148,6 +148,24 @@ const ghostHost = (function(){
 
 	function entries(){ return session ? Array.from(session.peers.values()).filter(e => e.hello) : []; }
 
+	// Party HUD feed (host side): the host hero (self) + every embodied guest.
+	// Display truth only — the roster/arrow painter consumes it, nothing writes back.
+	// Empty unless someone is actually embodied: a room of pure spectators is not a party.
+	function partyMembers(){
+		if(!session || !bridge) return [];
+		const list = [];
+		for(const e of entries()){
+			if(!e.body) continue;
+			list.push({ id: e.gid, name: e.name || 'Gracz', x: e.body.x, y: e.body.y,
+				hpFrac: e.body.maxHp > 0 ? e.body.hp / e.body.maxHp : 0, self: false, dead: !!e.body.dead, facing: e.body.f || 1 });
+		}
+		if(!list.length) return [];
+		const p = bridge.player;
+		list.unshift({ id: 'host', name: session.name, x: p.x, y: p.y,
+			hpFrac: p.maxHp > 0 ? Math.max(0, p.hp) / p.maxHp : 1, self: true, dead: (p.hp || 0) <= 0, facing: p.facing || 1 });
+		return list;
+	}
+
 	function metrics(){
 		const t = now();
 		return {
@@ -2305,7 +2323,7 @@ const ghostHost = (function(){
 		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
 	}
 
-	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource, giftWeapon,
+	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource, giftWeapon, partyMembers,
 		// QA seam: the LIVE body object for a gid (host page only — the host owns every
 		// body anyway; this just spares QA the private-scope gymnastics)
 		_debugBody: (gid) => { if(!session) return null; for(const e of entries()) if(e.gid === gid) return e.body; return null; } };

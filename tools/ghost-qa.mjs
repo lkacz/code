@@ -1757,6 +1757,20 @@ async function main(){
 		if(fresh.stone !== 0 || fresh.wood !== 0) throw new Error('the HOST riches leaked into guest-local truth: ' + JSON.stringify(fresh));
 		if(!fresh.ui || !fresh.craftUi) throw new Error('hero mode did not bring the real UI back: ' + JSON.stringify(fresh));
 		if(!(fresh.wrapped > 0)) throw new Error('replica damage entries are not wrapped for the combat forward');
+		// --- party HUD: the fronted host's draw loop builds the DOM roster for the
+		// whole team, and the pure classifier flags a panned-away teammate as an edge
+		// arrow when fed the LIVE member list (camera math is deterministic; actually
+		// panning the follow-camera in headless is not). The background guest tab has
+		// no rAF, so only its FEED is asserted there — the painter is shared anyway.
+		await host.poll(`(()=>{ const feed=(MM.ghostHost.partyMembers&&MM.ghostHost.partyMembers())||[];
+			const rows=Math.max(0,document.querySelectorAll('#partyBar > div').length-1);
+			const off=(window.MM.partyHud&&feed.length)?MM.partyHud.partyPointers(feed,{W:innerWidth,H:innerHeight,tile:20,zoom:1,camX:feed[0].x+120,camY:0}).offScreen.length:0;
+			return {feed:feed.length,rows,off}; })()`,
+			v => v && v.feed >= 2 && v.rows >= 2 && v.off >= 1,
+			'the host party HUD rosters the team and classifies panned-away teammates as arrows', 40, 250);
+		await ghost.poll(`(MM.ghostClient.partyMembers&&MM.ghostClient.partyMembers().length)||0`,
+			v => v >= 2, 'the embodied guest party feed lists itself + the host', 40, 250);
+		console.log('party HUD: ok (host roster DOM >=2 rows, off-screen arrow classified, guest feed lists the team)');
 		// --- mining through the hact channel: host validates, tile breaks on the
 		// stream, the YIELD lands in the guest's own inv via its local awardTileDrops
 		const heroDig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');

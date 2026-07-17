@@ -93,6 +93,7 @@ import { finale as FINALE } from './engine/finale.js';
 // import time when the URL carries ?watch=ROOM — everything below honors it.
 import { ghostHost as GHOST_HOST } from './engine/ghost_host.js';
 import { ghostClient as GHOST_CLIENT } from './engine/ghost_client.js';
+import './engine/party_hud.js'; // co-op roster + off-screen teammate arrows (MM.partyHud)
 import './engine/ui.js';
 import './inventory_ui.js';
 // Bind global MM into a module-scoped constant for convenience
@@ -12838,6 +12839,15 @@ function draw(){ // Background first
 	// HUD: vitals cluster (HP / energy / level+XP / buffs) — engine/vitals_hud.js
 	// (canvas-drawn HUD steps aside for the title/finale ceremonies, like the DOM HUD)
 	const ceremonyHold=uiOverlayHold();
+	// Party HUD: co-op roster + edge arrows to off-screen teammates. Role-aware feed:
+	// the host lists its embodied guests, an embodied guest lists the host + peers.
+	if(MM.partyHud){
+		const partyList=ceremonyHold?[]
+			:(GHOST_HOST && GHOST_HOST.active() && GHOST_HOST.partyMembers)?GHOST_HOST.partyMembers()
+			:(GHOST_CLIENT && GHOST_CLIENT.active() && GHOST_CLIENT.partyMembers)?GHOST_CLIENT.partyMembers():[];
+		if(partyList.length>=2) MM.partyHud.draw(ctx,{members:partyList,camX:camRenderX,camY:camRenderY,tile:TILE,zoom,W,H,heroX:player.x,heroY:player.y});
+		else MM.partyHud.hide();
+	}
 	ctx.save();
 	if(!ceremonyHold){
 		const lv=(MM.progress && MM.progress.level)? MM.progress.level() : {level:1,into:player.xp||0,need:60};

@@ -941,6 +941,32 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'CLAUDE.md carries the multiplayer contract (three questions + intent checklist)');
 }
 
+// --- party HUD: one roster serves both ends, display truth only ---------------------------
+// The feed is role-aware (host lists its embodied guests; an embodied guest lists
+// the host + peers) and read-only: nothing in the party pipeline writes the world
+// or sends a packet — it is a painter over state the streams already own.
+{
+	assert.ok(/import '\.\/engine\/party_hud\.js';/.test(mainSrc), 'main.js imports the party HUD module');
+	assert.ok(/MM\.partyHud\.draw\(ctx,\{members:partyList,camX:camRenderX,camY:camRenderY,tile:TILE,zoom,W,H,heroX:player\.x,heroY:player\.y\}\)/.test(mainSrc),
+		'the draw loop hands the party feed to the HUD with the standard view mapping');
+	assert.ok(/GHOST_HOST\.active\(\) && GHOST_HOST\.partyMembers\)\?GHOST_HOST\.partyMembers\(\)/.test(mainSrc)
+		&& /GHOST_CLIENT\.active\(\) && GHOST_CLIENT\.partyMembers\)\?GHOST_CLIENT\.partyMembers\(\):\[\]/.test(mainSrc),
+		'the feed is role-aware: host accessor first, guest accessor as the fallback');
+	assert.ok(/const partyList=ceremonyHold\?\[\]/.test(mainSrc), 'the party HUD steps aside for the title/finale ceremonies');
+	assert.ok(/else MM\.partyHud\.hide\(\);/.test(mainSrc), 'a party of fewer than two hides the roster');
+	// host feed: empty unless someone is embodied; self row is the session hero
+	const hostFeed = hostSrc.slice(hostSrc.indexOf('function partyMembers'), hostSrc.indexOf('function partyMembers') + 900);
+	assert.ok(/if\(!e\.body\) continue;/.test(hostFeed) && /if\(!list\.length\) return \[\];/.test(hostFeed),
+		'the host party is its embodied guests — pure spectators are not a party');
+	assert.ok(!/peer\.send|broadcast|setTile|hurtBody/.test(hostFeed), 'the host feed is read-only display truth');
+	// guest feed: embodiment-gated; the host row rides the hero plane's display vitals
+	const clientFeed = clientSrc.slice(clientSrc.indexOf('function partyMembers'), clientSrc.indexOf('function partyMembers') + 1100);
+	assert.ok(/if\(!\(play\.on \|\| hero\.on\)\) return \[\];/.test(clientFeed), 'a pure spectator has no party roster');
+	assert.ok(!/conn\.send|localStorage/.test(clientFeed), 'the guest feed is read-only display truth');
+	assert.ok(/if\(Number\.isFinite\(pl\.hp\)\) remoteHost\.hp = pl\.hp;/.test(clientSrc),
+		'the embodied guest keeps the host hp as DISPLAY truth on remoteHost (never applied to its own player)');
+}
+
 // …which is exactly why Kopiuj must RELEASE the focus it took: select() leaves the
 // caret in the link INPUT, the guard above then freezes the panel body forever and
 // the host never sees the joining viewer's row (the field-report screenshot bug)
