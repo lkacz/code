@@ -176,7 +176,7 @@ window.MM = window.MM || {};
   }
   function rodLength(item){
     const tier = tierKey(item && item.tier);
-    return 0.62 + TIER_KEYS.indexOf(tier) * 0.05; // higher tiers wear a longer aerial
+    return 0.31 + TIER_KEYS.indexOf(tier) * 0.025; // a discreet aerial; higher tiers wear a slightly longer one
   }
   function init(player){
     points.length = 0; restLen.length = 0;
@@ -263,6 +263,16 @@ window.MM = window.MM || {};
   }
 
   // --- palette + draw --------------------------------------------------------
+  // Deliberately dark and discreet (owner ruling 2026-07-17): the aerial reads
+  // as a thin dark whisker, the tint lives mostly in the small tip orb.
+  function shade(hex, delta){
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
+    if(!m) return hex || '#6b7280';
+    const n = parseInt(m[1], 16);
+    const b = (v) => v < 0 ? 0 : (v > 255 ? 255 : v);
+    const r = b(((n >> 16) & 255) + delta), g = b(((n >> 8) & 255) + delta), bl = b((n & 255) + delta);
+    return '#' + r.toString(16).padStart(2, '0') + g.toString(16).padStart(2, '0') + bl.toString(16).padStart(2, '0');
+  }
   let palItem = null, palCache = null;
   function palette(item){
     if(item && palItem === item && palCache) return palCache;
@@ -276,8 +286,8 @@ window.MM = window.MM || {};
       else if(typeof item.damageReductionBonus === 'number') orb = '#a8c4ff';
     }
     const tier = tierKey(item && item.tier);
-    const rod = tier === 'legendary' ? '#ffd9f6' : tier === 'epic' ? '#ffe08a' : '#c9d2de';
-    palCache = { rod, rodDark:'#3a4150', orb };
+    const rod = tier === 'legendary' ? '#71566d' : tier === 'epic' ? '#6d5f3a' : '#4a515e';
+    palCache = { rod, rodDark:'#171b23', orb: shade(orb, -36) };
     palItem = item || null;
     return palCache;
   }
@@ -293,15 +303,15 @@ window.MM = window.MM || {};
     ctx.moveTo(points[0].x * T, points[0].y * T);
     for(let i = 1; i < SEGS; i++) ctx.lineTo(points[i].x * T, points[i].y * T);
     ctx.strokeStyle = pal.rodDark;
-    ctx.lineWidth = Math.max(1, T * 0.062);
+    ctx.lineWidth = Math.max(1, T * 0.032);
     ctx.stroke();
     ctx.strokeStyle = pal.rod;
-    ctx.lineWidth = Math.max(1, T * 0.03);
+    ctx.lineWidth = Math.max(0.6, T * 0.015);
     ctx.stroke();
     // mount bead on the head
     ctx.fillStyle = pal.rodDark;
     ctx.beginPath();
-    ctx.arc(points[0].x * T, points[0].y * T, Math.max(1, T * 0.055), 0, Math.PI * 2);
+    ctx.arc(points[0].x * T, points[0].y * T, Math.max(1, T * 0.034), 0, Math.PI * 2);
     ctx.fill();
     // tip orb: breathing glow, strong while the active runs, dim on cooldown
     const tip = points[SEGS - 1];
@@ -309,14 +319,14 @@ window.MM = window.MM || {};
     const running = !!activeNow();
     const cooling = !running && t < st.cdUntil;
     const pulse = running ? 0.75 + 0.25 * Math.sin(t * 0.02) : 0.45 + 0.2 * Math.sin(t * 0.006);
-    const r = Math.max(1.5, T * 0.085);
+    const r = Math.max(1, T * 0.05);
     if(!cooling){
-      const rg = ctx.createRadialGradient(tip.x * T, tip.y * T, 0.5, tip.x * T, tip.y * T, r * 3);
-      rg.addColorStop(0, 'rgba(255,255,255,' + (0.22 * pulse).toFixed(3) + ')');
+      const rg = ctx.createRadialGradient(tip.x * T, tip.y * T, 0.5, tip.x * T, tip.y * T, r * 2.4);
+      rg.addColorStop(0, 'rgba(255,255,255,' + (0.12 * pulse).toFixed(3) + ')');
       rg.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = rg;
       ctx.beginPath();
-      ctx.arc(tip.x * T, tip.y * T, r * 3, 0, Math.PI * 2);
+      ctx.arc(tip.x * T, tip.y * T, r * 2.4, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha *= cooling ? 0.55 : 1;
@@ -324,8 +334,8 @@ window.MM = window.MM || {};
     ctx.beginPath();
     ctx.arc(tip.x * T, tip.y * T, r, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(20,24,34,0.8)';
-    ctx.lineWidth = Math.max(1, r * 0.35);
+    ctx.strokeStyle = 'rgba(12,15,21,0.85)';
+    ctx.lineWidth = Math.max(0.8, r * 0.35);
     ctx.stroke();
     ctx.restore();
     return true;

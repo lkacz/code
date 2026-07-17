@@ -928,27 +928,28 @@ import './inventory.js';
     ctx.restore();
   }
   function drawAntennaMini(ctx,item){
-    const tierCol=TIER_COLORS[item.tier]||'#c9d2de';
-    const orb=item.antennaActive==='cloak'?'#c98cff'
-      :item.antennaActive==='surge'?'#ffd45f'
-      :item.antennaActive==='echo'?'#63f0d4'
-      :typeof item.attackDamage==='number'?'#ffb24d'
-      :typeof item.damageReductionBonus==='number'?'#a8c4ff':'#75dcff';
+    // dark, discreet whisker (matches engine/antennas.js palette ruling)
+    const tierCol=item.tier==='legendary'?'#71566d':item.tier==='epic'?'#6d5f3a':'#4a515e';
+    const orb=item.antennaActive==='cloak'?'#a468d9'
+      :item.antennaActive==='surge'?'#d9ae3f'
+      :item.antennaActive==='echo'?'#3fc9ae'
+      :typeof item.attackDamage==='number'?'#d98e2d'
+      :typeof item.damageReductionBonus==='number'?'#84a0d9':'#4fb6d9';
     ctx.save();
     // mount pad
-    ctx.fillStyle='#3a4150';
-    ctx.beginPath(); ctx.arc(40,64,7,0,Math.PI*2); ctx.fill();
-    // springy rod with a gentle bend
-    ctx.strokeStyle='#3a4150'; ctx.lineWidth=5; ctx.lineCap='round';
-    ctx.beginPath(); ctx.moveTo(40,64); ctx.quadraticCurveTo(44,38,36,18); ctx.stroke();
-    ctx.strokeStyle=tierCol; ctx.lineWidth=2.4;
-    ctx.beginPath(); ctx.moveTo(40,64); ctx.quadraticCurveTo(44,38,36,18); ctx.stroke();
-    // tip orb + glow
-    const g=ctx.createRadialGradient(36,16,1,36,16,14);
-    g.addColorStop(0,'#ffffff'); g.addColorStop(0.35,orb); g.addColorStop(1,'rgba(0,0,0,0)');
-    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(36,16,14,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle=orb; ctx.beginPath(); ctx.arc(36,16,6,0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle='#141822'; ctx.lineWidth=1.6; ctx.stroke();
+    ctx.fillStyle='#171b23';
+    ctx.beginPath(); ctx.arc(40,60,5,0,Math.PI*2); ctx.fill();
+    // short springy rod with a gentle bend
+    ctx.strokeStyle='#171b23'; ctx.lineWidth=3; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(40,60); ctx.quadraticCurveTo(43,44,38,32); ctx.stroke();
+    ctx.strokeStyle=tierCol; ctx.lineWidth=1.3;
+    ctx.beginPath(); ctx.moveTo(40,60); ctx.quadraticCurveTo(43,44,38,32); ctx.stroke();
+    // tip orb + faint glow
+    const g=ctx.createRadialGradient(38,31,1,38,31,9);
+    g.addColorStop(0,'rgba(255,255,255,0.55)'); g.addColorStop(0.4,orb); g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(38,31,9,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle=orb; ctx.beginPath(); ctx.arc(38,31,4,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#0c0f15'; ctx.lineWidth=1.2; ctx.stroke();
     ctx.restore();
   }
   function drawItemThumb(ctx,item){
