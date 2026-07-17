@@ -251,6 +251,29 @@ async function main(){
 		if(!(snapCheck.dx < 1.5)) throw new Error('hero replica far from host hero after join: dx=' + snapCheck.dx);
 		if(!snapCheck.veilHidden || !snapCheck.bar || !snapCheck.hudHidden) throw new Error('ghost UI contract broken: ' + JSON.stringify(snapCheck));
 
+		// --- TRADER-PROBE mode (--trader-probe): 2-tab npc-plane diagnosis on
+		// virgin terrain (the scout finds a stand before scenes carve the world).
+		if(process.argv.includes('--trader-probe')){
+			// reproduce the failing gauntlet context: the guest is a HERO, not a
+			// spectator (the spectator variant passed; hero-mode is where it died)
+			if(process.argv.includes('--hero')){
+				const gidP = await ghost.eval(`MM.ghostClient.metrics().gid`);
+				await host.eval(`MM.ghostHost.setViewerMode('${gidP}', 'hero')`);
+				await ghost.poll(`MM.ghostClient.metrics().mode`, v => v === 'hero', 'probe guest goes hero', 40, 250);
+				await ghost.poll(`MM.ghostClient.metrics().hero.spawned`, v => v === true, 'probe hero spawns', 60, 250);
+			}
+			const arrived = await host.eval(`(()=>{ const ok=MM.trader.forceArrive(window.player, MM.world.getTile, {});
+				return {ok, active:MM.trader.isActive(), snap:JSON.stringify(MM.ghostBridge.snapshotNpcs&&MM.ghostBridge.snapshotNpcs()).slice(0,200)}; })()`);
+			console.log('probe arrive:', JSON.stringify(arrived));
+			await sleep(7000); // one full npc cadence
+			const got = await ghost.eval(`(()=>({ active:MM.trader&&MM.trader.isActive(), npcs:MM.ghostClient.metrics().stats.npcs||0,
+				trader:JSON.stringify(MM.trader&&MM.trader._state&&{a:MM.trader._state().active,x:MM.trader._state().x}).slice(0,120) }))()`);
+			const hostNow = await host.eval(`(()=>({ active:MM.trader.isActive(), day:(MM.trader._state().leaveDay), snap:JSON.stringify(MM.ghostBridge.snapshotNpcs()).includes('"trader"') }))()`);
+			console.log('probe guest:', JSON.stringify(got), 'host:', JSON.stringify(hostNow));
+			console.log('ghost-qa (trader-probe): ' + (got.active ? 'OK' : 'REPLICA NEVER AROSE'));
+			return;
+		}
+
 		// --- FORK-ONLY mode (--fork-only): the minimal 2-tab world-fork validation.
 		// The full gauntlet's fork scene sits after the 4-tab stretch, which starves
 		// under concurrent CPU load — this compact path proves the same production
@@ -1849,8 +1872,30 @@ async function main(){
 		// --- npc plane: the wandering trader arrives on the guest replica and a
 		// hero guest trades GUEST-locally (its inventory is its own truth; the
 		// host arbitrates nothing and its stall state is untouched by the trade)
-		await host.eval(`(()=>{ MM.trader.forceArrive(window.player, MM.world.getTile, {}); return MM.trader.isActive(); })()`);
-		await ghost.poll(`(MM.trader && MM.trader.isActive()) ? 1 : 0`, v => v === 1, 'the trader replica arrives on the npc plane', 40, 400);
+		const stall = await host.eval(`(()=>{ const p=window.player;
+			let via='scout', ok=MM.trader.forceArrive(p, MM.world.getTile, {});
+			if(!ok){
+				// carved QA terrain defeats the scout (surfaceHeight is worldgen truth,
+				// not live tiles) — stage the exact state shape restore() would build
+				const st=MM.trader._state();
+				st.active=true; st.x=Math.floor(p.x)+4.5; st.y=p.y; st.visitIndex++;
+				st.stock=MM.trader._rollStock(st.visitIndex, MM.worldGen.worldSeed, st.x);
+				via='staged';
+			}
+			// forceArrive({}) sets leaveDay off the FALLBACK clock; this deep into the
+			// gauntlet the real gameDayFloat is far past it and the very next host
+			// frame departs the stall — pin the visit open for the scene's duration
+			MM.trader._state().leaveDay=1e9;
+			return {via, active:MM.trader.isActive()}; })()`);
+		if(!stall.active) throw new Error('trader staging failed: ' + JSON.stringify(stall));
+		console.log('trader staging:', JSON.stringify(stall));
+		try{
+			await ghost.poll(`(MM.trader && MM.trader.isActive()) ? 1 : 0`, v => v === 1, 'the trader replica arrives on the npc plane', 40, 400);
+		}catch(e){
+			let diag = '?';
+			try{ diag = JSON.stringify(await ghost.eval(`({npcPkts:MM.ghostClient.metrics().stats.npcs||0, replica:!!(MM.trader&&MM.trader.isActive())})`)); }catch(e2){ /* starved */ }
+			throw new Error(e.message + ' [diag: ' + diag + ']');
+		}
 		const trade = await ghost.eval(`(()=>{ const st=MM.trader.stock(); if(!st||!st.rates||!st.rates.length) return {err:'no-stock'};
 			const r=st.rates[0]; for(const k of Object.keys(r.take)) window.inv[k]=(window.inv[k]|0)+r.take[k];
 			const d0=window.inv.diamond|0; const res=MM.trader.tradeSell(r.id,{inv:window.inv});

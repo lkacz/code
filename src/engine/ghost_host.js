@@ -408,6 +408,12 @@ const ghostHost = (function(){
 		}
 		for(const env of NET.chunkPayload('snap', s.snapCache)) peer.send(env);
 		if(s.sinceCache.length) peer.send({ t: 'tiles', d: s.sinceCache.slice() });
+		// a (possibly CACHED) snapshot may carry plane states older than the last
+		// sig-skipped broadcast — and a plane whose state then never changes would
+		// leave the (re)joined guest stale FOREVER. Reset the slow planes' sigs so
+		// the next tick rebroadcasts current truth to everyone (restores are
+		// idempotent; the fast planes re-sig within a second anyway).
+		s.lastStoryJson = null; s.lastNpcJson = null; s.lastDropsJson = null;
 		s.stats.snapshots++;
 		s.lastSnapAt = t;
 	}
