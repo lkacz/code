@@ -301,8 +301,12 @@ assert.match(mainSrc, /function drawLadderOverlay\(g,px,py,h,conn,kind\)/, 'main
 assert.match(mainSrc, /function infrastructureOverlayCellsFor\(sx,sy,viewX,viewY\)/, 'infrastructure overlay pass reuses one visible-cell scan per frame');
 assert.match(mainSrc, /else if\(isLadderTileId\(t\)\)\{\s+drawLadderOverlay\(ctx,cell\.px,cell\.py,cell\.h,ladderConnections\(cell\.x,cell\.y,hasLadderAt\),t\);/, 'infrastructure overlay pass draws both connection-aware ladder materials');
 assert.match(mainSrc, /isLadderTileId\(t\) \? 3/, 'render sorting keeps both ladders above pipes and cables in stacked overlay cells');
-assert.match(mainSrc, /function infrastructureTargetBlockedReason\(tx,ty,id\)[\s\S]*?isPowerCableTileId\(id\) \|\| id===T\.WATER_PIPE[\s\S]*?Math\.abs\(tx-px\)===1 && Math\.abs\(ty-py\)===1/, 'adjacent diagonal pipe or either cable material can reach around a blocked tile corner');
-assert.match(mainSrc, /function canPlaceInfrastructureAt\(tx,ty,id\)[\s\S]*?infrastructureTargetBlockedReason\(tx,ty,id\)/, 'pipe and cable placement uses the diagonal-aware physical targeting rule');
+assert.match(mainSrc, /function infrastructureTargetBlockedReasonFrom\(originX,originY,tx,ty,id\)[\s\S]*?isPowerCableTileId\(id\) \|\| id===T\.WATER_PIPE[\s\S]*?Math\.abs\(tx-px\)===1 && Math\.abs\(ty-py\)===1/, 'adjacent diagonal pipe or either cable material can reach around a blocked tile corner');
+assert.match(mainSrc, /function canPlaceInfrastructureAt\(tx,ty,id,remoteContext\)[\s\S]*?infrastructureTargetBlockedReason\(tx,ty,id\)/, 'local pipe and cable placement keeps the diagonal-aware physical targeting rule');
+assert.match(mainSrc, /remotePlacementActorBlockedReason\(remoteBody,tx,ty,id\)/,
+  'remote pipe and cable placement routes actor checks through the remote-body policy');
+assert.match(mainSrc, /infrastructureTargetBlockedReasonFrom\(body\.x,body\.y,tx,ty,infrastructureId\)/,
+  'remote pipe and cable occlusion is evaluated from the guest body instead of the host hero');
 assert.match(pumpSrc, /function drawFlow\([\s\S]*?pipeRenderCenter\(TILE,px,py\)/, 'animated fluid flow follows the lower-right pipe track');
 assert.match(teleporterSrc, /function drawCableEnergy\([\s\S]*?cableRenderCenter\(TILE,px,py\)/, 'animated electric energy follows the upper-left cable track');
 assert.match(mainSrc, /function canPlaceLadderAt\(tx,ty,cur,id\)/, 'main has material-aware ladder placement rules');

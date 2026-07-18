@@ -1,6 +1,6 @@
 // Nowy styl / pełny ekran inspirowany Diamonds Explorer
 // Module entry: import constants (also hydrates window.MM via shim) and side-effect engine modules
-import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, TILE, T, INFO, MOVE, isAutumnLeaf, isLeaf, isFrozenEarth } from './constants.js';
+import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, TILE, HERO_BODY_W, HERO_BODY_H, T, INFO, MOVE, isAutumnLeaf, isLeaf, isFrozenEarth } from './constants.js';
 import { clearActiveGameStorage, normalizeWorldSeed, queueFreshWorldSeed, queueWorldSeed, randomWorldSeed } from './engine/new_game.js';
 // Ensure worldgen initializes before world (world.js reads MM.worldGen on load)
 import { worldGen as WORLDGEN } from './engine/worldgen.js';
@@ -773,7 +773,7 @@ setTile.transient = function(x,y,v){
 if(FALLING && FALLING.init) FALLING.init(getTile,setTile);
 
 // --- Gracz / inwentarz ---
-const player={x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:false,facing:1,tool:'basic',jumpCount:0,maxHp:100,hp:100,hpInvul:0,hurtFlashUntil:0,atkCd:0,xp:0,energy:0,maxEnergy:0,soot:0,_smokeTint:0};
+const player={x:0,y:0,w:HERO_BODY_W,h:HERO_BODY_H,vx:0,vy:0,onGround:false,facing:1,tool:'basic',jumpCount:0,maxHp:100,hp:100,hpInvul:0,hurtFlashUntil:0,atkCd:0,xp:0,energy:0,maxEnergy:0,soot:0,_smokeTint:0};
 const HURT_FLASH_MS=520;
 const HERO_ENERGY_BASE=40;
 const HERO_ENERGY_PER_LEVEL=8;
@@ -8550,8 +8550,8 @@ function fallbackLineOfSight(x0,y0,x1,y1){
 	}
 	return false;
 }
-function targetFaceExposedToPlayer(tx,ty){
-	const px=Math.floor(player.x), py=Math.floor(player.y);
+function targetFaceExposedFrom(originX,originY,tx,ty){
+	const px=Math.floor(originX), py=Math.floor(originY);
 	const dx=Math.sign(tx-px), dy=Math.sign(ty-py);
 	if(dx===0 && dy===0) return true;
 	if(dx!==0 && dy!==0){
@@ -8560,25 +8560,32 @@ function targetFaceExposedToPlayer(tx,ty){
 	if(dx!==0) return !isSolid(getTile(tx-dx,ty));
 	return !isSolid(getTile(tx,ty-dy));
 }
-function canPhysicallyTargetTile(tx,ty){
-	if(!worldCellInBounds(tx,ty)) return false;
-	const px=Math.floor(player.x), py=Math.floor(player.y);
+function canPhysicallyTargetTileFrom(originX,originY,tx,ty){
+	if(!Number.isFinite(originX) || !Number.isFinite(originY) || !worldCellInBounds(tx,ty)) return false;
+	const px=Math.floor(originX), py=Math.floor(originY);
 	const los=(FOG && (FOG.hasLineOfSight || FOG._hasLineOfSight)) || null;
 	const rayClear = typeof los==='function' ? los(px,py,tx,ty,getTile,(t)=>isSolid(t)) : fallbackLineOfSight(px,py,tx,ty);
-	return rayClear && targetFaceExposedToPlayer(tx,ty);
+	return rayClear && targetFaceExposedFrom(px,py,tx,ty);
+}
+function canPhysicallyTargetTile(tx,ty){ return canPhysicallyTargetTileFrom(player.x,player.y,tx,ty); }
+function blockedTargetReasonFrom(originX,originY,tx,ty){
+	return canPhysicallyTargetTileFrom(originX,originY,tx,ty) ? null : 'Zasłonięte';
 }
 function blockedTargetReason(tx,ty){
-	return canPhysicallyTargetTile(tx,ty) ? null : 'Zasłonięte';
+	return blockedTargetReasonFrom(player.x,player.y,tx,ty);
 }
-function infrastructureTargetBlockedReason(tx,ty,id){
-	if(canPhysicallyTargetTile(tx,ty)) return null;
-	const px=Math.floor(player.x), py=Math.floor(player.y);
+function infrastructureTargetBlockedReasonFrom(originX,originY,tx,ty,id){
+	if(canPhysicallyTargetTileFrom(originX,originY,tx,ty)) return null;
+	const px=Math.floor(originX), py=Math.floor(originY);
 	// A cable or pipe is a thin surface installation: the hero can reach around
 	// either side of an immediately adjacent corner even when two solid blocks
 	// make the ordinary mining ray regard that corner as occluded.
 	if((isPowerCableTileId(id) || id===T.WATER_PIPE) && worldYInBounds(ty)
 		&& Math.abs(tx-px)===1 && Math.abs(ty-py)===1) return null;
 	return 'Zasłonięte';
+}
+function infrastructureTargetBlockedReason(tx,ty,id){
+	return infrastructureTargetBlockedReasonFrom(player.x,player.y,tx,ty,id);
 }
 
 // Input + tryby specjalne
@@ -10685,6 +10692,16 @@ function solidAt(x,y,axis){
 	if(heroTrapdoorOpenForCollision(t,x,y,axis)) return false;
 	return !isHeroPassableTile(t);
 }
+// Host-side shadow bodies must never read the HOST hero's keys, velocity or AABB
+// when deciding collision. Their caller supplies only the guest movement intent.
+function ghostBodySolidAt(x,y,axis,probe,openTrapdoor){
+	if(!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x)>WORLD_MAX_ABS_X) return true;
+	if(y>=worldMaxY() || y<worldMinY()) return true;
+	const t=getTile(x,y);
+	if(hasLadderAt(x,y)) return false;
+	if(openTrapdoor && isTrapdoorTile(t) && (axis==='x' || axis==='y') && probe) return false;
+	return !isHeroPassableTile(t);
+}
 // Swept per-axis resolution: only tiles the hero *entered during this substep*
 // (his pre-move span did not overlap them) push back. Tiles that already
 // overlapped are embedded — a collapse solidified around him — and belong to
@@ -11957,6 +11974,18 @@ function tryToggleBlockLayerAt(tx,ty){
 function cellOverlapsPlayer(tx,ty){
 	return tx+1 > player.x - player.w/2 && tx < player.x + player.w/2 && ty+1 > player.y - player.h/2 && ty < player.y + player.h/2;
 }
+// Remote placement never inherits the host hero's pose or god-mode bypass. The
+// network handler performs the same checks first; keeping them here makes the
+// world-write seam independently safe if another authenticated caller is added.
+function remotePlacementActorBlockedReason(body,tx,ty,infrastructureId){
+	if(!body || !Number.isFinite(body.x) || !Number.isFinite(body.y)) return 'Za daleko';
+	const heroRules=MM && MM.ghostNet && MM.ghostNet.HERO_RULES;
+	const reach=(heroRules && Number.isFinite(heroRules.REACH)) ? heroRules.REACH : PLACE_REACH;
+	if(Math.abs(tx-Math.floor(body.x))>reach || Math.abs(ty-Math.floor(body.y))>reach) return 'Za daleko';
+	return infrastructureId===undefined
+		? blockedTargetReasonFrom(body.x,body.y,tx,ty)
+		: infrastructureTargetBlockedReasonFrom(body.x,body.y,tx,ty,infrastructureId);
+}
 function isStableMachineSupport(t){
 	return isStableMachineSupportTile(t);
 }
@@ -12049,7 +12078,9 @@ function canPlaceDynamoAt(tx,ty){
 	}
 	return {ok:true, id:T.DYNAMO, structure:'dynamo', cells};
 }
-function canPlaceInfrastructureAt(tx,ty,id){
+function canPlaceInfrastructureAt(tx,ty,id,remoteContext){
+	const remoteActor=remoteContext!==undefined;
+	const remoteBody=remoteActor && remoteContext ? remoteContext.body : null;
 	if(!isInfrastructureTileId(id)) return null;
 	if(!worldCellInBounds(tx,ty)) return {ok:false,id,overlay:true,reason:'Poza granica swiata'};
 	const cur=getTile(tx,ty);
@@ -12059,14 +12090,17 @@ function canPlaceInfrastructureAt(tx,ty,id){
 	if(INFO[cur] && INFO[cur].chestTier) return {ok:false, id, overlay:true, reason:'Skrzynia blokuje instalacje'};
 	if(INFO[cur] && INFO[cur].cache) return {ok:false, id, overlay:true, reason:'Skrytka blokuje instalacje'};
 	if(cur===T.DYNAMO || cur===T.DYNAMO_SLOT || cur===T.TELEPORTER || cur===T.WATER_PUMP || cur===T.STEAM_BOILER || cur===T.STEAM_JET || cur===T.VENDING_MACHINE || cur===T.TURRET || cur===T.FIRE_TURRET || cur===T.WATER_TURRET || cur===T.SPRING_PLATFORM || cur===T.SOLAR_PANEL || cur===T.SOLAR_BATTERY || cur===T.ANTIGRAVITY_BEACON || cur===T.METEOR_SIREN) return {ok:false, id, overlay:true, reason:'Maszyna blokuje instalacje'};
-	if(!godMode && !withinReach(tx,ty,PLACE_REACH)) return {ok:false, id, overlay:true, reason:'Za daleko'};
-	const blocked=infrastructureTargetBlockedReason(tx,ty,id);
+	if(remoteActor){
+		const actorBlocked=remotePlacementActorBlockedReason(remoteBody,tx,ty,id);
+		if(actorBlocked) return {ok:false, id, overlay:true, reason:actorBlocked};
+	} else if(!godMode && !withinReach(tx,ty,PLACE_REACH)) return {ok:false, id, overlay:true, reason:'Za daleko'};
+	const blocked=remoteActor ? null : infrastructureTargetBlockedReason(tx,ty,id);
 	if(blocked) return {ok:false, id, overlay:true, reason:blocked};
 	if(isLadderTileId(id)){
 		const ladder=canPlaceLadderAt(tx,ty,cur,id);
 		if(!ladder.ok) return ladder;
 	}
-	if(!godMode && !haveBlocksFor(id)) return {ok:false, id, overlay:true, reason:'Brak blokow'};
+	if(!remoteActor && !godMode && !haveBlocksFor(id)) return {ok:false, id, overlay:true, reason:'Brak blokow'};
 	return {ok:true, id, overlay:true};
 }
 function constructionBackgroundBlockedReason(cur){
@@ -12076,7 +12110,9 @@ function constructionBackgroundBlockedReason(cur){
 	if(cur!==T.AIR && !isGasTileId(cur) && cur!==T.WATER && !isHeroPassableTile(cur)) return 'Pierwszy plan zajety';
 	return '';
 }
-function canPlaceConstructionBackgroundAt(tx,ty,id){
+function canPlaceConstructionBackgroundAt(tx,ty,id,remoteContext){
+	const remoteActor=remoteContext!==undefined;
+	const remoteBody=remoteActor && remoteContext ? remoteContext.body : null;
 	if(!isBackgroundBuildTileId(id)) return {ok:false, id, background:true, reason:'Tylko material budowlany'};
 	if(!worldCellInBounds(tx,ty)) return {ok:false,id,background:true,reason:'Poza granica swiata'};
 	if(!WORLD || !WORLD.setConstructionBackground) return {ok:false, id, background:true, reason:'Brak warstwy tla'};
@@ -12086,10 +12122,13 @@ function canPlaceConstructionBackgroundAt(tx,ty,id){
 	const cur=getTile(tx,ty);
 	const blockedByTile=constructionBackgroundBlockedReason(cur);
 	if(blockedByTile) return {ok:false, id, background:true, reason:blockedByTile};
-	if(!godMode && !withinReach(tx,ty,PLACE_REACH)) return {ok:false, id, background:true, reason:'Za daleko'};
-	const blocked=blockedTargetReason(tx,ty);
+	if(remoteActor){
+		const actorBlocked=remotePlacementActorBlockedReason(remoteBody,tx,ty);
+		if(actorBlocked) return {ok:false, id, background:true, reason:actorBlocked};
+	} else if(!godMode && !withinReach(tx,ty,PLACE_REACH)) return {ok:false, id, background:true, reason:'Za daleko'};
+	const blocked=remoteActor ? null : blockedTargetReason(tx,ty);
 	if(blocked) return {ok:false, id, background:true, reason:blocked};
-	if(!godMode && !haveBlocksFor(id)) return {ok:false, id, background:true, reason:'Brak blokow'};
+	if(!remoteActor && !godMode && !haveBlocksFor(id)) return {ok:false, id, background:true, reason:'Brak blokow'};
 	return {ok:true, id, background:true};
 }
 function wakeConstructionBackgroundChanged(tx,ty){
@@ -16314,6 +16353,9 @@ MM.ghostBridge={
 	// --- play mode (embodied guests) -----------------------------------------------
 	// The guest's own hero physics runs on ITS replicated world; these two feed it.
 	solidAt:(x,y,axis)=>{ try{ return solidAt(x,y,axis||'y'); }catch(e){ return true; } },
+	ghostBodySolidAt:(x,y,axis,probe,openTrapdoor)=>{ try{ return ghostBodySolidAt(x,y,axis,probe,!!openTrapdoor); }catch(e){ return true; } },
+	ghostBodyBounds:()=>({minX:-WORLD_MAX_ABS_X,maxX:WORLD_MAX_ABS_X,minY:worldMinY(),maxY:worldMaxY()}),
+	ghostTargetClear:(originX,originY,tx,ty)=>{ try{ return canPhysicallyTargetTileFrom(originX,originY,tx,ty); }catch(e){ return false; } },
 	screenToWorld:(cx,cy)=>{ try{ return screenToWorld(cx,cy); }catch(e){ return null; } },
 	// Remote heroes (guest bodies on the host, the host hero + fellow guests on a
 	// guest) render through the REAL hero painter via a field swap, so a second
@@ -16350,6 +16392,11 @@ MM.ghostBridge={
 		finally{ MM.customization=savedCust; for(const k of keys) player[k]=saved[k]; }
 	},
 	resourceLabel:(k)=>RES_LABEL[k]||k,
+	// Host-authoritative tile-to-resource lookup for hero placement escrow.
+	ghostHeroPlacementKey:(tid)=>{
+		const id=Number(tid)|0;
+		return Object.prototype.hasOwnProperty.call(TILE_TO_RES,id) ? TILE_TO_RES[id] : null;
+	},
 	// Guest mining: the same whitelist and lifecycle hooks the companion diggers use
 	// (breakTileByCompanion is the model) — but the yield goes to the CALLER (the
 	// host-owned guest pouch), never to the host inventory. Foreground tiles only:
@@ -16386,9 +16433,13 @@ MM.ghostBridge={
 		const cur=getTile(tx,ty);
 		if(!isReplaceableNaturalOpenTile(cur,false)) return {ok:false, reason:'occupied'};
 		if(cur===T.WATER && id===T.WATER) return {ok:false, reason:'occupied'};
+		// Solo wood-on-water routes through BOATS.placeWood and creates/extends a raft.
+		// The guest bridge has no authoritative raft transaction, so a forged intent
+		// must fail closed instead of silently writing an ordinary WOOD tile.
+		if(cur===T.WATER && id===T.WOOD) return {ok:false, reason:'boat'};
 		if(cellOverlapsPlayer(tx,ty)) return {ok:false, reason:'hero'};
-		if(body && Number.isFinite(body.x) && tx+1>body.x-(body.w||0.6)/2 && tx<body.x+(body.w||0.6)/2
-			&& ty+1>body.y-(body.h||0.9)/2 && ty<body.y+(body.h||0.9)/2) return {ok:false, reason:'self'};
+		if(body && Number.isFinite(body.x) && tx+1>body.x-(body.w||HERO_BODY_W)/2 && tx<body.x+(body.w||HERO_BODY_W)/2
+			&& ty+1>body.y-(body.h||HERO_BODY_H)/2 && ty<body.y+(body.h||HERO_BODY_H)/2) return {ok:false, reason:'self'};
 		if(id!==T.SAND && FALLING && FALLING.canSupportPlacement){
 			const structural=FALLING.canSupportPlacement(tx,ty,id);
 			if(structural && structural.applies && !structural.ok) return {ok:false, reason:'support'};
@@ -16404,17 +16455,6 @@ MM.ghostBridge={
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		noteSaveActivity();
 		return {ok:true, tile:id, label:TILE_LABELS[id]||String(id)};
-	},
-	// Guest melee: creatures only, same contract as the ghost powers — no tile is
-	// ever touched, so even an armed guest cannot reshape the world by fighting.
-	ghostPlayStrike:(x,y,r,dmg)=>{
-		if(!Number.isFinite(x) || !Number.isFinite(y)) return 0;
-		const rad=Math.max(0.5,Math.min(3,Number(r)||1.4));
-		const amount=Math.max(1,Math.min(20,Number(dmg)||7));
-		let hits=0;
-		try{ if(MOBS && MOBS.blastRadius) hits+=MOBS.blastRadius(x,y,rad,amount,{source:'ghost',kind:'strike'})|0; }catch(e){}
-		try{ if(INVASIONS && INVASIONS.damageAt && INVASIONS.damageAt(Math.floor(x),Math.floor(y),amount,{source:'ghost'})) hits++; }catch(e){}
-		return hits;
 	},
 	// Guest weapons: the host already validated ownership, cooldown and ammo against
 	// its own body state — this seam only resolves the blow through the REAL combat
@@ -16574,7 +16614,7 @@ MM.ghostBridge={
 	// apply; heroEnergy is withheld so a guest can never drain the HOST's pool
 	ghostHeroTeleport:(body,dir)=>{
 		if(!TELEPORTERS || !TELEPORTERS.tryTeleport) return {ok:false};
-		const proxy={x:body.x, y:body.y, vx:(dir<0?-1:1)*2, vy:0, w:body.w||0.62, h:body.h||0.92};
+		const proxy={x:body.x, y:body.y, vx:(dir<0?-1:1)*2, vy:0, w:body.w||HERO_BODY_W, h:body.h||HERO_BODY_H};
 		// Base-tile reader + STORED-energy-only opts: passing the dynamo network into
 		// the jump made connectedDynamoEnergy traverse raw tiles and quietly refuse
 		// the whole teleport. A guest jumps on the pad's OWN stored charge (and any
@@ -16656,8 +16696,8 @@ MM.ghostBridge={
 		noteSaveActivity();
 		return {ok:true, tid:tId, layer:'fg'};
 	},
-	// hero-mode placement: the guest's inventory is ITS truth — the host validates
-	// only WORLD legality, on the layer the guest's own canPlaceAt routed to.
+	// Hero-mode placement: ghost_host already debited its host-authoritative
+	// resource escrow; this seam validates world legality on the requested layer.
 	ghostHeroPlaceAt:(tx,ty,tid,layer,body)=>{
 		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
 		const id=Number(tid)|0;
@@ -16665,26 +16705,29 @@ MM.ghostBridge={
 		if(!def) return {ok:false, reason:'key'};
 		if(id===T.VENDING_MACHINE || id===T.SPRING_PLATFORM || id===T.DYNAMO) return {ok:false, reason:'machine'};
 		if(layer==='overlay'){
-			const v=canPlaceInfrastructureAt(tx,ty,id);
+			const v=canPlaceInfrastructureAt(tx,ty,id,{body});
 			if(!v || !v.ok) return {ok:false, reason:'occupied'};
 			if(!setInfrastructureConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
 			noteSaveActivity();
 			return {ok:true, tid:id};
 		}
 		if(layer==='background'){
-			const v=canPlaceConstructionBackgroundAt(tx,ty,id);
+			const v=canPlaceConstructionBackgroundAt(tx,ty,id,{body});
 			if(!v || !v.ok) return {ok:false, reason:'occupied'};
 			if(!setConstructionBackgroundConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
 			wakeConstructionBackgroundChanged(tx,ty);
 			noteSaveActivity();
 			return {ok:true, tid:id};
 		}
+		const actorBlocked=remotePlacementActorBlockedReason(body,tx,ty);
+		if(actorBlocked) return {ok:false, reason:actorBlocked==='Za daleko'?'reach':'blocked'};
 		const cur=getTile(tx,ty);
 		if(!isReplaceableNaturalOpenTile(cur,false)) return {ok:false, reason:'occupied'};
 		if(cur===T.WATER && id===T.WATER) return {ok:false, reason:'occupied'};
+		if(cur===T.WATER && id===T.WOOD) return {ok:false, reason:'boat'};
 		if(cellOverlapsPlayer(tx,ty)) return {ok:false, reason:'hero'};
-		if(body && Number.isFinite(body.x) && tx+1>body.x-(body.w||0.6)/2 && tx<body.x+(body.w||0.6)/2
-			&& ty+1>body.y-(body.h||0.9)/2 && ty<body.y+(body.h||0.9)/2) return {ok:false, reason:'self'};
+		if(body && Number.isFinite(body.x) && tx+1>body.x-(body.w||HERO_BODY_W)/2 && tx<body.x+(body.w||HERO_BODY_W)/2
+			&& ty+1>body.y-(body.h||HERO_BODY_H)/2 && ty<body.y+(body.h||HERO_BODY_H)/2) return {ok:false, reason:'self'};
 		if(id!==T.SAND && id!==T.WATER && FALLING && FALLING.canSupportPlacement){
 			const structural=FALLING.canSupportPlacement(tx,ty,id);
 			if(structural && structural.applies && !structural.ok) return {ok:false, reason:'support'};

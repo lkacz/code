@@ -16,10 +16,165 @@ import { applyHorizontalMovement } from './movement.js';
 const MMR = (typeof window !== 'undefined' && window.MM) ? window.MM : null;
 // the invite secret rides the URL #fragment (kept off the wire); without it a guest
 // only ever connects same-machine (loopback), never authenticated remote RTC
-const WATCH = (typeof location !== 'undefined') ? NET.parseWatch(location.search, location.hash) : null;
+const INVITE_TAB_KEY = 'mm_ghost_invite_v1';
+// Durable seat recovery is deliberately ROOM-scoped. Under the bearer-invite
+// model there is no stable, authenticated host identity, so carrying a credential
+// into a different room would let an unrelated host solicit it. The cache only
+// helps the browser-stable gid return to the SAME room after a tab or host restart.
+// It is a bounded array (rather than attacker-shaped object keys), versioned, and
+// every row is revalidated on read before a token can reach the wire.
+const RESUME_CACHE_KEY = 'mm_ghost_resume_cache_v1';
+const RESUME_CACHE_VERSION = 1;
+const RESUME_CACHE_MAX = 24;
+const RESUME_CACHE_TTL_MS = 7 * 24 * 3600 * 1000;
+const RESUME_CACHE_REFRESH_MS = 6 * 3600 * 1000;
+export function normalizeResumeCredentialCache(raw, at){
+	const t = Number.isFinite(at) ? at : Date.now();
+	let parsed = raw;
+	try{ if(typeof parsed === 'string') parsed = JSON.parse(parsed); }catch(e){ parsed = null; }
+	if(!parsed || typeof parsed !== 'object' || parsed.v !== RESUME_CACHE_VERSION || !Array.isArray(parsed.entries)) return { v: RESUME_CACHE_VERSION, entries: [] };
+	const rows = [];
+	for(const row of parsed.entries.slice(0, RESUME_CACHE_MAX * 4)){
+		if(!row || typeof row !== 'object') continue;
+		const room = NET.normalizeRoom(row.room);
+		const ts = Number(row.ts);
+		const age = t - ts;
+		if(room !== row.room || !NET.validGid(row.gid) || !NET.validResumeTokenShape(row.rt)
+			|| !Number.isFinite(ts) || ts <= 0 || age < 0 || age > RESUME_CACHE_TTL_MS) continue;
+		rows.push({ room, gid: row.gid, rt: row.rt, ts: Math.floor(ts) });
+	}
+	rows.sort((a, b) => b.ts - a.ts);
+	const seen = new Set(), entries = [];
+	for(const row of rows){
+		const key = row.room + '\0' + row.gid;
+		if(seen.has(key)) continue;
+		seen.add(key); entries.push(row);
+		if(entries.length >= RESUME_CACHE_MAX) break;
+	}
+	return { v: RESUME_CACHE_VERSION, entries };
+}
+export function readResumeCredential(storage, room, gid, at){
+	if(!storage || NET.normalizeRoom(room) !== room || !NET.validGid(gid)) return null;
+	try{
+		const cache = normalizeResumeCredentialCache(storage.getItem(RESUME_CACHE_KEY), at);
+		const row = cache.entries.find(e => e.room === room && e.gid === gid);
+		return row ? row.rt : null;
+	}catch(e){ return null; }
+}
+export function writeResumeCredential(storage, room, gid, rt, at){
+	if(!storage || NET.normalizeRoom(room) !== room || !NET.validGid(gid) || !NET.validResumeTokenShape(rt)) return false;
+	const t = Number.isFinite(at) ? at : Date.now();
+	try{
+		const cache = normalizeResumeCredentialCache(storage.getItem(RESUME_CACHE_KEY), t);
+		cache.entries.unshift({ room, gid, rt, ts: t });
+		storage.setItem(RESUME_CACHE_KEY, JSON.stringify(normalizeResumeCredentialCache(cache, t)));
+		return true;
+	}catch(e){ return false; }
+}
+export function removeResumeCredential(storage, room, gid, at){
+	if(!storage || NET.normalizeRoom(room) !== room || !NET.validGid(gid)) return false;
+	try{
+		const cache = normalizeResumeCredentialCache(storage.getItem(RESUME_CACHE_KEY), at);
+		cache.entries = cache.entries.filter(e => e.room !== room || e.gid !== gid);
+		storage.setItem(RESUME_CACHE_KEY, JSON.stringify(cache));
+		return true;
+	}catch(e){ return false; }
+}
+export function canRefreshResumeCredential(authenticated, gid, baseGid, resumeToken){
+	return authenticated === true && gid === baseGid && NET.validGid(gid) && NET.validResumeTokenShape(resumeToken);
+}
+// localStorage has no cross-document compare-and-swap, so every document carries
+// an owner nonce, checks before writes and re-reads after a claim. Storage/pageshow
+// arbitration handles a simultaneous last-writer race by rotating the loser.
+const GID_LEASE_RAW_MAX = 512;
+export function createGidLeaseController(storage, gid, owner, nowFn){
+	const validOwner = typeof owner === 'string' && /^d[a-z0-9]{12,40}$/.test(owner);
+	const clock = typeof nowFn === 'function' ? nowFn : Date.now;
+	function rawLease(){
+		try{
+			const raw = storage && storage.getItem(NET.GID_LEASE_KEY);
+			if(typeof raw !== 'string' || raw.length > GID_LEASE_RAW_MAX) return null;
+			const row = JSON.parse(raw);
+			if(!row || typeof row !== 'object' || !NET.validGid(row.gid)) return null;
+			const ts = Number(row.ts);
+			if(!Number.isFinite(ts) || ts <= 0) return null;
+			const rowOwner = typeof row.owner === 'string' && /^d[a-z0-9]{12,40}$/.test(row.owner) ? row.owner : null;
+			return { gid: row.gid, owner: rowOwner, ts };
+		}catch(e){ return null; }
+	}
+	function current(){
+		const row = rawLease();
+		if(!row) return null;
+		const age = Number(clock()) - row.ts;
+		return Number.isFinite(age) && age >= 0 && age < NET.GID_LEASE_MS ? row : null;
+	}
+	return {
+		claim(){
+			if(!storage || !NET.validGid(gid) || !validOwner) return false;
+			const held = current();
+			if(held && (held.gid !== gid || held.owner !== owner)) return false;
+			const ts = Number(clock());
+			if(!Number.isFinite(ts) || ts <= 0) return false;
+			try{ storage.setItem(NET.GID_LEASE_KEY, JSON.stringify({ v: 1, gid, owner, ts })); }
+			catch(e){ return false; }
+			const won = current();
+			return !!won && won.gid === gid && won.owner === owner;
+		},
+		owns(){ const row = current(); return !!row && row.gid === gid && row.owner === owner; },
+		conflict(){ const row = current(); return !!row && (row.gid !== gid || row.owner !== owner); },
+		release(){
+			const row = rawLease();
+			if(!row || row.gid !== gid || row.owner !== owner) return false;
+			// Best-effort immediate reload UX. localStorage cannot make this get/remove
+			// atomic; eliminating that tiny interleave requires independent owner keys.
+			try{ storage.removeItem(NET.GID_LEASE_KEY); return true; }catch(e){ return false; }
+		},
+		current
+	};
+}
+function consumeWatchInvite(){
+	if(typeof location === 'undefined') return null;
+	const watch = NET.parseWatch(location.search, location.hash);
+	if(!watch) return null;
+	// Keep reload/reconnect working inside this tab, but remove the bearer capability
+	// from the address bar and the current history entry as soon as it is consumed.
+	// sessionStorage dies with the tab. A browser-created duplicate may clone its
+	// initial contents; the owner-nonce gid lease below arbitrates that case.
+	try{
+		if(watch.secret) sessionStorage.setItem(INVITE_TAB_KEY, JSON.stringify({ room: watch.room, secret: watch.secret }));
+		else {
+			const kept = JSON.parse(sessionStorage.getItem(INVITE_TAB_KEY) || 'null');
+			if(kept && kept.room === watch.room && NET.validInviteSecret(kept.secret)) watch.secret = kept.secret;
+		}
+	}catch(e){ /* private/storage-disabled tab: in-memory invite still works */ }
+	if(watch.secret && typeof history !== 'undefined' && history.replaceState && location.hash){
+		try{ history.replaceState(history.state, '', location.pathname + location.search); }catch(e){ /* keep working even if URL rewriting is forbidden */ }
+	}
+	return watch;
+}
+function clearWatchInvite(){ try{ sessionStorage.removeItem(INVITE_TAB_KEY); }catch(e){ /* already gone */ } }
+// One terminal verdict owns transport teardown. Credential cleanup is separately
+// idempotent so a later explicit leave may still scrub an invite retained by a
+// temporary `full` verdict without closing the same connection twice.
+export function createClientTerminalTeardown(ops){
+	ops = ops || {};
+	let done = false, inviteCleared = false, identityRotated = false;
+	return function finish(options){
+		options = options || {};
+		if(options.clearInvite && !inviteCleared){ inviteCleared = true; try{ if(ops.clearInvite) ops.clearInvite(); }catch(e){ /* terminal cleanup continues */ } }
+		if(options.rotateIdentity && !identityRotated){ identityRotated = true; try{ if(ops.rotateIdentity) ops.rotateIdentity(); }catch(e){ /* terminal cleanup continues */ } }
+		if(done) return false;
+		done = true;
+		for(const step of ['persist', 'cancelReconnect', 'stopTimers', 'closeConnection']){
+			try{ if(typeof ops[step] === 'function') ops[step](); }catch(e){ /* every remaining cleanup step must still run */ }
+		}
+		return true;
+	};
+}
+const WATCH = consumeWatchInvite();
 if(WATCH && MMR){
 	MMR.ghostMode = true;
-	MMR.ghostWatch = WATCH;
+	MMR.ghostWatch = Object.assign({}, WATCH, { secret: WATCH.secret ? 'present' : null });
 	// Storage lockdown: a watcher replicates a FOREIGN world into live systems,
 	// and several engines persist side stores (dynamic loot, discoveries, prefs)
 	// on restore/update. The main-save guards in main.js are not enough — block
@@ -29,7 +184,7 @@ if(WATCH && MMR){
 		// (the ghost's OWN profile is on this list: name, avatar, career and stable
 		// gid — career + gid are what make progression AND the host-kept body pouch
 		// survive a reload and a fresh invite link)
-		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY, NET.GID_KEY, NET.GID_LEASE_KEY, NET.LOOK_KEY, NET.HERO_KEY]);
+		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY, NET.GID_KEY, NET.GID_LEASE_KEY, NET.LOOK_KEY, NET.HERO_KEY, RESUME_CACHE_KEY]);
 		const origSet = Storage.prototype.setItem;
 		const origRemove = Storage.prototype.removeItem;
 		Storage.prototype.setItem = function(k, v){
@@ -74,47 +229,68 @@ const ghostClient = (function(){
 	// then the browser-stable base — adopted only when no LIVE tab holds its lease,
 	// because two tabs sharing one gid would boot each other via newest-wins.
 	const gidMint = () => 'g' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
-	const gid = (() => {
+	const leaseOwner = WATCH ? ('d' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 8)) : null;
+	let baseGid = null, gidLease = null;
+	let gid = (() => {
 		if(!WATCH) return gidMint(); // host pages import this module too — leave their storage alone
 		const shape = /^g[a-z0-9]{8,14}$/;
 		try{
 			const tab = sessionStorage.getItem(NET.GID_KEY);
-			if(typeof tab === 'string' && shape.test(tab)) return tab;
 			let base = localStorage.getItem(NET.GID_KEY);
 			if(typeof base !== 'string' || !shape.test(base)){ base = gidMint(); localStorage.setItem(NET.GID_KEY, base); }
-			let lease = null;
-			try{ lease = JSON.parse(localStorage.getItem(NET.GID_LEASE_KEY) || 'null'); }catch(e){ lease = null; }
-			const held = !!(lease && lease.gid === base && (Date.now() - (Number(lease.ts) || 0)) < NET.GID_LEASE_MS);
-			const mine = held ? gidMint() : base; // a sibling tab holds the base identity
+			baseGid = base;
+			gidLease = createGidLeaseController(localStorage, base, leaseOwner);
+			let mine = (typeof tab === 'string' && shape.test(tab)) ? tab : base;
+			// Duplicating a tab can clone sessionStorage. Even a tab-scoped base gid must
+			// win the document-owner lease before it is allowed onto the wire.
+			if(mine === base && !gidLease.claim()) mine = gidMint();
 			sessionStorage.setItem(NET.GID_KEY, mine);
 			return mine;
 		}catch(e){ return gidMint(); }
 	})();
-	if(WATCH && typeof window !== 'undefined'){
-		// the base-identity owner keeps its lease warm; sibling tabs never write it
-		const heartbeatGidLease = () => {
-			try{ if(localStorage.getItem(NET.GID_KEY) === gid) localStorage.setItem(NET.GID_LEASE_KEY, JSON.stringify({ gid, ts: Date.now() })); }catch(e){ /* fine */ }
-		};
-		heartbeatGidLease();
-		setInterval(heartbeatGidLease, 3000);
+	let gidLeaseT = null;
+	function releaseGidLease(ownerGid){
+		if(gidLease && ownerGid === baseGid) gidLease.release();
 	}
 	// Resume token: the host's proof-of-ownership for THIS gid, minted host-side on
 	// the first hello and echoed on every reconnect so an impostor who merely knows
-	// the (public) gid cannot claim the seat. Tab-scoped in sessionStorage — it must
-	// NOT be shared across tabs, since each tab holds its own gid. Never on the
-	// localStorage lockdown (it would then leak between tabs of one browser).
+	// the (public) gid cannot claim the seat. sessionStorage is the live-tab source;
+	// the browser-stable base gid additionally gets the bounded room-scoped cache so
+	// closing a tab does not orphan its host-kept body.
 	let resumeToken = null;
+	let resumeAuthenticatedThisDocument = false;
+	let lastResumeCacheAt = 0;
 	(() => {
 		if(!WATCH) return;
 		try{
 			const raw = JSON.parse(sessionStorage.getItem(NET.RESUME_TOKEN_KEY) || 'null');
 			if(raw && raw.room === WATCH.room && NET.validResumeTokenShape(raw.rt)) resumeToken = raw.rt;
 		}catch(e){ resumeToken = null; }
+		if(!resumeToken){
+			try{ resumeToken = readResumeCredential(localStorage, WATCH.room, gid); }catch(e){ resumeToken = null; }
+		}
 	})();
+	function refreshResumeCredential(force){
+		// A cache/session token is only a claim until this document receives welcome.
+		// Never extend a stale or rejected proof merely because a lifecycle event fired.
+		if(!WATCH || !canRefreshResumeCredential(resumeAuthenticatedThisDocument, gid, baseGid, resumeToken) || !gidLease) return false;
+		if(!force && state !== 'sync' && state !== 'live') return false;
+		const t = Date.now();
+		if(!force && t - lastResumeCacheAt < RESUME_CACHE_REFRESH_MS) return false;
+		// Claim also refreshes our lease, but will never overwrite a fresh other owner.
+		if(!gidLease.claim()) return false;
+		if(!writeResumeCredential(localStorage, WATCH.room, gid, resumeToken, t)) return false;
+		lastResumeCacheAt = t;
+		return true;
+	}
 	function storeResumeToken(rt){
 		if(!NET.validResumeTokenShape(rt)) return;
 		resumeToken = rt;
+		resumeAuthenticatedThisDocument = true;
 		try{ sessionStorage.setItem(NET.RESUME_TOKEN_KEY, JSON.stringify({ room: WATCH.room, rt })); }catch(e){ /* session-only */ }
+		// Only the browser-stable base identity is durable. Sibling tabs deliberately
+		// mint ephemeral gids, so persisting their proofs would create unreachable rows.
+		try{ refreshResumeCredential(true); }catch(e){ /* session recovery still works */ }
 	}
 	const assembler = NET.createAssembler();
 	const queue = [];
@@ -127,6 +303,7 @@ const ghostClient = (function(){
 	const buffWait = {}; // kind -> readyAtMs (UI countdown)
 	let timers = { hello: 0, pose: 0, needMobs: 0 };
 	let veil = null, bar = null, barTick = null;
+	let safetyNoticeShown = false;
 	let hostIdle = false, staleBanner = null, lastHostMsgAt = 0, bootAt = 0, connectFailShown = false;
 	let finRelayed = false; // the finale relay fires once per host ceremony opening
 	let forkOffered = false, forkCard = null; // world-fork offer (host-granted, player-confirmed)
@@ -135,7 +312,7 @@ const ghostClient = (function(){
 	let lockedConn = null;
 	let syncSince = 0, lastSnapReq = 0;
 	let lastRafAt = 0;
-	let reconnecting = false, reconnects = 0;
+	let reconnecting = false, reconnects = 0, reconnectT = null;
 	let mode = 'full'; // host-granted permission ladder: watch | chat | full
 	let lastInputAt = 0; // real watcher input — powers the social-facilitation "active" signal
 	let avatar = 'duszek';
@@ -523,17 +700,23 @@ const ghostClient = (function(){
 		showVeil('Łączenie z warstwą <b>' + WATCH.room + '</b>…');
 		buildBar();
 		bootAt = nowMs(); // the connect-failure verdict measures from here
+		reconcileGidLease(); // duplicated sessionStorage must arbitrate before hello
 		state = 'connect';
 		conn = makeConn();
 		sendHello();
 		// prompt goodbye on tab close — otherwise the host only reaps after 15 s;
 		// and flush the career so a deed banked seconds before the close survives
-		window.addEventListener('beforeunload', () => { flushProgress(true); saveHeroState(true); try{ if(conn) conn.close(); }catch(e){ /* fine */ } });
-		window.addEventListener('pagehide', () => { flushProgress(true); saveHeroState(true); });
+		window.addEventListener('beforeunload', () => { flushProgress(true); saveHeroState(true); refreshResumeCredential(true); try{ if(conn) conn.close(); }catch(e){ /* fine */ } });
+		window.addEventListener('pagehide', (ev) => { flushProgress(true); saveHeroState(true); refreshResumeCredential(true); if(!ev.persisted) releaseGidLease(gid); });
+		window.addEventListener('pageshow', () => { reconcileGidLease(); refreshResumeCredential(true); });
+		window.addEventListener('storage', (ev) => {
+			if(ev && (ev.key === NET.GID_LEASE_KEY || ev.key === NET.GID_KEY)) reconcileGidLease();
+		});
+		gidLeaseT = setInterval(reconcileGidLease, 3000);
 		// Backgrounding the tab is the one moment a watcher is most likely to never
 		// come back to it — bank the career to disk right there, before the browser
 		// starts throttling everything this page does.
-		try{ document.addEventListener('visibilitychange', () => { if(document.hidden) flushProgress(true); }); }catch(e){ /* no document: Node sims */ }
+		try{ document.addEventListener('visibilitychange', () => { if(document.hidden){ flushProgress(true); refreshResumeCredential(true); } }); }catch(e){ /* no document: Node sims */ }
 		// Companion pump (mirror of ghost_host's): keeps hello retries, queue
 		// drain and the pose keepalive alive while this tab is backgrounded and
 		// rAF is frozen. All paths inside frame() are cadence-gated/idempotent.
@@ -544,6 +727,7 @@ const ghostClient = (function(){
 		pump = setInterval(() => {
 			try{ frame(0.5, (typeof performance !== 'undefined') ? performance.now() : Date.now(), true); }catch(e){ /* next tick */ }
 			try{ flushProgress(); }catch(e){ /* storage blocked */ }
+			try{ refreshResumeCredential(false); }catch(e){ /* next lifecycle retry */ }
 		}, 500);
 		return true;
 	}
@@ -557,6 +741,81 @@ const ghostClient = (function(){
 		});
 	}
 	function sendHello(){ if(conn) conn.send({ t: 'hello', gid, name: ghostName(), avatar, proto: NET.GHOST_PROTO, lvl: NET.levelFor(prog.xp).level, rt: resumeToken || undefined }); }
+	let leaseConflictRotating = false;
+	function rotateLeaseConflictIdentity(){
+		if(leaseConflictRotating || gid !== baseGid) return false;
+		leaseConflictRotating = true;
+		const losingGid = gid;
+		// Never delete the shared base credential here: the document that won the
+		// owner-nonce lease still needs it. Only this document's session proof rotates.
+		releaseGidLease(losingGid);
+		gid = gidMint(); resumeToken = null; resumeAuthenticatedThisDocument = false; lastResumeCacheAt = 0;
+		try{
+			sessionStorage.removeItem(NET.RESUME_TOKEN_KEY);
+			sessionStorage.setItem(NET.GID_KEY, gid);
+		}catch(e){ /* the in-memory identity is still isolated */ }
+		if(hero.on) exitHero();
+		if(play.on) exitPlay();
+		mode = 'watch'; queue.length = 0; poseLog.length = 0;
+		restartForLeaseConflict();
+		leaseConflictRotating = false;
+		return true;
+	}
+	function reconcileGidLease(){
+		if(!WATCH || gid !== baseGid || !gidLease) return true;
+		let stable = null;
+		try{ stable = localStorage.getItem(NET.GID_KEY); }catch(e){ return true; }
+		if(stable !== baseGid || !gidLease.claim()){
+			rotateLeaseConflictIdentity();
+			return false;
+		}
+		refreshResumeCredential(false);
+		return true;
+	}
+	function rotateTakenIdentity(){
+		// `taken` proves this tab no longer owns the persisted gid. Rotate only this
+		// tab's retry identity: the browser-stable base may belong to the live sibling
+		// that correctly won the gid, and must not be overwritten from the loser.
+		const rejectedGid = gid;
+		resumeToken = null;
+		resumeAuthenticatedThisDocument = false;
+		// A base-gid `taken` can arrive after a last-writer lease race. Never erase
+		// that shared proof: it may already belong to the sibling that actually won.
+		try{ if(rejectedGid !== baseGid) removeResumeCredential(localStorage, WATCH.room, rejectedGid); }catch(e){ /* cache may be unavailable */ }
+		releaseGidLease(rejectedGid);
+		gid = gidMint();
+		try{
+			sessionStorage.removeItem(NET.RESUME_TOKEN_KEY);
+			sessionStorage.removeItem(NET.GID_KEY);
+			sessionStorage.setItem(NET.GID_KEY, gid);
+		}catch(e){ /* storage-disabled tabs already mint an ephemeral gid per load */ }
+	}
+	const closeTerminalOnce = createClientTerminalTeardown({
+		clearInvite: clearWatchInvite,
+		rotateIdentity: rotateTakenIdentity,
+		persist(){ flushProgress(true); saveHeroState(true); refreshResumeCredential(true); },
+		cancelReconnect(){
+			reconnecting = false;
+			if(reconnectT){ clearTimeout(reconnectT); reconnectT = null; }
+		},
+		stopTimers(){
+			if(pump){ clearInterval(pump); pump = null; }
+			if(barTick){ clearInterval(barTick); barTick = null; }
+			if(gidLeaseT){ clearInterval(gidLeaseT); gidLeaseT = null; }
+			releaseGidLease(gid);
+			if(bar) bar.style.display = 'none';
+		},
+		closeConnection(){
+			const ending = conn;
+			conn = null;
+			lockedConn = null;
+			try{ if(ending) ending.close(); }catch(e){ /* already closed */ }
+		}
+	});
+	function finishTerminal(options){
+		state = 'ended'; // set first: a synchronous close callback cannot schedule a reconnect
+		return closeTerminalOnce(options || {});
+	}
 	// Transport loss ≠ the host saying goodbye: rebuild the connection and let the
 	// normal hello → welcome → snapshot flow re-base the world. hostGone stays final.
 	function scheduleReconnect(){
@@ -564,35 +823,51 @@ const ghostClient = (function(){
 		reconnecting = true;
 		reconnects++;
 		if(reconnects > 8){
-			state = 'ended';
+			finishTerminal();
 			showVeil('Połączenie z warstwą przepadło.<br><a href="' + location.href.replace(/"/g, '') + '" style="color:#8fc7ff;">Spróbuj ponownie</a>');
 			return;
 		}
 		state = 'connect';
 		lockedConn = null;
-		try{ conn.close(); }catch(e){ /* fine */ }
+		const stale = conn;
+		conn = null;
+		try{ if(stale) stale.close(); }catch(e){ /* fine */ }
 		showVeil('Połączenie przerwane — łączę ponownie… (' + reconnects + '/8)');
-		setTimeout(() => {
+		reconnectT = setTimeout(() => {
+			reconnectT = null;
 			reconnecting = false;
 			if(state !== 'connect') return; // hostGone/leave won the race
 			conn = makeConn();
 			sendHello();
 		}, 1200);
 	}
+	function restartForLeaseConflict(){
+		if(state === 'idle' || state === 'ended') return;
+		if(reconnectT){ clearTimeout(reconnectT); reconnectT = null; }
+		reconnecting = true; reconnects = 0;
+		state = 'connect'; lockedConn = null;
+		const stale = conn;
+		conn = null; // stale callbacks now fail the api===conn gate below
+		try{ if(stale) stale.close(); }catch(e){ /* the replacement still proceeds */ }
+		showVeil('Ta karta utraciła wspólną tożsamość — łączę ją jako nowego ducha…');
+		const expectedGid = gid;
+		reconnectT = setTimeout(() => {
+			reconnectT = null; reconnecting = false;
+			if(state !== 'connect' || gid !== expectedGid) return;
+			conn = makeConn();
+			sendHello();
+		}, 0);
+	}
 	function leave(){
-		state = 'ended';
-		flushProgress(true); // nothing earned may be lost on the way out
-		saveHeroState(true); // the hero's inventory survives the exit too
-		if(pump){ clearInterval(pump); pump = null; }
-		if(barTick){ clearInterval(barTick); barTick = null; }
-		if(bar) bar.style.display = 'none';
-		try{ if(conn) conn.close(); }catch(e){ /* fine */ }
+		finishTerminal({ clearInvite: true });
 		showVeil('Opuściłeś warstwę.<br><a href="' + location.pathname + '" style="color:#8fc7ff;">Wróć do własnej gry</a>');
 	}
 
 	// --- messages ------------------------------------------------------------------
 	function onMessage(pl, c, api){
+		if(api !== conn) return; // a pre-welcome callback from a replaced joinRoom is stale
 		if(!pl || typeof pl.t !== 'string') return;
+		if(state === 'ended') return; // queued frames cannot revive or mutate a terminal client
 		// once locked, a straggler frame from the losing transport must not reach
 		// the assembler — an interleaved foreign chunk would wedge the snapshot
 		if(lockedConn && c !== lockedConn) return;
@@ -614,27 +889,34 @@ const ghostClient = (function(){
 			return;
 		}
 		if(pl.t === 'full'){
-			state = 'ended';
+			finishTerminal();
 			showVeil('Ta warstwa ma już komplet duchów.<br>Spróbuj ponownie za chwilę.');
 			return;
 		}
 		if(pl.t === 'banned'){
-			state = 'ended';
+			finishTerminal({ clearInvite: true });
 			showVeil('Gospodarz zablokował twój dostęp do tej warstwy.');
 			return;
 		}
 		if(pl.t === 'incompatible'){
 			// protocol mismatch: the host runs a different wire version — no snapshot,
 			// no permissions were granted, and retrying the same build won't help
-			state = 'ended';
+			finishTerminal();
 			showVeil('Niezgodna wersja gry z gospodarzem.<br>Odśwież stronę, aby pobrać najnowszą wersję.');
+			return;
+		}
+		if(pl.t === 'unavailable'){
+			// The host could not mint the cryptographic proof that owns this seat.
+			// Retrying on the same page cannot safely authenticate us, so stop exactly
+			// like the other terminal admission verdicts instead of reconnect-looping.
+			finishTerminal();
+			showVeil('Gospodarz nie może teraz utworzyć bezpiecznej tożsamości gracza.');
 			return;
 		}
 		if(pl.t === 'taken'){
 			// this gid is already held this session and we could not prove ownership —
 			// a fresh identity avoids colliding with the real owner
-			state = 'ended';
-			try{ sessionStorage.removeItem(NET.RESUME_TOKEN_KEY); }catch(e){ /* fine */ }
+			finishTerminal({ rotateIdentity: true });
 			showVeil('To miejsce jest już zajęte przez inną kartę.<br><a href="' + location.href.replace(/"/g, '') + '" style="color:#8fc7ff;">Spróbuj ponownie</a>');
 			return;
 		}
@@ -779,8 +1061,8 @@ const ghostClient = (function(){
 		}
 		if(pl.t === 'plook'){
 			// a fellow player's chosen color — re-validated (defense in depth), bounded
-			if(typeof pl.gid === 'string' && pl.gid && NET.validLookColor(pl.c)){
-				const g = pl.gid.slice(0, 40);
+			if(NET.validGid(pl.gid) && NET.validLookColor(pl.c)){
+				const g = pl.gid;
 				if(g in looks || Object.keys(looks).length < 24) looks[g] = pl.c.toLowerCase();
 			}
 			return;
@@ -789,7 +1071,7 @@ const ghostClient = (function(){
 			// host-arbitrated duel state: this client only mirrors what the host decided
 			const other = pl.a === gid ? pl.b : (pl.b === gid ? pl.a : null);
 			if(other){
-				play.duelWith = pl.on ? String(other).slice(0, 20) : null;
+				play.duelWith = pl.on && NET.validGid(other) ? other : null;
 				bridge.msg(pl.on ? '⚔ Pojedynek rozpoczęty!' : '⚔ Pojedynek zakończony');
 				updateBar();
 			}
@@ -828,13 +1110,17 @@ const ghostClient = (function(){
 			return;
 		}
 		if(pl.t === 'prespawn'){
-			if(play.on && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
+			// `rebase` is also used when a stored reconnect pose became solid while
+			// offline. It applies to either embodied rung and preserves the body's
+			// death/vitals state; an ordinary prespawn remains play-mode resurrection.
+			if((play.on || (pl.rebase && hero.on)) && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
 				const p = bridge.player;
 				p.x = +pl.x; p.y = +pl.y; p.vx = 0; p.vy = 0;
-				play.dead = false;
+				if(play.on){ play.dead = pl.rebase ? !!pl.dead : false; play.spawned = true; }
+				if(hero.on) hero.spawned = true;
 				poseLog.length = 0; // pre-respawn claims answer nothing anymore
 				bridge.snapCameraToPlayer();
-				bridge.msg('✨ Odrodzenie!');
+				bridge.msg(pl.rebase ? '✨ Pozycja przywrócona w bezpiecznym miejscu' : '✨ Odrodzenie!');
 			}
 			return;
 		}
@@ -868,7 +1154,7 @@ const ghostClient = (function(){
 			return;
 		}
 		if(pl.t === 'hostGone'){
-			state = 'ended';
+			finishTerminal({ clearInvite: true });
 			showVeil('Transmisja zakończona przez gospodarza.<br><a href="' + location.pathname + '" style="color:#8fc7ff;">Wróć do własnej gry</a>');
 			return;
 		}
@@ -970,6 +1256,7 @@ const ghostClient = (function(){
 			cam.mode = 'follow';
 			bridge.snapCameraToPlayer();
 			bridge.msg('👁 Obserwujesz warstwę gracza ' + (hostName || '…') + ' — ' + (isTouchUi() ? 'przeciągnij palcem, aby latać duchem' : 'WASD/przeciąganie = lot ducha, F = podążaj, P = 📍 wskaż miejsce') + '. Twoja aktywność wzmacnia gracza!');
+			showSafetyNotice();
 		}
 		hideVeil();
 		updateBar();
@@ -1291,8 +1578,8 @@ const ghostClient = (function(){
 				timersPlay.pose = t;
 				const p = bridge.player;
 				// while driving a mech the pose carries STEERING BITS (1=left 2=right
-				// 4=up); the host ignores position claims — the cab is the authority
-				let cbits = 0;
+				// 4=up, 8=drop-through); the host ignores position claims — the cab is the authority
+				let cbits = (held.has('s') || held.has('arrowdown')) ? 8 : 0;
 				if(hero.driveId){
 					if(held.has('a') || held.has('arrowleft')) cbits |= 1;
 					if(held.has('d') || held.has('arrowright')) cbits |= 2;
@@ -1310,7 +1597,8 @@ const ghostClient = (function(){
 				poseSeq = (poseSeq + 1) >>> 0;
 				poseLog.push({ seq: poseSeq, x: p.x, y: p.y });
 				if(poseLog.length > 48) poseLog.shift();
-				conn.send({ t: 'ppose', q: poseSeq, x: +p.x.toFixed(2), y: +p.y.toFixed(2), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, act: isActive() ? 1 : 0 });
+				const cbits = (held.has('s') || held.has('arrowdown')) ? 8 : 0;
+				conn.send({ t: 'ppose', q: poseSeq, x: +p.x.toFixed(2), y: +p.y.toFixed(2), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, act: isActive() ? 1 : 0, c: cbits });
 			}
 			// hold-to-mine: keep re-sending the intent at the host's floor while the
 			// button is down; the host owns the per-cell progress
@@ -1812,6 +2100,11 @@ const ghostClient = (function(){
 			+ ' background:radial-gradient(ellipse at 50% 40%, rgba(14,20,34,.92), rgba(4,7,13,.98)); color:#dcebff; font:14px system-ui; text-align:center; pointer-events:auto; }'
 			+ '#ghostVeil .gvIcon{ font-size:44px; animation:gvFloat 2.6s ease-in-out infinite; }'
 			+ '#ghostVeil .gvText{ line-height:1.6; max-width:min(440px,86vw); }'
+			+ '#ghostSafetyNotice{ position:fixed; left:12px; top:12px; z-index:180; width:min(460px,calc(100vw - 24px)); box-sizing:border-box; display:flex; flex-direction:column; gap:7px;'
+			+ ' padding:10px 12px; border-radius:13px; border:1px solid rgba(230,189,114,.42); background:rgba(15,20,29,.97); color:#dce8f5; font:11px/1.45 system-ui; box-shadow:0 10px 30px rgba(0,0,0,.58); pointer-events:auto; }'
+			+ '#ghostSafetyNotice .gsHead{ display:flex;align-items:center;justify-content:space-between;gap:8px;color:#f0c879;font-weight:850;font-size:12px; }'
+			+ '#ghostSafetyNotice .gsGood{ color:#9fd6ae; } #ghostSafetyNotice .gsRisk{ color:#d7b77c; }'
+			+ '#ghostSafetyNotice button{ align-self:flex-end;border:none;border-radius:8px;background:#2c7ef8;color:#fff;font-weight:800;padding:6px 11px;cursor:pointer; }'
 			+ '@keyframes gvFloat{ 0%,100%{ transform:translateY(0); opacity:.75; } 50%{ transform:translateY(-9px); opacity:1; } }';
 		document.head.appendChild(st);
 	}
@@ -1844,6 +2137,30 @@ const ghostClient = (function(){
 		veil.querySelector('.gvText').innerHTML = html;
 	}
 	function hideVeil(){ if(veil) veil.style.display = 'none'; }
+	function showSafetyNotice(){
+		if(safetyNoticeShown || typeof document === 'undefined') return;
+		safetyNoticeShown = true;
+		const box = document.createElement('aside');
+		box.id = 'ghostSafetyNotice';
+		box.setAttribute('role', 'note');
+		const head = document.createElement('div');
+		head.className = 'gsHead';
+		const title = document.createElement('span');
+		title.textContent = '⚠ Multiplayer tylko dla znajomych';
+		const good = document.createElement('div');
+		good.className = 'gsGood';
+		good.textContent = '✓ Korzyści: szyfrowane P2P, świat kontrolowany przez gospodarza i lokalne postępy — bez osobnego konta lub serwera zapisów.';
+		const risk = document.createElement('div');
+		risk.className = 'gsRisk';
+		risk.textContent = 'Link jest wspólnym kluczem: przyjmuj go bezpośrednio od znajomego i nie przekazuj dalej. Posiadacze tego samego linku są w jednej strefie zaufania i mogą próbować podszyć się podczas łączenia. „Gra (sakwa)” ma ścisłe ograniczenia gospodarza; „pełny bohater” ufa twojej lokalnej postaci i powinien być używany wyłącznie między zaufanymi znajomymi. P2P może ujawnić drugiemu uczestnikowi podstawowe metadane sieciowe, a użycie TURN także operatorowi przekaźnika; treść połączenia pozostaje szyfrowana.';
+		const close = document.createElement('button');
+		close.type = 'button';
+		close.textContent = 'Rozumiem';
+		close.addEventListener('click', () => box.remove());
+		head.append(title);
+		box.append(head, good, risk, close);
+		document.body.appendChild(box);
+	}
 	const AVATAR_ICONS = { duszek: '👻', iskra: '✨', gwiazdka: '⭐', kotek: '🐱', sowa: '🦉', orbita: '🪐' };
 	function isTouchUi(){
 		try{ return document.documentElement.getAttribute('data-input-mode') === 'touch'; }catch(e){ return false; }
@@ -2322,7 +2639,7 @@ const ghostClient = (function(){
 
 	function metrics(){
 		return {
-			watch: WATCH ? Object.assign({}, WATCH) : null,
+			watch: WATCH ? Object.assign({}, WATCH, { secret: WATCH.secret ? 'present' : null }) : null,
 			state, gid, hostName,
 			transport: conn ? conn.transport() : 'none',
 			camMode: cam.mode,

@@ -2,6 +2,7 @@ import { T, WORLD_H } from '../constants.js';
 import { isBlastProtectedTile, isObjectFootingTile, isPassableForFalling, isReplaceableNaturalOpenTile } from './material_physics.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { damageBlastCreatures } from './explosion_damage.js';
+import { authoritativeBodyBlocksCell } from './body_footprint.js';
 
 (function(){
   window.MM = window.MM || {};
@@ -213,7 +214,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(maybeDestroyDynamoAt(tx,ty,getTile,setTile)) return;
     if(typeof setTile==='function' && Math.random()<0.45){
       const rest=findRestCell(tx,ty,getTile,false);
-      if(rest && getTile(rest.x,rest.y)!==T.LAVA){
+      if(rest && getTile(rest.x,rest.y)!==T.LAVA && !authoritativeBodyBlocksCell(rest.x,rest.y)){
         const old=getTile(rest.x,rest.y);
         setTile(rest.x,rest.y,T.STONE);
         if(old===T.WATER){ try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(rest.x,rest.y,getTile); }catch(e){} }
@@ -234,6 +235,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     }
     const old=getTile(rest.x,rest.y);
     if(!isReplaceableNaturalOpenTile(old,false)) return false;
+    if(authoritativeBodyBlocksCell(rest.x,rest.y)) return false;
     setTile(rest.x,rest.y,T.VOLCANO_MASTER_STONE);
     trackMasterStone(rest.x,rest.y,0);
     if(old===T.WATER){ try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(rest.x,rest.y,getTile); }catch(e){} }

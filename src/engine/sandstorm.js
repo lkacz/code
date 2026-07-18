@@ -15,6 +15,7 @@
 // the wind module's ritual gale already round-trips through its own snapshot.
 import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isSkyOpenTile } from './material_physics.js';
+import { authoritativeBodyBlocksCell, BODY_DEPOSITION_CLEARANCE } from './body_footprint.js';
 
 window.MM = window.MM || {};
 (function(){
@@ -60,13 +61,7 @@ window.MM = window.MM || {};
     return 0.5;
   }
   function isSandTile(t){ return t===T.SAND || t===T.UNSTABLE_SAND; }
-  function heroBlocksSandAt(cx,py){
-    const p=playerRef();
-    if(!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
-    // Same guard as snow deposition: never solidify sand inside (or one tile
-    // around) the hero — burial comes from the dune closing in, never minting.
-    return Math.abs(cx+0.5-p.x)<1.6 && Math.abs(py+0.5-p.y)<2.4;
-  }
+  function bodyBlocksSandAt(cx,py){ return authoritativeBodyBlocksCell(cx,py,BODY_DEPOSITION_CLEARANCE); }
   // First blocking tile scanning down the open sky; returns the landing air cell
   // above it (mirrors clouds.snowLandingCell without the canopy special case —
   // deserts have no leaf canopies worth climbing).
@@ -108,7 +103,7 @@ window.MM = window.MM || {};
     const cell=surfaceCell(cx,getTile);
     if(!cell || !isSandTile(cell.support)) return false;
     const y=cell.supportY;
-    if(heroBlocksSandAt(cx,y)) return false;
+    if(bodyBlocksSandAt(cx,y)) return false;
     let anchor=y;
     try{
       const wg=MM.worldGen;
@@ -133,7 +128,7 @@ window.MM = window.MM || {};
   // cap, never places into the hero AABB. Water columns refuse the unit (the
   // mass stays airborne and drifts on).
   function placeDuneTileAt(cx,py,getTile,setTile){
-    if(heroBlocksSandAt(cx,py)) return false;
+    if(bodyBlocksSandAt(cx,py)) return false;
     setTile(cx,py,T.UNSTABLE_SAND);
     if(getTile(cx,py)!==T.UNSTABLE_SAND) return false;
     notifyTileChanged(cx,py,getTile);
@@ -291,7 +286,7 @@ window.MM = window.MM || {};
   }
 
   MM.sandstorm={update, draw, reset, metrics, startStorm, stopStorm, isActive, intensityAt, config:CFG,
-    _debug:{storm, tryLiftAt, depositSandUnit, surfaceCell, duneDepthAt, naturalIntensity, heroBlocksSandAt}};
+    _debug:{storm, tryLiftAt, depositSandUnit, surfaceCell, duneDepthAt, naturalIntensity, bodyBlocksSandAt, heroBlocksSandAt:bodyBlocksSandAt}};
 })();
 
 export const sandstorm = (typeof window!=='undefined' && window.MM) ? window.MM.sandstorm : globalThis.MM && globalThis.MM.sandstorm;

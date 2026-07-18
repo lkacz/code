@@ -91,6 +91,7 @@ function countSandFamily(){
 function reset(){
   tiles.clear();
   sandstorm.reset();
+  MM.coopBodies = [];
   played.length = 0;
   player.x = 40; player.y = SURF - 2;
 }
@@ -172,6 +173,22 @@ for(let i = 0; i < 60; i++) sandstorm._debug.depositSandUnit(60, getTile, setTil
     }
   }
   assert.equal(inside, 0, 'the snow-style hero guard blocks minting into (or right around) the hero');
+}
+
+for(const dead of [false, true]){
+  reset();
+  sandstorm.startStorm(60, 1, { source: 'qa', ownerId: 'sandstorm-test' });
+  player.x = -400;
+  const guest={x:60.5,y:SURF-1.4,w:0.7,h:0.95,dead};
+  MM.coopBodies=[guest];
+  assert.equal(sandstorm._debug.bodyBlocksSandAt(60,SURF-2),true,`${dead?'dead':'live'} guest uses the shared dune footprint`);
+  for(let i = 0; i < 60; i++) sandstorm._debug.depositSandUnit(60, getTile, setTile);
+  let inside=0;
+  for(let x=58;x<=63;x++) for(let y=SURF-6;y<=SURF;y++){
+    if(getTile(x,y)!==T.UNSTABLE_SAND) continue;
+    if(Math.abs(x+0.5-guest.x)<1.6 && Math.abs(y+0.5-guest.y)<2.4) inside++;
+  }
+  assert.equal(inside,0,`${dead?'dead':'live'} guest cannot be buried by sandstorm deposition`);
 }
 
 // --- 6. forced storms are owner-scoped like clouds.startStorm ---------------

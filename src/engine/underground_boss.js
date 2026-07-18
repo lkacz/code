@@ -9,6 +9,7 @@ import { worldGen as WG } from './worldgen.js';
 import { guardianLairs as GUARDIANS } from './guardian_lairs.js';
 import { applyBossStatus, bossElectricDamageMult, bossStatusFor, tickBossStatus } from './boss_status.js';
 import { damageBlastCreatures } from './explosion_damage.js';
+import { authoritativeBodyBlocksCell } from './body_footprint.js';
 
 const undergroundBoss = (function(){
   const root = (typeof window !== 'undefined') ? window : globalThis;
@@ -1427,7 +1428,9 @@ const undergroundBoss = (function(){
         if(ty<2 || ty>=WORLD_BOTTOM-3 || !setTile || !getTile) continue;
         const cur=getTile(tx,ty);
         if(isBlastProtectedTile(cur)) continue;
-        setTile(tx,ty,d>R*0.74 ? (Math.random()<0.5?T.METEOR_DUST:T.BASALT) : T.AIR);
+        const next=d>R*0.74 ? (Math.random()<0.5?T.METEOR_DUST:T.BASALT) : T.AIR;
+        if(next!==T.AIR && authoritativeBodyBlocksCell(tx,ty)) continue;
+        setTile(tx,ty,next);
         terrainChanged(tx,ty,getTile);
       }
     }

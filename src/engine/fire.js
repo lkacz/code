@@ -18,6 +18,7 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE as TILE_PX, thawedEart
 import { isLavaExposureOpenTile, isLavaVentOpenTile } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
 import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } from './flame_fx.js';
+import { authoritativeBodyBlocksCell } from './body_footprint.js';
 (function(){
   window.MM = window.MM || {};
   const burning=new Map(); // key "x,y" -> {x,y,left,total,spreadAcc,mobAcc}
@@ -734,7 +735,10 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
       if(L.waterT<=0){
         L.waterT=0.22+Math.random()*0.12;
         if(getTile(L.x,L.y)!==T.LAVA){ lavaSet.delete(k); continue; }
-        if(lavaTouchesWater(L,getTile)){ setTile(L.x,L.y,T.OBSIDIAN); lavaSet.delete(k); continue; }
+        if(lavaTouchesWater(L,getTile)){
+          if(!authoritativeBodyBlocksCell(L.x,L.y)){ setTile(L.x,L.y,T.OBSIDIAN); lavaSet.delete(k); }
+          continue;
+        }
       }
       L.hotT=(L.hotT==null?Math.random()*LAVA_HOT_AIR_INTERVAL:L.hotT)-dt;
       if(L.hotT<=0){
@@ -759,7 +763,10 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
         L.moveT=lavaMoveDelay(pressure);  // viscous normally; volcano leaks react fast
         if(getTile(L.x,L.y)!==T.LAVA){ lavaSet.delete(k); continue; }
         // water contact hardens (checked each tick — steam rises from the boundary)
-        if(lavaTouchesWater(L,getTile)){ setTile(L.x,L.y,T.OBSIDIAN); lavaSet.delete(k); continue; }
+        if(lavaTouchesWater(L,getTile)){
+          if(!authoritativeBodyBlocksCell(L.x,L.y)){ setTile(L.x,L.y,T.OBSIDIAN); lavaSet.delete(k); }
+          continue;
+        }
         let nx=L.x, ny=L.y, moved=false, clone=false;
         const belowT=getTile(L.x,L.y+1);
         if(lavaOpenTile(belowT)){ ny=L.y+1; moved=true; }
@@ -799,8 +806,11 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
       if(L.exposed){
         L.coolT-=dt;
         if(L.coolT<=0){
-          if(getTile(L.x,L.y)===T.LAVA) setTile(L.x,L.y,T.OBSIDIAN); // re-validate before converting
-          lavaSet.delete(k);
+          if(getTile(L.x,L.y)!==T.LAVA) lavaSet.delete(k);
+          else if(!authoritativeBodyBlocksCell(L.x,L.y)){
+            setTile(L.x,L.y,T.OBSIDIAN); // re-validate both tile and body before converting
+            lavaSet.delete(k);
+          } else L.coolT=0.25; // retry after the body leaves; never delete the live lava entry
         }
       }
     }

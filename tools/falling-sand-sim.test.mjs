@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 globalThis.window = globalThis;
 globalThis.MM = {};
 
-const { T, WORLD_H } = await import('../src/constants.js');
+const { T, WORLD_H, WORLD_MIN_Y } = await import('../src/constants.js');
 const { fallingSolids } = await import('../src/engine/falling.js');
 await import('../src/engine/dynamo.js');
 
@@ -28,6 +28,7 @@ function reset(){
   tiles.clear();
   backgroundTiles.clear();
   fallingSolids.reset();
+  MM.coopBodies = [];
   MM.world = { getConstructionBackground:getBackgroundTile };
   MM.water = { displaceAt(){}, onTileChanged(){} };
   delete MM.worldGen;
@@ -117,6 +118,84 @@ function makeDrawCtx(){
     fillRect(){ calls.push('fillRect'); },
     strokeRect(){ calls.push('strokeRect'); }
   };
+}
+
+// Host and co-op bodies share one settlement footprint. Live/dead guest bodies
+// keep dynamic solids loose, while forced save settlement stacks above them.
+{
+  const priorPlayer=globalThis.player;
+  try{
+    reset();
+    fillFloor(12,-3,3);
+    globalThis.player={x:0.5,y:10.7,w:0.7,h:0.95};
+    fallingSolids.spawnLoose(0,4,T.SAND);
+    stepFalling(2);
+    assert.equal(getTile(0,10),T.AIR,'host footprint keeps falling sand loose instead of minting through the hero');
+    assert.ok(fallingSolids.metrics().sand>0,'host-blocked sand remains an airborne entity');
+    globalThis.player.x=20;
+    stepFalling(2);
+    assert.equal(getTile(0,11),T.SAND,'host-blocked sand settles after the hero moves away');
+
+    for(const dead of [false,true]){
+      reset();
+      fillFloor(12,-3,3);
+      globalThis.player={x:20,y:10.7,w:0.7,h:0.95};
+      const guest={x:0.5,y:10.7,w:0.7,h:0.95,dead};
+      MM.coopBodies=[guest];
+      fallingSolids.spawnLoose(0,4,T.STONE);
+      stepFalling(2);
+      assert.equal(getTile(0,10),T.AIR,`${dead?'dead':'live'} guest footprint keeps rubble loose`);
+      assert.ok(fallingSolids.metrics().active>0,`${dead?'dead':'live'} guest-blocked rubble remains an entity`);
+      guest.x=20;
+      stepFalling(2);
+      assert.equal(getTile(0,11),T.STONE,`${dead?'dead':'live'} guest-blocked rubble settles after the body moves`);
+    }
+
+    reset();
+    fillFloor(12,-3,3);
+    globalThis.player={x:20,y:10.7,w:0.7,h:0.95};
+    MM.coopBodies=[{x:0.5,y:10.7,w:0.7,h:0.95,dead:true}];
+    fallingSolids.spawnLoose(0,4,T.STONE);
+    fallingSolids.settleAll();
+    assert.equal(getTile(0,10),T.AIR,'forced rubble settlement never serializes through a dead guest');
+    assert.ok(getTile(-1,11)===T.STONE || getTile(1,11)===T.STONE,'forced rubble settlement preserves mass in a stable clear cell beside the guest');
+
+    reset();
+    globalThis.player={x:100,y:10.7,w:0.7,h:0.95};
+    const rigidBody={x:0.5,y:10.7,w:0.7,h:0.95,dead:true};
+    const sandBody={x:30.5,y:10.7,w:0.7,h:0.95,dead:false};
+    MM.coopBodies=[rigidBody,sandBody];
+    for(const center of [0,30]){
+      for(let x=center-8;x<=center+8;x++){
+        for(let y=WORLD_MIN_Y;y<=12;y++){
+          if(x===center && y===11) continue;
+          setTile(x,y,T.STONE);
+        }
+      }
+    }
+    fallingSolids.restore({
+      v:5,
+      active:[{x:0,y:11,type:T.STONE,vy:0,rubble:true}],
+      sand:[{x:30,y:11,vy:0}]
+    });
+    fallingSolids.settleAll();
+    assert.equal(getTile(0,11),T.AIR,'tight forced rubble enclosure stays clear through the corpse');
+    assert.equal(getTile(30,11),T.AIR,'tight forced sand enclosure stays clear through the live guest');
+    const escrow=JSON.parse(JSON.stringify(fallingSolids.snapshot()));
+    assert.equal(escrow.active.length,1,'unplaceable rubble remains in the serializable falling escrow');
+    assert.equal(escrow.sand.length,1,'unplaceable sand remains in the serializable falling escrow');
+    fallingSolids.restore(escrow);
+    rigidBody.x=100;
+    sandBody.x=100;
+    fallingSolids.settleAll();
+    assert.equal(getTile(0,11),T.STONE,'restored rubble escrow settles after its body blocker moves');
+    assert.equal(getTile(30,11),T.SAND,'restored sand escrow settles after its body blocker moves');
+    assertSettledState('released body-blocked falling escrow');
+  }finally{
+    MM.coopBodies=[];
+    if(priorPlayer===undefined) delete globalThis.player;
+    else globalThis.player=priorPlayer;
+  }
 }
 
 {

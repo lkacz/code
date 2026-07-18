@@ -28,6 +28,7 @@ import {
   isTrapdoorTile,
   isWaterOpenTile
 } from './material_physics.js';
+import { authoritativeBodyBlocksCell, BODY_DEPOSITION_CLEARANCE } from './body_footprint.js';
 
 window.MM = window.MM || {};
 (function(){
@@ -926,13 +927,7 @@ window.MM = window.MM || {};
   function snowStackCap(){
     return storm.active ? CFG.SNOW_STACK_STORM : CFG.SNOW_STACK_MAX;
   }
-  function heroBlocksSnowAt(cx,py){
-    const p=window.player;
-    if(!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
-    // never solidify snow inside (or one tile around) the hero: burial comes from
-    // the drift closing in around him, not from tiles minted into his hitbox
-    return Math.abs(cx+0.5-p.x)<1.6 && Math.abs(py+0.5-p.y)<2.4;
-  }
+  function bodyBlocksSnowAt(cx,py){ return authoritativeBodyBlocksCell(cx,py,BODY_DEPOSITION_CLEARANCE); }
   function snowLandingCell(cx,fromRow,getTile){
     let ty=null;
     for(let y=Math.max(WORLD_TOP+1,Math.floor(fromRow));y<WORLD_BOTTOM;y++){
@@ -952,7 +947,7 @@ window.MM = window.MM || {};
     return d;
   }
   function placeSnowTileAt(cx,py,getTile,setTile,tile){
-    if(heroBlocksSnowAt(cx,py)) return false;
+    if(bodyBlocksSnowAt(cx,py)) return false;
     setTile(cx,py,tile);
     if(getTile(cx,py)!==tile) return false;
     return true;
@@ -1659,7 +1654,7 @@ window.MM = window.MM || {};
   }
   function _debug(){
     let depFrac=0; for(const c of clouds) depFrac+=c.depAcc;
-    return {clouds, vapor, toxicVapor, evapAcc, depFrac, farBudget, simT, bolts, storm, waterTileCost};
+    return {clouds, vapor, toxicVapor, evapAcc, depFrac, farBudget, simT, bolts, storm, waterTileCost, depositSnowUnit};
   }
 
   MM.clouds={update, draw, reset, addCloud, injectVapor, injectToxicVapor, isRainingAt, isSnowingAt, solarTransmissionAt, precipitationAudioAt, toxicRainAt, metrics, setWindOverride, setCycleOverride,

@@ -127,8 +127,21 @@ try{
   fire.noteLava(0,10);
   step(1.0);
   assert.equal(tunnelLavaCount(1,6,10), 0, 'ordinary lava does not race along a floored tunnel');
+
+  // Water-contact and air-cooling crusts are dynamic passable->solid writes.
+  // A current or dead remote footprint must defer obsidian until it leaves.
+  tiles=new Map(); fire.reset();
+  setTile(0,10,T.LAVA); setTile(1,10,T.WATER);
+  fire.noteLava(0,10);
+  MM.coopBodies=[{x:0.5,y:10.5,w:0.7,h:0.95,dead:true}];
+  step(0.6);
+  assert.equal(getTile(0,10),T.LAVA,'water-contact lava cannot harden through a dead guest footprint');
+  delete MM.coopBodies;
+  step(0.6);
+  assert.equal(getTile(0,10),T.OBSIDIAN,'deferred lava hardening resumes after the footprint clears');
 } finally {
   Math.random=realRandom;
+  delete MM.coopBodies;
   fire.reset();
 }
 

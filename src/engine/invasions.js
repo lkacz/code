@@ -18,6 +18,7 @@ import {
 } from './invasion_ai.js';
 import { STORY_LORE, storyInvasionLinesForProgress } from './story_lore.js';
 import { isLongCharacterSpeech, readableCharacterSpeechDuration } from './character_speech.js';
+import { authoritativeBodyBlocksCell } from './body_footprint.js';
 
 // Night invasions are intentionally team-based. Today the implemented team type
 // is "aliens", but the save shape and scheduler can host more invader kinds.
@@ -933,7 +934,7 @@ const invasions = (function(){
       const coop = (window.MM && MM.coopBodies && MM.coopBodies.length) ? MM.coopBodies : null;
       if(!coop) return null;
       const list = [player];
-      for(const b of coop){ if(b && Number.isFinite(b.x) && Number.isFinite(b.y)) list.push(b); }
+      for(const b of coop){ if(b && !b.dead && Number.isFinite(b.x) && Number.isFinite(b.y)) list.push(b); }
       return list.length > 1 ? list : null;
     })();
     const spawned = [];
@@ -2820,6 +2821,7 @@ const invasions = (function(){
   function canPlaceBarricadeAt(tx,ty,player,team,getTile){
     const t = readTile(getTile,tx,ty);
     if(!isReplaceableNaturalOpenTile(t,false) || t === T.WATER) return false;
+    if(authoritativeBodyBlocksCell(tx,ty)) return false;
     const px = player && Number.isFinite(player.x) ? player.x : 0;
     const py = player && Number.isFinite(player.y) ? player.y : 0;
     if(Math.hypot((tx+0.5)-px,(ty+0.5)-py) < 2.4) return false;
@@ -2833,6 +2835,7 @@ const invasions = (function(){
     const profile = profileFor(team);
     if(!Array.isArray(team.builtTiles)) team.builtTiles = [];
     if(team.builtTiles.length >= profile.buildCap) return false;
+    if(authoritativeBodyBlocksCell(tx,ty)) return false; // re-check at the write boundary
     const old = readTile(getTile,tx,ty);
     if(!writeTile(setTile,tx,ty,T.ALIEN_BIOMASS)) return false;
     wakeTileChanged(ctx,tx,ty,old,T.ALIEN_BIOMASS);
@@ -2874,6 +2877,7 @@ const invasions = (function(){
   function canPlaceRampAt(tx,ty,player,team,getTile){
     const t = readTile(getTile,tx,ty);
     if(!isReplaceableNaturalOpenTile(t,false) || t === T.WATER) return false;
+    if(authoritativeBodyBlocksCell(tx,ty)) return false;
     const px = player && Number.isFinite(player.x) ? player.x : 0;
     const py = player && Number.isFinite(player.y) ? player.y : 0;
     if(Math.hypot((tx+0.5)-px,(ty+0.5)-py) < 1.8) return false;
@@ -2889,6 +2893,7 @@ const invasions = (function(){
     const profile = profileFor(team);
     if(!Array.isArray(team.builtTiles)) team.builtTiles = [];
     if((team.rampTiles|0) >= (profile.rampBudget||0)) return false;
+    if(authoritativeBodyBlocksCell(tx,ty)) return false; // close validation/write races
     const tile = isMolekinTeam(team) ? T.DIRT : T.ALIEN_BIOMASS;
     const old = readTile(getTile,tx,ty);
     if(!writeTile(setTile,tx,ty,tile)) return false;
@@ -5147,7 +5152,7 @@ const invasions = (function(){
     reset,
     metrics,
     state:()=>({teams:teams.map(serializeTeam), caches:caches.map(c=>deepCopy(c)), lastNightDay, seq}),
-    _debug:{teams,caches,lasers,moleShots,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireAlienLaser,releaseAlienLaser,updateAlienLaserCharge,fireMolekinAttack,molekinChargeLane,tryStartMolekinCharge,updateMolekinCharge,updateMoleShots,unstuckAlien,beginExtraction,updateExtraction,extractionPlan,findSurfaceStandable,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,setAlienSpeech,longSpeechActive,updateAlien,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,updateAtomicWinterAwareness,atomicWinterSpeechLines,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
+    _debug:{teams,caches,lasers,moleShots,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireAlienLaser,releaseAlienLaser,updateAlienLaserCharge,fireMolekinAttack,molekinChargeLane,tryStartMolekinCharge,updateMolekinCharge,updateMoleShots,unstuckAlien,beginExtraction,updateExtraction,extractionPlan,findSurfaceStandable,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceRampAt,placeRampTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,setAlienSpeech,longSpeechActive,updateAlien,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,updateAtomicWinterAwareness,atomicWinterSpeechLines,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
   };
   MM.invasions = api;
   return api;

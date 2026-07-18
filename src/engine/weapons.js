@@ -13,6 +13,7 @@ import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } 
 import { isBlastProtectedTile, isCondensedWaterTargetTile, isHeatRayPassableTile, isIridiumArrowPierceableTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
 import { damageBlastCreatures } from './explosion_damage.js';
+import { authoritativeBodyBlocksCell } from './body_footprint.js';
 (function(){
   window.MM = window.MM || {};
 
@@ -787,7 +788,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
 
   function arrowResourceKey(a){
-    if(!a || a.thrown || a.snowball || a.rock || a.splat) return null;
+    // Co-op shafts are host-simulated combat effects, never host-world
+    // resources. The material identity remains available while an ordinary
+    // arrow expires (for break FX); recovery functions separately enforce the
+    // explicit recoverable flag before any pickup can be minted.
+    if(!a || a.coopOwner || a.thrown || a.snowball || a.rock || a.splat) return null;
     if(typeof a.recoverKey==='string' && a.recoverKey) return a.recoverKey;
     const tier=ARROW_TIERS.find(t=>t.id===a.tier);
     return tier && !tier.snowball ? tier.key : null;
@@ -843,6 +848,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return true;
   }
   function makeArrowRecoverable(a){
+    if(!a || a.coopOwner || a.recoverable===false) return false;
     const key=arrowResourceKey(a);
     if(!key) return false;
     a.recoverable=true;
@@ -976,7 +982,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
     a.maxTravel=Math.max(1,Math.hypot(a.vx,a.vy)*a.life);
   }
   function spawnDroppedArrowPickup(a){
-    const key=a.recoverKey || arrowResourceKey(a);
+    if(!a || a.coopOwner || a.recoverable===false) return false;
+    const key=arrowResourceKey(a);
     if(!key) return false;
     try{
       if(MM.drops && typeof MM.drops.spawnResource==='function'){
@@ -1998,6 +2005,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   // Impact router for every splatting projectile (never sticks like an arrow).
   function splatProjectile(a,getTile,setTile){
+    // A network-owned shaft is allowed only the deliberately harmless wet
+    // creature status.  This is a defense-in-depth boundary for forged/stale
+    // projectile flags that bypassed the spawn-time whitelist.
+    if(a.coopOwner && a.splat!=='wet') return;
     if(a.splat==='toxic') return splatToxicSnowball(a);
     const tile=MM.TILE||20;
     if(a.splat==='snow'){
@@ -2049,21 +2060,25 @@ import { damageBlastCreatures } from './explosion_damage.js';
       return;
     }
     if(a.splat==='wet'){
-      // water balloon: soaks everything in the burst, douses flames, waters crops
+      // Water balloons always retain creature-facing soak/douse effects. A
+      // co-op projectile stops there: tile fire and crops are host-world state.
+      const wetSource=a.coopOwner?'coop':'hero';
       try{
         if(MM.mobs){
-          if(MM.mobs.wetRadius) MM.mobs.wetRadius(a.x,a.y,1.8,{dur:8,source:'hero',cause:'water_balloon'});
+          if(MM.mobs.wetRadius) MM.mobs.wetRadius(a.x,a.y,1.8,{dur:8,source:wetSource,cause:'water_balloon'});
           if(MM.mobs.douseRadius) MM.mobs.douseRadius(a.x,a.y,1.8);
         }
       }catch(e){}
-      try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.8,'wet',{dur:8,source:'hero',cause:'water_balloon'}); }catch(e){}
-      try{
-        if(FIRE && FIRE.isBurning && FIRE.extinguish){
-          const bx=Math.floor(a.x), by=Math.floor(a.y);
-          for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ if(FIRE.isBurning(bx+dx,by+dy)) FIRE.extinguish(bx+dx,by+dy); }
-        }
-      }catch(e){}
-      try{ if(MM.plants && MM.plants.waterAt) MM.plants.waterAt(a.x,a.y,1.6,2.2); }catch(e){}
+      if(!a.coopOwner){ try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.8,'wet',{dur:8,source:wetSource,cause:'water_balloon'}); }catch(e){} }
+      if(!a.coopOwner){
+        try{
+          if(FIRE && FIRE.isBurning && FIRE.extinguish){
+            const bx=Math.floor(a.x), by=Math.floor(a.y);
+            for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){ if(FIRE.isBurning(bx+dx,by+dy)) FIRE.extinguish(bx+dx,by+dy); }
+          }
+        }catch(e){}
+        try{ if(MM.plants && MM.plants.waterAt) MM.plants.waterAt(a.x,a.y,1.6,2.2); }catch(e){}
+      }
       try{ if(MM.particles && MM.particles.spawnSplash) MM.particles.spawnSplash(a.x*tile,a.y*tile,0.7); }catch(e){}
       try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.8,element:'water_splat'}); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
@@ -2195,7 +2210,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return true;
   }
   function tryIridiumPierceBlock(a,tx,ty,t,getTile,setTile){
-    if(!a || a.tier!=='iridium' || !(a.pierceLeft>0) || typeof setTile!=='function') return false;
+    if(!a || a.coopOwner || a.tier!=='iridium' || !(a.pierceLeft>0) || typeof setTile!=='function') return false;
     if(t===T.ANTIMATTER_CRYSTAL){
       setTile(tx,ty,T.AIR);
       triggerAntimatterBreak(tx,ty);
@@ -2494,11 +2509,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
       if(a.stuck){
         a.stuckT-=dt;
         // Any material that survived impact can be reclaimed before it expires.
-        if(a.recoverable){
-          const p=(typeof window!=='undefined') ? window.player : null;
-          if(p && Math.abs(p.x-a.x)<1.1 && Math.abs(p.y-a.y)<1.3){
-            const recoverKey=a.recoverKey || arrowResourceKey(a);
-            if(addResource(recoverKey,1)){
+		if(a.recoverable){
+			const p=(typeof window!=='undefined') ? window.player : null;
+			if(p && Math.abs(p.x-a.x)<1.1 && Math.abs(p.y-a.y)<1.3){
+				const recoverKey=arrowResourceKey(a);
+				if(recoverKey && addResource(recoverKey,1)){
               showRecoveredArrowFx(a,recoverKey,p);
               try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks(a.x*(MM.TILE||20),a.y*(MM.TILE||20),'common',4); }catch(e){}
               try{ if(MM.audio && MM.audio.play) MM.audio.play('harvest'); }catch(e){}
@@ -2550,9 +2565,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
         // Its status splat is the entire effect.
         if(a.noDamage && !a.spent && MM.mobs && MM.mobs.nearestLiving
            && MM.mobs.nearestLiving(a.x,a.y,0.72)){
-          noteWeaponCombatHit(a.x,a.y-0.10,0,{source:'hero',kind:'thrown'},projectileCombatVisualMeta(a,{target:'mob',power:0.65}));
+          noteWeaponCombatHit(a.x,a.y-0.10,0,{source:a.coopOwner?'coop':'hero',kind:'thrown'},projectileCombatVisualMeta(a,{target:'mob',power:0.65}));
           splatProjectile(a,getTile,setTile);
-          addUltCharge(0.08);
+          if(!a.coopOwner) addUltCharge(0.08);
           arrows.splice(i,1);
           break;
         }
@@ -2562,7 +2577,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
         // a co-op guest's arrow wounds like the hero's but is credited 'coop': no
         // host XP special-casing, no heroFocus power bookkeeping (mobs.js decides)
         const arrowOpts={source:a.coopOwner?'coop':'hero',kind:a.harpoon?'harpoon':'arrow',weaponType:a.harpoon?'harpoon':'bow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,pierceLeft:a.pierceLeft||0,fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike};
-        if(!a.noDamage && !a.spent && (a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
+        if(!a.coopOwner && !a.noDamage && !a.spent && (a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
           undergroundResult=MM.undergroundBoss.damageAt(tx,ty,hitDmg,arrowOpts);
           if(undergroundResult==='bounce'){
             bounceArrowFromUnderground(a,tx,ty);
@@ -2576,14 +2591,16 @@ import { damageBlastCreatures } from './explosion_damage.js';
         if(a.coopOwner && a.duelGid && a.ownerGid && !a.spent){
           const duelBodies=(typeof MM!=='undefined' && MM.coopBodies) || null;
           let duelHit=false;
-          if(duelBodies) for(const bb of duelBodies){
-            if(bb.gid !== a.duelGid || bb.dead || typeof bb.hurt!=='function') continue;
-            if(bb.duelWith !== a.ownerGid) break; // symmetry or nothing
-            if(Math.abs(a.x-bb.x) < (bb.w||0.62)/2+0.35 && Math.abs(a.y-bb.y) < (bb.h||0.92)/2+0.35){
-              bb.hurt(a.dmg, a.x, a.y, 'duel');
+          if(Array.isArray(duelBodies)){
+            const owner=duelBodies.find(bb=>bb && bb.gid===a.ownerGid && !bb.dead);
+            const target=duelBodies.find(bb=>bb && bb.gid===a.duelGid && !bb.dead && typeof bb.hurt==='function');
+            // Re-check BOTH halves of consent. A target-only stale snapshot must
+            // not keep an arrow armed after its owner left or forfeited.
+            if(owner && target && owner.duelWith===a.duelGid && target.duelWith===a.ownerGid
+              && Math.abs(a.x-target.x) < (target.w||0.62)/2+0.35 && Math.abs(a.y-target.y) < (target.h||0.92)/2+0.35){
+              target.hurt(a.dmg, a.x, a.y, 'duel');
               duelHit=true;
             }
-            break;
           }
           if(duelHit){ arrows.splice(i,1); break; }
         }
@@ -2595,14 +2612,14 @@ import { damageBlastCreatures } from './explosion_damage.js';
           hitMobAlive=typeof isAlive==='function' ? isAlive : null;
           hitMobAnchor=anchor && typeof anchor==='object' ? anchor : null;
         }});
-        const beforeRoamingBoss=creatureGate && ((MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
-          || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,hitDmg,targetArrowOpts))
+        const beforeRoamingBoss=creatureGate && ((!a.coopOwner && MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
+          || (!a.coopOwner && MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,hitDmg,targetArrowOpts))
           || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,targetArrowOpts))
-          || (MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
+          || (!a.coopOwner && MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
           || undergroundResult
-          || (MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,arrowOpts)));
+          || (!a.coopOwner && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,arrowOpts)));
         let roamingBossResult=false;
-        if(creatureGate && !beforeRoamingBoss && MM.bosses && MM.bosses.damageAt){
+        if(!a.coopOwner && creatureGate && !beforeRoamingBoss && MM.bosses && MM.bosses.damageAt){
           roamingBossResult=MM.bosses.damageAt(tx,ty,hitDmg,targetArrowOpts);
         }
         // Irydium treats a boss body tile exactly like a pierceable world block:
@@ -2631,13 +2648,13 @@ import { damageBlastCreatures } from './explosion_damage.js';
           break;
         }
         const creatureHit=creatureGate && (beforeRoamingBoss || roamingBossResult
-          || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,hitDmg,targetArrowOpts))
-          || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
-          || (MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg)));
+          || (!a.coopOwner && MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,hitDmg,targetArrowOpts))
+          || (!a.coopOwner && MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,hitDmg))
+          || (!a.coopOwner && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg)));
         if(creatureHit){
           noteWeaponCombatHit(a.x,a.y-0.18,hitDmg,arrowOpts,projectileCombatVisualMeta(a,{major:!!a.power,tier:a.tier,power:a.power?1.35:0.82}));
-          if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:'hero',specialAttack:!!a.specialAttack});
-          if(a.stagger && MM.mobs && MM.mobs.chillAt) MM.mobs.chillAt(tx,ty,{dur:a.stagger,source:'hero',cause:'stagger'}); // stone arrows stop the target in its tracks
+          if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:a.coopOwner?'coop':'hero',specialAttack:!!a.specialAttack});
+          if(a.stagger && MM.mobs && MM.mobs.chillAt) MM.mobs.chillAt(tx,ty,{dur:a.stagger,source:a.coopOwner?'coop':'hero',cause:'stagger'}); // stone arrows stop the target in its tracks
           if(a.splat) splatProjectile(a,getTile,setTile);
           if(!a.coopOwner) addUltCharge(0.08); // only the hero's own shots feed the hero's ult
           if(breakArrowOnImpact(a,'creature')){
@@ -2712,7 +2729,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
             }
             break;
           }
-          if(a.fire && FIRE){ FIRE.ignite(tx,ty,getTile,setTile); FIRE.ignite(Math.floor(a.x),Math.floor(a.y),getTile,setTile); }
+          if(!a.coopOwner && a.fire && FIRE){ FIRE.ignite(tx,ty,getTile,setTile); FIRE.ignite(Math.floor(a.x),Math.floor(a.y),getTile,setTile); }
           if(breakArrowOnImpact(a,'terrain')){
             arrows.splice(i,1);
             break;
@@ -2806,7 +2823,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
         if(Math.random()<0.10 && MM.mechs && MM.mechs.damageAt) MM.mechs.damageAt(tx,ty, Math.max(1,(p.dps||2)*0.5),puffStreamDamageOpts('hose',p));
         if(t===T.LAVA){
           // quenching: molten rock hardens to obsidian under the jet
-          if(typeof setTile==='function' && Math.random()<QUENCH_CHANCE){
+          if(typeof setTile==='function' && !authoritativeBodyBlocksCell(tx,ty) && Math.random()<QUENCH_CHANCE){
             setTile(tx,ty,T.OBSIDIAN);
             emitSteam(p.x,p.y-0.2,3,getTile,setTile);
           } else emitSteam(p.x,p.y-0.2,1,getTile,setTile);
@@ -3732,6 +3749,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
   // The host validates ownership/cooldown/ammo BEFORE calling in (ghost_host.js).
   const coopSwings=[];
   const COOP_SWING_CAP=8;
+  const coopGid=(v)=>typeof v==='string' && /^g[a-zA-Z0-9._-]{1,39}$/.test(v) ? v : null;
   function noteCoopSwing(tx,ty,dir){
     if(coopSwings.length>=COOP_SWING_CAP) coopSwings.shift();
     coopSwings.push({t:0.22, tx, ty, dir:dir<0?-1:1, dur:0.22});
@@ -3742,17 +3760,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const bonus=Math.max(0,Math.min(40,Number(opts.bonus)||0));
     const reach=Math.max(1,Math.min(4,Number(opts.reach)||MELEE_REACH));
     const {px,tx,ty}=meleeTargetTile(body,aimX,aimY,reach,false);
-    // the hero's melee fan-out, minus the host-economy branches (chests, loose
-    // pickups), minus npcSystem (guests do not assault villagers) and minus the
-    // center mimic (its reversed-damage contract must never route through a body)
-    const hit=(MM.guardianLairs && MM.guardianLairs.attackAt && MM.guardianLairs.attackAt(tx,ty,bonus))
-           || (MM.undergroundBoss && MM.undergroundBoss.attackAt && MM.undergroundBoss.attackAt(tx,ty,bonus))
-           || (MM.skyGuardian && MM.skyGuardian.attackAt && MM.skyGuardian.attackAt(tx,ty,bonus))
-           || (MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,Math.max(1,2+bonus),{kind:'melee',source:'coop'}))
-           || (MM.ufo && MM.ufo.attackAt && MM.ufo.attackAt(tx,ty,bonus))
-           || (MM.invasions && MM.invasions.attackAt && MM.invasions.attackAt(tx,ty,bonus))
-           || (MM.mechs && MM.mechs.attackAt && MM.mechs.attackAt(tx,ty,bonus,{source:'coop'}))
-           || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'coop'}));
+    // Guest combat is intentionally limited to ordinary mobs. Boss/guardian/UFO
+    // defeat paths carry host story, terrain and economy side effects.
+    const hit=(MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'coop'}));
     noteCoopSwing(tx,ty,tx>=px?1:-1);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing',{x:tx+0.5,y:ty+0.5}); }catch(e){}
     return !!hit;
@@ -3763,7 +3773,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const v=aimVector(body,aimX,aimY);
     if(!Number.isFinite(v.dx) || !Number.isFinite(v.dy)) return false;
     const sp=Math.max(6,Math.min(24,Number(opts.speed)||15));
-    pushArrow({
+    const spawned=pushArrow({
       x:body.x + v.dx*0.7,
       y:body.y - 0.15 + v.dy*0.7,
       vx:v.dx*sp,
@@ -3773,9 +3783,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
       tier:'wood', color:'#caa472', headColor:'#dfe6f1',
       recoverable:false, coopOwner:true, windCap:sp*1.35,
       // duel identity, HOST-stamped at fire time: consent is re-verified at impact
-      ownerGid:(typeof opts.ownerGid==='string')?opts.ownerGid.slice(0,20):null,
-      duelGid:(typeof opts.duelGid==='string')?opts.duelGid.slice(0,20):null
+      ownerGid:coopGid(opts.ownerGid),
+      duelGid:coopGid(opts.duelGid)
     });
+    if(!spawned) return false;
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow',{x:body.x,y:body.y}); }catch(e){}
     return true;
   }
@@ -3789,7 +3800,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const sp=Math.hypot(vx,vy);
     if(!(sp>0.5)) return false;
     const cap=Math.min(26,sp); vx=vx/sp*cap; vy=vy/sp*cap;
-    pushArrow({
+    const spawned=pushArrow({
       x:body.x+(vx/cap)*0.7, y:body.y-0.15+(vy/cap)*0.7,
       vx, vy,
       dmg:Math.max(1,Math.min(45,Math.round(Number(spec.dmg)||1))),
@@ -3800,16 +3811,19 @@ import { damageBlastCreatures } from './explosion_damage.js';
       // creatures but must never edit terrain, ignite the world, spawn/detonate gas or
       // hurt the host. So world-hazard flags a hostile client might smuggle are dropped
       // at the source — no `fire` (no world ignition), and the burst whitelist is 'wet'
-      // ONLY (a soak: douses fire, waters crops, wets mobs — no terrain, no host damage).
+      // ONLY (a creature-facing soak — no terrain, economy, or host damage).
       // The gas-grenade and bomb bursts stay hero-only. Defense in depth: the arrow
       // simulation also gates every world-touching branch on !a.coopOwner.
+      // For co-op specifically, the wet soak affects creatures only; tile fire
+      // and crops stay unchanged.
       snowball:!!spec.snowball, rock:!!spec.rock, thrown:!!spec.thrown, harpoon:!!spec.harpoon,
       stickyFuse:spec.sticky?2.5:0, // the fuse length is the HOST's, the guest only names the kind
       splat:(spec.splat==='wet')?'wet':undefined, // burst kind only — radii/durations are the handlers' own
       // duel identity, HOST-stamped: consent is re-verified at impact time
-      ownerGid:(typeof spec.ownerGid==='string')?spec.ownerGid.slice(0,20):null,
-      duelGid:(typeof spec.duelGid==='string')?spec.duelGid.slice(0,20):null
+      ownerGid:coopGid(spec.ownerGid),
+      duelGid:coopGid(spec.duelGid)
     });
+    if(!spawned) return false;
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow',{x:body.x,y:body.y}); }catch(e){}
     return true;
   }
@@ -3942,7 +3956,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
     metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
+    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowResourceKey,dropSurvivingArrow,spawnDroppedArrowPickup,splatProjectile,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

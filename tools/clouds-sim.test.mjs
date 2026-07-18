@@ -73,6 +73,7 @@ function resetWorld(){
   physicalChests.length = 0;
   TEMP = 0.7;
   globalThis.player = {x:0};
+  MM.coopBodies = [];
   delete MM.dynamo;
   delete MM.fire;
   delete MM.mobs;
@@ -238,6 +239,22 @@ for(const [k,v] of tiles){
 assert.ok(snowTileCount >= 1, `snowfall settled as SNOW tiles (got ${snowTileCount})`);
 assert.equal(m.snowTiles, snowTileCount, 'snow-tile metric matches the world');
 for(const [x,d] of snowDepths) assert.ok(d <= CFG.SNOW_STACK_MAX, `column ${x} respects the calm-weather stack cap (depth=${d})`);
+
+// Snow uses the same padded host+co-op footprint as dunes. Direct deposition
+// keeps this regression deterministic and covers corpses plus toxic snow.
+resetWorld();
+globalThis.player={x:0.5,y:88.6,w:0.7,h:0.95};
+assert.equal(clouds._debug().depositSnowUnit(0,70,getTile,setTile,{}),false,'host footprint blocks direct snow deposition');
+for(const dead of [false,true]){
+  resetWorld();
+  globalThis.player={x:500,y:88.6,w:0.7,h:0.95};
+  const guest={x:0.5,y:88.6,w:0.7,h:0.95,dead};
+  MM.coopBodies=[guest];
+  const opts=dead ? {toxic:true} : {};
+  assert.equal(clouds._debug().depositSnowUnit(0,70,getTile,setTile,opts),false,`${dead?'dead':'live'} guest footprint blocks snow deposition`);
+  assert.equal(clouds._debug().depositSnowUnit(10,70,getTile,setTile,opts),'placed','snow still deposits outside the guest clearance');
+  assert.equal(getTile(10,89),dead?T.TOXIC_SNOW:T.SNOW,'the outside positive-control snow uses the requested material');
+}
 
 // --- 7a. Living turf gets dusted first (GRASS -> GRASS_SNOW, mass sublimates back) ---
 resetWorld();

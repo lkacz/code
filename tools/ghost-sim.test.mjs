@@ -154,6 +154,19 @@ const out5 = dec5.push(NET.mqttEncodePublish('c', '3'));
 assert.equal(out5.length, 1, 'decoder recovered after malformed length (no permanent wedge)');
 assert.equal(out5[0].topic, 'c', 'post-recovery packet framed cleanly');
 
+// Reject oversized broker frames before decoder concatenation, then recover on
+// the next ordinary packet rather than leaving signaling permanently wedged.
+const dec6 = NET.createMqttDecoder({maxPacketBytes:64});
+assert.deepEqual(dec6.push(Uint8Array.from([0x30, 0x41])), [], 'oversized declared MQTT packet is rejected from its header');
+assert.equal(dec6.push(NET.mqttEncodePublish('d', '4')).length, 1, 'decoder recovers after oversized declared packet');
+const dec7 = NET.createMqttDecoder({maxPacketBytes:64});
+assert.deepEqual(dec7.push(new Uint8Array(65)), [], 'oversized incoming MQTT chunk is rejected before buffering');
+assert.equal(dec7.push(NET.mqttEncodePublish('e', '5')).length, 1, 'decoder recovers after oversized incoming chunk');
+const dec8 = NET.createMqttDecoder({maxPacketBytes:64});
+assert.deepEqual(dec8.push(Uint8Array.from([0x30, 1, 0])), [], 'truncated PUBLISH topic header is ignored safely');
+assert.deepEqual(dec8.push(Uint8Array.from([0x30, 4, 0, 8, 0x61, 0x62])), [], 'PUBLISH topic length cannot exceed its body');
+assert.equal(dec8.push(NET.mqttEncodePublish('f', '6')).length, 1, 'decoder recovers after malformed PUBLISH bodies');
+
 // --- social facilitation rules ------------------------------------------------------
 assert.equal(NET.SOCIAL_RULES.IDLE_MS, 30000, 'watcher counts as active for 30 s after real input');
 let b = NET.socialBoosts(0);
@@ -218,7 +231,7 @@ assert.ok(NET.modeAllows('chat', 'chat') && !NET.modeAllows('chat', 'full'), 'ch
 assert.ok(!NET.modeAllows('watch', 'chat') && !NET.modeAllows('bogus', 'watch'), 'watch is the floor, garbage denies');
 
 // --- play mode: the embodied guest (full multiplayer) ---------------------------------
-assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'strike', 'attack', 'craft', 'duel', 'pickup', 'eat'],
+assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'attack', 'craft', 'duel', 'pickup', 'eat'],
 	'a player mines, builds, fights, crafts, duels, scavenges and eats — nothing that bypasses the host');
 assert.ok(NET.validPlayAction('mine') && !NET.validPlayAction('setTile') && !NET.validPlayAction('teleport'), 'play actions validate');
 assert.ok(NET.PLAY_RULES.REACH > 0 && NET.PLAY_RULES.MAX_HP > 0 && NET.PLAY_RULES.MINE_TICKS >= 1, 'play rules are sane');
@@ -465,15 +478,15 @@ assert.ok(/function notifyTileChanged\(x,y,old,v\)\{\s*try\{ if\(MM\.ghostHostTi
 const clientSrc = readFileSync(new URL('../src/engine/ghost_client.js', import.meta.url), 'utf8');
 assert.ok(/MMR\.ghostMode = true;/.test(clientSrc), 'client stamps MM.ghostMode at import time');
 assert.ok(/NET\.parseWatch\(location\.search, location\.hash\)/.test(clientSrc), 'watch param + invite secret come from the URL (search + #fragment)');
-assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY|NET\.GID_KEY|NET\.GID_LEASE_KEY|NET\.LOOK_KEY|NET\.HERO_KEY)/.test(clientSrc),
-	'client persists nothing but its display name, avatar, own career, stable gid (+lease), chosen look and hero state');
-assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY, NET\.HERO_KEY\]\)/.test(clientSrc),
+assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY|NET\.GID_KEY|NET\.GID_LEASE_KEY|NET\.LOOK_KEY|NET\.HERO_KEY|RESUME_CACHE_KEY)/.test(clientSrc),
+	'client persists nothing but its own profile, stable identity/lease, hero state and bounded room recovery proof');
+assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY, NET\.HERO_KEY, RESUME_CACHE_KEY\]\)/.test(clientSrc),
 	'ghost mode locks down ALL localStorage writes (side stores like dynamic loot must not leak into the watcher’s own world)');
 // hardening pins (post-review): hostile hosts, transport races, throttling floods
 assert.ok(/function esc\(s\)/.test(clientSrc) && /esc\(hostName\)/.test(clientSrc),
 	'remote host name is HTML-escaped before touching the veil innerHTML (XSS)');
-assert.ok(/if\(lockedConn && c !== lockedConn\) return;/.test(clientSrc),
-	'after transport lock, straggler frames from the losing transport are dropped (assembler wedge race)');
+assert.ok(/if\(api !== conn\) return;/.test(clientSrc) && /if\(lockedConn && c !== lockedConn\) return;/.test(clientSrc),
+	'straggler frames from a replaced transport are dropped before and after the welcome lock');
 assert.ok(/queue\.length > 1200/.test(clientSrc) && /queue\.length = 0;/.test(clientSrc) && /t: 'needSnap'/.test(clientSrc),
 	'queue overflow dumps the backlog and requests a resync — cumulative tile diffs are never silently dropped');
 assert.ok(/const rafAlive = fromPump && \(t - lastRafAt\) < 1500;/.test(clientSrc),
@@ -490,6 +503,123 @@ assert.ok(/Math\.min\(120000, Math\.max\(0, Number\(pl\.waitMs\)/.test(clientSrc
 assert.ok(/pl\.t === 'connLost'/.test(clientSrc) && /function scheduleReconnect\(\)/.test(clientSrc), 'client auto-reconnects on transport loss');
 assert.ok(/reconnects > 8/.test(clientSrc), 'reconnect attempts are budgeted');
 assert.ok(/reconnects = 0; \/\/ a completed join/.test(clientSrc), 'a successful re-join refreshes the budget');
+{
+	const { canRefreshResumeCredential, createClientTerminalTeardown, createGidLeaseController, normalizeResumeCredentialCache, readResumeCredential, writeResumeCredential, removeResumeCredential } = await import('../src/engine/ghost_client.js');
+	const calls = { persist: 0, cancelReconnect: 0, stopTimers: 0, closeConnection: 0, clearInvite: 0, rotateIdentity: 0 };
+	let reconnectPending = true;
+	const finish = createClientTerminalTeardown({
+		persist(){ calls.persist++; },
+		cancelReconnect(){ calls.cancelReconnect++; reconnectPending = false; },
+		stopTimers(){ calls.stopTimers++; },
+		closeConnection(){ calls.closeConnection++; },
+		clearInvite(){ calls.clearInvite++; },
+		rotateIdentity(){ calls.rotateIdentity++; }
+	});
+	assert.equal(finish({ rotateIdentity: true }), true, 'the first terminal verdict owns teardown');
+	assert.equal(reconnectPending, false, 'terminal teardown cancels pending reconnect work');
+	assert.equal(finish({ rotateIdentity: true }), false, 'a duplicate terminal verdict cannot close twice');
+	assert.equal(finish({ clearInvite: true }), false, 'later credential cleanup does not repeat transport teardown');
+	assert.deepEqual(calls, { persist: 1, cancelReconnect: 1, stopTimers: 1, closeConnection: 1, clearInvite: 1, rotateIdentity: 1 },
+		'terminal lifecycle and credential cleanup are independently idempotent');
+
+	const at = 1700000000000;
+	const tokenA = 'a'.repeat(32), tokenB = 'b'.repeat(32), tokenC = 'c'.repeat(32);
+	assert.equal(canRefreshResumeCredential(false, 'gcache-owner', 'gcache-owner', tokenA), false,
+		'a cached proof cannot refresh its TTL before this document is authenticated');
+	assert.equal(canRefreshResumeCredential(true, 'gcache-owner', 'gcache-owner', tokenA), true,
+		'an accepted welcome authorizes refresh for the stable base identity');
+	assert.equal(canRefreshResumeCredential(true, 'gephem-owner', 'gcache-owner', tokenA), false,
+		'an authenticated ephemeral sibling never writes the shared base credential cache');
+	const mem = new Map();
+	const storage = {
+		getItem: k => mem.has(k) ? mem.get(k) : null,
+		setItem: (k, v) => mem.set(k, String(v))
+	};
+	assert.equal(writeResumeCredential(storage, 'ROOM42', 'gcache-owner', tokenA, at), true, 'a valid room/gid proof enters the durable recovery cache');
+	assert.equal(writeResumeCredential(storage, 'ROOM42', 'gcache-owner', tokenB, at + 1), true, 'a newer proof replaces the exact room/gid row');
+	assert.equal(writeResumeCredential(storage, 'OTHER7', 'gcache-owner', tokenC, at + 2), true, 'the same gid may hold an independent proof for another room');
+	assert.equal(readResumeCredential(storage, 'ROOM42', 'gcache-owner', at + 3), tokenB, 'recovery reads the newest proof for the exact room only');
+	assert.equal(readResumeCredential(storage, 'OTHER7', 'gcache-owner', at + 3), tokenC, 'a room change never aliases the previous proof');
+	assert.equal(removeResumeCredential(storage, 'ROOM42', 'gcache-owner', at + 3), true, 'a rejected proof can be removed without disturbing other rooms');
+	assert.equal(readResumeCredential(storage, 'ROOM42', 'gcache-owner', at + 3), null, 'removed room proof is gone');
+	assert.equal(readResumeCredential(storage, 'OTHER7', 'gcache-owner', at + 3), tokenC, 'removing one room preserves another room credential');
+	const dirty = normalizeResumeCredentialCache({ v: 1, entries: [
+		{ room: 'OTHER7', gid: 'gok', rt: tokenA, ts: at - 1 },
+		{ room: 'OTHER7', gid: 'gexpired', rt: tokenA, ts: at - 8 * 24 * 3600 * 1000 },
+		{ room: 'OTHER7', gid: 'gfuture', rt: tokenA, ts: at + 1 },
+		{ room: 'bad', gid: 'gwrong-room', rt: tokenA, ts: at - 1 },
+		{ room: 'OTHER7', gid: 'gwrong-token', rt: 'bad', ts: at - 1 }
+	] }, at);
+	assert.deepEqual(dirty.entries.map(e => e.gid), ['gok'], 'cache normalization fails closed on expired, future and malformed rows');
+	assert.deepEqual(normalizeResumeCredentialCache({ v: 99, entries: dirty.entries }, at), { v: 1, entries: [] }, 'an unknown cache version is ignored, never reinterpreted');
+	const boundedMem = new Map();
+	const boundedStorage = { getItem: k => boundedMem.get(k) || null, setItem: (k, v) => boundedMem.set(k, String(v)) };
+	for(let i = 0; i < 30; i++) writeResumeCredential(boundedStorage, 'ROOM42', 'gbound-' + i, tokenA, at + i);
+	const bounded = normalizeResumeCredentialCache(boundedMem.values().next().value, at + 30);
+	assert.equal(bounded.entries.length, 24, 'durable recovery cache has a hard row ceiling');
+
+	const longSessionAt = at + 8 * 24 * 3600 * 1000;
+	assert.equal(writeResumeCredential(storage, 'ROOM42', 'glong-session', tokenA, longSessionAt), true,
+		'a still-connected session can refresh its durable proof after the original seven-day window');
+	assert.equal(readResumeCredential(storage, 'ROOM42', 'glong-session', longSessionAt + 1), tokenA,
+		'the refreshed proof remains recoverable after a long-lived tab finally closes');
+
+	let leaseNow = at;
+	const leaseMem = new Map();
+	const leaseStorage = {
+		getItem: k => leaseMem.has(k) ? leaseMem.get(k) : null,
+		setItem: (k, v) => leaseMem.set(k, String(v)),
+		removeItem: k => leaseMem.delete(k)
+	};
+	const ownerA = 'daaaaaaaaaaaa', ownerB = 'dbbbbbbbbbbbb';
+	const leaseA = createGidLeaseController(leaseStorage, 'gshared-owner', ownerA, () => leaseNow);
+	const leaseB = createGidLeaseController(leaseStorage, 'gshared-owner', ownerB, () => leaseNow);
+	assert.equal(leaseA.claim(), true, 'the first document owner claims the stable gid lease');
+	assert.equal(leaseB.claim(), false, 'a sibling heartbeat never overwrites a fresh other-owner lease');
+	assert.equal(leaseB.release(), false, 'a sibling cannot release another document owner\'s lease');
+	assert.equal(JSON.parse(leaseMem.get(NET.GID_LEASE_KEY)).owner, ownerA, 'failed sibling claim/release leaves the winner intact');
+	leaseNow += 100;
+	assert.equal(leaseA.claim(), true, 'the exact document owner may heartbeat its own lease');
+	leaseNow += NET.GID_LEASE_MS + 1;
+	assert.equal(leaseB.claim(), true, 'an expired owner lease may be reclaimed by a sibling document');
+	assert.equal(leaseA.release(), false, 'the stale prior owner cannot remove the fresh winner lease');
+	assert.equal(JSON.parse(leaseMem.get(NET.GID_LEASE_KEY)).owner, ownerB, 'the fresh winner survives a stale-owner release');
+	assert.equal(leaseB.release(), true, 'the exact current document owner may release for immediate reload recovery');
+
+	leaseMem.set(NET.GID_LEASE_KEY, JSON.stringify({ gid: 'gshared-owner', ts: leaseNow }));
+	assert.equal(leaseA.claim(), false, 'a fresh ownerless legacy lease is treated as occupied, never silently overwritten');
+	leaseNow += NET.GID_LEASE_MS + 1;
+	assert.equal(leaseA.claim(), true, 'an ownerless legacy lease can be replaced only after expiry');
+
+	const racedMem = new Map();
+	const racedStorage = {
+		getItem: k => racedMem.get(k) || null,
+		setItem(k, v){
+			racedMem.set(k, String(v));
+			// Model another document winning between this claimant's write and reread.
+			racedMem.set(k, JSON.stringify({ v: 1, gid: 'gshared-owner', owner: ownerB, ts: leaseNow }));
+		},
+		removeItem: k => racedMem.delete(k)
+	};
+	const racedA = createGidLeaseController(racedStorage, 'gshared-owner', ownerA, () => leaseNow);
+	assert.equal(racedA.claim(), false, 'a post-write reread detects a simultaneous sibling winner');
+	assert.equal(JSON.parse(racedMem.get(NET.GID_LEASE_KEY)).owner, ownerB, 'the simultaneous winner remains the current lease owner');
+}
+assert.ok(/if\(reconnectT\)\{ clearTimeout\(reconnectT\); reconnectT = null; \}/.test(clientSrc)
+	&& /const stale = conn;\s*\n\s*conn = null;/.test(clientSrc),
+	'terminal teardown cancels the delayed reconnect and reconnect closes never leave a stale conn reference');
+assert.ok(/const ending = conn;\s*\n\s*conn = null;[\s\S]{0,100}if\(ending\) ending\.close\(\)/.test(clientSrc)
+	&& /if\(state === 'ended'\) return; \/\/ queued frames/.test(clientSrc),
+	'a terminal connection is closed exactly once and queued frames cannot revive it');
+assert.ok(/function rotateTakenIdentity\(\)[\s\S]{0,900}sessionStorage\.setItem\(NET\.GID_KEY, gid\);/.test(clientSrc)
+	&& !/function rotateTakenIdentity\(\)[\s\S]{0,900}localStorage\.setItem\(NET\.GID_KEY, gid\);/.test(clientSrc)
+	&& /if\(rejectedGid !== baseGid\) removeResumeCredential\(localStorage, WATCH\.room, rejectedGid\)/.test(clientSrc)
+	&& /pl\.t === 'taken'[\s\S]{0,180}finishTerminal\(\{ rotateIdentity: true \}\)/.test(clientSrc),
+	'`taken` rotates only the losing tab gid and never destroys the shared base recovery proof');
+for(const packet of ['full', 'banned', 'incompatible', 'unavailable', 'taken', 'hostGone']){
+	assert.ok(new RegExp("pl\\.t === '" + packet + "'[\\s\\S]{0,420}finishTerminal\\(").test(clientSrc),
+		packet + ' is a terminal packet that tears down its transport');
+}
 assert.ok(/applyGameData\(data, \{ ignoreCritical: true \}\)/.test(clientSrc), 'snapshot apply ignores local critical-state remnants');
 
 // --- source pins: ghost_host stream planes ------------------------------------------------------------
@@ -520,6 +650,29 @@ assert.ok(/pong-timeout/.test(netSrc) && /Date\.now\(\) - lastPong > 80000/.test
 	'a silently dead MQTT socket is detected by the pong watchdog');
 assert.ok(/conn\.onMessage\(\{ t: 'connLost' \}\)/.test(netSrc),
 	'a dropped DataChannel surfaces as connLost (reconnectable), not hostGone (final)');
+assert.ok(/const SIG_NS = 'mmg2\/';/.test(netSrc)
+	&& /env\.v !== SIGNAL_ENVELOPE_VERSION/.test(netSrc)
+	&& /SIGNAL_ENVELOPE_FIELDS = new Set\(\['v', 'k', 'to', 'sid', 'ct', 'role', 'nonce', 'ts', 'sig', 'from'\]\)/.test(netSrc),
+	'signaling v2 uses an isolated MQTT namespace and rejects plaintext/extra-field downgrade envelopes');
+assert.ok(/deriveSignalKey\(secretHex, room, role, purpose\)/.test(netSrc)
+	&& /purpose === 'mac'/.test(netSrc) && /purpose === 'aead'/.test(netSrc)
+	&& /name: 'HKDF', hash: 'SHA-256'/.test(netSrc)
+	&& /name: 'AES-GCM'/.test(netSrc)
+	&& /if\(keyCache\.size >= 64\) keyCache\.delete/.test(netSrc)
+	&& /keyFor\(expectRole, 'mac', false\)/.test(netSrc)
+	&& /if\(!v\.ok\) return v;\s*\n\s*rememberKey\('mac'/.test(netSrc),
+	'v2 derives distinct room/role/domain-separated HMAC and AES-GCM keys with HKDF-SHA-256');
+assert.ok(/const body = payload\.sdp != null \? \{ fp, sdp: payload\.sdp \} : \{ fp, c: payload\.c \};/.test(netSrc)
+	&& /env\.ct = await encryptSignalBody/.test(netSrc),
+	'SDP, ICE and fingerprints enter only the encrypted signal body');
+{
+	const verifySlice = netSrc.slice(netSrc.indexOf('export async function verifySignal'), netSrc.indexOf('export function createReplayGuard'));
+	const openSlice = netSrc.slice(netSrc.indexOf('async open(env, expectRole'), netSrc.indexOf('// --- host-side movement enforcement'));
+	assert.ok(verifySlice.indexOf('signalMacWithKey') < verifySlice.indexOf('guard.accept'),
+		'the outer HMAC authenticates before a nonce can consume replay capacity');
+	assert.ok(openSlice.indexOf('await verifySignal') < openSlice.indexOf('decryptSignalBody'),
+		'the bounded HMAC/replay gate runs before any AES-GCM decrypt');
+}
 
 // --- P0-4/P0-5: transport hardening wiring (the RTC path can't run headless, so pin it) ------
 // remote RTC requires the invite SECRET on BOTH ends — the signaling is signed with it,
@@ -531,34 +684,76 @@ assert.ok(/if\(validInviteSecret\(opts\.secret\) && typeof RTCPeerConnection/.te
 assert.ok(/s\.listen = NET\.hostListen\(room, \{ rtc: opts\.rtc !== false, secret: s\.secret,/.test(hostSrc),
 	'P0-4: the host serves AUTHENTICATED remote RTC by default, bound to its session invite secret');
 assert.ok(/secret: NET\.mintInviteSecret\(\),/.test(hostSrc), 'P0-4: the host mints a per-session 128-bit invite secret');
+assert.ok(/sessionStorage\.setItem\(INVITE_TAB_KEY/.test(clientSrc)
+	&& /history\.replaceState\(history\.state, '', location\.pathname \+ location\.search\)/.test(clientSrc)
+	&& /clearInvite: clearWatchInvite/.test(clientSrc)
+	&& /finishTerminal\(\{ clearInvite: true \}\)/.test(clientSrc),
+	'P0-4: the consumed bearer secret moves to tab scope, leaves browser history, and clears on final leave');
 // the RTC handshake routes through the signed channel and gates on the secret
-assert.ok(/function createRtcHost\(room, handlers, secret\)\{[\s\S]{0,120}createSignedChannel\(secret, room, 'h'\);\s*\n\s*if\(!sc\.ready\) return/.test(netSrc),
+assert.ok(/export function createRtcHost\(room, handlers, secret\)\{[\s\S]{0,260}createSignedChannel\(secret, room, 'h'\);\s*\n\s*if\(!sc\.ready\) return/.test(netSrc),
 	'P0-4: createRtcHost refuses to signal without a valid secret (signed channel)');
-assert.ok(/function createRtcJoin\(room, gid, handlers, secret\)\{[\s\S]{0,140}createSignedChannel\(secret, room, 'g' \+ gid\);\s*\n\s*if\(!sc\.ready\)/.test(netSrc),
+assert.ok(/export function createRtcJoin\(room, gid, handlers, secret\)\{[\s\S]{0,320}const self = 'g' \+ gid;[\s\S]{0,80}createSignedChannel\(secret, room, self\);\s*\n\s*if\(!sc\.ready\)/.test(netSrc),
 	'P0-4: createRtcJoin refuses to join without a valid secret (signed channel)');
-assert.ok(/const v = await sc\.open\(m, gid\);\s*\n\s*if\(!v\.ok\) return;/.test(netSrc),
+assert.ok(/const verifyLease = acquireSignalVerify\(\);[\s\S]{0,180}v = await sc\.open\(m, gid, fpPin, sidPin\);[\s\S]{0,120}verifyLease\.release\(\);[\s\S]{0,80}if\(stopped \|\| !v \|\| !v\.ok\) return;/.test(netSrc),
 	'P0-4: an unsigned/forged/replayed guest envelope never opens a PeerConnection (DoS + auth gate)');
-assert.ok(/const v = await sc\.open\(m, 'h', hostFp \|\| null\);\s*\n\s*if\(!v\.ok\) return;/.test(netSrc),
+assert.ok(/const verifyLease = acquireSignalVerify\(\);[\s\S]{0,180}v = await sc\.open\(m, 'h', \(m\.k === 'ice' && pinnedHostFp\) \? pinnedHostFp : null, messageSid\);[\s\S]{0,120}verifyLease\.release\(\);[\s\S]{0,100}if\(closed \|\| sid !== messageSid \|\| !v \|\| !v\.ok\) return;/.test(netSrc),
 	'P0-4: the guest only acts on host envelopes it verified (and pins the host fingerprint)');
 assert.ok(/hostFp = sdpFingerprint\(m\.sdp\);/.test(netSrc) && /entry\.peerFp = fp;/.test(netSrc),
 	'P0-4: both ends pin the peer DTLS fingerprint from the signed offer/answer');
+assert.ok((netSrc.match(/m = v\.message; \/\//g) || []).length === 2,
+	'P0-4: host and join RTC state machines consume only the decrypted validated message');
 // signaling size caps before parse + SDP/ICE bounds
-assert.ok(/if\(!withinWireLimit\(payload, WIRE_LIMITS\.SIG_MAX\)\) return;/.test(netSrc) && /if\(!validSignalSize\(m\)\) return;/.test(netSrc),
-	'P0-5: signaling envelopes are size-capped before parse and their SDP/ICE bounded');
+assert.ok(/if\(!withinWireLimit\(payload, WIRE_LIMITS\.SIG_MAX\)\) return;/.test(netSrc)
+	&& /function signalPreflight\(m, from, to\)\{[\s\S]{0,180}validSignalEnvelope\(m\) && validSignalSize\(m\)/.test(netSrc)
+	&& /if\(!signalPreflight\(m, m\.from, who\)\) return;/.test(netSrc)
+	&& /function validOpenedSignal\(env\)\{[\s\S]{0,180}if\(!validSignalSize\(env\)\) return false;/.test(netSrc),
+	'P0-5: sealed envelopes/ciphertext are capped before crypto and decrypted SDP/ICE are bounded before RTC APIs');
 assert.ok(/if\(!withinWireLimit\(str, WIRE_LIMITS\.MQTT_PAYLOAD_MAX\)\) return;/.test(netSrc),
 	'P0-5: MQTT publishes are byte-capped');
 // RTC DoS: pending flood guard, negotiation + hello deadlines, fail-closed teardown
-assert.ok(/if\(pcs\.size >= RTC_LIMITS\.PENDING_MAX\) return;/.test(netSrc),
+assert.ok(/pending >= RTC_LIMITS\.PENDING_MAX \|\| pcs\.size >= RTC_LIMITS\.PEERS_MAX/.test(netSrc),
 	'P0-5: a `hi` flood cannot open unbounded RTCPeerConnections (pending cap)');
-assert.ok(/entry\.negT = setTimeout\(\(\) => \{ if\(!entry\.alive\) drop\(gid\); \}, RTC_LIMITS\.NEGOTIATE_MS\);/.test(netSrc),
+assert.ok(/const rtcGlobalAdmission = \{ pending: 0, verifying: 0 \};/.test(netSrc)
+	&& /const pendingLease = acquireRtcPending\(\);\s*\n\s*if\(!pendingLease\) return;/.test(netSrc)
+	&& /if\(e\.pendingLease\)\{ e\.pendingLease\.release\(\); e\.pendingLease = null; \}/.test(netSrc),
+	'P0-5: half-open RTC admission is globally leased across room/listener instances and returned on teardown');
+assert.ok(/const rtcSignalVerifyRate = createRateBudget\(RTC_LIMITS\.SIGNAL_VERIFY_RATE_MAX, RTC_LIMITS\.SIGNAL_VERIFY_RATE_WINDOW_MS\);/.test(netSrc)
+	&& /function acquireSignalVerify\(\)\{[\s\S]{0,260}rtcSignalVerifyRate\.tryTake\(Date\.now\(\)\)/.test(netSrc)
+	&& /if\(!signalPreflight\(m, gid, 'h'\)\) return;\s*\n\s*if\(!signalAllowed\(gid\)\) return;/.test(netSrc),
+	'P0-5: cheap preflight precedes globally concurrency- and rate-bounded HMAC verification');
+assert.ok(/entry\.negT = setTimeout\(\(\) => \{ if\(!entry\.alive\) drop\(gid, entry\); \}, RTC_LIMITS\.NEGOTIATE_MS\);/.test(netSrc),
 	'P0-5: a negotiation that never connects is dropped on a deadline');
-assert.ok(/entry\.helloT = setTimeout\(\(\) => \{ if\(!entry\.helloSeen\) drop\(gid\); \}, RTC_LIMITS\.HELLO_MS\);/.test(netSrc),
+assert.ok(/entry\.helloT = setTimeout\(\(\) => \{ if\(!entry\.helloSeen\) drop\(gid, entry\); \}, RTC_LIMITS\.HELLO_MS\);/.test(netSrc),
 	'P0-5: a channel that opens but never says hello is reaped (mandatory hello timeout)');
-assert.ok(/function drop\(gid\)\{[\s\S]{0,220}clearTimeout\(e\.negT\);[\s\S]{0,80}clearTimeout\(e\.helloT\);/.test(netSrc),
+assert.ok(/function drop\(gid, expected\)\{[\s\S]{0,360}clearTimeout\(e\.negT\);[\s\S]{0,80}clearTimeout\(e\.helloT\);/.test(netSrc),
 	'P0-5: teardown is fail-closed — both deadline timers are cleared with the peer');
+assert.ok(/if\(!e \|\| \(expected && e !== expected\) \|\| e\.dropped\) return;/.test(netSrc)
+	&& /if\(m\.k !== 'hi' && \(!current \|\| current\.dropped \|\| pcs\.get\(gid\) !== current\)\) return;/.test(netSrc),
+	'P0-5: stale host RTC callbacks and verified signals cannot act on a replacement negotiation');
+assert.ok(/if\(pendingEntry\.alive \|\| m\.sid === pendingEntry\.sid \|\| m\.ts <= pendingEntry\.hiTs\) return;/.test(netSrc)
+	&& /drop\(gid, pendingEntry\);/.test(netSrc) && /sid: m\.sid, hiTs: m\.ts/.test(netSrc),
+	'P0-5: only a strictly newer authenticated sid may replace a pending host negotiation; alive peers stay pinned');
+assert.ok(/const isCurrent = \(\) => !closed && sid === messageSid && pc === activePc && !resetting;/.test(netSrc),
+	'P0-5: every guest RTC continuation is bound to the PC and sid generation that created it');
+assert.ok(/try\{ handlers\.onPeer\(entry\.peer\); \}\s*\n\s*catch\(e\)\{ drop\(gid, entry\); \}/.test(netSrc)
+	&& /try\{ handlers\.onOpen\(opened\); \}\s*\n\s*catch\(e\)\{ if\(isCurrent\(\)\)\{ resetPeer\(true, activePc\); sendHi\(\); \} \}/.test(netSrc),
+	'P0-5: application open hooks fail-close the exact RTC generation when they throw');
+assert.ok(/dc\.onclose = \(\) => \{\s*\n\s*try\{ if\(entry\.peer && entry\.peer\.onMessage\)/.test(netSrc)
+	&& /finally \{ drop\(gid, entry\); \}/.test(netSrc)
+	&& (netSrc.match(/finally \{ resetPeer\(true, activePc\); sendHi\(\); \}/g) || []).length >= 2,
+	'P0-5: host/join close-loss notifications cannot throw past mandatory teardown');
+assert.ok(/export function createRtcJoin[\s\S]*function signalAllowed\(\)\{[\s\S]*SIGNAL_PEER_MAX[\s\S]*async onMsg\(m\)\{[\s\S]*if\(!signalAllowed\(\)\) return;[\s\S]*export function hostListen/.test(netSrc),
+	'P0-5: the guest bounds public-broker HMAC work before authenticating host-shaped signaling');
 // DataChannel send goes through the bounded queue, and oversized frames are refused
-assert.ok(/const q = createSendQueue\(\);/.test(netSrc) && /if\(!q\.push\(str\) \|\| !q\.flush\(dc\)\)\{ try\{ dc\.close\(\)/.test(netSrc),
-	'P0-5: dc.send rides a bounded queue that fail-closes the channel on overflow');
+assert.ok(/const rtcQueueByteBudget = createByteBudget\(DC_QUEUE\.GLOBAL_MAX_BYTES\);/.test(netSrc)
+	&& /const q = createSendQueue\(\{ acquireBytes: bytes => rtcQueueByteBudget\.acquire\(bytes\) \}\);/.test(netSrc)
+	&& /if\(!q\.push\(str\) \|\| !q\.flush\(dc\)\) closePeer\(\);/.test(netSrc),
+	'P0-5: every rtc peer shares one aggregate queued-byte budget and fail-closes on denial');
+assert.ok(/function failClosed\(extraLease\)\{[\s\S]{0,180}for\(const entry of q\) releaseEntry\(entry\);/.test(netSrc)
+	&& /function dispose\(\)\{[\s\S]{0,100}q\.dispose\(\);/.test(netSrc)
+	&& /dc\.addEventListener\('close', dispose, \{ once: true \}\)/.test(netSrc)
+	&& /const old = pc, oldConn = conn;[\s\S]{0,300}if\(oldConn\) oldConn\.close\(\)/.test(netSrc),
+	'P0-5: queued-byte leases release on queue failure plus host/join close paths');
 assert.ok(/if\(!withinWireLimit\(str, WIRE_LIMITS\.JSON_MAX\)\) return;/.test(netSrc),
 	'P0-5: an oversized outbound frame is dropped, never emitted');
 // assembler byte ceiling (UTF-8, not code units)
@@ -572,15 +767,27 @@ assert.ok(/if\(pl\.proto !== NET\.GHOST_PROTO\)\{[\s\S]{0,160}t: 'incompatible'[
 	'P0-3: a protocol mismatch is refused before a viewer/snapshot/permission exists');
 
 // --- P0-1 wiring: resume tokens on both ends ------------------------------------------------
-assert.ok(/const known = s\.tokens\.get\(entry\.gid\);\s*\n\s*if\(known && !NET\.resumeTokenMatch\(pl\.rt, known\)\)\{/.test(hostSrc),
+assert.ok(/let known = s\.tokens\.get\(entry\.gid\);[\s\S]{0,650}if\(known && !NET\.resumeTokenMatch\(pl\.rt, known\)\)\{/.test(hostSrc),
 	'P0-1: a claimed gid already held this session requires the matching resume token');
-assert.ok(/if\(!s\.tokens\.has\(entry\.gid\)\) s\.tokens\.set\(entry\.gid, NET\.mintResumeToken\(\)\);/.test(hostSrc),
+assert.ok(/if\(!s\.tokens\.has\(entry\.gid\)\)\{[\s\S]{0,180}proof = proof \|\| NET\.mintResumeToken\(\);[\s\S]{0,260}s\.tokens\.set\(entry\.gid, proof\);/.test(hostSrc),
 	'P0-1: the host mints a resume token on the first claim of a gid');
+assert.ok(/try\{ proof = proof \|\| NET\.mintResumeToken\(\); \}[\s\S]{0,500}entry\.resumeToken = s\.tokens\.get\(entry\.gid\);\s*\n\s*entry\.hello = true;/.test(hostSrc),
+	'P0-1: secure-random failure cannot leave a peer in authenticated hello state without a resume proof');
+assert.ok(/const savedClaim = bodyKeepClaim\(s\.room, entry\.gid, pl\.rt\);[\s\S]{0,180}if\(savedClaim\.taken\)/.test(hostSrc)
+	&& /if\(!NET\.resumeTokenMatch\(resumeToken, snap\.rt\)\) return \{ snap: null, proof: null, taken: true \};/.test(hostSrc),
+	'P0-1: a current-room persisted body requires its saved resume-token proof before admission');
 assert.ok(/rt: entry\.resumeToken,/.test(hostSrc), 'P0-1: the resume token rides the private welcome');
 assert.ok(/rt: resumeToken \|\| undefined/.test(clientSrc) && /storeResumeToken\(pl\.rt\)/.test(clientSrc),
 	'P0-1: the guest echoes its resume token on hello and banks the one the welcome gave it');
 assert.ok(/sessionStorage\.setItem\(NET\.RESUME_TOKEN_KEY/.test(clientSrc),
-	'P0-1: the resume token lives in tab-scoped sessionStorage (never shared across tabs)');
+	'P0-1: the live resume token remains in tab-scoped sessionStorage');
+assert.ok(/const RESUME_CACHE_KEY = 'mm_ghost_resume_cache_v1';/.test(clientSrc)
+	&& /readResumeCredential\(localStorage, WATCH\.room, gid\)/.test(clientSrc)
+	&& /writeResumeCredential\(localStorage, WATCH\.room, gid, resumeToken, t\)/.test(clientSrc)
+	&& /const RESUME_CACHE_REFRESH_MS = 6 \* 3600 \* 1000;/.test(clientSrc)
+	&& /canRefreshResumeCredential\(resumeAuthenticatedThisDocument, gid, baseGid, resumeToken\)/.test(clientSrc)
+	&& /resumeAuthenticatedThisDocument = true;/.test(clientSrc),
+	'P0-1: only a host-accepted stable base proof is periodically kept recoverable across tab restarts');
 
 // --- social facilitation integration pins ---------------------------------------------------
 assert.ok(/const socialMult=\(MM\.socialBoost && Number\.isFinite\(MM\.socialBoost\.xp\)\) \? MM\.socialBoost\.xp : 1;/.test(mobsSrc)
@@ -713,7 +920,7 @@ assert.ok(/c\.laserCd=Math\.max\(c\.laserCd\|\|0,0\.6\);[\s\S]{0,80}return true;
 assert.ok(/function handlePower\(s, entry, pl\)/.test(hostSrc), 'the host owns power resolution');
 assert.ok(/if\(!NET\.modeAllows\(entry\.mode, 'full'\)\)\{ entry\.peer\.send\(\{ t: 'powerAck', kind, ok: false, reason: 'perm'/.test(hostSrc), 'powers need at least the full permission mode');
 assert.ok(/if\(entry\.charge < rule\.cost\)/.test(hostSrc) && /entry\.charge -= rule\.cost;/.test(hostSrc), 'powers cost earned charge');
-assert.ok(/const hits = bridge\.ghostPower\(kind, entry\.cam\.x, entry\.cam\.y, rule\);/.test(hostSrc),
+assert.ok(/const pos = trackedPos\(entry\);[\s\S]{0,900}const hits = bridge\.ghostPower\(kind, pos\.x, pos\.y, rule\);/.test(hostSrc),
 	'a power strikes at the SPIRIT position the host tracked — never at client-chosen coordinates');
 assert.ok(/function chargeTick\(s, t, live\)/.test(hostSrc) && /NET\.chargeAfter\(entry\.charge, dt, wasActive\)/.test(hostSrc),
 	'charge accrues only while the watcher is active (and reuses the per-frame entries snapshot)');
@@ -814,7 +1021,7 @@ for(const gate of authorityGates){
 assert.ok(/entry\.level = Math\.max\(1, Math\.min\(NET\.PROG\.MAX_LEVEL, Math\.floor\(pl\.lvl\)\)\)/.test(hostSrc),
 	'the claimed level is clamped and used for display only');
 // client: persists in the WATCHER's own browser — that is what survives a reload
-assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY, NET\.HERO_KEY\]\)/.test(clientSrc),
+assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY, NET\.HERO_KEY, RESUME_CACHE_KEY\]\)/.test(clientSrc),
 	'the ghost profile is on the storage allowlist (the lockdown would otherwise silently drop it)');
 assert.ok(/localStorage\.setItem\(NET\.PROG_KEY, JSON\.stringify\(prog\)\)/.test(clientSrc) && /function loadProgress\(\)/.test(clientSrc),
 	'the career is written to and read from the watcher’s own localStorage');
@@ -826,7 +1033,9 @@ assert.ok(/if\(pl\.k === 'join' && prog\.days\.includes\(today\(\)\)\) return;/.
 	'join XP pays once per day — reload-farming must not out-earn honest watching');
 assert.ok(/function flushProgress\(force\)/.test(clientSrc) && /t - lastProgSaveAt < 2000/.test(clientSrc),
 	'profile writes are throttled (a deed-spamming host cannot buy a localStorage write per message)');
-assert.ok(/window\.addEventListener\('pagehide', \(\) => \{ flushProgress\(true\); saveHeroState\(true\); \}\)/.test(clientSrc) && /flushProgress\(true\); \/\/ nothing earned/.test(clientSrc),
+assert.ok(/window\.addEventListener\('pagehide', \(ev\) => \{ flushProgress\(true\); saveHeroState\(true\); refreshResumeCredential\(true\); if\(!ev\.persisted\) releaseGidLease\(gid\); \}\)/.test(clientSrc)
+	&& /persist\(\)\{ flushProgress\(true\); saveHeroState\(true\); refreshResumeCredential\(true\); \}/.test(clientSrc)
+	&& /try\{ refreshResumeCredential\(false\); \}catch\(e\)/.test(clientSrc),
 	'dirty progress AND the hero state are force-flushed on leave and unload — the throttle may never lose an earned deed');
 assert.ok(/JSON\.stringify\(res\.state\.counts\) !== JSON\.stringify\(before\.counts\)/.test(clientSrc)
 	&& /res\.state\.days\.length !== before\.days\.length/.test(clientSrc),
@@ -844,6 +1053,12 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'every hero world intent lands in one host-side handler');
 	assert.ok(/if\(!b \|\| entry\.mode !== 'hero'\)/.test(hostSrc), 'hact demands the hero rung exactly');
 	assert.ok(/NET\.playReachOk\(b\.x, b\.y, tx, ty, NET\.HERO_RULES\.REACH\)/.test(hostSrc), 'hero reach is enforced against the HOST-tracked body');
+	assert.ok(/function guestTargetClear\(body, tx, ty\)/.test(hostSrc)
+		&& /bridge\.ghostTargetClear\(body\.x, body\.y, Math\.floor\(tx\), Math\.floor\(ty\)\)/.test(hostSrc),
+		'guest world intents require body-origin line of sight in addition to numeric reach');
+	assert.ok(/function canPhysicallyTargetTileFrom\(originX,originY,tx,ty\)/.test(mainSrc)
+		&& /ghostTargetClear:\(originX,originY,tx,ty\)=>/.test(mainSrc),
+		'the bridge reuses solo line-of-sight and exposed-face rules from the guest body origin');
 	assert.ok(/Math\.min\(NET\.HERO_RULES\.DMG_MAX, Number\(pl\.n\) \|\| 1\)/.test(hostSrc)
 		&& /Math\.abs\(x - b\.x\) > NET\.HERO_RULES\.DMG_RADIUS/.test(hostSrc),
 		'forwarded damage is clamped by amount AND anchored near the body');
@@ -854,9 +1069,17 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	// the bridge seams re-validate world truth with solo-grade rules
 	assert.ok(/ghostHeroMineAt:\(tx,ty\)=>\{/.test(mainSrc) && /info\.chestTier \|\| info\.cache\) return \{ok:false, reason:'chest'\}/.test(mainSrc),
 		'hero mining spans the three solo layers but chests stay host economy');
-	assert.ok(/ghostHeroPlaceAt:\(tx,ty,tid,layer,body\)=>\{/.test(mainSrc) && /canPlaceInfrastructureAt\(tx,ty,id\)/.test(mainSrc)
-		&& /canPlaceConstructionBackgroundAt\(tx,ty,id\)/.test(mainSrc),
-		'hero placement re-validates per layer with the solo legality cores');
+	assert.ok(/ghostHeroPlaceAt:\(tx,ty,tid,layer,body\)=>\{/.test(mainSrc) && /canPlaceInfrastructureAt\(tx,ty,id,\{body\}\)/.test(mainSrc)
+		&& /canPlaceConstructionBackgroundAt\(tx,ty,id,\{body\}\)/.test(mainSrc)
+		&& /const actorBlocked=remotePlacementActorBlockedReason\(body,tx,ty\)/.test(mainSrc),
+		'hero placement re-validates every layer against the authenticated guest body');
+	assert.ok(/function remotePlacementActorBlockedReason\(body,tx,ty,infrastructureId\)/.test(mainSrc)
+		&& /infrastructureTargetBlockedReasonFrom\(body\.x,body\.y,tx,ty,infrastructureId\)/.test(mainSrc)
+		&& /const remoteBody=remoteActor && remoteContext \? remoteContext\.body : null/.test(mainSrc)
+		&& /if\(!remoteActor && !godMode && !haveBlocksFor\(id\)\)/.test(mainSrc),
+		'remote overlay/background legality uses guest-origin reach/LOS and skips host inventory and god-mode authority');
+	assert.ok((mainSrc.match(/if\(cur===T\.WATER && id===T\.WOOD\) return \{ok:false, reason:'boat'\};/g) || []).length >= 2,
+		'play and hero placement fail closed when wood-on-water would require the unsupported raft transaction');
 	// the write chokepoints: the guest's real mining/building routes through intents
 	assert.ok(/if\(MM\.ghostHeroIntents\) return MM\.ghostHeroIntents\.mineBreak\(mineTx,mineTy\);/.test(mainSrc),
 		'breakMinedTile defers to the intent chokepoint for hero guests');
@@ -1204,15 +1427,26 @@ assert.ok(/bridge\.overlayHold && bridge\.overlayHold\(\)/.test(hostSrc), 'the s
 assert.ok(/bridge\.releaseInput\(\)/.test(hostSrc) && /releaseInput:\(\)=>\{ try\{ releaseGameplayInput\(\); \}catch\(e\)\{\} \}/.test(mainSrc),
 	'opening the chat line releases held movement keys (the swallowed keyup would keep the hero walking)');
 assert.ok(/id="ghostPanelSay"/.test(hostSrc), 'the panel carries a say row for touch hosts');
+assert.ok(/id="ghostPanelBenefits"/.test(hostSrc) && /✓ Korzyści/.test(hostSrc) && /świat pozostaje pod kontrolą gospodarza/.test(hostSrc),
+	'the host panel explains the encrypted, host-authoritative multiplayer benefits');
+assert.ok(/id="ghostPanelSafety"/.test(hostSrc) && /Tryb tylko dla znajomych/.test(hostSrc)
+	&& /Link jest wspólnym kluczem dostępu/.test(hostSrc) && /mogą próbować podszyć się podczas łączenia/.test(hostSrc) && /pełny bohater/.test(hostSrc),
+	'the host panel clearly warns against public links and reserves full-hero authority for trusted friends');
+assert.ok(/function showSafetyNotice\(\)/.test(clientSrc) && /id = 'ghostSafetyNotice'/.test(clientSrc)
+	&& /Multiplayer tylko dla znajomych/.test(clientSrc) && /showSafetyNotice\(\);/.test(clientSrc),
+	'a joining friend sees the trust-and-benefits notice after the first successful world sync');
+assert.ok(/P2P może ujawnić drugiemu uczestnikowi/.test(clientSrc) && /użycie TURN także operatorowi przekaźnika/.test(clientSrc)
+	&& /treść połączenia pozostaje szyfrowana/.test(clientSrc),
+	'the friend-facing notice describes network-metadata exposure without implying plaintext relay traffic');
 
 // --- pings: a watcher points, nobody aims -----------------------------------------------------------
 assert.ok(NET.PING.MIN_MS >= 2000 && NET.PING.TTL_MS > 0, 'pings are rate-limited and transient');
 {
 	const pingSlice = hostSrc.slice(hostSrc.indexOf('function handlePing'), hostSrc.indexOf("--- the host's own voice"));
 	assert.ok(pingSlice.length > 40, 'handlePing found');
-	assert.ok(/!NET\.modeAllows\(entry\.mode, 'chat'\) \|\| !entry\.cam\) return;/.test(pingSlice), 'pings need at least chat permission and a tracked pose');
+	assert.ok(/const pos = trackedPos\(entry\);/.test(pingSlice) && /!NET\.modeAllows\(entry\.mode, 'chat'\) \|\| !pos\) return;/.test(pingSlice), 'pings need at least chat permission and a tracked pose');
 	assert.ok(/t - \(entry\.lastPingAt \|\| 0\) < NET\.PING\.MIN_MS\) return;/.test(pingSlice), 'pings are rate-limited per watcher');
-	assert.ok(/x: \+entry\.cam\.x\.toFixed\(2\), y: \+entry\.cam\.y\.toFixed\(2\)/.test(pingSlice) && !/pl\.x|pl\.y/.test(pingSlice),
+	assert.ok(/x: \+pos\.x\.toFixed\(2\), y: \+pos\.y\.toFixed\(2\)/.test(pingSlice) && !/pl\.x|pl\.y/.test(pingSlice),
 		'the marker lands at the HOST-tracked pose — client coordinates are never read');
 	assert.ok(!/sendDeed/.test(pingSlice), 'pings earn no XP (a pointer, not a faucet)');
 }
@@ -1246,7 +1480,7 @@ for(const fn of ['function handleBuff', 'function handlePower', 'function handle
 // --- action feedback: watcher deeds leave a visible trace, under one switch --------------------------
 assert.ok(/function noteActionFx\(s, fx\)/.test(hostSrc) && /s\.actionFx\.length > 10\) s\.actionFx\.shift\(\)/.test(hostSrc),
 	'the action feed exists and is bounded');
-for(const [ev, pat] of [['buff', /noteActionFx\(s, \{ kind: 'buff', hero: 1/], ['power', /noteActionFx\(s, \{ kind: 'power', power: kind, x: entry\.cam\.x/], ['assist', /noteActionFx\(s, \{ kind: 'assist', hero: 1/], ['ping', /noteActionFx\(s, \{ kind: 'ping', x: entry\.cam\.x/]]){
+for(const [ev, pat] of [['buff', /noteActionFx\(s, \{ kind: 'buff', hero: 1/], ['power', /noteActionFx\(s, \{ kind: 'power', power: kind, x: pos\.x/], ['assist', /noteActionFx\(s, \{ kind: 'assist', hero: 1/], ['ping', /noteActionFx\(s, \{ kind: 'ping', x: pos\.x/]]){
 	assert.ok(pat.test(hostSrc), ev + ' actions feed the visible trace');
 }
 assert.ok(/if\(viewPrefs\.fx\) drawActionFx\(ctx, TILE, t, p\);/.test(hostSrc), 'the whole trace obeys the „działania” toggle at paint time');
@@ -1312,10 +1546,10 @@ assert.ok(/DEFAULT_MODES = NET\.PERMISSION_MODES\.filter\(m => m !== 'play' && m
 assert.ok(/if\(!DEFAULT_MODES\.includes\(mode\)\) return false;/.test(hostSrc), 'setDefaultMode refuses the embodied rungs');
 // granting play spawns a HOST-owned body; revoking removes it — spectating persists
 assert.ok(/const embodied = \(mode === 'play' \|\| mode === 'hero'\);/.test(hostSrc)
-	&& /if\(embodied && !entry\.body\) spawnBody\(session, entry\);/.test(hostSrc)
+	&& /if\(embodied && !entry\.body && !spawnBody\(session, entry\)\)\{[\s\S]{0,140}entry\.mode = 'full'; entry\.heroMode = false;/.test(hostSrc)
 	&& /else if\(!embodied && entry\.body\) despawnBody\(session, entry\);/.test(hostSrc)
 	&& /entry\.heroMode = mode === 'hero';/.test(hostSrc),
-	'both embodied rungs spawn the host-tracked body; any downgrade removes it; heroMode flags guest-local vitals');
+	'both embodied rungs require a safe host-tracked body; failed spawn/downgrade returns to the influence-only floor');
 // vitals & pouch are HOST state, streamed to the guest as display truth
 assert.ok(/function sendVitals\(s, entry\)/.test(hostSrc) && /t: 'pvit'/.test(hostSrc), 'the host owns and streams the guest vitals + pouch');
 assert.ok(/function hurtBody\(s, entry/.test(hostSrc) && /b\.invulUntil = t \+ NET\.PLAY_RULES\.HURT_INVUL_MS/.test(hostSrc),
@@ -1325,7 +1559,8 @@ assert.ok(/requestedKb[^\n]*Math\.min\(12/.test(hostSrc) && /requestedKbY[^\n]*M
 	'host-authored attacks can request bounded knockback for guest bodies, including molekin charges');
 // the movement envelope: a claimed pose is clamped to MAX_SPEED AND resolved out of
 // solids by a swept AABB against the host tiles (P0-6: no wall/bedrock tunnelling)
-assert.ok(/pl\.t === 'ppose'/.test(hostSrc) && /NET\.sweepBodyMove\(\{ x: b\.x, y: b\.y, w: NET\.PLAY_RULES\.BODY_W, h: NET\.PLAY_RULES\.BODY_H \}, \+pl\.x, \+pl\.y, maxStep, solidAt, null\)/.test(hostSrc),
+assert.ok(/pl\.t === 'ppose'/.test(hostSrc) && /bridge\.ghostBodySolidAt\(tx, ty, axis, probe, openTrapdoor\)/.test(hostSrc)
+	&& /NET\.sweepBodyMove\(\{ x: b\.x, y: b\.y, w: NET\.PLAY_RULES\.BODY_W, h: NET\.PLAY_RULES\.BODY_H \}, \+pl\.x, \+pl\.y, maxStep, solidAt, bounds\)/.test(hostSrc),
 	'the guest pose is followed inside a speed envelope AND swept against host tiles (a wall-tunnel hack is stopped at the wall)');
 // P0-6: an embodied guest's camera (which powers/pings/actions originate from) is the
 // ACCEPTED collision-resolved body position, never the raw client claim
@@ -1347,9 +1582,11 @@ assert.ok(/function handlePlayAct\(s, entry, pl\)/.test(hostSrc) && /pl\.t === '
 	'every guest world intent lands in one host-side handler');
 assert.ok(/if\(b\.dead\)\{ entry\.peer\.send\(\{ t: 'pactAck', a: pl\.a, ok: false, reason: 'dead'/.test(hostSrc), 'a dead guest cannot act');
 assert.ok(/if\(!NET\.playReachOk\(b\.x, b\.y, tx, ty\)\)/.test(hostSrc), 'reach is enforced against the HOST-tracked body pose');
+assert.ok(/\(pl\.a === 'mine' \|\| pl\.a === 'place'\) && !guestTargetClear\(b, tx, ty\)/.test(hostSrc),
+	'zero-trust play edits also require a clear body-origin target path');
 assert.ok(/if\(!\(Number\(b\.pouch\[key\]\) > 0\)/.test(hostSrc), 'building spends only what the host-owned pouch holds');
 assert.ok(/bridge\.ghostPlayMineAt\(tx, ty\)/.test(hostSrc) && /bridge\.ghostPlayPlaceAt\(tx, ty, key/.test(hostSrc)
-	&& /bridge\.ghostPlayStrike\(/.test(hostSrc), 'intents resolve through the guarded bridge seams');
+	&& /bridge\.ghostPlayAttack\(/.test(hostSrc), 'intents resolve through the guarded bridge seams');
 // the body plane feeds MM.coopBodies — the one hook creatures read
 assert.ok(/function bodyTick\(s, t\)/.test(hostSrc) && /MMR\.coopBodies = pub;/.test(hostSrc) && /t: 'pb'/.test(hostSrc),
 	'the body plane streams the guests AND publishes MM.coopBodies for creature contact');
@@ -1361,8 +1598,10 @@ assert.ok(/ghostPlayMineAt:\(tx,ty\)=>\{/.test(mainSrc) && /companionHarvestAssi
 	'guest mining reuses the companion-digger whitelist (no machines, chests, story tiles)');
 assert.ok(/ghostPlayPlaceAt:\(tx,ty,key,body\)=>\{/.test(mainSrc) && /cellOverlapsPlayer\(tx,ty\)/.test(mainSrc),
 	'guest building respects the same open-cell / hero-overlap rules as the local placer');
-assert.ok(/ghostPlayStrike:\(x,y,r,dmg\)=>\{/.test(mainSrc) && !/ghostPlayStrike[\s\S]{0,400}setTile\(/.test(mainSrc),
-	'guest melee is creatures-only — no tile is ever touched by fighting');
+assert.ok(/ghostPlayAttack:\(body,spec,aimX,aimY\)=>\{/.test(mainSrc) && /W\.coopMeleeAt/.test(mainSrc),
+	'guest melee routes through the attributed co-op weapon inlet');
+assert.ok(!NET.validPlayAction('strike') && !/ghostPlayStrike:\(/.test(mainSrc),
+	'the obsolete free area strike is not a network action or bridge capability');
 assert.ok(/drawHeroAt:\(st\)=>\{/.test(mainSrc) && /drawPlayer\(\{remoteBody:true, cloaked:!!st\.cloaked\}\)/.test(mainSrc),
 	'remote heroes render through the REAL hero painter via a field swap (a player looks like a player; antenna cloak rides along)');
 // mobs.js contact pass — cost-free in solo play, hurts a touched guest body
@@ -1494,17 +1733,19 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 }
 
 // --- Wave B: real guest weapons — host-resolved, body-attributed, creature-only ---------------------
-// The strike stub grows into an arsenal: the guest NAMES an owned weapon and a world
+// The guest NAMES an owned weapon and a world
 // aim; the host checks ownership, cooldown and pouch ammo against ITS body state and
 // resolves the blow through the real combat chains in weapons.js, attributed 'coop'.
 // Nothing a guest fires may touch a tile, open a chest, or feed the host's ult.
 {
 	const w = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
-	// melee resolves through the hero's own attackAt fan-out, credited 'coop'
+	// melee resolves only against ordinary mobs, credited 'coop'
 	const cm = w.slice(w.indexOf('function coopMeleeAt'), w.indexOf('function spawnCoopArrow'));
 	assert.ok(/meleeTargetTile\(body,aimX,aimY,reach,false\)/.test(cm), 'coop melee clamps its target into the weapon reach box');
-	assert.ok(/MM\.mobs\.attackAt\(tx,ty,bonus,\{source:'coop'\}\)/.test(cm) && /MM\.invasions\.attackAt/.test(cm) && /MM\.guardianLairs\.attackAt/.test(cm),
-		'coop melee runs the real creature chains with coop attribution');
+	assert.ok(/MM\.mobs\.attackAt\(tx,ty,bonus,\{source:'coop'\}\)/.test(cm),
+		'coop melee runs the ordinary-mob chain with coop attribution');
+	assert.ok(!/MM\.(?:invasions|guardianLairs|undergroundBoss|skyGuardian|bosses|ufo)\./.test(cm),
+		'coop melee cannot enter special defeat/story systems');
 	assert.ok(!/setTile\(|openChestFromWeaponHit\(|collectLooseTarget\(|addUltCharge\(|MM\.npcSystem\.|MM\.centerGuardian\./.test(cm),
 		'coop melee: no tiles, no chests, no pickups, no host ult, no villagers, no center mimic');
 	assert.ok(/noteCoopSwing\(tx,ty,tx>=px\?1:-1\)/.test(cm), 'a guest swing is visible (coop swing FX)');
@@ -1570,12 +1811,23 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	// sharing one gid would boot each other through the host's newest-wins rule
 	assert.ok(/const tab = sessionStorage\.getItem\(NET\.GID_KEY\);/.test(clientSrc) && /\^g\[a-z0-9\]\{8,14\}\$/.test(clientSrc),
 		'the client gid is tab-stable across reloads and validated against its own shape');
-	assert.ok(/const held = !!\(lease && lease\.gid === base && \(Date\.now\(\) - \(Number\(lease\.ts\) \|\| 0\)\) < NET\.GID_LEASE_MS\);/.test(clientSrc)
-		&& /const mine = held \? gidMint\(\) : base;/.test(clientSrc),
-		'a sibling tab holding the base identity forces a fresh gid (no self-boot collision)');
+	assert.ok(/const leaseOwner = WATCH \? \('d' \+/.test(clientSrc)
+		&& /gidLease = createGidLeaseController\(localStorage, base, leaseOwner\);/.test(clientSrc)
+		&& /if\(mine === base && !gidLease\.claim\(\)\) mine = gidMint\(\);/.test(clientSrc),
+		'each document must win an owner-nonce lease before sending the stable base gid');
 	assert.ok(/if\(!WATCH\) return gidMint\(\);/.test(clientSrc), 'host pages never write the ghost identity keys');
-	assert.ok(/localStorage\.getItem\(NET\.GID_KEY\) === gid\) localStorage\.setItem\(NET\.GID_LEASE_KEY/.test(clientSrc),
-		'only the base-identity owner heartbeats the lease');
+	assert.ok(/if\(held && \(held\.gid !== gid \|\| held\.owner !== owner\)\) return false;/.test(clientSrc)
+		&& /return !!won && won\.gid === gid && won\.owner === owner;/.test(clientSrc),
+		'a heartbeat refuses a fresh other owner and confirms its write before claiming victory');
+	assert.ok(/function releaseGidLease\(ownerGid\)/.test(clientSrc)
+		&& /if\(!row \|\| row\.gid !== gid \|\| row\.owner !== owner\) return false;/.test(clientSrc)
+		&& /if\(!ev\.persisted\) releaseGidLease\(gid\)/.test(clientSrc),
+		'only the exact document owner releases the base gid while bfcache pages retain their live lease');
+	assert.ok(/window\.addEventListener\('pageshow', \(\) => \{ reconcileGidLease\(\); refreshResumeCredential\(true\); \}\)/.test(clientSrc)
+		&& /ev\.key === NET\.GID_LEASE_KEY \|\| ev\.key === NET\.GID_KEY/.test(clientSrc)
+		&& /function rotateLeaseConflictIdentity\(\)/.test(clientSrc)
+		&& /function restartForLeaseConflict\(\)/.test(clientSrc),
+		'pageshow and storage conflicts re-arbitrate, rotate the losing document and reconnect it ephemerally');
 	assert.ok(/catch\(e\)\{ return gidMint\(\); \}/.test(clientSrc),
 		'no storage → a session-scoped gid (ephemeral is a feature, not a crash)');
 	// the craft intent: recipe whitelist, owned-weapon dedup, atomic pouch spend
@@ -1588,12 +1840,28 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/sendDeed\(entry, 'craft', 1\);/.test(hostSrc), 'a craft pays the guest its own career XP');
 	// persistence: host-side store, hostile-input restore, banked at every exit
 	assert.ok(/const BODY_KEEP_KEY = 'mm_ghost_bodies_v1';/.test(hostSrc), 'the host-side body store key is pinned');
-	assert.ok(/restoreBodyFor\(entry\.gid, entry\.body\);/.test(hostSrc), 'a returning gid gets its kept body back on spawn');
+	assert.ok(/const BODY_KEEP_VERSION = 2;/.test(hostSrc)
+		&& /JSON\.stringify\(\{ v: BODY_KEEP_VERSION, entries: rows\.slice\(0, BODY_KEEP_MAX\) \}\)/.test(hostSrc)
+		&& /room: entry\.room,[\s\S]{0,80}gid: entry\.gid,[\s\S]{0,180}rt: entry\.resumeToken,/.test(hostSrc)
+		&& /restoreBodyFor\(s\.room, entry\.gid, entry\.body, entry\.resumeToken\);/.test(hostSrc),
+		'a returning gid gets only its versioned, room-and-proof-bound kept body back on spawn');
+	assert.ok(/raw\.length > BODY_KEEP_RAW_MAX/.test(hostSrc)
+		&& /o\.v === BODY_KEEP_VERSION && Array\.isArray\(o\.entries\)/.test(hostSrc)
+		&& !/row\.legacy|snap\.legacy|const legacy = rows/.test(hostSrc),
+		'oversized, unknown-version and all room-unbound legacy body stores fail closed');
+	assert.ok(/function canonicalBodyKeepRow\(snap, at\)/.test(hostSrc)
+		&& /return \{ room: snap\.room, gid: snap\.gid, pouch, weapons, rt: snap\.rt, ts: savedAt \};/.test(hostSrc)
+		&& /key === 'prototype' \|\| key === 'constructor'/.test(hostSrc)
+		&& /if\(weapons\.length >= 8\) break;/.test(hostSrc),
+		'every retained body row is rebuilt into an exact bounded pouch/weapon schema');
+	assert.ok(/const rows = freshBodyKeepRows\(\)\.filter\(row => !\(row\.gid === entry\.gid && row\.room === entry\.room\)\);/.test(hostSrc)
+		&& /entries: rows\.slice\(0, BODY_KEEP_MAX\)/.test(hostSrc),
+		'banking replaces only the same room/gid row, preserving other rooms under one global bound');
 	assert.ok(/body\.pouch = \{\};[\s\S]{0,300}NET\.pouchAdd\(body\.pouch, k, n\);/.test(hostSrc),
 		'the kept pouch REPLACES the starter pouch (no rejoin ammo farming) and re-clamps every count');
 	assert.ok(/if\(NET\.validPlayWeapon\(k\) && !body\.weapons\.includes\(k\)\) body\.weapons\.push\(k\);/.test(hostSrc),
 		'kept weapons pass the arsenal whitelist again on restore (disk is hostile input)');
-	assert.ok(/function despawnBody\(s, entry\)\{\s*\n\s*if\(!entry\.body\) return;\s*\n\s*endDuel\(s, entry, true\);[^\n]*\n[\s\S]{0,140}keepBody\(entry\);/.test(hostSrc),
+	assert.ok(/function despawnBody\(s, entry\)\{\s*\n\s*if\(!entry\.body\) return;[\s\S]{0,100}endDuel\(s, entry, true\);[^\n]*\n[\s\S]{0,140}keepBody\(entry\);/.test(hostSrc),
 		'demote/leave forfeits any duel, vacates any cab and banks the body');
 	// P0-7: a dropped connection tears the body down through ONE centralized path —
 	// settle the duel, eject from the mech cab (no phantom rider), bank the pouch, then
@@ -1606,8 +1874,15 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'a token-proven reconnect reattaches the preserved body (not a fresh full-HP spawn)');
 	assert.ok(/mode === 'play' && wasHero && entry\.body/.test(hostSrc) && /entry\.body\.maxHp = Math\.min\(entry\.body\.maxHp \|\| NET\.PLAY_RULES\.MAX_HP, NET\.PLAY_RULES\.MAX_HP\);/.test(hostSrc),
 		'a hero→play demotion clamps the body into the play HP pool');
-	assert.ok(/keepAllBodies\(s\); \/\/ slow-cadence flush/.test(hostSrc) && /keepAllBodies\(session\); \/\/ ending the stream/.test(hostSrc),
-		'the reap tick and session stop both flush every live body');
+	assert.ok(/if\(wasHero && mode === 'play'\)\{[\s\S]{0,180}guestUnboard\(entry\.gid\);/.test(hostSrc),
+		'a hero→play demotion vacates the mech even though it keeps the body');
+	assert.ok(/keepAllBodies\(s\); \/\/ slow-cadence flush/.test(hostSrc)
+		&& /for\(const entry of Array\.from\(ending\.peers\.values\(\)\)\) dropPeer\(ending, entry, true\);/.test(hostSrc),
+		'the reap tick banks bodies and session stop routes every peer through centralized teardown');
+	assert.ok(/ending\.closed = true;/.test(hostSrc)
+		&& /if\(!s \|\| s\.closed \|\| s !== session \|\| !entry \|\| !s\.peers\.has\(entry\.peer\)\) return;/.test(hostSrc)
+		&& /entry\.peer\.onMessage = null;/.test(hostSrc),
+		'a stopped/dropped session rejects queued messages and detaches the peer callback before close');
 	assert.ok(/keepBody\(entry\); \/\/ earned gear is banked the moment it exists/.test(hostSrc), 'a successful craft banks immediately');
 	// client: chips only SEND the intent; affordability is a display-only mirror
 	assert.ok(/function renderCraft\(\)/.test(clientSrc) && /sendPlayAct\('craft', 0, 0, key\);/.test(clientSrc),
@@ -1778,8 +2053,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 // standing contract below).
 {
 	// duels: mutual handshake, host-arbitrated, melee only, bodies only
-	assert.ok(/const back = s\.duelAsks\.get\(te\.gid \+ '>' \+ entry\.gid\);/.test(hostSrc)
-		&& /s\.duelAsks\.set\(entry\.gid \+ '>' \+ te\.gid, tD\);/.test(hostSrc),
+	assert.ok(/const reverseKey = NET\.duelAskKey\(te\.gid, entry\.gid\);/.test(hostSrc)
+		&& /s\.duelAsks\.set\(NET\.duelAskKey\(entry\.gid, te\.gid\), tD\);/.test(hostSrc),
 		'a duel starts ONLY when both sides asked for each other (mutual consent)');
 	assert.ok(/if\(b\.duelWith \|\| te\.body\.duelWith\)/.test(hostSrc), 'a busy duelist cannot be challenged');
 	const duelPass = hostSrc.slice(hostSrc.indexOf('let duelHit = 0;'), hostSrc.indexOf('let duelHit = 0;') + 900);
@@ -1835,7 +2110,7 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'a look change is embodied-only, strict-hex validated and rate-floored on the host');
 	assert.ok(/if\(other !== entry && other\.look\)\{ try\{ entry\.peer\.send\(\{ t: 'plook', gid: other\.gid, c: other\.look \}\)/.test(hostSrc),
 		'a late joiner receives every known look right after the snapshot');
-	assert.ok(/if\(typeof pl\.gid === 'string' && pl\.gid && NET\.validLookColor\(pl\.c\)\)/.test(clientSrc),
+	assert.ok(/if\(NET\.validGid\(pl\.gid\) && NET\.validLookColor\(pl\.c\)\)/.test(clientSrc),
 		'the client re-validates relayed looks (defense in depth) before painting with them');
 	assert.ok(/typeof st\.look==='string' && \/\^#\[0-9a-f\]\{6\}\$\/i\.test\(st\.look\)/.test(mainSrc),
 		'the painter accepts only strict hex for a chosen look (it reaches fillStyle)');
@@ -1855,17 +2130,39 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/dropPouchAt\(s, entry, b\); \/\/ the gravestone rule/.test(hostSrc), 'death triggers the gravestone rule');
 	// duel arrows: host-stamped identity at fire time, consent re-verified at impact
 	const wsrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
-	assert.ok(/ownerGid:\(typeof opts\.ownerGid==='string'\)\?opts\.ownerGid\.slice\(0,20\):null,/.test(wsrc)
-		&& /duelGid:\(typeof opts\.duelGid==='string'\)\?opts\.duelGid\.slice\(0,20\):null/.test(wsrc),
+	assert.ok(/ownerGid:coopGid\(opts\.ownerGid\),/.test(wsrc)
+		&& /duelGid:coopGid\(opts\.duelGid\)/.test(wsrc),
 		'a coop arrow carries HOST-stamped owner/duel identity');
 	const da = wsrc.slice(wsrc.indexOf('// consensual duel arrows'), wsrc.indexOf('const creatureGate'));
-	assert.ok(/if\(bb\.gid !== a\.duelGid \|\| bb\.dead \|\| typeof bb\.hurt!=='function'\) continue;/.test(da)
-		&& /if\(bb\.duelWith !== a\.ownerGid\) break; \/\/ symmetry or nothing/.test(da)
-		&& /bb\.hurt\(a\.dmg, a\.x, a\.y, 'duel'\);/.test(da),
-		'a duel arrow wounds only the consenting partner body, symmetry checked at impact');
+	assert.ok(/const owner=duelBodies\.find\(bb=>bb && bb\.gid===a\.ownerGid && !bb\.dead\);/.test(da)
+		&& /const target=duelBodies\.find\(bb=>bb && bb\.gid===a\.duelGid && !bb\.dead/.test(da)
+		&& /owner\.duelWith===a\.duelGid && target\.duelWith===a\.ownerGid/.test(da)
+		&& /target\.hurt\(a\.dmg, a\.x, a\.y, 'duel'\);/.test(da),
+		'a duel arrow requires both live bodies and mutual consent at impact');
 	assert.ok(!/damageHero|bridge\.player/.test(da), 'a duel arrow can never touch the host hero');
 	assert.ok(/entry\.bodyLike\.duelWith = b\.duelWith \|\| null;/.test(hostSrc) && /entry\.bodyLike = \{ gid: entry\.gid,/.test(hostSrc),
 		'bodyLike carries gid + live duel consent for impact-time checks');
+}
+
+// Dynamic passable->solid writers must use the same current-session footprint
+// predicate as weather/falling. These source pins cover the bounded legacy paths
+// whose engine sims do not expose a convenient deterministic write hook.
+{
+	const fireSrc = readFileSync(new URL('../src/engine/fire.js', import.meta.url), 'utf8');
+	const volcanoSrc = readFileSync(new URL('../src/engine/volcano.js', import.meta.url), 'utf8');
+	const undergroundSrc = readFileSync(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8');
+	const dynamicWeaponsSrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+	assert.ok((invasionsSrc.match(/authoritativeBodyBlocksCell\(tx,ty\)/g) || []).length >= 4,
+		'invasion barricade/ramp validation and write boundaries both protect guest footprints');
+	assert.ok((fireSrc.match(/!authoritativeBodyBlocksCell\(L\.x,L\.y\)/g) || []).length >= 3,
+		'lava water-contact and air-cooling crust conversions defer under guest bodies');
+	assert.ok(/!authoritativeBodyBlocksCell\(rest\.x,rest\.y\)/.test(volcanoSrc)
+		&& /if\(authoritativeBodyBlocksCell\(rest\.x,rest\.y\)\) return false;/.test(volcanoSrc),
+		'ordinary and master volcanic rocks cannot settle through a guest footprint');
+	assert.ok(/!authoritativeBodyBlocksCell\(tx,ty\) && Math\.random\(\)<QUENCH_CHANCE/.test(dynamicWeaponsSrc),
+		'a hose cannot quench passable lava into solid obsidian through a guest body');
+	assert.ok(/if\(next!==T\.AIR && authoritativeBodyBlocksCell\(tx,ty\)\) continue;/.test(undergroundSrc),
+		'the underground boss crater may excavate under a body but cannot deposit solid fallback rock through it');
 }
 
 console.log('ghost-sim: all assertions passed');

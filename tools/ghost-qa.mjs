@@ -1350,8 +1350,11 @@ async function main(){
 		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'full')`);
 		await host.poll(`MM.ghostHost.metrics().players`, v => v === 0, 'body despawns before the store injection', 40, 250);
 		await host.eval(`(()=>{
-			const store = JSON.parse(localStorage.getItem('mm_ghost_bodies_v1') || '{}');
-			store['${gidPlay}'] = { pouch: { wood: 20, stone: 12, arrowWood: 3 }, weapons: ['fists', 'sword', 'bow'], ts: Date.now() };
+			const store = JSON.parse(localStorage.getItem('mm_ghost_bodies_v1') || 'null');
+			const room = MM.ghostHost.metrics().room;
+			const row = store && store.v === 2 && Array.isArray(store.entries) ? store.entries.find(e => e.room === room && e.gid === '${gidPlay}') : null;
+			if(!row) throw new Error('missing proof-bound body row for QA injection');
+			row.pouch = { wood: 20, stone: 12, arrowWood: 3 }; row.weapons = ['fists', 'sword', 'bow']; row.ts = Date.now();
 			localStorage.setItem('mm_ghost_bodies_v1', JSON.stringify(store));
 			return 1;
 		})()`);
@@ -1409,7 +1412,7 @@ async function main(){
 		// round-trip: demote banks the body; the store holds the spear; re-promote returns it
 		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'full')`);
 		await host.poll(`MM.ghostHost.metrics().players`, v => v === 0, 'demote banks the body', 40, 250);
-		const banked = await host.eval(`(()=>{ const s=JSON.parse(localStorage.getItem('mm_ghost_bodies_v1')||'{}')['${gidPlay}']; return s ? {weapons:s.weapons, wood:s.pouch.wood||0, stone:s.pouch.stone||0} : null; })()`);
+		const banked = await host.eval(`(()=>{ const o=JSON.parse(localStorage.getItem('mm_ghost_bodies_v1')||'null'); const room=MM.ghostHost.metrics().room; const s=o&&Array.isArray(o.entries)?o.entries.find(e=>e.room===room&&e.gid==='${gidPlay}'):null; return s ? {weapons:s.weapons, wood:s.pouch.wood||0, stone:s.pouch.stone||0} : null; })()`);
 		if(!banked || !banked.weapons.includes('spear')) throw new Error('the earned spear was not banked host-side: ' + JSON.stringify(banked));
 		if(!(banked.wood === 12 && banked.stone === 7)) throw new Error('the banked pouch drifted: ' + JSON.stringify(banked));
 		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'play')`);
@@ -1819,7 +1822,9 @@ async function main(){
 			v => v === 1, 'the guest drowns', 40, 250);
 		const spilled = await host.eval(`(()=>{
 			let n=0; for(const d of MM.drops._debug.list){ if(d.kind==='resource' && Math.abs(d.x-(${grave.bx}+0.5))<4 && Math.abs(d.y-${grave.row})<5) n++; }
-			const keep=JSON.parse(localStorage.getItem('mm_ghost_bodies_v1')||'{}')['${duelists.g1}'];
+			const bodyStore=JSON.parse(localStorage.getItem('mm_ghost_bodies_v1')||'null');
+			const room=MM.ghostHost.metrics().room;
+			const keep=bodyStore&&Array.isArray(bodyStore.entries)?bodyStore.entries.find(e=>e.room===room&&e.gid==='${duelists.g1}'):null;
 			for(const [x,y] of [[${grave.bx},${grave.row}],[${grave.bx},${grave.head}],[${grave.bx}-1,${grave.row}],[${grave.bx}+1,${grave.row}],[${grave.bx}-1,${grave.head}],[${grave.bx}+1,${grave.head}],[${grave.bx},${grave.head}-1],[${grave.bx}-1,${grave.head}-1],[${grave.bx}+1,${grave.head}-1]]) MM.world.setTile(x,y,MM.T.AIR);
 			return {n, keptKeys:keep?Object.keys(keep.pouch).length:-1};
 		})()`);

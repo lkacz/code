@@ -116,4 +116,217 @@ const coopOverLava = dbg.pushArrow({ x: 5.2, y: 0.4, vx: 16, vy: 0, dmg: 6, life
 stepArrows(6);
 assert.equal(!!coopOverLava.fire, false, 'EXPLOIT NEUTRALIZED: a coop arrow never catches fire over lava (no terrain ignition on impact)');
 
+// Defense in depth: even a forged co-op shaft with an iridium tier and pierce
+// budget cannot enter the block-removal branch.
+reset();
+tiles.set(key(6, 0), T.DIRT);
+dbg.pushArrow({ x: 5.2, y: 0.4, vx: 16, vy: 0, dmg: 6, life: 3, stuck: false, stuckT: 3, tier: 'iridium', pierceLeft: 1 });
+stepArrows(6);
+assert.ok(setAirCalls > 0, 'CONTROL: an ordinary iridium arrow still pierces a terrain block');
+reset();
+tiles.set(key(6, 0), T.DIRT);
+dbg.pushArrow({ x: 5.2, y: 0.4, vx: 16, vy: 0, dmg: 6, life: 3, stuck: false, stuckT: 3, tier: 'iridium', pierceLeft: 1, coopOwner: true });
+stepArrows(6);
+assert.equal(setAirCalls, 0, 'EXPLOIT NEUTRALIZED: a forged co-op iridium shaft cannot remove terrain');
+
+// ---------------------------------------------------------------------------
+// 5) RECOVERY ECONOMY: ordinary host arrows still become pickups, while a
+//    co-op shaft cannot turn its wood tier (or a forged cached key) into ammo.
+// ---------------------------------------------------------------------------
+reset();
+const spawnedResources = [];
+MM.drops = { spawnResource: (x, y, resourceKey, count) => { spawnedResources.push({ resourceKey, count }); return true; } };
+const hostRecover = { x: 1, y: 1, vx: 10, vy: 0, life: 2, tier: 'wood' };
+assert.equal(dbg.arrowResourceKey(hostRecover), 'arrowWood', 'CONTROL: an ordinary wood arrow maps to its host resource');
+assert.equal(dbg.dropSurvivingArrow(hostRecover), true, 'CONTROL: an ordinary surviving arrow becomes recoverable');
+assert.equal(hostRecover.recoverable, true, 'CONTROL: the ordinary arrow is marked recoverable');
+assert.equal(dbg.spawnDroppedArrowPickup(hostRecover), true, 'CONTROL: the ordinary arrow can spawn its pickup');
+assert.deepEqual(spawnedResources, [{ resourceKey: 'arrowWood', count: 1 }], 'CONTROL: recovery returns exactly one wood arrow');
+
+const coopRecover = { x: 1, y: 1, vx: 10, vy: 0, life: 2, tier: 'wood', coopOwner: true, recoverable: false, recoverKey: 'arrowWood' };
+assert.equal(dbg.arrowResourceKey(coopRecover), null, 'EXPLOIT NEUTRALIZED: a co-op shaft has no host resource identity');
+assert.equal(dbg.dropSurvivingArrow(coopRecover), false, 'EXPLOIT NEUTRALIZED: a co-op shaft cannot become recoverable after a hit');
+assert.equal(dbg.spawnDroppedArrowPickup(coopRecover), false, 'EXPLOIT NEUTRALIZED: even a forged cached key cannot spawn a host pickup');
+assert.equal(spawnedResources.length, 1, 'EXPLOIT NEUTRALIZED: no extra arrow resource was minted');
+globalThis.inv = {};
+globalThis.player = { x: 1, y: 1, w: 0.7, h: 0.95, hp: 100 };
+const forgedStuckCoop = dbg.pushArrow({ x: 1, y: 1, vx: 0, vy: 0, life: 2, tier: 'wood', stuck: true, stuckT: 3,
+	coopOwner: true, recoverable: true, recoverKey: 'arrowWood' });
+stepArrows(1);
+assert.equal(globalThis.inv.arrowWood, undefined, 'EXPLOIT NEUTRALIZED: forged recoverable state cannot mint ammo through proximity pickup');
+assert.ok(dbg.arrows.includes(forgedStuckCoop), 'EXPLOIT NEUTRALIZED: the rejected co-op pickup remains a projectile, not a resource');
+
+// ---------------------------------------------------------------------------
+// 6) CREATURE FANOUT: hero arrows retain center-mimic and villager routing;
+//    co-op arrows skip both because those handlers can reflect into the host or
+//    mutate protected NPC state.
+// ---------------------------------------------------------------------------
+reset();
+let centerGuardianCalls = 0;
+let npcDamageCalls = 0;
+MM.centerGuardian = { damageAt: () => { centerGuardianCalls++; return true; } };
+MM.npcSystem = { damageAt: () => { npcDamageCalls++; return true; } };
+dbg.pushArrow({ x: 0.5, y: 0.5, vx: 8, vy: 0, dmg: 6, life: 3, stuck: false, stuckT: 3, tier: 'wood' });
+stepArrows(1);
+assert.ok(centerGuardianCalls > 0, 'CONTROL: an ordinary hero arrow still reaches centerGuardian');
+
+reset();
+centerGuardianCalls = 0; npcDamageCalls = 0;
+MM.centerGuardian = { damageAt: () => { centerGuardianCalls++; return false; } };
+MM.npcSystem = { damageAt: () => { npcDamageCalls++; return true; } };
+dbg.pushArrow({ x: 0.5, y: 0.5, vx: 8, vy: 0, dmg: 6, life: 3, stuck: false, stuckT: 3, tier: 'wood' });
+stepArrows(1);
+assert.ok(npcDamageCalls > 0, 'CONTROL: an ordinary hero arrow still reaches npcSystem');
+
+reset();
+centerGuardianCalls = 0; npcDamageCalls = 0;
+MM.centerGuardian = { damageAt: () => { centerGuardianCalls++; return true; } };
+MM.npcSystem = { damageAt: () => { npcDamageCalls++; return true; } };
+dbg.pushArrow({ x: 0.5, y: 0.5, vx: 8, vy: 0, dmg: 6, life: 3, stuck: false, stuckT: 3, tier: 'wood', coopOwner: true, recoverable: false });
+stepArrows(1);
+assert.equal(centerGuardianCalls, 0, 'EXPLOIT NEUTRALIZED: a co-op arrow never enters the centerGuardian reflection path');
+assert.equal(npcDamageCalls, 0, 'EXPLOIT NEUTRALIZED: a co-op arrow never damages npcSystem villagers');
+
+reset();
+let mechDamageCalls = 0;
+MM.centerGuardian = { damageAt: () => false };
+MM.mechs = { damageAt: () => { mechDamageCalls++; return true; } };
+dbg.pushArrow({ x: 0.5, y: 0.5, vx: 8, vy: 0, dmg: 6, life: 3, stuck: false, stuckT: 3, tier: 'wood' });
+stepArrows(1);
+assert.ok(mechDamageCalls > 0, 'CONTROL: an ordinary hero arrow can still damage a mech');
+
+reset();
+mechDamageCalls = 0;
+MM.centerGuardian = { damageAt: () => false };
+MM.mechs = {
+	damageAt: () => { mechDamageCalls++; return true; },
+	attackAt: () => { mechDamageCalls++; return true; }
+};
+dbg.pushArrow({ x: 0.5, y: 0.5, vx: 8, vy: 0, dmg: 6, life: 3, stuck: false, stuckT: 3, tier: 'wood', coopOwner: true, recoverable: false });
+stepArrows(1);
+weapons.coopMeleeAt({ x: 0.5, y: 0.5 }, 1.5, 0.5, { bonus: 4 });
+assert.equal(mechDamageCalls, 0, 'EXPLOIT NEUTRALIZED: co-op arrows and melee cannot destroy mechs, collapse blocks, or award host XP');
+
+// Every special combat family carries its own defeat/story/economy callbacks.
+// A forged co-op shaft and co-op melee must stop at ordinary MM.mobs.
+reset();
+let ordinaryMobCalls = 0;
+const specialCalls = { guardians:0, underground:0, sky:0, bosses:0, invasions:0, ufo:0 };
+MM.mobs = { damageAt: () => { ordinaryMobCalls++; return false; }, attackAt: () => { ordinaryMobCalls++; return true; }, nearestLiving: () => null };
+MM.guardianLairs = { damageAt: () => { specialCalls.guardians++; return true; }, attackAt: () => { specialCalls.guardians++; return true; } };
+MM.undergroundBoss = { damageAt: () => { specialCalls.underground++; return true; }, attackAt: () => { specialCalls.underground++; return true; } };
+MM.skyGuardian = { damageAt: () => { specialCalls.sky++; return true; }, attackAt: () => { specialCalls.sky++; return true; } };
+MM.bosses = { damageAt: () => { specialCalls.bosses++; return true; } };
+MM.invasions = { damageAt: () => { specialCalls.invasions++; return true; }, attackAt: () => { specialCalls.invasions++; return true; } };
+MM.ufo = { damageAt: () => { specialCalls.ufo++; return true; }, attackAt: () => { specialCalls.ufo++; return true; } };
+dbg.pushArrow({ x: 0.5, y: 0.5, vx: 8, vy: 0, dmg: 6, life: 3, stuck: false, stuckT: 3, tier: 'wood', coopOwner: true, recoverable: false });
+stepArrows(1);
+weapons.coopMeleeAt({ x: 0.5, y: 0.5 }, 1.5, 0.5, { bonus: 4 });
+assert.ok(ordinaryMobCalls >= 2, 'co-op arrows and melee still reach ordinary mobs');
+assert.deepEqual(specialCalls, { guardians:0, underground:0, sky:0, bosses:0, invasions:0, ufo:0 },
+	'EXPLOIT NEUTRALIZED: co-op combat never enters special defeat systems');
+
+// ---------------------------------------------------------------------------
+// 7) ADMISSION + DUEL LIVENESS: a saturated projectile store must reject the
+//    shot honestly (so ghost_host can refund ammo), and target-only stale duel
+//    consent cannot arm an in-flight arrow.
+// ---------------------------------------------------------------------------
+reset();
+for(let i=0;i<128;i++) dbg.arrows.push({
+	x:i,y:0,vx:0,vy:0,life:3,tier:'wood',embeddedMob:{id:i},recoverable:false
+});
+const audioBeforeCap=audio.length;
+assert.equal(weapons.spawnCoopArrow({x:0.5,y:0.5},4,0.5,{ownerGid:'gcap-owner'}),false,
+	'a co-op arrow reports entity-cap rejection so its host-side ammo can be refunded');
+assert.equal(weapons.spawnHeroProjectile({x:0.5,y:0.5},{vx:12,vy:0,ownerGid:'gcap-hero'}),false,
+	'a hero-guest projectile also reports entity-cap rejection');
+assert.equal(dbg.arrows.length,128,'capacity rejection preserves all embedded body arrows');
+assert.equal(audio.length,audioBeforeCap,'a rejected shot emits no bow audio');
+
+reset();
+MM.mobs={damageAt:()=>false,nearestLiving:()=>null};
+let duelHurt=0;
+const duelTarget={gid:'gduel-target',x:2.5,y:0.5,w:0.7,h:0.95,dead:false,duelWith:'gduel-owner',hurt:()=>{ duelHurt++; }};
+MM.coopBodies=[
+	{gid:'gduel-owner',x:0.5,y:0.5,w:0.7,h:0.95,dead:false,duelWith:null},
+	duelTarget
+];
+dbg.pushArrow({x:2.5,y:0.5,vx:0,vy:0,dmg:6,life:3,stuck:false,stuckT:3,tier:'wood',coopOwner:true,ownerGid:'gduel-owner',duelGid:'gduel-target'});
+stepArrows(1);
+assert.equal(duelHurt,0,'target-only stale duel consent cannot wound after the owner forfeits');
+
+reset();
+MM.mobs={damageAt:()=>false,nearestLiving:()=>null};
+duelHurt=0;
+duelTarget.duelWith='gduel-owner';
+MM.coopBodies=[
+	{gid:'gduel-owner',x:0.5,y:0.5,w:0.7,h:0.95,dead:false,duelWith:'gduel-target'},
+	duelTarget
+];
+dbg.pushArrow({x:2.5,y:0.5,vx:0,vy:0,dmg:6,life:3,stuck:false,stuckT:3,tier:'wood',coopOwner:true,ownerGid:'gduel-owner',duelGid:'gduel-target'});
+stepArrows(1);
+assert.equal(duelHurt,1,'mutual live duel consent still permits an arrow hit');
+MM.coopBodies=[];
+
+// ---------------------------------------------------------------------------
+// 8) WET BURSTS: both owners still soak/douse creatures. Only the hero's own
+//    balloon may extinguish tile fire or water host-world crops.
+// ---------------------------------------------------------------------------
+let wetCreatureCalls = 0;
+let douseCreatureCalls = 0;
+let wetBossCalls = 0;
+let extinguishCalls = 0;
+let waterCropCalls = 0;
+let lastWetSource = '';
+MM.mobs = {
+	wetRadius: (x, y, radius, opts) => { wetCreatureCalls++; lastWetSource = opts && opts.source; return 1; },
+	douseRadius: () => { douseCreatureCalls++; return 1; },
+	damageAt: () => false,
+	nearestLiving: () => null
+};
+MM.bossStatus = { applyRadius: () => { wetBossCalls++; return 1; } };
+MM.plants = { waterAt: () => { waterCropCalls++; return true; } };
+MM.fire.isBurning = () => true;
+MM.fire.extinguish = () => { extinguishCalls++; return true; };
+
+dbg.splatProjectile({ x: 2.5, y: 0.5, splat: 'wet' }, getTile, setTile);
+assert.ok(wetCreatureCalls > 0 && douseCreatureCalls > 0 && wetBossCalls > 0, 'CONTROL: a hero wet burst still affects creatures');
+assert.ok(extinguishCalls > 0, 'CONTROL: a hero wet burst still extinguishes tile fire');
+assert.ok(waterCropCalls > 0, 'CONTROL: a hero wet burst still waters crops');
+assert.equal(lastWetSource, 'hero', 'CONTROL: hero wet status keeps hero attribution');
+
+wetCreatureCalls = 0; douseCreatureCalls = 0; wetBossCalls = 0;
+extinguishCalls = 0; waterCropCalls = 0; lastWetSource = '';
+dbg.splatProjectile({ x: 2.5, y: 0.5, splat: 'wet', coopOwner: true }, getTile, setTile);
+assert.ok(wetCreatureCalls > 0 && douseCreatureCalls > 0, 'co-op wet bursts retain ordinary-creature wet and douse effects');
+assert.equal(wetBossCalls, 0, 'co-op wet bursts cannot mutate special boss status systems');
+assert.equal(lastWetSource, 'coop', 'co-op wet status is attributed to the co-op attacker');
+assert.equal(extinguishCalls, 0, 'EXPLOIT NEUTRALIZED: a co-op wet burst cannot extinguish host-world tile fire');
+assert.equal(waterCropCalls, 0, 'EXPLOIT NEUTRALIZED: a co-op wet burst cannot water host-world crops');
+
+// Defense in depth for impossible cached flags: non-wet splats do nothing, and
+// leaked fire/stagger statuses retain co-op attribution instead of becoming a
+// host-hero kill path.
+let hostileStatusCalls = 0;
+let hostileBossStatusCalls = 0;
+MM.mobs = {
+	damageAt: () => true,
+	nearestLiving: () => ({ id:'target' }),
+	statusRadius: () => { hostileStatusCalls++; return 1; },
+	poisonRadius: () => { hostileStatusCalls++; return 1; },
+	chillRadius: () => { hostileStatusCalls++; return 1; },
+	wetRadius: () => { hostileStatusCalls++; return 1; },
+	igniteAt: (x,y,opts) => { hostileStatusCalls++; assert.equal(opts.source,'coop','forged fire remains co-op attributed'); return true; },
+	chillAt: (x,y,opts) => { hostileStatusCalls++; assert.equal(opts.source,'coop','forged stagger remains co-op attributed'); return true; }
+};
+MM.bossStatus = { applyRadius: () => { hostileBossStatusCalls++; return 1; } };
+for(const splat of ['toxic','snow','sand','spit','gascloud','bomb']) dbg.splatProjectile({ x:2.5, y:0.5, splat, coopOwner:true, toxicSpit:true },getTile,setTile);
+assert.equal(hostileStatusCalls,0,'forged non-wet co-op splats cannot apply creature statuses');
+assert.equal(hostileBossStatusCalls,0,'forged co-op splats cannot touch boss status');
+reset();
+dbg.pushArrow({ x:0.5, y:0.5, vx:8, vy:0, dmg:6, life:3, stuck:false, stuckT:3, tier:'wood', coopOwner:true, fire:true, stagger:2 });
+stepArrows(1);
+assert.equal(hostileStatusCalls,2,'forged fire/stagger flags are bounded to two ordinary-mob status calls');
+assert.equal(hostileBossStatusCalls,0,'forged status flags still cannot touch bosses');
+
 console.log('coop-projectile-sim: all assertions passed');

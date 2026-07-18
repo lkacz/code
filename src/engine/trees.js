@@ -1,7 +1,8 @@
 // Tree generation + falling system
-import { CHUNK_W, WORLD_H, T, SNOW_LINE, isAutumnLeaf, isLeaf } from '../constants.js';
+import { CHUNK_W, WORLD_H, T, SNOW_LINE, HERO_BODY_W, HERO_BODY_H, isAutumnLeaf, isLeaf } from '../constants.js';
 import { fallingWindResponseForMaterial, isPassableForFalling } from './material_physics.js';
 import { heroLoadWeight } from './hero_crush.js';
+import { authoritativeBodyBlocksCell, COOP_BODY_ONLY } from './body_footprint.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
 window.MM = window.MM || {};
 (function(){
@@ -26,6 +27,7 @@ window.MM = window.MM || {};
   const SEASONAL_LEAF_DECAY_SECONDS = 60;
   const SEASONAL_LEAF_CLEANUP_BUDGET = 18;
   const TREE_DEBRIS_PERSIST_CAP = 24000;
+  const TREE_LOOSE_PERSIST_CAP = 24000;
   const TREE_IDENTITY_PERSIST_CAP = 48000;
   const TREE_LEAF_LITTER_PERSIST_CAP = 16000;
   const TREE_CHUNK_AUDIT_CAP = 2048;
@@ -568,14 +570,30 @@ window.MM = window.MM || {};
   // Felled blocks share pass-through rules with rigid falling solids, but still
   // collide with standing foliage so wood can crush or slide off tree crowns.
   function passThrough(t){ return !isLeaf(t) && isPassableForFalling(t); }
-  // Never solidify tree debris inside the hero — pieces hover on him like the
-  // falling-solids entities do, and settle once he steps away (same contract as
-  // falling.js playerBlocks). Forced settles (save-time settleAll) bypass this;
-  // the burial resolver in engine/hero_crush.js cleans those up next frame.
-  function heroBlocks(x,y){
+  // Keep host-only load accounting separate from the shared settlement probe:
+  // debris resting on a guest must not count as crush weight on the host.
+  function hostPlayerBlocks(x,y){
     const p=(typeof window!=='undefined' && window.player) ? window.player : null;
     if(!p) return false;
-    return x+1 > p.x-p.w/2 && x < p.x+p.w/2 && y+1 > p.y-p.h/2 && y < p.y+p.h/2;
+    const w=Number.isFinite(p.w)&&p.w>0?p.w:HERO_BODY_W, h=Number.isFinite(p.h)&&p.h>0?p.h:HERO_BODY_H;
+    return x+1 > p.x-w/2 && x < p.x+w/2 && y+1 > p.y-h/2 && y < p.y+h/2;
+  }
+  function bodyBlocks(x,y){ return authoritativeBodyBlocksCell(x,y); }
+  function guestBodyBlocks(x,y){ return authoritativeBodyBlocksCell(x,y,COOP_BODY_ONLY); }
+  function forcedBodyFreeRest(getTile,startX,startY){
+    for(let radius=0;radius<=8;radius++){
+      const offsets=radius===0?[0]:[-radius,radius];
+      for(const dx of offsets){
+        const x=startX+dx;
+        let y=Math.max(0,Math.min(WORLD_H-1,Math.floor(startY)));
+        while(y>0 && !passThrough(getTile(x,y))) y--;
+        if(!passThrough(getTile(x,y))) continue;
+        while(y<WORLD_H-1 && passThrough(getTile(x,y+1))) y++;
+        if(y+1<WORLD_H && standingTreeSupportAt(getTile,x,y+1)) continue;
+        if(!bodyBlocks(x,y)) return {x,y};
+      }
+    }
+    return null;
   }
   function normalizeDir(dir){ return dir<0?-1:(dir>0?1:0); }
   function windSpeedAt(getTile,x,y){
@@ -604,6 +622,17 @@ window.MM = window.MM || {};
       hBudget:Math.max(0, hBudget==null ? pileRollBudget(t) : hBudget|0),
       windCarry:0
     };
+  }
+  function restoredFallingPiece(raw){
+    try{
+      if(!raw || !Number.isFinite(raw.x) || !Number.isFinite(raw.y) || !Number.isInteger(raw.t)) return null;
+      const x=Math.floor(raw.x), y=Math.floor(raw.y);
+      if(!Number.isSafeInteger(x) || Math.abs(x)>TREE_MAX_ABS_X || y<0 || y>=WORLD_H || !fallsAsTreeDebris(raw.t)) return null;
+      const hBudget=Number.isFinite(raw.hBudget) ? Math.max(0,Math.min(8,Math.floor(raw.hBudget))) : pileRollBudget(raw.t);
+      const piece=makeFallingPiece(x,y,raw.t,raw.dir,hBudget);
+      piece.windCarry=Number.isFinite(raw.windCarry) ? Math.max(-4,Math.min(4,raw.windCarry)) : 0;
+      return piece;
+    }catch(e){ return null; }
   }
   function canOccupy(getTile,occ,x,y){ return y>=0 && y<WORLD_H && passThrough(getTile(x,y)) && !(occ && occ.has(key(x,y))); }
   function applyWindToPiece(getTile,b,occ,dt){
@@ -717,15 +746,25 @@ window.MM = window.MM || {};
   }
   // Settle a felled block into the world without destroying terrain or water:
   // bump up out of any cell claimed meanwhile, displace water instead of deleting it.
-  // Returns 'hero' when the resting cell overlaps the hero (unless force), so the
-  // caller keeps the piece loose instead of burying him.
+  // Returns 'body' when a live settle overlaps any host-owned player footprint.
+  // Forced save settlement preserves the host burial-resolver contract but diverts
+  // around guests, which have no local resolver to repair a serialized overlap.
   function settleTreeBlock(getTile,setTile,b,force){
-    const x=Math.floor(b.x);
+    let x=Math.floor(b.x);
     let y=Math.max(0, Math.min(WORLD_H-1, Math.floor(b.y)));
     while(y>0 && !passThrough(getTile(x,y))) y--;
     if(!passThrough(getTile(x,y))) return false;
     if(y+1<WORLD_H && standingTreeSupportAt(getTile,x,y+1)) return false;
-    if(!force && heroBlocks(x,y)) return 'hero';
+    if(bodyBlocks(x,y)){
+      if(!force) return 'body';
+      // Keep the legacy host-save contract (hero_crush re-loosens that tile), but
+      // a remote body has no local burial resolver and must always be avoided.
+      if(guestBodyBlocks(x,y)){
+        const rest=forcedBodyFreeRest(getTile,x,y);
+        if(!rest) return 'body';
+        x=rest.x; y=rest.y;
+      }
+    }
     const was=getTile(x,y);
     if(was===T.WATER){ try{ if(MM.water && MM.water.displaceAt) MM.water.displaceAt(x,y,getTile,setTile); }catch(e){} }
     setTile(x,y,b.t);
@@ -743,7 +782,7 @@ window.MM = window.MM || {};
     const piece=makeFallingPiece(b.x,b.y,b.t,b.dir,b.hBudget);
     const settle=()=>{
       const res=settleTreeBlock(getTile,setTile,piece,force);
-      if(res==='hero'){ piece.onHero=true; fallingBlocks.push(piece); return false; } // hover on the hero until he moves
+      if(res==='body'){ piece.onHero=hostPlayerBlocks(piece.x,piece.y); fallingBlocks.push(piece); return false; }
       return res;
     };
     let guard=0;
@@ -1066,8 +1105,8 @@ window.MM = window.MM || {};
     drainTreeQueues(getTile,setTile);
     const trees=[...fallingTrees];
     fallingTrees.length=0;
-    // force=true: the save cannot persist loose pieces, so a piece hovering on
-    // the hero solidifies in place — the burial resolver re-loosens it next frame
+    // force=true settles what it safely can. Pieces with no legal resting cell
+    // remain in fallingBlocks and are serialized by snapshot() as loose escrow.
     trees.forEach(tree=>landTree(getTile,setTile,tree,landedAngle(tree),true));
     let guard=0;
     while((fallingBlocks.length || unstableTreeTiles.size || unstableFallenTreeTiles.size) && guard++<64){
@@ -1106,11 +1145,22 @@ window.MM = window.MM || {};
         : SEASONAL_LEAF_DECAY_SECONDS;
       leafLitter.push([pos.k,+remaining.toFixed(3)]);
     }
-    return {v:3,debris,identities,leafLitter};
+    const loose=[];
+    for(let i=0, n=Math.min(fallingBlocks.length,TREE_LOOSE_PERSIST_CAP); i<n; i++){
+      const piece=restoredFallingPiece(fallingBlocks[i]);
+      if(!piece) continue;
+      loose.push({x:piece.x,y:piece.y,t:piece.t,dir:piece.dir,hBudget:piece.hBudget,windCarry:piece.windCarry||0});
+    }
+    return {v:4,debris,identities,leafLitter,loose};
   }
   function restore(state,getTile){
     clearTreeIdentityMaps();
     resetVolatileState();
+    const loose=state && Array.isArray(state.loose) ? state.loose : [];
+    for(let i=0, n=Math.min(loose.length,TREE_LOOSE_PERSIST_CAP); i<n; i++){
+      const piece=restoredFallingPiece(loose[i]);
+      if(piece) fallingBlocks.push(piece);
+    }
     const debris=state && Array.isArray(state.debris) ? state.debris : [];
     for(let i=0, n=Math.min(debris.length,TREE_DEBRIS_PERSIST_CAP); i<n; i++){
       const pos=parsePersistedTreeKey(debris[i]);
@@ -1159,12 +1209,12 @@ window.MM = window.MM || {};
       const toRemove=[];
       for(const idx of order){
         const b=fallingBlocks[idx];
-        b.onHero=false; // re-set by the hover branches below
+        b.onHero=false; // re-set only when the host (not a guest) carries the piece
         applyWindToPiece(getTile,b,occ,STEP);
         const belowY=b.y+1;
         if(belowY>=WORLD_H){
-          if(settleTreeBlock(getTile,setTile,b)!=='hero') toRemove.push(idx);
-          else b.onHero=true;
+          if(settleTreeBlock(getTile,setTile,b)!=='body') toRemove.push(idx);
+          else b.onHero=hostPlayerBlocks(b.x,b.y);
           continue;
         }
         const belowKey=key(b.x,belowY);
@@ -1196,8 +1246,8 @@ window.MM = window.MM || {};
           occ.add(key(b.x,b.y));
           continue;
         }
-        if(settleTreeBlock(getTile,setTile,b)!=='hero') toRemove.push(idx);
-        else b.onHero=true;
+        if(settleTreeBlock(getTile,setTile,b)!=='body') toRemove.push(idx);
+        else b.onHero=hostPlayerBlocks(b.x,b.y);
       }
       if(toRemove.length){
         toRemove.sort((a,b)=>b-a).forEach(i=>fallingBlocks.splice(i,1));
@@ -1361,7 +1411,7 @@ window.MM = window.MM || {};
   trees.heroRestingLoad = ()=>{
     let count=0, weight=0;
     for(const b of fallingBlocks){
-      if(!b.onHero || !heroBlocks(b.x,b.y)) continue;
+      if(!b.onHero || !hostPlayerBlocks(b.x,b.y)) continue;
       count++; weight+=heroLoadWeight(b.t);
     }
     return {count,weight};
@@ -1376,6 +1426,7 @@ window.MM = window.MM || {};
   trees._unstableTreeTiles = unstableTreeTiles;
   trees._limits = Object.freeze({
     debris:TREE_DEBRIS_PERSIST_CAP,
+    loose:TREE_LOOSE_PERSIST_CAP,
     identities:TREE_IDENTITY_PERSIST_CAP,
     leafLitter:TREE_LEAF_LITTER_PERSIST_CAP,
     chunkAudit:TREE_CHUNK_AUDIT_CAP

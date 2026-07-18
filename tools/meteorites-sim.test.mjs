@@ -74,6 +74,31 @@ MM.plants = {
   mutateAt(){ plantMutations++; return 1; }
 };
 
+// The crater transaction may excavate under an embodied player, but every
+// collision-tile writer must leave both host and co-op footprints open.
+{
+  const occupancyTiles=new Map([
+    ['900,20',T.AIR],
+    ['901,20',T.AIR],
+    ['902,20',T.STONE]
+  ]);
+  const getOccupancyTile=(x,y)=>occupancyTiles.get(kxy(x,y)) ?? T.AIR;
+  const setOccupancyTile=(x,y,t)=>occupancyTiles.set(kxy(x,y),t);
+  const oldPose={x:player.x,y:player.y};
+  player.x=900.5; player.y=20.5;
+  MM.coopBodies=[{gid:'gmeteor-body',x:901.5,y:20.5,w:0.7,h:0.95,dead:false}];
+  meteorites._debug.queueCrater(901,20,1,getOccupancyTile,[
+    {phase:1,x:900,y:20,t:T.STONE,d:0,place:true},
+    {phase:1,x:901,y:20,t:T.OBSIDIAN,d:0,place:true},
+    {phase:0,x:902,y:20,t:T.AIR,d:0,place:false}
+  ],setOccupancyTile,{instant:true});
+  assert.equal(getOccupancyTile(900,20),T.AIR,'primary crater floor cannot materialize through the host body');
+  assert.equal(getOccupancyTile(901,20),T.AIR,'primary crater floor cannot materialize through a co-op body');
+  assert.equal(getOccupancyTile(902,20),T.AIR,'body occupancy guard still permits crater excavation');
+  MM.coopBodies=[];
+  player.x=oldPose.x; player.y=oldPose.y;
+}
+
 meteorites.restore({enabled:false,nextIn:60,spawned:0,impacts:0});
 assert.equal(meteorites.metrics().beacons, 0, 'restore clears the antigravity beacon lookup index');
 assert.equal(meteorites.metrics().sirens, 0, 'restore clears the meteor siren lookup index');

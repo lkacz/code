@@ -6071,7 +6071,7 @@ const mobs = (function(){
     const coop = (window.MM && MM.coopBodies && MM.coopBodies.length) ? MM.coopBodies : null;
     if(!coop) return null; // solo: callers keep the host-player fast path
     const list = [player];
-    for(const b of coop){ if(b && finiteCoord(b.x) && finiteCoord(b.y)) list.push(b); }
+    for(const b of coop){ if(b && !b.dead && finiteCoord(b.x) && finiteCoord(b.y)) list.push(b); }
     return list.length > 1 ? list : null;
   }
   let nextSpawnCheck = 0;
@@ -6274,6 +6274,15 @@ const mobs = (function(){
     if(opts.hero===true) return true;
     const src=String(opts.source || opts.actor || opts.by || '').toLowerCase();
     return src==='hero' || src==='player' || src==='hero_mech' || src==='player_mech';
+  }
+  // Network spectators and embodied guests are allowed to help wound ordinary
+  // creatures, but they never own this world's kill/reward contract.  Keeping
+  // that rule at the common damage inlet is important: several species death
+  // callbacks award host XP/loot or mutate terrain and weather.
+  function sourceIsRemoteWoundOnly(opts){
+    if(!opts || typeof opts!=='object') return false;
+    const src=String(opts.source || opts.actor || opts.by || '').toLowerCase();
+    return src==='coop' || src==='ghost';
   }
   function combatElementFromOpts(opts){
     if(!opts || typeof opts!=='object') return '';
@@ -10960,13 +10969,19 @@ const mobs = (function(){
     // Frozen shell shields the creature — crack it (or melt it with fire) first.
     if(m.status && m.status.frozen && m.status.frozen.t>0) dealt*=STATUS.frozen.armor||1;
     const beforeHp=Number(m.hp)||0;
+    const remoteWoundOnly=sourceIsRemoteWoundOnly(opts);
+    // Fail closed before ANY species hook.  A guest can reduce a creature to a
+    // visible wound floor, but cannot fire onDamaged/onDeath callbacks whose
+    // behavior is species-specific and may touch the host's world or economy.
+    if(remoteWoundOnly) dealt=Math.min(dealt,Math.max(0,beforeHp-0.5));
+    if(!(dealt>0)) return;
     const willDie=beforeHp-dealt<=0;
     noteDamageSource(m,opts);
     m.hp-=dealt;
     m.hitFlashUntil = performance.now()+120;
     m.shake = 0.6;
     noteMobCombatHit(m,dealt,opts,willDie,beforeHp,thermalBonus);
-    if(typeof spec.onDamaged==='function'){
+    if(!remoteWoundOnly && typeof spec.onDamaged==='function'){
       try{ spec.onDamaged(m,spec,{amount:dealt,beforeHp,opts,now:performance.now(),willDie}); }catch(e){}
     }
     if(m.hp<=0){ m.hp=0; m.shake=1; spawnMobDeathFx(m,opts); onMobDeath(m); }

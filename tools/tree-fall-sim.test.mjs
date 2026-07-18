@@ -29,7 +29,7 @@ const setTileWithTreeHook = (x,y,t)=>{
   if(old!==t) trees.onTileChanged(x,y,old,t);
 };
 const resetTiles = ()=>tiles.clear();
-const resetTreeSystem = ()=>{ trees.reset(); if(trees.resetIdentities) trees.resetIdentities(); };
+const resetTreeSystem = ()=>{ trees.reset(); if(trees.resetIdentities) trees.resetIdentities(); MM.coopBodies=[]; };
 function burnTileNow(x,y){
   assert.equal(fire.ignite(x,y,getTile), true, 'test tile ignites before burn-out');
   const info=INFO[getTile(x,y)];
@@ -66,6 +66,80 @@ function markRegisteredTree(id,cells){
 }
 
 worldGen.randSeed = ()=>0;
+
+// Tree debris uses the same host+co-op footprint as rigid falling solids. Guest
+// corpses block settlement too, but their debris load is never charged to the host.
+{
+  const priorPlayer=globalThis.player;
+  try{
+    resetTiles(); resetTreeSystem();
+    for(let x=-3;x<=3;x++) setTile(x,12,T.STONE);
+    globalThis.player={x:0.5,y:10.7,w:0.7,h:0.95};
+    trees._fallingBlocks.push({x:0,y:4,t:T.WOOD,dir:0,hBudget:0});
+    for(let i=0;i<30;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
+    assert.equal(getTile(0,10),T.AIR,'host footprint keeps tree debris loose');
+    assert.equal(trees._fallingBlocks.length,1,'host-blocked tree debris remains active');
+    assert.equal(trees.heroRestingLoad().count,1,'debris on the host still contributes host crush load');
+    globalThis.player.x=20;
+    for(let i=0;i<30;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
+    assert.equal(getTile(0,11),T.WOOD,'host-blocked tree debris settles after the hero moves');
+
+    resetTiles(); resetTreeSystem();
+    for(let x=-3;x<=3;x++) setTile(x,12,T.STONE);
+    globalThis.player={x:20,y:10.7,w:0.7,h:0.95};
+    const corpse={x:0.5,y:10.7,w:0.7,h:0.95,dead:true};
+    MM.coopBodies=[corpse];
+    trees._fallingBlocks.push({x:0,y:4,t:T.WOOD,dir:0,hBudget:0});
+    for(let i=0;i<30;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
+    assert.equal(getTile(0,10),T.AIR,'dead guest footprint keeps tree debris loose');
+    assert.equal(trees._fallingBlocks.length,1,'guest-blocked tree debris remains active');
+    assert.equal(trees.heroRestingLoad().count,0,'debris on a guest is not charged as host crush load');
+    corpse.x=20;
+    for(let i=0;i<30;i++) trees.updateFallingBlocks(getTile,setTile,1/60);
+    assert.equal(getTile(0,11),T.WOOD,'guest-blocked tree debris settles after the body moves');
+
+    resetTiles(); resetTreeSystem();
+    for(let x=-3;x<=3;x++) setTile(x,12,T.STONE);
+    globalThis.player={x:20,y:10.7,w:0.7,h:0.95};
+    MM.coopBodies=[{x:0.5,y:10.7,w:0.7,h:0.95,dead:true}];
+    trees._fallingBlocks.push({x:0,y:4,t:T.WOOD,dir:0,hBudget:0});
+    trees.settleAll(getTile,setTile);
+    assert.equal(getTile(0,10),T.AIR,'forced tree settlement never serializes through a dead guest');
+    assert.ok(getTile(-1,11)===T.WOOD || getTile(1,11)===T.WOOD,'forced tree settlement preserves debris in a stable clear cell beside the guest');
+
+    resetTiles(); resetTreeSystem();
+    globalThis.player={x:100,y:10.7,w:0.7,h:0.95};
+    const enclosedCorpse={x:0.5,y:10.7,w:0.7,h:0.95,dead:true};
+    MM.coopBodies=[enclosedCorpse];
+    for(let x=-8;x<=8;x++){
+      for(let y=0;y<=12;y++){
+        if(x===0 && y<12) continue;
+        setTile(x,y,T.STONE);
+      }
+    }
+    trees._fallingBlocks.push(
+      {x:0,y:4,t:T.WOOD,dir:0,hBudget:0},
+      {x:0,y:5,t:T.WOOD,dir:0,hBudget:0}
+    );
+    trees.settleAll(getTile,setTile);
+    assert.equal(getTile(0,10),T.AIR,'tight forced tree enclosure keeps the upper corpse cell clear');
+    assert.equal(getTile(0,11),T.AIR,'tight forced tree enclosure keeps the lower corpse cell clear');
+    const escrow=JSON.parse(JSON.stringify(trees.snapshot()));
+    assert.equal(escrow.v,4,'tree snapshot version records loose-piece persistence');
+    assert.equal(escrow.loose.length,2,'all unplaceable tree debris remains in the serializable loose escrow');
+    trees.restore(escrow,getTile);
+    assert.equal(trees._fallingBlocks.length,2,'every tree loose escrow record restores as active debris');
+    enclosedCorpse.x=100;
+    trees.settleAll(getTile,setTile);
+    assert.equal(getTile(0,10),T.WOOD,'restored tree escrow keeps its upper debris mass');
+    assert.equal(getTile(0,11),T.WOOD,'restored tree escrow settles after its body blocker moves');
+    assert.equal(trees._fallingBlocks.length,0,'released tree escrow fully drains');
+  }finally{
+    MM.coopBodies=[];
+    if(priorPlayer===undefined) delete globalThis.player;
+    else globalThis.player=priorPlayer;
+  }
+}
 
 {
   resetTiles();
@@ -1313,19 +1387,26 @@ worldGen.randSeed = ()=>0;
   resetTiles();
   resetTreeSystem();
   const debrisFlood=Array.from({length:trees._limits.debris+29},(_,i)=>key(i,5));
-  trees.restore({v:3,debris:debrisFlood,identities:[],leafLitter:[]},()=>T.WOOD);
+  const looseFlood=Array.from({length:trees._limits.loose+29},(_,i)=>({x:i,y:5,t:T.WOOD,dir:0,hBudget:0}));
+  trees.restore({v:4,debris:debrisFlood,identities:[],leafLitter:[],loose:looseFlood},()=>T.WOOD);
   assert.equal(trees._fallenTreeTiles.size,trees._limits.debris,'tree restore processes at most the debris persistence cap');
+  assert.equal(trees._fallingBlocks.length,trees._limits.loose,'tree restore processes at most the loose-debris persistence cap');
   assert.equal(trees.snapshot().debris.length,trees._limits.debris,'tree snapshot stays bounded at the debris persistence cap');
+  assert.equal(trees.snapshot().loose.length,trees._limits.loose,'tree snapshot stays bounded at the loose-debris persistence cap');
 
-  trees.restore({v:3,
+  trees.restore({v:4,
     debris:['bad-key','1,Infinity','30000001,5','1,5,extra'],
     identities:[['2,5','valid-tree'],['3,5','x'.repeat(161)],['4e0,5','invalid-key']],
-    leafLitter:[['4,5',Infinity]]
+    leafLitter:[['4,5',Infinity]],
+    loose:[null,{x:Infinity,y:5,t:T.WOOD},{x:3,y:-1,t:T.WOOD},{x:3,y:5,t:T.STONE},{x:6,y:5,t:T.LEAF,dir:9,hBudget:99,windCarry:99}]
   },(x)=>x===4?T.AUTUMN_LEAF_ORANGE:T.WOOD);
   assert.equal(trees._fallenTreeTiles.has('bad-key'),false,'malformed persisted coordinates are rejected');
   assert.equal(trees._tileTreeIds.size,1,'restore rejects oversized ids and non-canonical identity coordinates');
   assert.equal(trees._tileTreeIds.get('2,5'),'valid-tree','valid bounded tree identity still restores');
   assert.ok(Number.isFinite(trees._seasonalLeafLitter.get('4,5')),'non-finite leaf expiry is replaced with a finite decay deadline');
+  assert.equal(trees._fallingBlocks.length,1,'malformed loose tree records are rejected independently');
+  assert.deepEqual({x:trees._fallingBlocks[0].x,y:trees._fallingBlocks[0].y,t:trees._fallingBlocks[0].t,dir:trees._fallingBlocks[0].dir,hBudget:trees._fallingBlocks[0].hBudget,windCarry:trees._fallingBlocks[0].windCarry},
+    {x:6,y:5,t:T.LEAF,dir:1,hBudget:8,windCarry:4},'valid loose tree records restore with bounded motion fields');
 }
 
 {

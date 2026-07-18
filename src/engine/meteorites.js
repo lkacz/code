@@ -1,7 +1,8 @@
 import { CHUNK_W, T, INFO, WORLD_H, WORLD_MAX_Y } from '../constants.js';
-import { isGasTile, isMeteorForestSiteTile, isMeteorImpactGroundTile, isMeteorLifeSiteTile, isMeteorProtectedTile, isMeteorSettlementSiteTile, isMeteorWaterSiteTile } from './material_physics.js';
+import { isGasTile, isMeteorForestSiteTile, isMeteorImpactGroundTile, isMeteorLifeSiteTile, isMeteorProtectedTile, isMeteorSettlementSiteTile, isMeteorWaterSiteTile, isSolidCollisionTile } from './material_physics.js';
 import { worldHostility as HOSTILITY } from './world_hostility.js';
 import { damageBlastCreatures } from './explosion_damage.js';
+import { authoritativeBodyBlocksCell } from './body_footprint.js';
 
 const meteorites = (function(){
   const MM = window.MM = window.MM || {};
@@ -1213,6 +1214,10 @@ const meteorites = (function(){
     if(protectedTile(old)) return false;
     if(op.phase===0 && old===T.AIR) return false;
     if(op.phase===1 && !op.place && op.t!==T.LAVA && old===T.AIR && Math.random()<0.72) return false;
+    // Craters may excavate beneath an embodied player, but neither the instant
+    // floor/rim pass nor a queued crater job may materialize a collision tile
+    // through the host or an authoritative co-op body.
+    if(isSolidCollisionTile(op.t) && authoritativeBodyBlocksCell(op.x,op.y)) return false;
     setTile(op.x,op.y,op.t);
     notifyTerrainChange(op.x,op.y,old,op.t,getTile,setTile,batch);
     return true;
@@ -1253,6 +1258,10 @@ const meteorites = (function(){
     if(y<1 || y>=WORLD_BOTTOM-3) return false;
     const old=readTile(getTile,x,y);
     if(old===t || protectedTile(old)) return false;
+    // All delayed aftermath writers (ice, rubble, minerals and crater ecology)
+    // share this inlet, so the same occupancy rule protects them as the primary
+    // crater transaction.
+    if(isSolidCollisionTile(t) && authoritativeBodyBlocksCell(x,y)) return false;
     setTile(x,y,t);
     notifyTerrainChange(x,y,old,t,getTile,setTile);
     return true;

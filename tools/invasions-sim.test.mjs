@@ -823,6 +823,13 @@ assert.ok(physicalChests.some(d=>d.tier==='epic' && d.opts.source==='alien_comma
 // engineer barricades are tracked and cleaned up when the team falls
 const debugTeam = invasions._debug.teams[0];
 invasions._debug.cleanupBuiltTiles(debugTeam,getTile,setTile,ctx); // clear any sim-built walls first
+MM.coopBodies=[{x:30.5,y:49.5,w:0.7,h:0.95,dead:true}];
+assert.equal(invasions._debug.canPlaceBarricadeAt(30,49,player,debugTeam,getTile),false,'a corpse footprint blocks invasion barricade validation');
+assert.equal(invasions._debug.placeBarricadeTile(debugTeam,30,49,getTile,setTile,ctx),false,'the barricade write boundary re-checks a guest footprint');
+assert.equal(invasions._debug.canPlaceRampAt(30,49,player,debugTeam,getTile),false,'a guest footprint blocks invasion ramp validation');
+assert.equal(invasions._debug.placeRampTile(debugTeam,30,49,getTile,setTile,ctx),false,'the ramp write boundary re-checks a guest footprint');
+assert.equal(getTile(30,49),T.AIR,'invasion construction never materializes a solid through a guest body');
+delete MM.coopBodies;
 assert.ok(invasions._debug.placeBarricadeTile(debugTeam,30,49,getTile,setTile,ctx), 'invaders can raise barricade tiles');
 assert.equal(getTile(30,49), T.ALIEN_BIOMASS, 'barricades are alien biomass tiles');
 assert.equal(debugTeam.builtTiles.length, 1, 'placed barricades are tracked on the team');

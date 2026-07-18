@@ -56,6 +56,16 @@ const world = {
 const species = mobs._debugSpecies();
 const progression=mobs._debugProgression;
 const id = 'STONE_GOLEM';
+let remoteDamagedHooks=0;
+let remoteDeathHooks=0;
+const remoteHookId='REMOTE_WOUND_HOOK_TEST';
+assert.equal(mobs.registerSpecies({
+  id:remoteHookId, displayName:'Remote wound hook test', hp:12, xp:500, dmg:0, speed:1,
+  wanderInterval:[2,3], max:1, ground:true, organic:false,
+  spawnTest(){ return false; },
+  onDamaged(){ remoteDamagedHooks++; },
+  onDeath(){ remoteDeathHooks++; }
+}),true,'remote wound regression species registered once');
 globalThis.player = {x:0.5,y:9.15,w:0.7,h:0.95,vx:0,vy:0,hp:100,maxHp:100,hpInvul:0,xp:0};
 
 function currentFatigue(){
@@ -86,6 +96,26 @@ function challengeFor(specId,mobOverrides){
 
 try{
   mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
+
+  // Network-owned attacks may help wound an ordinary creature, but they never
+  // own host kill rewards or arbitrary species callbacks (some real callbacks
+  // crater terrain, alter weather, and spawn follow-up mobs).
+  for(const source of ['coop','ghost']){
+    spawnTestMob(remoteHookId);
+    const xpBefore=player.xp;
+    assert.equal(mobs.damageAt(0,9,99999,{source}),true,source+' remote hit reaches the creature');
+    const survivor=mobs.serialize().list.find(m=>m.id===remoteHookId);
+    assert.ok(survivor && survivor.hp===0.5,source+' damage stops at the remote wound floor');
+    assert.equal(player.xp,xpBefore,source+' damage awards no host XP');
+  }
+  assert.equal(remoteDamagedHooks,0,'remote hits cannot run species onDamaged world hooks');
+  assert.equal(remoteDeathHooks,0,'remote hits cannot run species onDeath world hooks');
+  spawnTestMob(remoteHookId);
+  assert.equal(mobs.damageAt(0,9,99999,{source:'hero'}),true,'CONTROL: the host hero can finish the same species');
+  assert.equal(remoteDamagedHooks,1,'CONTROL: an owner hit retains the species damage hook');
+  assert.equal(remoteDeathHooks,1,'CONTROL: an owner kill retains the species death hook');
+  mobs.deserialize({v:5,list:[],aggro:{mode:'rel',m:{}},xpFatigue:{mode:'day',m:{}}});
+  player.xp=0;
 
   const fairBear=challengeFor('BEAR');
   const weakWolf=challengeFor('WOLF');

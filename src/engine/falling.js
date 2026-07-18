@@ -3,7 +3,7 @@
 // per-frame processor releases unstable tiles into moving entities. Sand obeys an
 // angle-of-repose rule (a grain topples when a side and the cell below it are open),
 // so piles relax into natural 45° slopes and avalanches propagate frame by frame.
-import { CHUNK_W, T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
+import { CHUNK_W, T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, HERO_BODY_W, HERO_BODY_H } from '../constants.js';
 import {
   buildMaterialProfile as sharedBuildMaterialProfile,
   fallingWindResponseForMaterial,
@@ -32,6 +32,7 @@ import {
   structuralSupportStrengthForMaterial
 } from './material_physics.js';
 import { heroLoadWeight } from './hero_crush.js';
+import { authoritativeBodyBlocksCell, COOP_BODY_ONLY } from './body_footprint.js';
 import { skyBiomeNaturalFabricTile } from './world_layers.js';
 window.MM = window.MM || {};
 (function(){
@@ -462,7 +463,7 @@ window.MM = window.MM || {};
   function canWindShift(x,y,dir){
     if(!inWorldY(y)) return false;
     if(!passable(getTile(x+dir,y))) return false;
-    if(playerBlocks(x+dir,y)) return false;
+    if(bodyBlocks(x+dir,y)) return false;
     return true;
   }
   function applyWindToFalling(e,type,dt,inWater){
@@ -484,12 +485,29 @@ window.MM = window.MM || {};
     return moved;
   }
 
-  // Never solidify a tile inside the player — the entity rests on them until they move
-  function playerBlocks(x,y){ const p=window.player; if(!p) return false; return x+1 > p.x-p.w/2 && x < p.x+p.w/2 && y+1 > p.y-p.h/2 && y < p.y+p.h/2; }
-  // Live-settle sentinel: the roll/stack target landed on the hero — keep the
+  // The host-only probe feeds crush/jump load accounting. World settlement uses
+  // the shared probe below so live and dead authoritative guests get equal AABBs.
+  function hostPlayerBlocks(x,y){ const p=window.player; if(!p) return false; const w=Number.isFinite(p.w)&&p.w>0?p.w:HERO_BODY_W, h=Number.isFinite(p.h)&&p.h>0?p.h:HERO_BODY_H; return x+1 > p.x-w/2 && x < p.x+w/2 && y+1 > p.y-h/2 && y < p.y+h/2; }
+  function bodyBlocks(x,y){ return authoritativeBodyBlocksCell(x,y); }
+  function guestBodyBlocks(x,y){ return authoritativeBodyBlocksCell(x,y,COOP_BODY_ONLY); }
+  function forcedBodyFreeRest(startX,startY){
+    for(let radius=0;radius<=8;radius++){
+      const offsets=radius===0?[0]:[-radius,radius];
+      for(const dx of offsets){
+        const x=startX+dx;
+        let y=clampY(startY);
+        while(y>WORLD_TOP && !passable(getTile(x,y))) y--;
+        if(!passable(getTile(x,y))) continue;
+        while(y<WORLD_BOTTOM-1 && passable(getTile(x,y+1))) y++;
+        if(!bodyBlocks(x,y)) return {x,y};
+      }
+    }
+    return null;
+  }
+  // Live-settle sentinel: the roll/stack target landed on a body — keep the
   // entity hovering instead of materializing a tile onto him (returned by
   // occupy/settleSand/settleRubble when force is falsy).
-  const HERO_REST=-2;
+  const BODY_REST=-2;
   // Load currently resting on the hero (hovering entities). main.js uses this to
   // block jumping under a pile — jump-spam used to ratchet the hero up through
   // his own debris, extruding a 1-wide chimney — and to crush when it is too heavy.
@@ -497,12 +515,12 @@ window.MM = window.MM || {};
     let count=0, weight=0;
     for(const b of active){
       if(b.vy!==0) continue;
-      if(!playerBlocks(b.x,Math.floor(b.yFloat))) continue;
+      if(!hostPlayerBlocks(b.x,Math.floor(b.yFloat))) continue;
       count++; weight+=heroLoadWeight(b.type);
     }
     for(const s of sandActive){
       if(s.vy!==0) continue;
-      if(!playerBlocks(s.x,Math.floor(s.yFloat))) continue;
+      if(!hostPlayerBlocks(s.x,Math.floor(s.yFloat))) continue;
       count++; weight+=heroLoadWeight(T.SAND);
     }
     return {count,weight};
@@ -521,18 +539,23 @@ window.MM = window.MM || {};
   }
 
   // Write a settled solid into the world, displacing (not destroying) any water there.
-  // The hero is a block too: live settles that land on him return HERO_REST (the
-  // entity keeps hovering); forced settles (autosave settleAll, overload culling)
-  // may not lose mass, so they stack over his head instead — never into his body.
-  // If the column above him is sealed, force falls through to the old cell and
-  // the burial resolver (engine/hero_crush.js) sorts it out next frame.
+  // Every authoritative body is a block too: live settles hover; forced settles
+  // preserve the host's overhead-stack rule and divert around remote footprints,
+  // so a tile is never serialized through a guest body.
   function occupy(x,y,type,force){
     let yy=y; while(yy>WORLD_TOP && !passable(getTile(x,yy))) yy--; // cell may have been claimed this frame — stack upward
-    if(playerBlocks(x,yy)){
-      if(!force) return HERO_REST;
-      let hy=yy;
-      while(hy>WORLD_TOP && (playerBlocks(x,hy) || !passable(getTile(x,hy)))) hy--;
-      if(passable(getTile(x,hy))) yy=hy;
+    if(bodyBlocks(x,yy)){
+      if(!force) return BODY_REST;
+      if(guestBodyBlocks(x,yy)){
+        const rest=forcedBodyFreeRest(x,yy);
+        if(!rest) return BODY_REST;
+        x=rest.x; yy=rest.y;
+      } else {
+        let hy=yy;
+        while(hy>WORLD_TOP && (bodyBlocks(x,hy) || !passable(getTile(x,hy)))) hy--;
+        if(!passable(getTile(x,hy)) || bodyBlocks(x,hy)) return BODY_REST;
+        yy=hy;
+      }
     }
     const was=getTile(x,yy);
     if(was===T.WATER) displaceWater(x,yy);
@@ -540,7 +563,7 @@ window.MM = window.MM || {};
     forgetSettledRubble(x,yy);
     notifyGasChange(x,yy,was,type);
     if(was===T.WATER) notifyWater(x,yy);
-    return yy;
+    return {x,y:yy};
   }
 
   function clampY(y){
@@ -906,13 +929,19 @@ window.MM = window.MM || {};
       x+=dir;
       y=dropY(x,y+1);
     }
-    // The hero is a block: live grains landing on him keep hovering; forced
-    // settles pile the grain over his head rather than into his body (mirrors occupy())
-    if(playerBlocks(x,y)){
-      if(!force) return HERO_REST;
-      let hy=y;
-      while(hy>WORLD_TOP && (playerBlocks(x,hy) || !passable(getTile(x,hy)))) hy--;
-      if(passable(getTile(x,hy))) y=hy;
+    // Bodies block live grains; forced settles pile above every footprint.
+    if(bodyBlocks(x,y)){
+      if(!force) return BODY_REST;
+      if(guestBodyBlocks(x,y)){
+        const rest=forcedBodyFreeRest(x,y);
+        if(!rest) return BODY_REST;
+        x=rest.x; y=rest.y;
+      } else {
+        let hy=y;
+        while(hy>WORLD_TOP && (bodyBlocks(x,hy) || !passable(getTile(x,hy)))) hy--;
+        if(!passable(getTile(x,hy)) || bodyBlocks(x,hy)) return BODY_REST;
+        y=hy;
+      }
     }
     if(!passable(getTile(x,y))) return -1;
     const was=getTile(x,y);
@@ -965,11 +994,11 @@ window.MM = window.MM || {};
         break;
       }
     }
-    const restY=occupy(x,y,type,force);
-    if(restY===HERO_REST) return HERO_REST;
-    markSettledRubble(x,restY,type);
-    queueAroundSettle(x,restY);
-    return restY;
+    const rest=occupy(x,y,type,force);
+    if(rest===BODY_REST) return BODY_REST;
+    markSettledRubble(rest.x,rest.y,type);
+    queueAroundSettle(rest.x,rest.y);
+    return rest.y;
   }
 
   // --- Instability queue ---
@@ -1819,12 +1848,15 @@ window.MM = window.MM || {};
     if(rubble && isRubbleTrackedMaterial(type)) return settleRubble(x,fromY,type,true);
     let y=clampY(fromY);
     while(y<WORLD_BOTTOM-1 && passable(getTile(x,y+1))) y++;
-    const restY=occupy(x,y,type,true);
-    queueCheck(x,restY);
-    return restY;
+    const rest=occupy(x,y,type,true);
+    if(rest===BODY_REST) return BODY_REST;
+    queueCheck(rest.x,rest.y);
+    return rest.y;
   }
-  // The v5 save persists tiles only — airborne entities would vanish on reload.
-  // buildSaveObject() calls this right before serializing chunks.
+  // Freeze as much in-flight material as possible before save. If every legal
+  // resting cell in the bounded body-avoidance scan is blocked, keep the entity
+  // in the v5 active/sand snapshot as a serializable escrow instead of dropping
+  // its mass or writing a solid through an authoritative body.
   function settleAll(){
     if(!getTile) return;
     let guard=0;
@@ -1833,13 +1865,15 @@ window.MM = window.MM || {};
       drainQueueForSettle();
       const blocks=[...active].sort((a,b)=>b.yFloat-a.yFloat);
       active.length=0;
-      for(const b of blocks) dropToRest(b.x, b.yFloat, b.type, b.rubble);
+      for(const b of blocks){
+        if(dropToRest(b.x, b.yFloat, b.type, b.rubble)===BODY_REST) active.push(b);
+      }
       const grains=[...sandActive].sort((a,b)=>b.yFloat-a.yFloat);
       sandActive.length=0;
-      for(const s of grains) dropToRest(s.x, s.yFloat, T.SAND);
+      for(const s of grains){
+        if(dropToRest(s.x, s.yFloat, T.SAND)===BODY_REST) sandActive.push(s);
+      }
     }
-    active.length=0;
-    sandActive.length=0;
   }
 
   // --- Entity integration (swept, cell-by-cell — large dt cannot tunnel through floors) ---
@@ -1906,11 +1940,11 @@ window.MM = window.MM || {};
           b.yFloat=settledAt;
           continue;
         }
-        if(playerBlocks(b.x,settledAt)){ b.vy=0; b.yFloat=settledAt; continue; } // rest on the player until they move
+        if(bodyBlocks(b.x,settledAt)){ b.vy=0; b.yFloat=settledAt; continue; } // rest on a body until it moves
         if(isFragileFalling(b.type)){ breakFragile(b.x,settledAt); active.splice(i,1); continue; }
         // roll/stack target may land on the hero even when settledAt did not — hover, never bury
         const rest=(b.rubble && isRubbleTrackedMaterial(b.type)) ? settleRubble(b.x,settledAt,b.type) : occupy(b.x,settledAt,b.type);
-        if(rest===HERO_REST){ b.vy=0; b.yFloat=settledAt; continue; }
+        if(rest===BODY_REST){ b.vy=0; b.yFloat=settledAt; continue; }
         active.splice(i,1);
       }
     }
@@ -1953,8 +1987,8 @@ window.MM = window.MM || {};
           s.x+=dir; s.yFloat=yi+0.05; if(s.vy>8) s.vy=8; continue;
         }
       }
-      if(playerBlocks(s.x,yi)){ s.vy=0; s.yFloat=yi; continue; }
-      if(settleSand(s.x,yi)===HERO_REST){ s.vy=0; s.yFloat=yi; continue; } // roll target landed on the hero
+      if(bodyBlocks(s.x,yi)){ s.vy=0; s.yFloat=yi; continue; }
+      if(settleSand(s.x,yi)===BODY_REST){ s.vy=0; s.yFloat=yi; continue; } // roll target landed on a body
       sandActive.splice(i,1);
     }
   }
@@ -2191,7 +2225,7 @@ window.MM = window.MM || {};
   function maybeStart(x,y){ queueCheck(x,y); }
   function isPlayerBuiltAt(x,y){ const c=normalizedWorldCell(x,y); return !!c && isTrackedPlayerBuild(c.x,c.y); }
   // Re-loosen a tile the burial resolver pulled off the hero: the entity rests
-  // on him (playerBlocks) and settles normally once he steps away.
+  // on an authoritative body and settles normally once it steps away.
   function spawnLoose(x,y,t){
     if(!validFallingType(t) || !finiteX(x) || !Number.isFinite(y)) return false;
     x=Math.floor(x); y=clampY(y);

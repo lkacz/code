@@ -14,6 +14,7 @@
 //   drops/seasons/infra — low-Hz snapshots of the slow planes
 //   ghosts    — presence relay so every watcher (and the host) sees the spirits
 import { ghostNet as NET } from './ghost_net.js';
+import { bodyFootprintOverlapsCell } from './body_footprint.js';
 
 const MMR = (typeof window !== 'undefined' && window.MM) ? window.MM : null;
 // Neutral from the first frame: every consumer (mobs XP, movement, weapons)
@@ -37,11 +38,16 @@ const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this l
 const ELECTRIC_CAUSE = /shock|electric|lightning|laser/; // wet bodies conduct these
 const TILE_RESYNC_LIMIT = 3000;
 const MAX_GHOSTS = 12; // every join serializes a full snapshot — cap the flood surface
+const MAX_PENDING = 16;
+const HELLO_DEADLINE_MS = 12000;
+const PEER_ACCEPT_WINDOW_MS = 2000, PEER_ACCEPT_MAX = 48;
+const IDENTITY_MAX = 256;
 const SNAP_REQ_MIN_MS = 5000; // per-peer floor for needSnap re-sends
 const SNAP_CACHE_MS = 3000; // one save serialization serves every join/resync inside the window
 const MOBS_REQ_MIN_MS = 1000; // needMobs costs a full mob serialize — per-peer floor
 const PEER_MSG_WINDOW_MS = 2000, PEER_MSG_MAX = 240; // ~120 msg/s ceiling; a legit ghost sends ~5/s
 const MODE_MEMORY_MS = 10 * 60 * 1000; // a transport blip must not demote a player mid-session
+const HOST_ROOM_TAB_KEY = 'mm_ghost_host_room_v1'; // same host tab/reload may resume its room; sibling tabs stay isolated
 const BUFF_FX = { cheer: { tier: 'rare', sound: 'milestone' }, bless: { tier: 'epic', sound: 'heal' }, energy: { tier: 'epic', sound: 'charge' } };
 
 const ghostHost = (function(){
@@ -57,7 +63,10 @@ const ghostHost = (function(){
 		opts = opts || {};
 		if(session) return session.room;
 		if(!bridge) return null;
-		const room = NET.normalizeRoom(opts.room) || NET.roomCode();
+		let room = NET.normalizeRoom(opts.room);
+		if(!room){ try{ room = NET.normalizeRoom(sessionStorage.getItem(HOST_ROOM_TAB_KEY)); }catch(e){ room = null; } }
+		if(!room) room = NET.roomCode();
+		try{ sessionStorage.setItem(HOST_ROOM_TAB_KEY, room); }catch(e){ /* storage-disabled host gets an ephemeral room */ }
 		const s = {
 			room,
 			name: String(opts.name || 'Gospodarz').slice(0, 24),
@@ -94,16 +103,20 @@ const ghostHost = (function(){
 			duelAsks: new Map(), // 'challenger>target' → ts; a duel starts only on MUTUAL asks
 			modeMemory: new Map(), // gid → {mode, ts, body}: embodied rungs + combat state survive a reconnect
 			tokens: new Map(), // gid → resume token: the ONLY proof of gid ownership this session
-			// per-session invite secret (≥128-bit): the capability that gates AUTHENTICATED
-			// remote join. It rides the shared link's #fragment; every RTC signaling
-			// envelope is HMAC-signed with it, so only holders of the link can connect
-			// remotely. A plain link without it only ever connects same-machine (loopback).
+			// per-session invite secret (at least 128 bits): the capability that gates
+			// remote join. It rides the shared link's #fragment; v2 RTC signaling derives
+			// separate authentication/encryption keys from it. A plain link without it
+			// only ever connects same-machine (loopback).
 			secret: NET.mintInviteSecret(),
-			listen: null
+			listen: null,
+			closed: false
 		};
-		// Remote WebRTC is now AUTHENTICATED (signed signaling bound to the invite
-		// secret + host DTLS fingerprint), so it is on by default again — but a peer can
-		// only join remotely with the secret-bearing link. `rtc:false` forces
+		s.acceptT = now();
+		s.acceptN = 0;
+		// Remote WebRTC signaling is encrypted and authenticated inside the shared
+		// bearer-invite trust domain; the verified SDP also pins the chosen DTLS
+		// fingerprint. It is on by default, but a peer can only join remotely with the
+		// secret-bearing link. `rtc:false` forces
 		// loopback-only (used by the headless authority tests).
 		s.listen = NET.hostListen(room, { rtc: opts.rtc !== false, secret: s.secret, onPeer: (peer) => onPeer(s, peer) });
 		// world.js notifyTileChanged fans out to this global when hosting
@@ -119,6 +132,17 @@ const ghostHost = (function(){
 			};
 		}
 		session = s;
+		// Dynamic solidifiers need the accepted body pose immediately, not the
+		// cadence-delayed creature plane. Expose only a read-only cell predicate;
+		// session entries and mutable body objects remain private to the host.
+		if(MMR){
+			s.bodyFootprintProbe = (x, y, clearance) => {
+				if(s.closed || session !== s) return false;
+				for(const entry of s.peers.values()) if(entry.hello && entry.body && bodyFootprintOverlapsCell(entry.body, x, y, clearance)) return true;
+				return false;
+			};
+			MMR.coopBodyBlocksCell = s.bodyFootprintProbe;
+		}
 		// Companion pump: rAF freezes in a backgrounded tab, which would silence
 		// every frame-driven plane the moment the host alt-tabs. Intervals only
 		// get clamped (≥1 Hz), so the stream degrades instead of dying. frame()
@@ -131,17 +155,20 @@ const ghostHost = (function(){
 
 	function stop(){
 		if(!session) return;
-		keepAllBodies(session); // ending the stream banks every player's pouch first
+		const ending = session;
+		ending.closed = true;
 		broadcast({ t: 'hostGone' });
+		for(const entry of Array.from(ending.peers.values())) dropPeer(ending, entry, true);
 		closeSayBox();
 		hostChat = null;
-		if(session.pump) clearInterval(session.pump);
-		try{ session.listen.stop(); }catch(e){ /* fine */ }
+		if(ending.pump) clearInterval(ending.pump);
+		try{ ending.listen.stop(); }catch(e){ /* fine */ }
 		if(MMR){
 			MMR.ghostHostTile = null;
 			MMR.ghostSpook = null;
 			MMR.coopBodies = []; // no session, no embodied guests — creatures stop checking
-			if(session.prevRenderHook) MMR.onTileRenderChanged = session.prevRenderHook;
+			if(MMR.coopBodyBlocksCell === ending.bodyFootprintProbe) MMR.coopBodyBlocksCell = null;
+			if(ending.prevRenderHook) MMR.onTileRenderChanged = ending.prevRenderHook;
 		}
 		session = null;
 		updateSocialBoost(); // back to neutral 1.0 — no audience, no facilitation
@@ -206,8 +233,14 @@ const ghostHost = (function(){
 
 	// --- peers -----------------------------------------------------------------
 	function onPeer(s, peer){
+		if(!s || s.closed || (session && session !== s)){ try{ peer.close(); }catch(e){ /* stale listener */ } return; }
+		const acceptedAt = now();
+		if(acceptedAt - s.acceptT > PEER_ACCEPT_WINDOW_MS){ s.acceptT = acceptedAt; s.acceptN = 0; }
+		let pending = 0; for(const e of s.peers.values()) if(!e.hello) pending++;
+		if(++s.acceptN > PEER_ACCEPT_MAX || pending >= MAX_PENDING){ try{ peer.close(); }catch(e){ /* refuse */ } return; }
 		const entry = {
-			peer, gid: peer.id, name: null, cam: null, camPos: null, hello: false, lastSeen: now(),
+			peer, gid: peer.id, room: s.room, name: null, cam: null, camPos: null, hello: false, lastSeen: now(),
+			helloDeadline: acceptedAt + HELLO_DEADLINE_MS,
 			rateT: 0, rateN: 0, lastMobsReq: 0, lastChatAt: 0,
 			mode: defaultMode, avatar: 'duszek', actUntil: 0, lastChat: null,
 			charge: 0, powerCd: {}, assistant: false, lastAssistAt: 0, lastChargeSentAt: 0,
@@ -217,7 +250,92 @@ const ghostHost = (function(){
 		peer.onMessage = (pl) => onPeerMessage(s, entry, pl);
 	}
 	function markActive(entry){ entry.actUntil = now() + ACT_POSE_TTL_MS; }
+	function trackedPos(entry){
+		const p = entry && entry.body ? entry.body : (entry && entry.cam);
+		return p && Number.isFinite(p.x) && Number.isFinite(p.y) ? p : null;
+	}
+	// Spectator camera coordinates reach render transforms and gradients. Finite is
+	// not sufficient (`1e308 * TILE` becomes Infinity), so pin every unembodied
+	// camera to the authoritative world envelope before retaining it.
+	function boundedSpectatorCamera(x, y){
+		if(!Number.isFinite(x) || !Number.isFinite(y) || !bridge || typeof bridge.ghostBodyBounds !== 'function') return null;
+		let bounds = null;
+		try{ bounds = bridge.ghostBodyBounds(); }catch(e){ return null; }
+		if(!bounds || !Number.isFinite(bounds.minX) || !Number.isFinite(bounds.maxX)
+			|| !Number.isFinite(bounds.minY) || !Number.isFinite(bounds.maxY)
+			|| bounds.minX > bounds.maxX || bounds.minY > bounds.maxY) return null;
+		return {
+			x: Math.max(bounds.minX, Math.min(bounds.maxX, x)),
+			y: Math.max(bounds.minY, Math.min(bounds.maxY, y))
+		};
+	}
+	function cellOverlapsOtherBody(s, owner, tx, ty){
+		if(!s || !s.peers || !Number.isFinite(tx) || !Number.isFinite(ty)) return true;
+		const hw = NET.PLAY_RULES.BODY_W / 2;
+		const hh = NET.PLAY_RULES.BODY_H / 2;
+		for(const entry of s.peers.values()){
+			// A dead hero-mode body can respawn in place, so it still reserves its
+			// footprint. Letting a block materialize through the corpse would make the
+			// next accepted sweep fail closed inside that new solid forever.
+			if(entry === owner || !entry.hello || !entry.body) continue;
+			const b = entry.body;
+			if(!Number.isFinite(b.x) || !Number.isFinite(b.y)) return true;
+			if(tx + 1 > b.x - hw && tx < b.x + hw && ty + 1 > b.y - hh && ty < b.y + hh) return true;
+		}
+		return false;
+	}
+	function guestTargetClear(body, tx, ty){
+		if(!body || !Number.isFinite(tx) || !Number.isFinite(ty) || !bridge || typeof bridge.ghostTargetClear !== 'function') return false;
+		try{ return !!bridge.ghostTargetClear(body.x, body.y, Math.floor(tx), Math.floor(ty)); }
+		catch(e){ return false; }
+	}
+	// A reconnect may outlive the terrain under its stored body: another player can
+	// close the tunnel while the owner is offline. Movement sweeps deliberately do
+	// not resolve an already-embedded starting AABB, so validate it before reattach
+	// with the neutral guest collision rules (no drop-through/open trapdoor input).
+	function guestBodyPositionClear(x, y){
+		if(!Number.isFinite(x) || !Number.isFinite(y) || !bridge || typeof bridge.ghostBodySolidAt !== 'function' || typeof bridge.ghostBodyBounds !== 'function') return false;
+		const w = NET.PLAY_RULES.BODY_W, h = NET.PLAY_RULES.BODY_H;
+		const hw = w / 2, hh = h / 2;
+		let bounds = null;
+		try{ bounds = bridge.ghostBodyBounds(); }catch(e){ return false; }
+		if(!bounds || typeof bounds !== 'object') return false;
+		if((Number.isFinite(bounds.minX) && x - hw < bounds.minX)
+			|| (Number.isFinite(bounds.maxX) && x + hw > bounds.maxX)
+			|| (Number.isFinite(bounds.minY) && y - hh < bounds.minY)
+			|| (Number.isFinite(bounds.maxY) && y + hh > bounds.maxY)) return false;
+		const x0 = Math.floor(x - hw), x1 = Math.floor(x + hw - 1e-6);
+		const y0 = Math.floor(y - hh), y1 = Math.floor(y + hh - 1e-6);
+		const probe = { x, y, w, h, axis: 'y' };
+		for(let ty = y0; ty <= y1; ty++) for(let tx = x0; tx <= x1; tx++){
+			try{ if(bridge.ghostBodySolidAt(tx, ty, 'y', probe, false)) return false; }
+			catch(e){ return false; }
+		}
+		return true;
+	}
+	function relocateEmbeddedBody(body){
+		if(!body || typeof body !== 'object') return -1;
+		if(guestBodyPositionClear(body.x, body.y)) return 0;
+		const p = bridge && bridge.player;
+		if(!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return -1;
+		const originX = +p.x, originY = +p.y;
+		// Search a bounded square spiral around the live host hero. Its centre is
+		// normally already legal; the rings cover a trapdoor, doorway or cramped cab.
+		for(let radius = 0; radius <= 12; radius++){
+			for(let dy = -radius; dy <= radius; dy++) for(let dx = -radius; dx <= radius; dx++){
+				if(radius && Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+				const x = originX + dx, y = originY + dy;
+				if(!guestBodyPositionClear(x, y)) continue;
+				// Combat/inventory/status/cooldown state stays on the same body object;
+				// only the invalid transform is repaired.
+				body.x = x; body.y = y; body.vx = 0; body.vy = 0;
+				return 1;
+			}
+		}
+		return -1;
+	}
 	function onPeerMessage(s, entry, pl){
+		if(!s || s.closed || s !== session || !entry || !s.peers.has(entry.peer)) return;
 		if(!pl || typeof pl.t !== 'string') return;
 		const t = now();
 		entry.lastSeen = t;
@@ -230,7 +348,6 @@ const ghostHost = (function(){
 		if(!entry.hello && pl.t !== 'hello' && pl.t !== 'bye') return;
 		if(pl.t === 'hello'){
 			if(!entry.hello){
-				if(typeof pl.gid === 'string' && pl.gid) entry.gid = pl.gid.slice(0, 40);
 				// protocol handshake: an incompatible client is refused BEFORE a viewer,
 				// a snapshot or any permission exists — a mismatched wire shape must not
 				// reach the sim at all
@@ -239,6 +356,12 @@ const ghostHost = (function(){
 					dropPeer(s, entry, true);
 					return;
 				}
+				if(!NET.validGid(pl.gid)){
+					try{ entry.peer.send({ t: 'invalid', reason: 'gid' }); }catch(e){ /* fine */ }
+					dropPeer(s, entry, true);
+					return;
+				}
+				entry.gid = pl.gid;
 				if(s.banned.has(entry.gid)){
 					entry.peer.send({ t: 'banned' });
 					dropPeer(s, entry, true);
@@ -246,10 +369,19 @@ const ghostHost = (function(){
 				}
 				// gid ownership: a gid is PUBLIC (it rides presence, pb rows, duels), so
 				// trusting hello.gid alone lets anyone who saw it claim the seat, evict the
-				// owner and inherit its rung/body via modeMemory. If this gid was already
-				// claimed this session, only its resume-token holder may re-seat it — an
-				// impostor is refused HERE, before the current owner is touched.
-				const known = s.tokens.get(entry.gid);
+				// owner and inherit its rung/body. Session memory is bound to s.tokens; a
+				// fresh disk-backed body is bound to the SAME persisted proof. Legacy body
+				// rows without one fail closed instead of becoming cross-session loot.
+				let known = s.tokens.get(entry.gid);
+				if(!known){
+					const savedClaim = bodyKeepClaim(s.room, entry.gid, pl.rt);
+					if(savedClaim.taken){
+						try{ entry.peer.send({ t: 'taken' }); }catch(e){ /* fine */ }
+						dropPeer(s, entry, true);
+						return;
+					}
+					known = savedClaim.proof;
+				}
 				if(known && !NET.resumeTokenMatch(pl.rt, known)){
 					try{ entry.peer.send({ t: 'taken' }); }catch(e){ /* fine */ }
 					dropPeer(s, entry, true);
@@ -266,13 +398,30 @@ const ghostHost = (function(){
 					dropPeer(s, entry, true);
 					return;
 				}
+				// Mint on the first unreserved claim; a session reconnect or a rightful
+				// disk-backed restore reuses its proof. It rides the private welcome (on
+				// this peer's own locked channel) and never leaks onto a broadcast plane.
+				// Do this BEFORE the authenticated-state transition: secure RNG deliberately
+				// throws when unavailable, and such a failure must not leave a hello=true
+				// peer holding the host's persisted default permission without a proof.
+				if(!s.tokens.has(entry.gid) && s.tokens.size >= IDENTITY_MAX){
+					try{ entry.peer.send({ t: 'full' }); }catch(e){ /* fine */ }
+					dropPeer(s, entry, true);
+					return;
+				}
+				if(!s.tokens.has(entry.gid)){
+					let proof = known;
+					try{ proof = proof || NET.mintResumeToken(); }
+					catch(e){
+						try{ entry.peer.send({ t: 'unavailable', reason: 'identity' }); }catch(e2){ /* fine */ }
+						dropPeer(s, entry, true);
+						return;
+					}
+					s.tokens.set(entry.gid, proof);
+				}
+				entry.resumeToken = s.tokens.get(entry.gid);
 				entry.hello = true;
 				s.watchers++;
-				// mint the resume token on the FIRST successful claim of this gid; a
-				// reconnect reuses the stored one. It rides the private welcome (on this
-				// peer's own locked channel) and never leaks onto any broadcast plane.
-				if(!s.tokens.has(entry.gid)) s.tokens.set(entry.gid, NET.mintResumeToken());
-				entry.resumeToken = s.tokens.get(entry.gid);
 				entry.name = String(pl.name || 'Duch').slice(0, 24);
 				if(NET.validAvatar(pl.avatar)) entry.avatar = pl.avatar;
 				if(Number.isFinite(pl.lvl)) entry.level = Math.max(1, Math.min(NET.PROG.MAX_LEVEL, Math.floor(pl.lvl)));
@@ -294,21 +443,46 @@ const ghostHost = (function(){
 				// player out of danger. The ban path already refused anyone thrown out.
 				const kept = s.modeMemory ? s.modeMemory.get(entry.gid) : null;
 				if(kept && now() - kept.ts < MODE_MEMORY_MS && (kept.mode === 'play' || kept.mode === 'hero')){
-					s.modeMemory.delete(entry.gid);
+					const safeMode = entry.mode;
 					entry.mode = kept.mode;
 					entry.heroMode = kept.mode === 'hero';
+					let relocated = false;
 					if(kept.body && typeof kept.body === 'object'){
 						entry.body = kept.body;
+						const relocation = relocateEmbeddedBody(entry.body);
+						if(relocation < 0){
+							// Missing collision truth or no nearby legal AABB: fail closed as a
+							// spectator and keep modeMemory intact for a later safe retry.
+							entry.body = null; entry.bodyLike = null;
+							entry.mode = safeMode; entry.heroMode = false;
+							entry.peer.send({ t: 'perm', mode: safeMode });
+							try{ bridge.msg('⚠ Nie znaleziono bezpiecznego miejsca dla ' + entry.name); }catch(e){ /* fine */ }
+							updateUi();
+							return;
+						}
+						relocated = relocation > 0;
 						entry.body.duelWith = null; // the old duel was settled at drop time
 						entry.body.disp = null;     // the display interp restarts at the true pose
 						entry.body.mine = null;     // any in-progress dig is cancelled
 						entry.bodyLike = null;      // bodyTick rebuilds the creature-contact hook
+						entry.cam = { x: entry.body.x, y: entry.body.y };
 						sendVitals(s, entry);       // the client re-learns its PRESERVED hp/pouch
 						updateUi();
 					} else if(!entry.body){
-						spawnBody(s, entry);
+						if(!spawnBody(s, entry)){
+							entry.mode = safeMode; entry.heroMode = false;
+							entry.peer.send({ t: 'perm', mode: safeMode });
+							updateUi();
+							return;
+						}
 					}
+					s.modeMemory.delete(entry.gid);
 					entry.peer.send({ t: 'perm', mode: kept.mode });
+					if(entry.body) sendVitals(s, entry); // fresh tabs enter embodied mode on perm first
+					// Ordered transports deliver this after perm, when both a fresh tab and a
+					// live reconnect have entered their embodied mode. Without the explicit
+					// rebase, a still-spawned client would keep claiming the now-solid pose.
+					if(relocated) entry.peer.send({ t: 'prespawn', x: +entry.body.x.toFixed(2), y: +entry.body.y.toFixed(2), rebase: 1, dead: entry.body.dead ? 1 : 0 });
 					try{ bridge.msg('🎮 ' + entry.name + ' wraca do gry po zerwaniu'); }catch(e){ /* fine */ }
 				} else {
 					try{ bridge.msg('👻 ' + entry.name + ' obserwuje twoją warstwę'); }catch(e){ /* fine */ }
@@ -351,7 +525,7 @@ const ghostHost = (function(){
 				sendSnapshot(s, entry.peer);
 			}
 		} else if(pl.t === 'pose'){
-			if(Number.isFinite(pl.x) && Number.isFinite(pl.y)) entry.cam = { x: +pl.x, y: +pl.y };
+			if(!entry.body){ const cam = boundedSpectatorCamera(+pl.x, +pl.y); if(cam) entry.cam = cam; }
 			// the watcher vouches for its own recent input; the flag times out fast,
 			// so a parked tab stops counting toward social boosts within seconds
 			if(pl.act) markActive(entry);
@@ -393,10 +567,12 @@ const ghostHost = (function(){
 				// ping from inside rock). solidAt reads out-of-world as solid, so the body
 				// also cannot leave the world. This shapes the host-side shadow only —
 				// honest guest movement stays guest-authoritative and never feels it.
-				const solidAt = (typeof bridge.solidAt === 'function')
-					? ((tx, ty) => { try{ return !!bridge.solidAt(tx, ty, 'y'); }catch(e){ return true; } })
-					: null;
-				const moved = NET.sweepBodyMove({ x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }, +pl.x, +pl.y, maxStep, solidAt, null);
+				const openTrapdoor = ((Number(pl.c) | 0) & 8) !== 0 || +pl.y < b.y;
+				const solidAt = (typeof bridge.ghostBodySolidAt === 'function')
+					? ((tx, ty, axis, probe) => { try{ return !!bridge.ghostBodySolidAt(tx, ty, axis, probe, openTrapdoor); }catch(e){ return true; } })
+					: (() => true);
+				let bounds = null; try{ bounds = bridge.ghostBodyBounds ? bridge.ghostBodyBounds() : null; }catch(e){ bounds = null; }
+				const moved = NET.sweepBodyMove({ x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }, +pl.x, +pl.y, maxStep, solidAt, bounds);
 				b.x = moved.x; b.y = moved.y;
 				// velocity is DERIVED from the accepted movement, never read off the
 				// claim: party-aware attackers lead their aim by vx/vy, so a spoofed
@@ -413,6 +589,7 @@ const ghostHost = (function(){
 					if(Number.isFinite(pl.hp)) b.hp = Math.max(0, Math.min(NET.HERO_RULES.HP_MAX, +pl.hp));
 					if(Number.isFinite(pl.mhp)) b.maxHp = Math.max(1, Math.min(NET.HERO_RULES.HP_MAX, +pl.mhp));
 					b.dead = b.hp <= 0;
+					if(entry.bodyLike) entry.bodyLike.dead = !!b.dead;
 					if(b.dead && b.duelWith) endDuel(s, entry); // a hero death settles the duel too
 				}
 			}
@@ -420,7 +597,7 @@ const ghostHost = (function(){
 			// position (collision-resolved above), NEVER the raw camera claim — a plain
 			// spectator (no body) still points its own camera freely
 			if(b){ entry.cam = { x: b.x, y: b.y }; }
-			else if(Number.isFinite(pl.x) && Number.isFinite(pl.y)) entry.cam = { x: +pl.x, y: +pl.y };
+			else { const cam = boundedSpectatorCamera(+pl.x, +pl.y); if(cam) entry.cam = cam; }
 			if(pl.act) markActive(entry);
 		} else if(pl.t === 'pact'){
 			handlePlayAct(s, entry, pl);
@@ -436,6 +613,15 @@ const ghostHost = (function(){
 		} else if(pl.t === 'bye'){
 			dropPeer(s, entry, false);
 		}
+	}
+	function pruneStatelessToken(s, gid){
+		if(!s || !s.tokens || typeof gid !== 'string') return;
+		// A live seat or an embodied reconnect window still owns state. A pure
+		// spectator that has left owns neither, so retaining its token only lets gid
+		// churn consume the bounded identity table forever.
+		if(s.modeMemory && s.modeMemory.has(gid)) return;
+		for(const other of s.peers.values()) if(other.hello && other.gid === gid) return;
+		s.tokens.delete(gid);
 	}
 	function dropPeer(s, entry, silent){
 		if(!s.peers.has(entry.peer)) return;
@@ -456,11 +642,19 @@ const ghostHost = (function(){
 		entry.body = null;
 		entry.bodyLike = null;
 		s.peers.delete(entry.peer);
-		if(entry.hello) s.watchers = Math.max(0, s.watchers - 1);
+		if(entry.hello){
+			s.watchers = Math.max(0, s.watchers - 1);
+			pruneStatelessToken(s, entry.gid);
+		}
+		entry.peer.onMessage = null;
 		try{ entry.peer.close(); }catch(e){ /* fine */ }
 		// dropping the last (or any) embodied guest immediately prunes MM.coopBodies —
 		// creatures must not keep hunting a body no connection is driving
-		if(MMR) MMR.coopBodies = entries().filter(e => e.bodyLike && e.body && !e.body.dead).map(e => e.bodyLike);
+		if(MMR) MMR.coopBodies = entries().filter(e => e.bodyLike && e.body).map(e => {
+			e.bodyLike.dead = !!e.body.dead;
+			e.bodyLike.duelWith = e.body.duelWith || null;
+			return e.bodyLike;
+		});
 		if(entry.hello && !silent){ try{ bridge.msg('👻 ' + (entry.name || 'Duch') + ' opuszcza warstwę'); }catch(e){ /* fine */ } }
 		updateUi();
 	}
@@ -714,7 +908,11 @@ const ghostHost = (function(){
 	function presenceTick(s, t){
 		s.last.presence = t;
 		updateSocialBoost();
-		const list = entries().filter(e => e.cam).map(e => ({ id: e.gid, name: e.name, x: +e.cam.x.toFixed(2), y: +e.cam.y.toFixed(2), a: e.avatar, act: e.actUntil > t ? 1 : 0 }));
+		const list = [];
+		for(const e of entries()){
+			const p = trackedPos(e);
+			if(p) list.push({ id: e.gid, name: e.name, x: +p.x.toFixed(2), y: +p.y.toFixed(2), a: e.avatar, act: e.actUntil > t ? 1 : 0 });
+		}
 		// idle = the host tab is backgrounded (sim frozen, pump-only stream) — the
 		// viewers show a "host inactive" banner instead of staring at a frozen world
 		broadcast({ t: 'ghosts', list, idle: (t - (s.lastSimAt || t)) > 1500 ? 1 : 0 });
@@ -773,7 +971,13 @@ const ghostHost = (function(){
 	function reap(s, t){
 		s.last.reap = t;
 		for(const entry of Array.from(s.peers.values())){
-			if(t - entry.lastSeen > 15000) dropPeer(s, entry, true);
+			if((!entry.hello && t > entry.helloDeadline) || t - entry.lastSeen > 15000) dropPeer(s, entry, true);
+		}
+		for(const [gid, kept] of s.modeMemory){
+			if(!kept || t - kept.ts >= MODE_MEMORY_MS){
+				s.modeMemory.delete(gid);
+				pruneStatelessToken(s, gid);
+			}
 		}
 		keepAllBodies(s); // slow-cadence flush: mined loot survives even a host crash
 	}
@@ -833,13 +1037,14 @@ const ghostHost = (function(){
 	function handlePing(s, entry){
 		markActive(entry);
 		const t = now();
-		if(!entry.hello || !NET.modeAllows(entry.mode, 'chat') || !entry.cam) return;
+		const pos = trackedPos(entry);
+		if(!entry.hello || !NET.modeAllows(entry.mode, 'chat') || !pos) return;
 		if(t - (entry.lastPingAt || 0) < NET.PING.MIN_MS) return;
 		entry.lastPingAt = t;
 		s.stats.pings++;
-		broadcast({ t: 'ping', gid: entry.gid, name: entry.name || 'Duch', x: +entry.cam.x.toFixed(2), y: +entry.cam.y.toFixed(2) });
+		broadcast({ t: 'ping', gid: entry.gid, name: entry.name || 'Duch', x: +pos.x.toFixed(2), y: +pos.y.toFixed(2) });
 		if(!s.hiddenGids.has(entry.gid)){
-			noteActionFx(s, { kind: 'ping', x: entry.cam.x, y: entry.cam.y, text: '📍 ' + (entry.name || 'Duch'), ttl: NET.PING.TTL_MS });
+			noteActionFx(s, { kind: 'ping', x: pos.x, y: pos.y, text: '📍 ' + (entry.name || 'Duch'), ttl: NET.PING.TTL_MS });
 			try{ bridge.msg('📍 ' + (entry.name || 'Duch') + ' wskazuje miejsce'); }catch(e){ /* fine */ }
 		}
 	}
@@ -872,12 +1077,13 @@ const ghostHost = (function(){
 		if(!NET.validPowerKind(kind)) return;
 		const rule = NET.POWER_RULES[kind];
 		const t = now();
+		const pos = trackedPos(entry);
 		if(!NET.modeAllows(entry.mode, 'full')){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'perm', charge: entry.charge }); return; }
-		if(!entry.cam){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'nopos', charge: entry.charge }); return; }
+		if(!pos){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'nopos', charge: entry.charge }); return; }
 		if(entry.charge < rule.cost){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'charge', charge: entry.charge }); return; }
 		const readyAt = (entry.powerCd && entry.powerCd[kind]) || 0;
 		if(t < readyAt){ entry.peer.send({ t: 'powerAck', kind, ok: false, reason: 'cd', waitMs: Math.ceil(readyAt - t), charge: entry.charge }); return; }
-		const hits = bridge.ghostPower(kind, entry.cam.x, entry.cam.y, rule);
+		const hits = bridge.ghostPower(kind, pos.x, pos.y, rule);
 		entry.charge -= rule.cost;
 		if(!entry.powerCd) entry.powerCd = {};
 		entry.powerCd[kind] = t + rule.cd;
@@ -885,13 +1091,13 @@ const ghostHost = (function(){
 		// the blast is real either way — the ring, burst and sound obey the FX toggle
 		if(viewPrefs.fx){
 			try{
-				if(MMR && MMR.particles && MMR.particles.spawnBurst) MMR.particles.spawnBurst(entry.cam.x, entry.cam.y, kind === 'smite' ? 'legendary' : 'epic', {});
+				if(MMR && MMR.particles && MMR.particles.spawnBurst) MMR.particles.spawnBurst(pos.x, pos.y, kind === 'smite' ? 'legendary' : 'epic', {});
 				if(MMR && MMR.audio && MMR.audio.play) MMR.audio.play(kind === 'frost' ? 'freeze' : kind === 'smite' ? 'chainShock' : 'roar');
 			}catch(e){ /* fx are best-effort */ }
 		}
-		noteActionFx(s, { kind: 'power', power: kind, x: entry.cam.x, y: entry.cam.y, text: rule.icon + ' ' + rule.label + ' — ' + (entry.name || 'Duch') });
+		noteActionFx(s, { kind: 'power', power: kind, x: pos.x, y: pos.y, text: rule.icon + ' ' + rule.label + ' — ' + (entry.name || 'Duch') });
 		entry.peer.send({ t: 'powerAck', kind, ok: true, waitMs: rule.cd, charge: entry.charge, hits });
-		broadcast({ t: 'powerFx', kind, x: +entry.cam.x.toFixed(2), y: +entry.cam.y.toFixed(2), name: entry.name || 'Duch', hits });
+		broadcast({ t: 'powerFx', kind, x: +pos.x.toFixed(2), y: +pos.y.toFixed(2), name: entry.name || 'Duch', hits });
 		try{ bridge.msg('👻 ' + (entry.name || 'Duch') + ': ' + rule.icon + ' ' + rule.label + (hits ? ' — ' + hits + ' celów!' : '')); }catch(e){ /* fine */ }
 		sendDeed(entry, kind, 1);
 		if(hits > 0) sendDeed(entry, 'hit', hits); // marksmanship pays extra (capped client-side)
@@ -919,50 +1125,111 @@ const ghostHost = (function(){
 	// and every world edit go through the validated bridge seams. The ghost tiers
 	// below stay untouched — spectating remains the default door.
 	// --- body persistence: the host's save is the ONLY authority --------------------
-	// A returning guest (stable client gid) gets its pouch and earned arsenal back
-	// from HOST-side storage. The gid is a self-claimed key — the contents were
-	// written by this host and are still treated as hostile input on read (clamped
-	// counts, whitelisted weapons), because disk is disk (normalizeProgress rule).
+	// A returning guest gets its pouch and earned arsenal back from HOST-side storage
+	// only after proving the resume token saved with that body. The contents are still
+	// treated as hostile input on read (clamped counts, whitelisted weapons), because
+	// disk is disk (normalizeProgress rule).
 	// Ephemeral fallback: no storage → sessions simply start fresh.
 	const BODY_KEEP_KEY = 'mm_ghost_bodies_v1';
+	const BODY_KEEP_VERSION = 2;
 	const BODY_KEEP_MAX = 24;
 	const BODY_KEEP_TTL_MS = 7 * 24 * 3600 * 1000;
+	const BODY_KEEP_RAW_MAX = 262144;
+	const BODY_KEEP_POUCH_MAX = 40;
+	const BODY_KEEP_POUCH_KEY_MAX = 64;
+	const BODY_KEEP_WEAPON_SCAN_MAX = 32;
 	function readBodyKeep(){
 		try{
 			const raw = (typeof window !== 'undefined' && window.localStorage) ? window.localStorage.getItem(BODY_KEEP_KEY) : null;
-			const o = raw ? JSON.parse(raw) : null;
-			return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
-		}catch(e){ return {}; }
+			// Bound work before parsing. Room-unbound legacy data is ambiguous even
+			// when it carries a proof, so only the explicit v2 envelope is readable.
+			if(typeof raw !== 'string' || raw.length > BODY_KEEP_RAW_MAX) return { entries: [] };
+			const o = JSON.parse(raw);
+			if(o && typeof o === 'object' && o.v === BODY_KEEP_VERSION && Array.isArray(o.entries))
+				return { entries: o.entries.slice(0, BODY_KEEP_MAX * 4) };
+		}catch(e){ /* corrupt/unknown store starts empty */ }
+		return { entries: [] };
 	}
+	function canonicalBodyKeepRow(snap, at){
+		if(!snap || typeof snap !== 'object' || Array.isArray(snap)) return null;
+		const t = Number.isFinite(at) ? at : Date.now();
+		const savedAt = Number(snap.ts), age = t - savedAt;
+		if(!Number.isFinite(savedAt) || savedAt <= 0 || age < 0 || age > BODY_KEEP_TTL_MS) return null;
+		if(NET.normalizeRoom(snap.room) !== snap.room || !NET.validGid(snap.gid) || !NET.validResumeTokenShape(snap.rt)) return null;
+		const pouch = {};
+		if(snap.pouch && typeof snap.pouch === 'object' && !Array.isArray(snap.pouch)){
+			for(const key of Object.keys(snap.pouch).slice(0, BODY_KEEP_POUCH_MAX)){
+				if(!key || key.length > BODY_KEEP_POUCH_KEY_MAX || key === '__proto__' || key === 'prototype' || key === 'constructor') continue;
+				const n = Math.floor(Number(snap.pouch[key]) || 0);
+				if(n > 0) NET.pouchAdd(pouch, key, n);
+			}
+		}
+		const weapons = [];
+		if(Array.isArray(snap.weapons)){
+			for(const key of snap.weapons.slice(0, BODY_KEEP_WEAPON_SCAN_MAX)){
+				if(NET.validPlayWeapon(key) && !weapons.includes(key)) weapons.push(key);
+				if(weapons.length >= 8) break;
+			}
+		}
+		// Rebuild rather than spread: retained rows have this exact bounded schema.
+		return { room: snap.room, gid: snap.gid, pouch, weapons, rt: snap.rt, ts: savedAt };
+	}
+	function freshBodyKeepRows(){
+		const t = Date.now();
+		const rows = readBodyKeep().entries.map(row => canonicalBodyKeepRow(row, t)).filter(Boolean);
+		rows.sort((a, b) => b.ts - a.ts);
+		const seen = new Set();
+		return rows.filter(row => {
+			const key = row.room + '\0' + row.gid;
+			if(seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		}).slice(0, BODY_KEEP_MAX);
+	}
+	// Rows are strict capabilities for exactly one room. A wrong proof for such a
+	// row is a real ownership conflict; room-unbound legacy data never reaches here.
+	function bodyKeepClaim(room, gid, resumeToken){
+		const rows = freshBodyKeepRows();
+		const snap = rows.find(row => row.gid === gid && row.room === room);
+		if(snap){
+			if(!NET.resumeTokenMatch(resumeToken, snap.rt)) return { snap: null, proof: null, taken: true };
+			return { snap, proof: snap.rt, taken: false };
+		}
+		return { snap: null, proof: null, taken: false };
+	}
+	function freshBodyKeepFor(room, gid, resumeToken){ return bodyKeepClaim(room, gid, resumeToken).snap; }
 	function keepBody(entry){
-		if(!entry || !entry.body || typeof entry.gid !== 'string') return;
+		if(!entry || !entry.body || typeof entry.gid !== 'string' || NET.normalizeRoom(entry.room) !== entry.room || !NET.validResumeTokenShape(entry.resumeToken)) return;
 		try{
-			const store = readBodyKeep();
-			store[entry.gid] = {
-				pouch: Object.assign({}, entry.body.pouch),
-				weapons: (entry.body.weapons || []).filter(k => NET.validPlayWeapon(k)).slice(0, 8),
+			const fresh = canonicalBodyKeepRow({
+				room: entry.room,
+				gid: entry.gid,
+				pouch: entry.body.pouch,
+				weapons: entry.body.weapons,
+				rt: entry.resumeToken,
 				ts: Date.now()
-			};
-			const gids = Object.keys(store).sort((a, b) => (store[b].ts || 0) - (store[a].ts || 0));
-			for(const g of gids.slice(BODY_KEEP_MAX)) delete store[g];
-			for(const g of Object.keys(store)) if(Date.now() - (store[g].ts || 0) > BODY_KEEP_TTL_MS) delete store[g];
-			window.localStorage.setItem(BODY_KEEP_KEY, JSON.stringify(store));
+			});
+			if(!fresh) return;
+			const rows = freshBodyKeepRows().filter(row => !(row.gid === entry.gid && row.room === entry.room));
+			rows.unshift(fresh);
+			rows.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+			window.localStorage.setItem(BODY_KEEP_KEY, JSON.stringify({ v: BODY_KEEP_VERSION, entries: rows.slice(0, BODY_KEEP_MAX) }));
 		}catch(e){ /* no storage → explicitly ephemeral, and that is fine */ }
 	}
 	function keepAllBodies(s){
 		for(const entry of entries()) if(entry.body) keepBody(entry);
 	}
-	function restoreBodyFor(gid, body){
+	function restoreBodyFor(room, gid, body, resumeToken){
 		try{
-			const snap = readBodyKeep()[gid];
-			if(!snap || typeof snap !== 'object') return false;
+			const snap = freshBodyKeepFor(room, gid, resumeToken);
+			if(!snap) return false;
 			if(snap.pouch && typeof snap.pouch === 'object'){
 				// the snapshot REPLACES the starter pouch — otherwise every rejoin farms
 				// a fresh quiver of starter arrows
 				body.pouch = {};
-				for(const k of Object.keys(snap.pouch).slice(0, 40)){
+				for(const k of Object.keys(snap.pouch).slice(0, BODY_KEEP_POUCH_MAX)){
 					const n = Math.floor(Number(snap.pouch[k]) || 0);
-					if(k && k !== '__proto__' && n > 0) NET.pouchAdd(body.pouch, k, n);
+					if(k && k.length <= BODY_KEEP_POUCH_KEY_MAX && k !== '__proto__' && k !== 'prototype' && k !== 'constructor' && n > 0) NET.pouchAdd(body.pouch, k, n);
 				}
 			}
 			if(Array.isArray(snap.weapons)){
@@ -974,38 +1241,49 @@ const ghostHost = (function(){
 	function spawnBody(s, entry){
 		const p = bridge.player;
 		entry.body = {
-			x: p.x, y: p.y - 0.2, vx: 0, vy: 0, f: 1,
+			x: p.x, y: p.y, vx: 0, vy: 0, f: 1,
 			hp: NET.PLAY_RULES.MAX_HP, maxHp: NET.PLAY_RULES.MAX_HP,
 			// the arsenal is HOST state: starter kit + whatever this gid earned before
 			// — a client-side claim to any other weapon dies in handlePlayAct
 			weapons: NET.PLAY_STARTER_WEAPONS.slice(),
 			pouch: Object.assign({}, NET.PLAY_STARTER_AMMO),
 			dead: false, respawnAt: 0, invulUntil: now() + 1500,
-			mine: null, lastMineAt: 0, lastPlaceAt: 0, lastStrikeAt: 0, lastAttackAt: 0, lastCraftAt: 0, lastPoseAt: 0, disp: null
+			mine: null, lastMineAt: 0, lastPlaceAt: 0, lastAttackAt: 0, lastCraftAt: 0, lastPoseAt: 0, disp: null
 		};
-		restoreBodyFor(entry.gid, entry.body);
+		const restored = restoreBodyFor(s.room, entry.gid, entry.body, entry.resumeToken);
+		if(relocateEmbeddedBody(entry.body) < 0){ entry.body = null; entry.bodyLike = null; return false; }
+		if(restored) keepBody(entry); // refresh and rewrite the validated row canonically
+		entry.cam = { x: entry.body.x, y: entry.body.y };
 		sendVitals(s, entry);
 		try{ bridge.msg('🎮 ' + (entry.name || 'Duch') + ' wciela się w twoją warstwę!'); }catch(e){ /* fine */ }
 		updateUi();
+		return true;
 	}
 	// --- consensual duels (owner ruling): PvP between guests exists ONLY as a duel
 	// both sides asked for. Host-arbitrated end to end: mutual-consent handshake,
 	// melee-only resolution in the attack branch, ended by death, demotion or leave.
 	// The HOST hero is never a duel target, and nothing here persists (keepBody
 	// copies pouch + weapons only).
+	function syncDuelBodyLike(entry){
+		if(entry && entry.bodyLike) entry.bodyLike.duelWith = (entry.body && entry.body.duelWith) || null;
+	}
 	function endDuel(s, entry, silent){
 		const b = entry.body;
-		if(!b || !b.duelWith) return;
+		if(!b || !b.duelWith){ syncDuelBodyLike(entry); return; }
 		const otherGid = b.duelWith;
 		b.duelWith = null;
+		syncDuelBodyLike(entry);
 		for(const e of entries()){
-			if(e.gid === otherGid && e.body && e.body.duelWith === entry.gid) e.body.duelWith = null;
+			if(e.gid !== otherGid) continue;
+			if(e.body && e.body.duelWith === entry.gid) e.body.duelWith = null;
+			syncDuelBodyLike(e);
 		}
 		broadcast({ t: 'duel', a: entry.gid, b: otherGid, on: 0 });
 		if(!silent){ try{ bridge.msg('⚔ Pojedynek zakończony'); }catch(e){ /* fine */ } }
 	}
 	function despawnBody(s, entry){
 		if(!entry.body) return;
+		entry.cam = { x: entry.body.x, y: entry.body.y };
 		endDuel(s, entry, true); // a demoted/leaving duelist forfeits quietly
 		try{ if(MMR && MMR.mechs && MMR.mechs.guestUnboard) MMR.mechs.guestUnboard(entry.gid); }catch(e){ /* fine */ }
 		keepBody(entry); // demote/leave: the pouch and earned arsenal await this gid's return
@@ -1051,6 +1329,7 @@ const ghostHost = (function(){
 		sendVitals(s, entry);
 		if(b.hp <= 0){
 			b.dead = true;
+			if(entry.bodyLike) entry.bodyLike.dead = true;
 			b.respawnAt = t + NET.PLAY_RULES.RESPAWN_MS;
 			if(b.duelWith && session) endDuel(session, entry); // death settles a duel
 			dropPouchAt(s, entry, b); // the gravestone rule: the pouch stays where the hero fell
@@ -1107,6 +1386,7 @@ const ghostHost = (function(){
 			const ax = Number(pl.x), ay = Number(pl.y);
 			if(!Number.isFinite(ax) || !Number.isFinite(ay)) return;
 			if(!spec.melee && !NET.playAimDir(b.x, b.y, ax, ay)) return; // degenerate arrow aim
+			if(spec.melee && !guestTargetClear(b, ax, ay)){ entry.peer.send({ t: 'pactAck', a: 'attack', ok: false, reason: 'blocked', key }); return; }
 			if(spec.ammo){
 				if(!(Number(b.pouch[spec.ammo]) > 0)){ entry.peer.send({ t: 'pactAck', a: 'attack', ok: false, reason: 'ammo', key }); return; }
 				NET.pouchTake(b.pouch, spec.ammo, 1);
@@ -1115,6 +1395,7 @@ const ghostHost = (function(){
 			let res = null;
 			try{ res = bridge.ghostPlayAttack({ x: b.x, y: b.y, facing: b.f < 0 ? -1 : 1, gid: entry.gid, duelWith: b.duelWith || null }, spec, ax, ay); }catch(e){ res = null; }
 			if(spec.ammo && !(res && res.ok)) NET.pouchAdd(b.pouch, spec.ammo, 1); // a shot that never flew is refunded
+			if(spec.ammo) keepBody(entry); // bank the spent-or-refunded final quiver before acknowledging
 			const hits = (res && res.hits) | 0;
 			// consensual duel (owner ruling): a MELEE swing that reaches the consenting
 			// partner wounds it too — bodies only, never the host hero, never without
@@ -1148,22 +1429,25 @@ const ghostHost = (function(){
 			const tD = now();
 			if(tD - (b.lastDuelAt || 0) < NET.PLAY_RULES.DUEL_MS) return;
 			b.lastDuelAt = tD;
-			const target = typeof pl.gid === 'string' ? pl.gid.slice(0, 20) : '';
+			const target = NET.validGid(pl.gid) ? pl.gid : '';
 			let te = null;
 			for(const e of entries()){ if(e.gid === target && e !== entry && e.body && !e.body.dead){ te = e; break; } }
 			if(!te){ entry.peer.send({ t: 'pactAck', a: 'duel', ok: false, reason: 'target' }); return; }
 			if(b.duelWith || te.body.duelWith){ entry.peer.send({ t: 'pactAck', a: 'duel', ok: false, reason: 'busy' }); return; }
 			for(const [k, ts] of s.duelAsks){ if(tD - ts > NET.PLAY_RULES.DUEL_TTL_MS) s.duelAsks.delete(k); }
-			const back = s.duelAsks.get(te.gid + '>' + entry.gid);
+			const reverseKey = NET.duelAskKey(te.gid, entry.gid);
+			const back = s.duelAsks.get(reverseKey);
 			if(back !== undefined){
-				s.duelAsks.delete(te.gid + '>' + entry.gid);
+				s.duelAsks.delete(reverseKey);
 				b.duelWith = te.gid;
 				te.body.duelWith = entry.gid;
+				syncDuelBodyLike(entry);
+				syncDuelBodyLike(te);
 				broadcast({ t: 'duel', a: entry.gid, b: te.gid, on: 1 });
 				try{ bridge.msg('⚔ Pojedynek: ' + (entry.name || 'Duch') + ' vs ' + (te.name || 'Duch')); }catch(e){ /* fine */ }
 				entry.peer.send({ t: 'pactAck', a: 'duel', ok: true, on: 1 });
 			} else {
-				s.duelAsks.set(entry.gid + '>' + te.gid, tD);
+				s.duelAsks.set(NET.duelAskKey(entry.gid, te.gid), tD);
 				entry.peer.send({ t: 'pactAck', a: 'duel', ok: true, on: 0 }); // challenge registered, waiting for consent
 				try{ te.peer.send({ t: 'duelAsk', from: entry.gid, name: String(entry.name || 'Duch').slice(0, 24) }); }catch(e){ /* fine */ }
 			}
@@ -1218,6 +1502,7 @@ const ghostHost = (function(){
 			const ax = Number(pl.x), ay = Number(pl.y);
 			if(!Number.isFinite(ax) || !Number.isFinite(ay)) return;
 			if(!NET.playReachOk(b.x, b.y, Math.floor(ax), Math.floor(ay))){ entry.peer.send({ t: 'pactAck', a: 'pickup', ok: false, reason: 'reach' }); return; }
+			if(!guestTargetClear(b, ax, ay)){ entry.peer.send({ t: 'pactAck', a: 'pickup', ok: false, reason: 'blocked' }); return; }
 			let res = null;
 			try{ res = bridge.ghostPlayPickupAt ? bridge.ghostPlayPickupAt(ax, ay, { x: b.x, y: b.y }) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
 			if(res && res.ok && res.key){
@@ -1232,6 +1517,10 @@ const ghostHost = (function(){
 		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
 		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return;
 		if(!NET.playReachOk(b.x, b.y, tx, ty)){ entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'reach', x: tx, y: ty }); return; }
+		if((pl.a === 'mine' || pl.a === 'place') && !guestTargetClear(b, tx, ty)){
+			entry.peer.send({ t: 'pactAck', a: pl.a, ok: false, reason: 'blocked', x: tx, y: ty });
+			return;
+		}
 		const t = now();
 		if(pl.a === 'mine'){
 			if(t - b.lastMineAt < NET.PLAY_RULES.MINE_MS) return; // silent — the hold-to-mine loop just retries
@@ -1256,7 +1545,7 @@ const ghostHost = (function(){
 			let res = null;
 			try{ res = bridge.ghostPlayMineAt(tx, ty); }catch(e){ res = { ok: false, reason: 'error' }; }
 			if(res && res.ok){
-				if(res.key) NET.pouchAdd(b.pouch, res.key, 1);
+				if(res.key){ NET.pouchAdd(b.pouch, res.key, 1); keepBody(entry); }
 				s.stats.playMines++;
 				sendVitals(s, entry);
 			}
@@ -1269,21 +1558,19 @@ const ghostHost = (function(){
 				entry.peer.send({ t: 'pactAck', a: 'place', ok: false, reason: 'cost', x: tx, y: ty });
 				return;
 			}
+			if(cellOverlapsOtherBody(s, entry, tx, ty)){
+				entry.peer.send({ t: 'pactAck', a: 'place', ok: false, reason: 'body', x: tx, y: ty });
+				return;
+			}
 			let res = null;
 			try{ res = bridge.ghostPlayPlaceAt(tx, ty, key, { x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }); }catch(e){ res = { ok: false, reason: 'error' }; }
 			if(res && res.ok){
 				NET.pouchTake(b.pouch, key, 1);
 				s.stats.playPlaces++;
+				keepBody(entry);
 				sendVitals(s, entry);
 			}
 			entry.peer.send({ t: 'pactAck', a: 'place', ok: !!(res && res.ok), reason: res && res.reason, x: tx, y: ty });
-		} else if(pl.a === 'strike'){
-			if(t - b.lastStrikeAt < NET.PLAY_RULES.STRIKE_MS) return;
-			b.lastStrikeAt = t;
-			let hits = 0;
-			try{ hits = bridge.ghostPlayStrike(tx + 0.5, ty + 0.5, NET.PLAY_RULES.STRIKE_R, NET.PLAY_RULES.STRIKE_DMG) | 0; }catch(e){ hits = 0; }
-			if(hits > 0) s.stats.playStrikes++;
-			entry.peer.send({ t: 'pactAck', a: 'strike', ok: true, hits, x: tx, y: ty });
 		}
 	}
 	// Hero-mode world intents: the ONLY world-touching inlet for a full-game guest.
@@ -1296,6 +1583,12 @@ const ghostHost = (function(){
 		markActive(entry);
 		const b = entry.body;
 		if(!b || entry.mode !== 'hero'){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'perm' }); return; }
+		if(b.dead){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'dead' }); return; }
+		// Reject stunned hero bodies before any action timer or world bridge call.
+		if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.isFrozenState && MMR.heroStatus.isFrozenState(b.statusSt)){
+			entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'frozen' });
+			return;
+		}
 		if(!NET.validHeroAction(pl.a)){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'action' }); return; }
 		const t = now();
 		if(pl.a === 'dmg'){
@@ -1305,6 +1598,7 @@ const ghostHost = (function(){
 			const x = Number(pl.x), y = Number(pl.y);
 			if(!Number.isFinite(x) || !Number.isFinite(y)) return;
 			if(Math.abs(x - b.x) > NET.HERO_RULES.DMG_RADIUS || Math.abs(y - b.y) > NET.HERO_RULES.DMG_RADIUS) return;
+			if(!guestTargetClear(b, x, y)) return;
 			const amt = Math.max(1, Math.min(NET.HERO_RULES.DMG_MAX, Number(pl.n) || 1));
 			const kind = (pl.k === 'ignite' || pl.k === 'chill') ? pl.k : 'hit'; // element whitelist — host picks its own safe params
 			// consensual duel (hero rung): a blow landing near the CONSENTING partner
@@ -1343,16 +1637,20 @@ const ghostHost = (function(){
 			// duration and cooldown come from the HOST's own antennas.js table, so a
 			// modified client cannot stretch its invisibility by a millisecond. Only
 			// cloak has world meaning (mob AI runs here); surge/echo stay guest-local.
+			const A = MMR && MMR.antennas;
+			const active = typeof pl.k === 'string' ? pl.k : '';
+			if(!A || !A.ACTIVES || !Object.prototype.hasOwnProperty.call(A.ACTIVES, active)){
+				entry.peer.send({ t: 'hact', a: 'antenna', ok: false, reason: 'kind' });
+				return;
+			}
 			if(t - (b.lastHeroAntennaAt || 0) < NET.HERO_RULES.ANTENNA_MS) return;
 			b.lastHeroAntennaAt = t;
-			const A = MMR && MMR.antennas;
-			if(!A || !A.ACTIVES || !A.ACTIVES[pl.k]){ entry.peer.send({ t: 'hact', a: 'antenna', ok: false, reason: 'kind' }); return; }
 			if(t < (b.antennaCdUntil || 0)){ entry.peer.send({ t: 'hact', a: 'antenna', ok: false, reason: 'cd' }); return; }
 			const tier = A.tierKey(pl.tr); // whitelist — an unknown claim falls to 'common'
-			const durMs = Math.round(A.durationFor(pl.k, tier) * 1000);
-			b.antennaCdUntil = t + Math.round(A.cooldownFor(pl.k, !!pl.u) * 1000);
-			if(pl.k === 'cloak') b.cloakUntil = t + durMs;
-			entry.peer.send({ t: 'hact', a: 'antenna', ok: true, k: pl.k, ms: durMs });
+			const durMs = Math.round(A.durationFor(active, tier) * 1000);
+			b.antennaCdUntil = t + Math.round(A.cooldownFor(active, !!pl.u) * 1000);
+			if(active === 'cloak') b.cloakUntil = t + durMs;
+			entry.peer.send({ t: 'hact', a: 'antenna', ok: true, k: active, ms: durMs });
 			s.stats.antenna = (s.stats.antenna || 0) + 1;
 			return;
 		}
@@ -1404,9 +1702,16 @@ const ghostHost = (function(){
 			b.lastHeroPickupAt = t;
 			const px = Number(pl.x), py = Number(pl.y);
 			if(!Number.isFinite(px) || !Number.isFinite(py)) return;
+			if(!guestTargetClear(b, px, py)){ entry.peer.send({ t: 'hact', a: 'pickup', ok: false, reason: 'blocked' }); return; }
 			let res = null;
 			try{ res = bridge.ghostHeroPickupAt ? bridge.ghostHeroPickupAt(px, py, { x: b.x, y: b.y })
 				: (bridge.ghostPlayPickupAt ? bridge.ghostPlayPickupAt(px, py, { x: b.x, y: b.y }) : null); }catch(e){ res = { ok: false, reason: 'error' }; }
+			// Mirror earned resources into host escrow; the ack still feeds the guest's
+			// local hero inventory as before.
+			if(res && res.ok && res.kind === 'res' && typeof res.key === 'string'){
+				NET.pouchAdd(b.pouch, res.key, res.qty || 1);
+				keepBody(entry);
+			}
 			entry.peer.send({ t: 'hact', a: 'pickup', ok: !!(res && res.ok), reason: (res && res.reason) || null,
 				key: (res && res.key) || null, qty: (res && res.qty) || 0, item: (res && res.item) || null });
 			return;
@@ -1414,11 +1719,21 @@ const ghostHost = (function(){
 		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
 		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return;
 		if(!NET.playReachOk(b.x, b.y, tx, ty, NET.HERO_RULES.REACH)){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'reach', x: tx, y: ty }); return; }
+		if((pl.a === 'use' || pl.a === 'mine' || pl.a === 'place') && !guestTargetClear(b, tx, ty)){
+			entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'blocked', x: tx, y: ty });
+			return;
+		}
 		if(pl.a === 'use'){
 			if(t - (b.lastHeroUseAt || 0) < NET.HERO_RULES.USE_MS) return;
 			b.lastHeroUseAt = t;
 			let res = null;
 			try{ res = bridge.ghostHeroUseAt ? bridge.ghostHeroUseAt(tx, ty) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
+			if(res && res.ok && Array.isArray(res.loot)){
+				for(const row of res.loot.slice(0, 8)){
+					if(Array.isArray(row) && typeof row[0] === 'string') NET.pouchAdd(b.pouch, row[0], row[1]);
+				}
+				keepBody(entry);
+			}
 			entry.peer.send({ t: 'hact', a: 'use', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty,
 				loot: (res && res.loot) || null, note: (res && res.note) ? String(res.note).slice(0, 80) : null });
 			return;
@@ -1428,16 +1743,38 @@ const ghostHost = (function(){
 			b.lastHeroMineAt = t;
 			let res = null;
 			try{ res = bridge.ghostHeroMineAt ? bridge.ghostHeroMineAt(tx, ty) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
-			if(res && res.ok) s.stats.heroMines = (s.stats.heroMines || 0) + 1;
+			if(res && res.ok){
+				s.stats.heroMines = (s.stats.heroMines || 0) + 1;
+				let key = null;
+				try{ key = bridge.ghostHeroPlacementKey ? bridge.ghostHeroPlacementKey(res.tid) : null; }catch(e){ key = null; }
+				if(typeof key === 'string' && key){ NET.pouchAdd(b.pouch, key, 1); keepBody(entry); }
+			}
 			entry.peer.send({ t: 'hact', a: 'mine', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid: (res && res.tid) || 0 });
 		} else if(pl.a === 'place'){
 			if(t - (b.lastHeroPlaceAt || 0) < NET.HERO_RULES.PLACE_MS) return;
 			b.lastHeroPlaceAt = t;
 			const tid = Number(pl.tid) | 0;
 			const layer = (pl.l === 'overlay' || pl.l === 'background') ? pl.l : 'fg';
+			if(layer === 'fg' && cellOverlapsOtherBody(s, entry, tx, ty)){
+				entry.peer.send({ t: 'hact', a: 'place', ok: false, reason: 'body', x: tx, y: ty, tid });
+				return;
+			}
+			// Derive and debit the placement cost from host-owned tile/resource truth.
+			let key = null;
+			try{ key = bridge.ghostHeroPlacementKey ? bridge.ghostHeroPlacementKey(tid) : null; }catch(e){ key = null; }
+			if(typeof key !== 'string' || !key){
+				entry.peer.send({ t: 'hact', a: 'place', ok: false, reason: 'key', x: tx, y: ty, tid });
+				return;
+			}
+			if(!NET.pouchTake(b.pouch, key, 1)){
+				entry.peer.send({ t: 'hact', a: 'place', ok: false, reason: 'cost', x: tx, y: ty, tid });
+				return;
+			}
 			let res = null;
 			try{ res = bridge.ghostHeroPlaceAt ? bridge.ghostHeroPlaceAt(tx, ty, tid, layer, { x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
 			if(res && res.ok) s.stats.heroPlaces = (s.stats.heroPlaces || 0) + 1;
+			else NET.pouchAdd(b.pouch, key, 1);
+			keepBody(entry); // persist the debit or its exact refund before the result ack
 			entry.peer.send({ t: 'hact', a: 'place', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid });
 		}
 	}
@@ -1559,32 +1896,38 @@ const ghostHost = (function(){
 			const b = entry.body;
 			if(!b) continue;
 			if(!entry.heroMode && b.dead && t >= b.respawnAt){
-				b.dead = false;
-				b.hp = b.maxHp;
-				b.x = bridge.player.x; b.y = bridge.player.y - 0.2;
-				b.vx = 0; b.vy = 0;
-				b.invulUntil = t + 1500;
-				if(b.drownSt && MMR && MMR.survival && MMR.survival.resetDrowning) MMR.survival.resetDrowning(b.drownSt);
-				if(b.chillSt && MMR && MMR.survival && MMR.survival.resetSwimChill) MMR.survival.resetSwimChill(b.chillSt);
-				if(b.thermSt && MMR && MMR.survival && MMR.survival.resetThermal) MMR.survival.resetThermal(b.thermSt);
-				if(b.pressSt && MMR && MMR.survival && MMR.survival.resetWaterPressure) MMR.survival.resetWaterPressure(b.pressSt);
-				if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.createState){ b.statusSt = MMR.heroStatus.createState(); b.lastStatusSig = -1; }
-				try{ entry.peer.send({ t: 'prespawn', x: +b.x.toFixed(2), y: +b.y.toFixed(2) }); }catch(e){ /* fine */ }
-				sendVitals(s, entry);
+				// Respawn begins at the host's exact pose, then uses the same fail-closed
+				// terrain relocation as reconnect. Do not revive/reset vitals until a clear
+				// AABB exists; on failure the corpse stays put and the next body tick retries.
+				const oldPose = { x: b.x, y: b.y, vx: b.vx, vy: b.vy };
+				b.x = bridge.player.x; b.y = bridge.player.y; b.vx = 0; b.vy = 0;
+				const relocation = relocateEmbeddedBody(b);
+				if(relocation < 0){
+					b.x = oldPose.x; b.y = oldPose.y; b.vx = oldPose.vx; b.vy = oldPose.vy;
+				} else {
+					b.dead = false;
+					b.hp = b.maxHp;
+					b.invulUntil = t + 1500;
+					if(b.drownSt && MMR && MMR.survival && MMR.survival.resetDrowning) MMR.survival.resetDrowning(b.drownSt);
+					if(b.chillSt && MMR && MMR.survival && MMR.survival.resetSwimChill) MMR.survival.resetSwimChill(b.chillSt);
+					if(b.thermSt && MMR && MMR.survival && MMR.survival.resetThermal) MMR.survival.resetThermal(b.thermSt);
+					if(b.pressSt && MMR && MMR.survival && MMR.survival.resetWaterPressure) MMR.survival.resetWaterPressure(b.pressSt);
+					if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.createState){ b.statusSt = MMR.heroStatus.createState(); b.lastStatusSig = -1; }
+					try{ entry.peer.send({ t: 'prespawn', x: +b.x.toFixed(2), y: +b.y.toFixed(2), rebase: relocation > 0 ? 1 : undefined }); }catch(e){ /* fine */ }
+					sendVitals(s, entry);
+				}
 			}
 			// hero mode: survival laws run on the GUEST through the real hero systems
 			// (vitals are its local truth) — running them here too would double-damage
 			if(!entry.heroMode && !b.dead && dt > 0) bodySurvivalPass(s, entry, b, dt, t);
 			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0, b.poseSeq || 0, ((b.cloakUntil || 0) > t) ? 1 : 0]);
-			if(!b.dead){
-				if(!entry.bodyLike) entry.bodyLike = { gid: entry.gid, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c, o) => hurtBody(s, entry, a, sx, sy, c, o) };
-				// vx/vy are advisory (aim-lead for party-aware attackers) — never authority.
-				// duelWith lets in-flight duel arrows re-check consent at IMPACT time.
-				// cloaked is the antenna gate flag mobs.js nearestCoopBody skips on.
-				entry.bodyLike.x = b.x; entry.bodyLike.y = b.y; entry.bodyLike.vx = b.vx || 0; entry.bodyLike.vy = b.vy || 0; entry.bodyLike.dead = false; entry.bodyLike.duelWith = b.duelWith || null;
-				entry.bodyLike.cloaked = (b.cloakUntil || 0) > t;
-				pub.push(entry.bodyLike);
-			}
+			if(!entry.bodyLike) entry.bodyLike = { gid: entry.gid, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c, o) => hurtBody(s, entry, a, sx, sy, c, o) };
+			// The occupancy plane includes corpses so environmental solids cannot form
+			// through a respawn footprint. Combat/spawn consumers skip `dead`; hurtBody
+			// also rejects it, preserving non-targetable/non-hurtable corpse semantics.
+			entry.bodyLike.x = b.x; entry.bodyLike.y = b.y; entry.bodyLike.vx = b.vx || 0; entry.bodyLike.vy = b.vy || 0; entry.bodyLike.dead = !!b.dead; entry.bodyLike.duelWith = b.duelWith || null;
+			entry.bodyLike.cloaked = (b.cloakUntil || 0) > t;
+			pub.push(entry.bodyLike);
 		}
 		if(MMR) MMR.coopBodies = pub;
 		if(list.length || s.pbWas){ broadcast({ t: 'pb', list }); s.pbWas = list.length > 0; }
@@ -1672,6 +2015,14 @@ const ghostHost = (function(){
 		if(!s) return false;
 		const q = s.assistQueue.take(qid);
 		if(!q) return false;
+		// Revocation is immediate even for work queued earlier. Approval performs a
+		// second authority check instead of treating the queue row as a capability.
+		const owner = entries().find(e => e.gid === q.gid && e.hello && e.assistant && NET.modeAllows(e.mode, 'full'));
+		if(!owner){
+			notifyAssistDone(q.gid, { t: 'assistDone', qid, ok: false, reason: 'perm', label: q.label });
+			updateUi();
+			return false;
+		}
 		// approval re-validates NOW: the world moved while the request sat in the queue
 		let res = null;
 		try{ res = bridge.ghostAssist(q.a, q.id, q.n); }catch(e){ res = { ok: false, reason: 'error' }; }
@@ -1777,8 +2128,16 @@ const ghostHost = (function(){
 			// vitals — the flag every body pass below branches on
 			const embodied = (mode === 'play' || mode === 'hero');
 			const wasHero = entry.heroMode;
+			// hero -> play keeps the body, so it bypasses despawnBody's teardown.
+			// Release a guest-driven mech before disabling the hero control path;
+			// otherwise its last steering input survives as a phantom rider.
+			if(wasHero && mode === 'play'){
+				try{ if(MMR && MMR.mechs && MMR.mechs.guestUnboard) MMR.mechs.guestUnboard(entry.gid); }catch(e){ /* fine */ }
+			}
 			entry.heroMode = mode === 'hero';
-			if(embodied && !entry.body) spawnBody(session, entry);
+			if(embodied && !entry.body && !spawnBody(session, entry)){
+				entry.mode = 'full'; entry.heroMode = false; // no clear AABB: influence-only floor
+			}
 			else if(!embodied && entry.body) despawnBody(session, entry);
 			// demotion hero → play must clamp the body into the zero-trust rung's HP pool:
 			// a hero body may carry up to HERO_RULES.HP_MAX (1000); play tops out at 80,
@@ -1789,7 +2148,8 @@ const ghostHost = (function(){
 				entry.body.hp = Math.min(entry.body.hp, entry.body.maxHp);
 				sendVitals(session, entry);
 			}
-			entry.peer.send({ t: 'perm', mode });
+			entry.peer.send({ t: 'perm', mode: entry.mode });
+			if(entry.body) sendVitals(session, entry); // perm must precede authoritative body vitals
 			hit = true;
 		}
 		if(hit) updateUi();
@@ -2050,7 +2410,7 @@ const ghostHost = (function(){
 	const PERM_KEY = 'mm_ghost_perm_v1';
 	const APPROVE_KEY = 'mm_ghost_approve_v1';
 	const VIEW_KEY = 'mm_ghost_view_v1';
-	const MODE_LABEL = { watch: 'tylko ogląda', chat: '+ czat', full: '+ czat i wpływ', play: '🎮 gra (sakwa)', hero: '🕹 gra (pełny bohater)' };
+	const MODE_LABEL = { watch: 'tylko ogląda', chat: '+ czat', full: '+ czat i wpływ', play: '🎮 gra (sakwa)', hero: '🕹 gra (pełny bohater — zaufany)' };
 	let defaultMode = 'watch'; // the SAFE FLOOR a viewer gets on join — spectate only until the host raises it by hand
 	// the embodied rungs are NEVER a door policy: play and hero are granted per
 	// viewer, by hand — an embodied stranger by default would be a griefing invitation
@@ -2220,6 +2580,10 @@ const ghostHost = (function(){
 			+ '<b style="font-size:13px;">👁 Duchy Warstwy</b>'
 			+ '<button id="ghostPanelClose" style="border:none;background:rgba(255,255,255,.12);color:#fff;width:24px;height:24px;border-radius:8px;cursor:pointer;">×</button></div>'
 			+ '<div id="ghostPanelInfo" style="line-height:1.45;color:#b9c9dc;">Wyślij link, a znajomi wejdą do twojego świata jako DUCHY: oglądają grę na żywo, płoszą stwory i wzmacniają cię samą obecnością — ale nie ruszą ani jednego kafla.</div>'
+			+ '<div id="ghostPanelBenefits" role="note" style="line-height:1.45;color:#9fd6ae;font-size:10.5px;padding:7px 8px;border-radius:9px;border:1px solid rgba(92,190,123,.28);background:rgba(42,111,71,.14);">'
+			+ '<b>✓ Korzyści</b><br>Połączenie i strumień są szyfrowane, świat pozostaje pod kontrolą gospodarza, a tryby oglądania, czatu i „gra (sakwa)” ograniczają wpływ znajomego. Nie potrzeba konta ani osobnego serwera zapisów.</div>'
+			+ '<div id="ghostPanelSafety" role="alert" style="line-height:1.45;color:#f0c879;font-size:10.5px;padding:7px 8px;border-radius:9px;border:1px solid rgba(230,189,114,.34);background:rgba(104,72,20,.18);">'
+			+ '<b>⚠ Tryb tylko dla znajomych</b><br>Link jest wspólnym kluczem dostępu — nie publikuj go i nie traktuj go jak konta użytkownika. Każdy, kto go otrzyma, może próbować dołączyć, a posiadacze tego samego linku są w jednej strefie zaufania i mogą próbować podszyć się podczas łączenia. „Gra (sakwa)” ma zasoby i działania kontrolowane przez gospodarza; „pełny bohater” ufa lokalnej postaci, ekwipunkowi i statystykom znajomego, więc dawaj go tylko osobie, której naprawdę ufasz. Zatrzymaj i uruchom transmisję ponownie, aby unieważnić stary link.</div>'
 			+ '<div id="ghostPanelLinkRow" style="display:none;gap:6px;"><input id="ghostPanelLink" readonly aria-label="Link dla widzów" style="flex:1;min-width:0;background:rgba(20,26,36,.9);border:1px solid rgba(255,255,255,.2);border-radius:8px;color:#d5e6ff;padding:6px 8px;font-size:11px;">'
 			+ '<button id="ghostPanelCopy" style="border:none;border-radius:8px;background:#2c7ef8;color:#fff;font-weight:700;padding:6px 10px;cursor:pointer;">Kopiuj</button>'
 			+ '<button id="ghostPanelShare" style="display:none;border:none;border-radius:8px;background:rgba(255,255,255,.14);color:#fff;font-weight:700;padding:6px 10px;cursor:pointer;">Wyślij</button></div>'
@@ -2236,7 +2600,7 @@ const ghostHost = (function(){
 			+ '<div id="ghostPanelQueue" style="display:none;flex-direction:column;gap:4px;"></div>'
 			+ '<div id="ghostPanelViewers" style="color:#9fd6ae;"></div>'
 			+ '<div id="ghostPanelPerks" style="line-height:1.45;color:#8fa4bb;font-size:11px;"></div>'
-			+ '<div style="color:#7d8fa6;font-size:10px;line-height:1.4;">🌐 Połączenie jest bezpośrednie (P2P); w restrykcyjnych sieciach ruch przechodzi przez publiczny przekaźnik TURN. Gdy mimo to widz nie może dołączyć, pomaga inna sieć lub hotspot.</div>'
+			+ '<div style="color:#7d8fa6;font-size:10px;line-height:1.4;">🌐 Połączenie jest bezpośrednie (P2P), gdy sieć na to pozwala. Może to ujawnić drugiej stronie podstawowe metadane sieciowe. W restrykcyjnych sieciach zaszyfrowany ruch przechodzi przez publiczny przekaźnik TURN. Gdy widz nie może dołączyć, pomaga inna sieć lub hotspot.</div>'
 			+ '<button id="ghostPanelToggle" style="border:none;border-radius:10px;background:#21a366;color:#fff;font-weight:800;padding:9px 12px;cursor:pointer;">Rozpocznij transmisję</button>';
 		document.body.appendChild(el);
 		el.querySelector('#ghostPanelClose').addEventListener('click', () => togglePanel(false));
@@ -2309,6 +2673,7 @@ const ghostHost = (function(){
 		badge.title = rank.name + ' — postępy widza (jego własne, nie dają mu żadnych uprawnień)';
 		const sel = document.createElement('select');
 		sel.style.cssText = 'background:rgba(20,26,36,.9);color:#d5e6ff;border:1px solid rgba(255,255,255,.2);border-radius:6px;font-size:10px;padding:2px;';
+		sel.title = '„Gra (sakwa)” jest trybem dla niezaufanego klienta. „Pełny bohater” ufa lokalnemu stanowi gracza — przyznawaj go tylko osobom, którym ufasz.';
 		for(const val of NET.PERMISSION_MODES){
 			const o = document.createElement('option');
 			o.value = val; o.textContent = MODE_LABEL[val] || val; o.selected = entry.mode === val;
@@ -2407,15 +2772,17 @@ const ghostHost = (function(){
 		let took = null;
 		try{ took = bridge.ghostGiftTake ? bridge.ghostGiftTake(key, count) : null; }catch(e){ took = null; }
 		if(!took || !took.ok){ try{ bridge.msg('🎁 Nie masz tylu: ' + key); }catch(e){ /* fine */ } return false; }
+		// Hero guests receive the normal local-inventory gift acknowledgement, while
+		// this pouch mirrors the same stock for host-authoritative placement escrow.
+		NET.pouchAdd(te.body.pouch, key, count);
+		keepBody(te);
 		if(te.heroMode){
 			// a hero guest banks the gift into its REAL inventory via the ack —
-			// the pouch is play-mode state it never reads
+			// the pouch remains host-only placement authority
 			try{ te.peer.send({ t: 'gift', key, n: count, label: took.label || key, hero: 1 }); }catch(e){ /* fine */ }
 			try{ bridge.msg('🎁 Podarowano ' + (took.label || key) + ' ×' + count + ' → ' + (te.name || 'Duch')); }catch(e){ /* fine */ }
 			return true;
 		}
-		NET.pouchAdd(te.body.pouch, key, count);
-		keepBody(te);
 		sendVitals(s, te);
 		try{ te.peer.send({ t: 'gift', key, n: count, label: took.label || key }); }catch(e){ /* fine */ }
 		try{ bridge.msg('🎁 Podarowano ' + (took.label || key) + ' ×' + count + ' → ' + (te.name || 'Duch')); }catch(e){ /* fine */ }
@@ -2514,7 +2881,7 @@ const ghostHost = (function(){
 			viewers.appendChild(head);
 			for(const entry of list) viewers.appendChild(viewerRow(entry, t));
 		}
-		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
+		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). „Gra (sakwa)” pozostaje host-autorytatywna i nadaje się dla niezaufanego klienta; „pełny bohater” ufa lokalnemu stanowi gracza i jest tylko dla zaufanych osób. 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
 	}
 
 	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource, giftWeapon, forkGrant, partyMembers,

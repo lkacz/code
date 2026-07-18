@@ -36,6 +36,14 @@ option. Never trust client-sent parameters: clamp amounts, whitelist kinds,
 and let the HOST own durations/strengths (the client may only *name* an
 element or pick between the module's own power levels).
 
+Remote-invite boundary: the URL-fragment secret is a **bearer capability**,
+not an account or durable device identity. Anyone holding the link may open a
+remote connection at the host's safe default permission, and the current
+shared-secret signaling protocol assumes invite holders will not impersonate
+the host to one another. Stop/restart hosting to rotate a leaked link. Do not
+describe `hero` as safe for strangers: grant it only to a trusted player;
+`play` is the hostile-client tier.
+
 ### The three questions for EVERY new feature
 
 1. **Does it WRITE the world** (tiles, entities, drops)? It must flow through
