@@ -96,6 +96,24 @@ const ghostClient = (function(){
 		heartbeatGidLease();
 		setInterval(heartbeatGidLease, 3000);
 	}
+	// Resume token: the host's proof-of-ownership for THIS gid, minted host-side on
+	// the first hello and echoed on every reconnect so an impostor who merely knows
+	// the (public) gid cannot claim the seat. Tab-scoped in sessionStorage — it must
+	// NOT be shared across tabs, since each tab holds its own gid. Never on the
+	// localStorage lockdown (it would then leak between tabs of one browser).
+	let resumeToken = null;
+	(() => {
+		if(!WATCH) return;
+		try{
+			const raw = JSON.parse(sessionStorage.getItem(NET.RESUME_TOKEN_KEY) || 'null');
+			if(raw && raw.room === WATCH.room && NET.validResumeTokenShape(raw.rt)) resumeToken = raw.rt;
+		}catch(e){ resumeToken = null; }
+	})();
+	function storeResumeToken(rt){
+		if(!NET.validResumeTokenShape(rt)) return;
+		resumeToken = rt;
+		try{ sessionStorage.setItem(NET.RESUME_TOKEN_KEY, JSON.stringify({ room: WATCH.room, rt })); }catch(e){ /* session-only */ }
+	}
 	const assembler = NET.createAssembler();
 	const queue = [];
 	const heroTarget = { has: false, x: 0, y: 0, vx: 0, vy: 0, at: 0 };
@@ -535,7 +553,7 @@ const ghostClient = (function(){
 			onSignalFail: () => { if(state === 'connect') showVeil('Nie mogę dosięgnąć serwerów sygnałowych.<br>Spróbuj ponownie za chwilę.'); }
 		});
 	}
-	function sendHello(){ if(conn) conn.send({ t: 'hello', gid, name: ghostName(), avatar, proto: NET.GHOST_PROTO, lvl: NET.levelFor(prog.xp).level }); }
+	function sendHello(){ if(conn) conn.send({ t: 'hello', gid, name: ghostName(), avatar, proto: NET.GHOST_PROTO, lvl: NET.levelFor(prog.xp).level, rt: resumeToken || undefined }); }
 	// Transport loss ≠ the host saying goodbye: rebuild the connection and let the
 	// normal hello → welcome → snapshot flow re-base the world. hostGone stays final.
 	function scheduleReconnect(){
@@ -581,6 +599,7 @@ const ghostClient = (function(){
 				state = 'sync';
 				syncSince = nowMs();
 				hostName = String(pl.host || 'Gospodarz').slice(0, 24);
+				storeResumeToken(pl.rt); // the seat is ours to reclaim on reconnect/reload
 				if(NET.validPermissionMode(pl.mode)) mode = pl.mode;
 				// the host's challenge mods are remote input: setRemoteMods re-whitelists
 				// against OUR table before mirroring the world's laws (night lock etc.)
@@ -599,6 +618,21 @@ const ghostClient = (function(){
 		if(pl.t === 'banned'){
 			state = 'ended';
 			showVeil('Gospodarz zablokował twój dostęp do tej warstwy.');
+			return;
+		}
+		if(pl.t === 'incompatible'){
+			// protocol mismatch: the host runs a different wire version — no snapshot,
+			// no permissions were granted, and retrying the same build won't help
+			state = 'ended';
+			showVeil('Niezgodna wersja gry z gospodarzem.<br>Odśwież stronę, aby pobrać najnowszą wersję.');
+			return;
+		}
+		if(pl.t === 'taken'){
+			// this gid is already held this session and we could not prove ownership —
+			// a fresh identity avoids colliding with the real owner
+			state = 'ended';
+			try{ sessionStorage.removeItem(NET.RESUME_TOKEN_KEY); }catch(e){ /* fine */ }
+			showVeil('To miejsce jest już zajęte przez inną kartę.<br><a href="' + location.href.replace(/"/g, '') + '" style="color:#8fc7ff;">Spróbuj ponownie</a>');
 			return;
 		}
 		if(pl.t === 'perm'){

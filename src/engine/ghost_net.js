@@ -622,18 +622,24 @@ export function chunkPayload(kind, str, maxLen, id){
 export const ASSEMBLER_MAX_CHUNKS = 2048;
 export const ASSEMBLER_MAX_CHUNK_LEN = 65536;
 export function createAssembler(){
-	let cur = null; // {id, kind, of, got, parts[]}
+	let cur = null; // {id, kind, of, got, parts[], bytes}
 	return {
 		push(env){
 			if(!env || env.t !== 'chunk' || typeof env.d !== 'string') return null;
 			const of = env.of | 0, i = env.i | 0;
 			if(of < 1 || of > ASSEMBLER_MAX_CHUNKS || env.d.length > ASSEMBLER_MAX_CHUNK_LEN) return null;
 			if(!cur || cur.id !== env.id){
-				cur = { id: env.id, kind: env.k, of, got: 0, parts: new Array(of) };
+				cur = { id: env.id, kind: env.k, of, got: 0, parts: new Array(of), bytes: 0 };
 			}
 			if(of !== cur.of) return null; // header disagrees with its own transfer
 			if(!(i >= 0 && i < cur.of)) return null;
-			if(cur.parts[i] == null){ cur.parts[i] = env.d; cur.got++; }
+			if(cur.parts[i] == null){
+				// byte-count the running total (UTF-8, not code units) so a hostile
+				// transfer of many just-legal chunks can't assemble past the ceiling
+				cur.bytes += utf8Len(env.d);
+				if(cur.bytes > WIRE_LIMITS.ASSEMBLED_MAX){ cur = null; return null; }
+				cur.parts[i] = env.d; cur.got++;
+			}
 			if(cur.got < cur.of) return null;
 			const done = { kind: cur.kind, data: cur.parts.join('') };
 			cur = null;
@@ -741,6 +747,242 @@ export function createMqttDecoder(){
 	};
 }
 
+// ============================ SECURITY PRIMITIVES (pure) ============================
+// Everything here is host-authoritative anti-abuse plumbing, testable under Node
+// (Web Crypto is available there): resume tokens against gid takeover, invite-
+// secret signaling signatures + replay guard, wire size caps, a swept-collision
+// resolver so the host can reject wall-tunneling, and a bounded DataChannel queue.
+
+function randBytesHex(n){
+	const a = new Uint8Array(Math.max(1, n | 0));
+	if(typeof crypto !== 'undefined' && crypto.getRandomValues) crypto.getRandomValues(a);
+	else for(let i = 0; i < a.length; i++) a[i] = (Math.random() * 256) | 0; // last-resort only — never in a crypto env
+	let s = '';
+	for(let i = 0; i < a.length; i++) s += a[i].toString(16).padStart(2, '0');
+	return s;
+}
+// UTF-8 byte length — the wire is bytes, not code units, so a hostile sender can't
+// smuggle a multi-megabyte payload past a String.length check with multi-byte chars.
+export function utf8Len(str){
+	const s = String(str == null ? '' : str);
+	if(typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).length;
+	let n = 0; // manual fallback (no TextEncoder — never on the real wire)
+	for(let i = 0; i < s.length; i++){ const c = s.codePointAt(i); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; if(c > 0xffff) i++; }
+	return n;
+}
+
+// --- resume tokens: the ONLY proof of gid ownership -------------------------------
+// A gid is public (it rides presence, pb rows, duel packets), so trusting `hello.gid`
+// alone lets anyone who has seen a victim's gid claim the seat, evict the owner, and
+// inherit its embodied rung/body/pouch via modeMemory. The host mints a 128-bit token
+// per (room, gid, host session) on the FIRST claim and hands it back privately; a
+// later claim of that gid must present the matching token or be refused BEFORE the
+// current owner is touched.
+export const RESUME_TOKEN_BYTES = 16; // 128-bit
+export const RESUME_TOKEN_KEY = 'mm_ghost_rtok_v1';
+export function mintResumeToken(){ return randBytesHex(RESUME_TOKEN_BYTES); }
+export function validResumeTokenShape(t){ return typeof t === 'string' && /^[0-9a-f]{32}$/.test(t); }
+// length-independent compare over the fixed shape (no early-out on first mismatch)
+export function resumeTokenMatch(a, b){
+	if(!validResumeTokenShape(a) || !validResumeTokenShape(b) || a.length !== b.length) return false;
+	let diff = 0;
+	for(let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+	return diff === 0;
+}
+
+// --- wire size caps: a hostile peer must not be able to make us allocate freely ------
+export const WIRE_LIMITS = {
+	JSON_MAX: 262144,      // 256 KB per non-chunk control message
+	SDP_MAX: 16384,        // one offer/answer
+	ICE_MAX: 2048,         // one candidate
+	SIG_MAX: 20480,        // whole signaling envelope
+	MQTT_PAYLOAD_MAX: 32768,
+	ASSEMBLED_MAX: 50331648 // 48 MB assembled snapshot ceiling (bytes, not code units)
+};
+export function withinWireLimit(str, limit){ return utf8Len(str) <= (Number(limit) || 0); }
+// A signaling envelope carries an SDP or an ICE candidate; reject the oversized ones
+// before they reach setRemoteDescription/addIceCandidate.
+export function validSignalSize(m){
+	if(!m || typeof m !== 'object') return false;
+	if(m.sdp != null && !withinWireLimit(typeof m.sdp === 'string' ? m.sdp : JSON.stringify(m.sdp), WIRE_LIMITS.SDP_MAX)) return false;
+	if(m.c != null && !withinWireLimit(typeof m.c === 'string' ? m.c : JSON.stringify(m.c), WIRE_LIMITS.ICE_MAX)) return false;
+	return true;
+}
+
+// --- invite-secret signaling: authenticate the handshake, not just the room code -----
+// Extending the room code does nothing (a public MQTT topic still carries plaintext
+// unsigned envelopes). The invite carries a Web-Crypto secret (≥128-bit); every
+// signaling envelope is HMAC-signed over (room|role|nonce|ts|contentHash) and bound
+// to the sender role and the host fingerprint, and a replay guard rejects re-sends.
+export const INVITE_SECRET_BYTES = 16;
+export const SIG_REPLAY_WINDOW_MS = 60000;
+export function mintInviteSecret(){ return randBytesHex(INVITE_SECRET_BYTES); }
+export function validInviteSecret(s){ return typeof s === 'string' && /^[0-9a-f]{32,64}$/.test(s); }
+function hexToBytes(hex){
+	const h = String(hex);
+	const out = new Uint8Array(h.length >> 1);
+	for(let i = 0; i < out.length; i++) out[i] = parseInt(h.substr(i * 2, 2), 16);
+	return out;
+}
+async function hmacHex(secretHex, msg){
+	if(typeof crypto === 'undefined' || !crypto.subtle) throw new Error('subtle-crypto-unavailable');
+	const key = await crypto.subtle.importKey('raw', hexToBytes(secretHex), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+	const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(String(msg)));
+	const b = new Uint8Array(sig);
+	let s = '';
+	for(let i = 0; i < b.length; i++) s += b[i].toString(16).padStart(2, '0');
+	return s;
+}
+// Canonical string the signature covers: order and separators are fixed so both ends
+// hash exactly the same bytes. fp = the signer's DTLS fingerprint binding (or '').
+function sigCanon(room, role, nonce, ts, fp, contentStr){
+	return [String(room), String(role), String(nonce), String(ts | 0), String(fp || ''), String(contentStr == null ? '' : contentStr)].join('');
+}
+export async function signSignal(secret, room, role, nonce, ts, contentStr, fp){
+	return hmacHex(secret, sigCanon(room, role, nonce, ts, fp, contentStr));
+}
+// Verify signature + freshness + role/fingerprint binding. `guard` (createReplayGuard)
+// rejects a nonce already seen inside the window — so a captured envelope can't be
+// replayed. Returns {ok, reason}.
+export async function verifySignal(secret, env, expect){
+	expect = expect || {};
+	if(!validInviteSecret(secret)) return { ok: false, reason: 'secret' };
+	if(!env || typeof env !== 'object') return { ok: false, reason: 'shape' };
+	if(typeof env.sig !== 'string' || typeof env.nonce !== 'string' || !Number.isFinite(env.ts)) return { ok: false, reason: 'shape' };
+	if(!validSignalSize(env)) return { ok: false, reason: 'size' };
+	const now = Number.isFinite(expect.now) ? expect.now : Date.now();
+	if(Math.abs(now - env.ts) > (expect.window || SIG_REPLAY_WINDOW_MS)) return { ok: false, reason: 'stale' };
+	if(expect.role && env.role !== expect.role) return { ok: false, reason: 'role' };
+	if(expect.fp && env.fp && env.fp !== expect.fp) return { ok: false, reason: 'fingerprint' };
+	if(expect.guard && !expect.guard.accept(env.nonce, now)) return { ok: false, reason: 'replay' };
+	const content = env.sdp != null ? (typeof env.sdp === 'string' ? env.sdp : JSON.stringify(env.sdp))
+		: env.c != null ? (typeof env.c === 'string' ? env.c : JSON.stringify(env.c)) : '';
+	let mac = '';
+	try{ mac = await hmacHex(secret, sigCanon(expect.room, env.role, env.nonce, env.ts, env.fp || '', content)); }
+	catch(e){ return { ok: false, reason: 'crypto' }; }
+	if(mac.length !== env.sig.length) return { ok: false, reason: 'sig' };
+	let diff = 0;
+	for(let i = 0; i < mac.length; i++) diff |= mac.charCodeAt(i) ^ env.sig.charCodeAt(i);
+	return diff === 0 ? { ok: true } : { ok: false, reason: 'sig' };
+}
+// Bounded nonce memory with TTL — a replay of an accepted nonce inside the window is
+// refused; old nonces age out so the set can't grow without bound.
+export function createReplayGuard(windowMs){
+	const win = Number(windowMs) || SIG_REPLAY_WINDOW_MS;
+	const seen = new Map(); // nonce -> ts
+	const MAX = 4096;
+	return {
+		accept(nonce, now){
+			const t = Number.isFinite(now) ? now : Date.now();
+			for(const [k, ts] of seen){ if(t - ts > win) seen.delete(k); }
+			if(typeof nonce !== 'string' || !nonce) return false;
+			if(seen.has(nonce)) return false;
+			if(seen.size >= MAX) return false; // saturated: fail closed rather than evict-and-admit
+			seen.set(nonce, t);
+			return true;
+		},
+		size(){ return seen.size; }
+	};
+}
+
+// --- host-side movement enforcement: swept AABB against real tiles -------------------
+// The host only clamped a per-axis STEP (max speed) — it never checked collision, so a
+// guest could walk its body through walls and bedrock and then act/aim/ping from inside
+// solid rock. This resolves a claimed move the way the local mover does: clamp the step
+// to the speed envelope, then advance axis-by-axis, stopping at the first solid tile so
+// the body never enters one. `solidAt(tx,ty)` is the HOST's tile reader; `bounds`
+// clamps to the world. Pure: no globals, fully testable with a synthetic grid.
+export function clampStep(cur, claimed, maxStep){
+	if(!Number.isFinite(claimed)) return cur;
+	if(!Number.isFinite(cur)) return claimed;
+	const step = Math.max(0, Number(maxStep) || 0);
+	const d = claimed - cur;
+	if(d > step) return cur + step;
+	if(d < -step) return cur - step;
+	return claimed;
+}
+function aabbHitsSolid(x, y, w, h, solidAt){
+	const x0 = Math.floor(x - w / 2), x1 = Math.floor(x + w / 2 - 1e-6);
+	const y0 = Math.floor(y - h / 2), y1 = Math.floor(y + h / 2 - 1e-6);
+	for(let ty = y0; ty <= y1; ty++) for(let tx = x0; tx <= x1; tx++){ if(solidAt(tx, ty)) return true; }
+	return false;
+}
+export function sweepBodyMove(b, claimedX, claimedY, maxStep, solidAt, bounds){
+	const w = (b && Number.isFinite(b.w)) ? b.w : PLAY_RULES.BODY_W;
+	const h = (b && Number.isFinite(b.h)) ? b.h : PLAY_RULES.BODY_H;
+	let cx = Number.isFinite(b.x) ? b.x : (Number(claimedX) || 0);
+	let cy = Number.isFinite(b.y) ? b.y : (Number(claimedY) || 0);
+	let tx = clampStep(cx, Number(claimedX), maxStep);
+	let ty = clampStep(cy, Number(claimedY), maxStep);
+	if(bounds){
+		tx = Math.max(bounds.minX + w / 2, Math.min(bounds.maxX - w / 2, tx));
+		ty = Math.max(bounds.minY + h / 2, Math.min(bounds.maxY - h / 2, ty));
+	}
+	const solid = (typeof solidAt === 'function') ? solidAt : () => false;
+	// resolve X, then Y, sub-stepping so a fast claim can't tunnel past a 1-tile wall
+	const stepInto = (fromX, fromY, toX, toY, moveAxis) => {
+		const dist = Math.abs((moveAxis === 'x' ? toX - fromX : toY - fromY));
+		const n = Math.max(1, Math.ceil(dist / 0.25));
+		let px = fromX, py = fromY;
+		for(let i = 1; i <= n; i++){
+			const nx = moveAxis === 'x' ? fromX + (toX - fromX) * (i / n) : px;
+			const ny = moveAxis === 'y' ? fromY + (toY - fromY) * (i / n) : py;
+			if(aabbHitsSolid(nx, ny, w, h, solid)) break;
+			px = nx; py = ny;
+		}
+		return moveAxis === 'x' ? px : py;
+	};
+	const nx = stepInto(cx, cy, tx, cy, 'x');
+	const ny = stepInto(nx, cy, nx, ty, 'y');
+	const blocked = (Math.abs(nx - tx) > 1e-6) || (Math.abs(ny - ty) > 1e-6);
+	return { x: nx, y: ny, blocked };
+}
+
+// --- bounded DataChannel send queue: never let dc.send outrun the socket -------------
+// dc.send ignoring bufferedAmount lets a slow/hostile receiver make us buffer without
+// bound (memory DoS) or block. This queues when the socket is congested (>hi water),
+// drains under lo water, and fail-closes (drops the peer) if the backlog itself blows
+// its ceiling — the caller closes the channel on a closed() queue.
+export const DC_QUEUE = { HI: 262144, LO: 65536, MAX: 4096 };
+export function createSendQueue(opts){
+	opts = opts || {};
+	const hi = Number.isFinite(opts.hi) ? opts.hi : DC_QUEUE.HI;
+	const lo = Number.isFinite(opts.lo) ? opts.lo : DC_QUEUE.LO;
+	const max = Number.isFinite(opts.max) ? opts.max : DC_QUEUE.MAX;
+	const q = [];
+	let closed = false, gated = false;
+	return {
+		push(item){
+			if(closed) return false;
+			if(q.length >= max){ closed = true; return false; } // fail closed
+			q.push(item);
+			return true;
+		},
+		// drive with a channel exposing {bufferedAmount, send(x)}; returns false once
+		// the queue has fail-closed so the transport can tear the peer down
+		flush(channel){
+			if(closed) return false;
+			const buffered = () => Number(channel && channel.bufferedAmount) || 0;
+			if(gated && buffered() > lo) return true;         // still draining: hold
+			gated = false;
+			while(q.length){
+				if(buffered() > hi){ gated = true; break; }    // congested: re-gate
+				try{ channel.send(q.shift()); }catch(e){ closed = true; return false; }
+			}
+			return true;
+		},
+		size(){ return q.length; },
+		closed(){ return closed; }
+	};
+}
+
+// --- RTC negotiation limits -----------------------------------------------------------
+export const RTC_LIMITS = {
+	PENDING_MAX: 8,     // half-open peer connections awaiting a datachannel
+	NEGOTIATE_MS: 15000, // an offer that never becomes a connected channel is dropped
+	HELLO_MS: 20000     // a connected channel that never sends a valid hello is dropped
+};
+
 // ============================ TRANSPORTS (browser) ============================
 
 // Public WSS brokers for the WebRTC handshake only (~2 KB per join); gameplay
@@ -791,7 +1033,7 @@ function mqttOpen(url, opts){
 	const api = {
 		get connected(){ return connected; },
 		subscribe(topic){ try{ ws.send(mqttEncodeSubscribe(subId++, topic)); }catch(e){ /* not open */ } },
-		publish(topic, str){ try{ ws.send(mqttEncodePublish(topic, str)); }catch(e){ /* not open */ } },
+		publish(topic, str){ if(!withinWireLimit(str, WIRE_LIMITS.MQTT_PAYLOAD_MAX)) return; try{ ws.send(mqttEncodePublish(topic, str)); }catch(e){ /* not open */ } },
 		close(){ closed = true; if(pingT) clearInterval(pingT); try{ ws.close(); }catch(e){ /* already */ } }
 	};
 	return api;
@@ -819,8 +1061,13 @@ function openSignal(room, who, handlers){
 			},
 			onMessage(topic, payload){
 				if(topic !== inbox) return;
+				// bytes on the public broker are hostile until proven otherwise: cap the
+				// envelope before JSON.parse, and reject an oversized SDP/ICE after
+				if(!withinWireLimit(payload, WIRE_LIMITS.SIG_MAX)) return;
 				let m = null; try{ m = JSON.parse(payload); }catch(e){ return; }
-				if(m && typeof m.k === 'string' && typeof m.from === 'string') handlers.onMsg(m);
+				if(!m || typeof m.k !== 'string' || typeof m.from !== 'string') return;
+				if(!validSignalSize(m)) return;
+				handlers.onMsg(m);
 			},
 			onDown(){ if(!closed) setTimeout(connect, 1500); }
 		});
@@ -879,15 +1126,37 @@ function createLoopbackJoin(room, id){
 }
 
 // --- WebRTC -------------------------------------------------------------------
+// Every rtc peer sends through a bounded queue: dc.send never outruns the socket
+// (bufferedAmount high/low water), and a backlog that blows its ceiling fail-closes
+// the channel instead of buffering without bound.
 function rtcPeerWrap(id, dc){
+	const q = createSendQueue();
+	try{ dc.bufferedAmountLowThreshold = DC_QUEUE.LO; }catch(e){ /* older impls */ }
+	try{ dc.onbufferedamountlow = () => { if(!q.flush(dc)){ try{ dc.close(); }catch(e2){ /* fine */ } } }; }catch(e){ /* fine */ }
 	return {
 		id, transport: 'rtc', onMessage: null,
-		send(pl){ try{ dc.send(JSON.stringify(pl)); }catch(e){ /* channel closing */ } },
+		send(pl){
+			let str = null;
+			try{ str = JSON.stringify(pl); }catch(e){ return; }
+			if(!withinWireLimit(str, WIRE_LIMITS.JSON_MAX)) return; // never emit an oversized frame
+			if(!q.push(str) || !q.flush(dc)){ try{ dc.close(); }catch(e){ /* fine */ } }
+		},
 		close(){ try{ dc.close(); }catch(e){ /* fine */ } }
 	};
 }
 function createRtcHost(room, handlers){
-	const pcs = new Map(); // ghostId -> {pc, peer}
+	const pcs = new Map(); // ghostId -> {pc, peer, negT, helloT, alive}
+	// fail-closed teardown: a half-open peer that never finishes negotiating, or a
+	// connected channel that never speaks a valid hello, is dropped with its timers
+	function drop(gid){
+		const e = pcs.get(gid);
+		if(!e) return;
+		if(e.negT) clearTimeout(e.negT);
+		if(e.helloT) clearTimeout(e.helloT);
+		try{ if(e.peer) e.peer.close(); }catch(err){ /* fine */ }
+		try{ e.pc.close(); }catch(err){ /* fine */ }
+		pcs.delete(gid);
+	}
 	const sig = openSignal(room, 'h', {
 		onReady: handlers.onStatus ? () => handlers.onStatus('signal-ready') : null,
 		onFail: handlers.onStatus ? () => handlers.onStatus('signal-fail') : null,
@@ -895,21 +1164,36 @@ function createRtcHost(room, handlers){
 			const gid = m.from;
 			if(m.k === 'hi'){
 				if(pcs.has(gid)) return; // one connection per ghost id
+				// flood guard: a stranger cannot make us open RTCPeerConnections without
+				// bound before the player cap is even consulted (each is real CPU/memory)
+				if(pcs.size >= RTC_LIMITS.PENDING_MAX) return;
 				const pc = new RTCPeerConnection(RTC_CONFIG);
-				const entry = { pc, peer: null };
+				const entry = { pc, peer: null, negT: 0, helloT: 0, alive: false };
 				pcs.set(gid, entry);
+				// negotiation deadline: no connected channel within the window → drop
+				entry.negT = setTimeout(() => { if(!entry.alive) drop(gid); }, RTC_LIMITS.NEGOTIATE_MS);
 				const dc = pc.createDataChannel('mm', { ordered: true });
 				pc.onicecandidate = (e) => { if(e.candidate) sig.sendTo(gid, { k: 'ice', c: e.candidate }); };
 				pc.onconnectionstatechange = () => {
-					if(pc.connectionState === 'failed' || pc.connectionState === 'closed'){ pcs.delete(gid); }
+					if(pc.connectionState === 'failed' || pc.connectionState === 'closed'){ drop(gid); }
 				};
 				dc.onopen = () => {
+					entry.alive = true;
+					if(entry.negT){ clearTimeout(entry.negT); entry.negT = 0; }
 					entry.peer = rtcPeerWrap(gid, dc);
-					dc.onmessage = (ev) => { let pl = null; try{ pl = JSON.parse(ev.data); }catch(e){ return; } if(entry.peer.onMessage) entry.peer.onMessage(pl); };
-					dc.onclose = () => { if(entry.peer && entry.peer.onMessage) entry.peer.onMessage({ t: 'bye' }); pcs.delete(gid); };
+					// mandatory hello timeout: a channel that opens and then sits silent
+					// (or never says a valid hello) is a resource leak — reap it
+					entry.helloT = setTimeout(() => { if(!entry.helloSeen) drop(gid); }, RTC_LIMITS.HELLO_MS);
+					dc.onmessage = (ev) => {
+						if(!withinWireLimit(ev.data, WIRE_LIMITS.JSON_MAX)) return; // oversized frame ignored
+						let pl = null; try{ pl = JSON.parse(ev.data); }catch(e){ return; }
+						if(pl && pl.t === 'hello'){ entry.helloSeen = true; if(entry.helloT){ clearTimeout(entry.helloT); entry.helloT = 0; } }
+						if(entry.peer.onMessage) entry.peer.onMessage(pl);
+					};
+					dc.onclose = () => { if(entry.peer && entry.peer.onMessage) entry.peer.onMessage({ t: 'bye' }); drop(gid); };
 					handlers.onPeer(entry.peer);
 				};
-				pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => sig.sendTo(gid, { k: 'offer', sdp: pc.localDescription })).catch(() => pcs.delete(gid));
+				pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => sig.sendTo(gid, { k: 'offer', sdp: pc.localDescription })).catch(() => drop(gid));
 			} else if(m.k === 'answer' && pcs.has(gid)){
 				pcs.get(gid).pc.setRemoteDescription(m.sdp).catch(() => {});
 			} else if(m.k === 'ice' && pcs.has(gid) && m.c){
@@ -919,8 +1203,7 @@ function createRtcHost(room, handlers){
 	});
 	return {
 		stop(){
-			for(const { pc, peer } of pcs.values()){ try{ if(peer) peer.send({ t: 'hostGone' }); }catch(e){ /* fine */ } try{ pc.close(); }catch(e){ /* fine */ } }
-			pcs.clear();
+			for(const gid of Array.from(pcs.keys())){ const e = pcs.get(gid); try{ if(e.peer) e.peer.send({ t: 'hostGone' }); }catch(err){ /* fine */ } drop(gid); }
 			sig.close();
 		}
 	};
@@ -958,15 +1241,19 @@ function createRtcJoin(room, gid, handlers){
 }
 
 // --- facades --------------------------------------------------------------------
-// Host listens on every transport it can: the same watch link then works for a
-// second tab on this machine (loopback) and for a friend across the internet (rtc).
+// Host listens on the loopback transport (a second tab on this machine) always;
+// the remote WebRTC transport is OPT-IN and OFF BY DEFAULT. Until the signaling
+// handshake is signed end-to-end (mintInviteSecret + signSignal/verifySignal), the
+// public MQTT brokers carry unauthenticated envelopes to any listener, so remote
+// join is a security hole we do not open for untrusted peers. A caller must pass
+// `rtc:true` deliberately to accept that risk.
 export function hostListen(room, opts){
 	const stops = [];
 	const status = { bc: false, rtc: false };
 	try{
 		if(typeof BroadcastChannel !== 'undefined'){ stops.push(createLoopbackHost(room, opts.onPeer).stop); status.bc = true; }
 	}catch(e){ /* no loopback */ }
-	if(opts.rtc !== false && typeof RTCPeerConnection !== 'undefined' && typeof WebSocket !== 'undefined'){
+	if(opts.rtc === true && typeof RTCPeerConnection !== 'undefined' && typeof WebSocket !== 'undefined'){
 		try{ stops.push(createRtcHost(room, { onPeer: opts.onPeer, onStatus: opts.onStatus }).stop); status.rtc = true; }catch(e){ /* rtc unavailable */ }
 	}
 	return { transports: status, stop(){ for(const s of stops){ try{ s(); }catch(e){ /* fine */ } } } };
@@ -993,7 +1280,11 @@ export function joinRoom(room, opts){
 	if(opts.via !== 'rtc'){
 		try{ if(typeof BroadcastChannel !== 'undefined') wire(createLoopbackJoin(room, opts.id)); }catch(e){ /* no loopback */ }
 	}
-	if(opts.via !== 'bc' && typeof RTCPeerConnection !== 'undefined' && typeof WebSocket !== 'undefined'){
+	// Remote RTC join is opt-in too: without an explicit `via:'rtc'` (or `rtc:true`)
+	// the guest never accepts an offer from the unauthenticated broker — a hostile
+	// host cannot answer a naive join and push a poisoned world. The default watch
+	// link (no `via`) therefore only connects same-machine (loopback).
+	if((opts.via === 'rtc' || opts.rtc === true) && typeof RTCPeerConnection !== 'undefined' && typeof WebSocket !== 'undefined'){
 		try{
 			const j = createRtcJoin(room, opts.id, { onOpen: (c) => { wire(c); if(opts.onTransportUp) opts.onTransportUp(c); }, onFail: opts.onSignalFail });
 			closers.push(j.close);
@@ -1018,6 +1309,10 @@ const api = {
 	ASSIST_LIMITS, clampCraftCount, createAssistQueue,
 	roomCode, normalizeRoom, watchLink, parseWatch, validBuffKind,
 	chunkPayload, createAssembler, createCooldownLedger,
+	utf8Len, WIRE_LIMITS, withinWireLimit, validSignalSize,
+	RESUME_TOKEN_BYTES, RESUME_TOKEN_KEY, mintResumeToken, validResumeTokenShape, resumeTokenMatch,
+	INVITE_SECRET_BYTES, SIG_REPLAY_WINDOW_MS, mintInviteSecret, validInviteSecret, signSignal, verifySignal, createReplayGuard,
+	clampStep, sweepBodyMove, createSendQueue, DC_QUEUE, RTC_LIMITS,
 	PROG_KEY, PROG, DEED_XP, validDeed, deedXp, xpForLevel, levelFor, RANKS, rankFor,
 	ACHIEVEMENTS, achievementById, achievementProgress, createProgress, normalizeProgress, statView, progressAfter,
 	hostListen, joinRoom

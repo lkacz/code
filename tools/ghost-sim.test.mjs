@@ -512,6 +512,54 @@ assert.ok(/pong-timeout/.test(netSrc) && /Date\.now\(\) - lastPong > 80000/.test
 assert.ok(/conn\.onMessage\(\{ t: 'connLost' \}\)/.test(netSrc),
 	'a dropped DataChannel surfaces as connLost (reconnectable), not hostGone (final)');
 
+// --- P0-4/P0-5: transport hardening wiring (the RTC path can't run headless, so pin it) ------
+// remote RTC is OFF by default — a caller must pass rtc:true deliberately
+assert.ok(/if\(opts\.rtc === true && typeof RTCPeerConnection/.test(netSrc),
+	'P0-4: hostListen only stands up RTC when rtc:true is passed (off by default)');
+assert.ok(/if\(\(opts\.via === 'rtc' \|\| opts\.rtc === true\) && typeof RTCPeerConnection/.test(netSrc),
+	'P0-4: joinRoom only accepts an RTC offer on an explicit opt-in (off by default)');
+assert.ok(/s\.listen = NET\.hostListen\(room, \{ rtc: opts\.rtc === true,/.test(hostSrc),
+	'P0-4: the host starts with remote RTC disabled unless explicitly opted in');
+// signaling size caps before parse + SDP/ICE bounds
+assert.ok(/if\(!withinWireLimit\(payload, WIRE_LIMITS\.SIG_MAX\)\) return;/.test(netSrc) && /if\(!validSignalSize\(m\)\) return;/.test(netSrc),
+	'P0-5: signaling envelopes are size-capped before parse and their SDP/ICE bounded');
+assert.ok(/if\(!withinWireLimit\(str, WIRE_LIMITS\.MQTT_PAYLOAD_MAX\)\) return;/.test(netSrc),
+	'P0-5: MQTT publishes are byte-capped');
+// RTC DoS: pending flood guard, negotiation + hello deadlines, fail-closed teardown
+assert.ok(/if\(pcs\.size >= RTC_LIMITS\.PENDING_MAX\) return;/.test(netSrc),
+	'P0-5: a `hi` flood cannot open unbounded RTCPeerConnections (pending cap)');
+assert.ok(/entry\.negT = setTimeout\(\(\) => \{ if\(!entry\.alive\) drop\(gid\); \}, RTC_LIMITS\.NEGOTIATE_MS\);/.test(netSrc),
+	'P0-5: a negotiation that never connects is dropped on a deadline');
+assert.ok(/entry\.helloT = setTimeout\(\(\) => \{ if\(!entry\.helloSeen\) drop\(gid\); \}, RTC_LIMITS\.HELLO_MS\);/.test(netSrc),
+	'P0-5: a channel that opens but never says hello is reaped (mandatory hello timeout)');
+assert.ok(/function drop\(gid\)\{[\s\S]{0,220}clearTimeout\(e\.negT\);[\s\S]{0,80}clearTimeout\(e\.helloT\);/.test(netSrc),
+	'P0-5: teardown is fail-closed — both deadline timers are cleared with the peer');
+// DataChannel send goes through the bounded queue, and oversized frames are refused
+assert.ok(/const q = createSendQueue\(\);/.test(netSrc) && /if\(!q\.push\(str\) \|\| !q\.flush\(dc\)\)\{ try\{ dc\.close\(\)/.test(netSrc),
+	'P0-5: dc.send rides a bounded queue that fail-closes the channel on overflow');
+assert.ok(/if\(!withinWireLimit\(str, WIRE_LIMITS\.JSON_MAX\)\) return;/.test(netSrc),
+	'P0-5: an oversized outbound frame is dropped, never emitted');
+// assembler byte ceiling (UTF-8, not code units)
+assert.ok(/cur\.bytes \+= utf8Len\(env\.d\);/.test(netSrc) && /if\(cur\.bytes > WIRE_LIMITS\.ASSEMBLED_MAX\)\{ cur = null; return null; \}/.test(netSrc),
+	'P0-5: the snapshot assembler enforces a UTF-8 BYTE ceiling on the assembled payload');
+
+// --- P0-3 wiring: the authenticated hello phase --------------------------------------------
+assert.ok(/if\(!entry\.hello && pl\.t !== 'hello' && pl\.t !== 'bye'\) return;/.test(hostSrc),
+	'P0-3: before a valid hello, only hello and bye are accepted');
+assert.ok(/if\(pl\.proto !== NET\.GHOST_PROTO\)\{[\s\S]{0,160}t: 'incompatible'[\s\S]{0,120}dropPeer\(s, entry, true\);/.test(hostSrc),
+	'P0-3: a protocol mismatch is refused before a viewer/snapshot/permission exists');
+
+// --- P0-1 wiring: resume tokens on both ends ------------------------------------------------
+assert.ok(/const known = s\.tokens\.get\(entry\.gid\);\s*\n\s*if\(known && !NET\.resumeTokenMatch\(pl\.rt, known\)\)\{/.test(hostSrc),
+	'P0-1: a claimed gid already held this session requires the matching resume token');
+assert.ok(/if\(!s\.tokens\.has\(entry\.gid\)\) s\.tokens\.set\(entry\.gid, NET\.mintResumeToken\(\)\);/.test(hostSrc),
+	'P0-1: the host mints a resume token on the first claim of a gid');
+assert.ok(/rt: entry\.resumeToken,/.test(hostSrc), 'P0-1: the resume token rides the private welcome');
+assert.ok(/rt: resumeToken \|\| undefined/.test(clientSrc) && /storeResumeToken\(pl\.rt\)/.test(clientSrc),
+	'P0-1: the guest echoes its resume token on hello and banks the one the welcome gave it');
+assert.ok(/sessionStorage\.setItem\(NET\.RESUME_TOKEN_KEY/.test(clientSrc),
+	'P0-1: the resume token lives in tab-scoped sessionStorage (never shared across tabs)');
+
 // --- social facilitation integration pins ---------------------------------------------------
 assert.ok(/const socialMult=\(MM\.socialBoost && Number\.isFinite\(MM\.socialBoost\.xp\)\) \? MM\.socialBoost\.xp : 1;/.test(mobsSrc)
 	&& /combatXp\*fatigue\.mult\*specialMult\*socialMult/.test(mobsSrc),
@@ -901,8 +949,14 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/if\(b\.dead && b\.duelWith\) endDuel\(s, entry\); \/\/ a hero death settles the duel too/.test(hostSrc),
 		'a hero death settles the duel');
 	assert.ok(/ownerGid: entry\.gid, duelGid: b\.duelWith \|\| null/.test(hostSrc)
-		&& /splat:\(spec\.splat==='wet'\|\|spec\.splat==='gascloud'\)\?spec\.splat:undefined/.test(wsrcH),
-		'hero projectiles carry host-stamped duel identity and whitelisted burst kinds');
+		&& /splat:\(spec\.splat==='wet'\)\?'wet':undefined/.test(wsrcH),
+		'hero projectiles carry host-stamped duel identity and a WORLD-INERT burst whitelist (wet only — no gascloud/fire)');
+	// P0-2: a coop (guest) projectile is inert to the world — the arrow sim gates every
+	// world-touching branch on !a.coopOwner (no world ignition, no gas detonation, no
+	// gascloud/bomb splat), and the resolver never lets a coop shaft carry `fire`.
+	assert.ok(/if\(a\.fire && !a\.coopOwner\)\{/.test(wsrcH), 'a coop arrow never detonates gas or ignites the world');
+	assert.ok(/if\(!a\.fire && !a\.coopOwner && \(\(FIRE/.test(wsrcH), 'a coop arrow never catches fire in flight (no terrain ignition on impact)');
+	assert.ok(/if\(a\.coopOwner\) return; \/\/ a guest projectile never detonates terrain/.test(wsrcH), 'a coop bomb splat is refused');
 	// death: the grave is a WORLD mechanic — a hero guest keeps its inventory
 	// (a replica-local grave would be stream-wiped and the halved resources lost)
 	assert.ok(/if\(MM\.ghostHeroIntents\)\{\s*updateInventory\(\);\s*startDeathTravelFx\(cause\);\s*return;/.test(mainSrc),
@@ -1083,8 +1137,9 @@ assert.ok(/function mountEntryPoint\(\)/.test(hostSrc) && /document\.getElementB
 	'the host binds the HUD button (the panel is no longer buried in the debug menu)');
 assert.ok(!/getElementById\('menuPanel'\)/.test(hostSrc), 'no menu-panel injection survives');
 assert.ok(/body\.mmGhostMode #menuWrap/.test(clientSrc), 'a watcher never sees the host-only viewers button (menuWrap is hidden in ghost mode)');
-// per-session default permission for newcomers — the host decides the door policy once
-assert.ok(/let defaultMode = 'full';/.test(hostSrc) && /mode: defaultMode,/.test(hostSrc), 'joining ghosts inherit the host-chosen default mode');
+// per-session default permission for newcomers — the SAFE FLOOR is watch-only, and
+// the host raises the door policy by hand (P0-3: no viewer starts with influence)
+assert.ok(/let defaultMode = 'watch';/.test(hostSrc) && /mode: defaultMode,/.test(hostSrc), 'joining ghosts default to the watch-only floor');
 assert.ok(/function setDefaultMode\(mode\)/.test(hostSrc) && /localStorage\.setItem\(PERM_KEY, mode\)/.test(hostSrc), 'the default mode is settable and remembered');
 
 // --- spirit lift: a ghost never covers the hero (pure) ---------------------------------------------
@@ -1208,8 +1263,8 @@ assert.ok(/pl\.t === 'guard'/.test(clientSrc) && /MMR\.guardianLairs\.ghostLerp\
 	'the watcher applies the guardian mirror and animates it between packets');
 
 // --- audit pins (2026-07-16): cache coherence, camera respect, seat identity, chat floor -----------
-assert.ok(/s\.snapCache = null; s\.sinceCache\.length = 0;\s*\n\s*reap\(s, t\);/.test(hostSrc),
-	'an emptied audience invalidates the snapshot cache — tile capture is off with zero watchers, so a re-join inside the cache window must reserialize');
+assert.ok(/s\.snapCache = null; s\.sinceCache\.length = 0;\s*\n\s*if\(MMR\) MMR\.coopBodies = \[\];[^\n]*\n\s*reap\(s, t\);/.test(hostSrc),
+	'an emptied audience invalidates the snapshot cache AND clears MM.coopBodies (no phantom body left for creatures once the last peer leaves)');
 assert.ok(/if\(other !== entry && other\.hello && other\.gid === entry\.gid\) dropPeer\(s, other, true\);/.test(hostSrc),
 	'one gid = one seat: the newest connection wins, so a dirty-drop reconnect is never blocked or twinned by its own corpse');
 assert.ok(/const wasLive = state === 'live';/.test(clientSrc) && /if\(!wasLive\)\{/.test(clientSrc),
@@ -1246,9 +1301,14 @@ assert.ok(/function hurtBody\(s, entry/.test(hostSrc) && /b\.invulUntil = t \+ N
 assert.ok(/requestedKb[^\n]*Math\.min\(12/.test(hostSrc) && /requestedKbY[^\n]*Math\.max\(-10/.test(hostSrc)
 	&& /hurt: \(a, sx, sy, c, o\) => hurtBody\(s, entry, a, sx, sy, c, o\)/.test(hostSrc),
 	'host-authored attacks can request bounded knockback for guest bodies, including molekin charges');
-// the movement envelope: a claimed pose is followed at most MAX_SPEED fast
-assert.ok(/pl\.t === 'ppose'/.test(hostSrc) && /NET\.clampBodyStep\(b\.x, \+pl\.x, maxStep\)/.test(hostSrc),
-	'the guest pose is followed inside a per-axis speed envelope (a teleport hack rubber-bands)');
+// the movement envelope: a claimed pose is clamped to MAX_SPEED AND resolved out of
+// solids by a swept AABB against the host tiles (P0-6: no wall/bedrock tunnelling)
+assert.ok(/pl\.t === 'ppose'/.test(hostSrc) && /NET\.sweepBodyMove\(\{ x: b\.x, y: b\.y, w: NET\.PLAY_RULES\.BODY_W, h: NET\.PLAY_RULES\.BODY_H \}, \+pl\.x, \+pl\.y, maxStep, solidAt, null\)/.test(hostSrc),
+	'the guest pose is followed inside a speed envelope AND swept against host tiles (a wall-tunnel hack is stopped at the wall)');
+// P0-6: an embodied guest's camera (which powers/pings/actions originate from) is the
+// ACCEPTED collision-resolved body position, never the raw client claim
+assert.ok(/if\(b\)\{ entry\.cam = \{ x: b\.x, y: b\.y \}; \}/.test(hostSrc),
+	'an embodied guest aims from its accepted body position, not a spoofable camera claim');
 // the movement budget is real elapsed time, never per-message: a synthetic dt floor
 // would let a claim-spamming client outrun MAX_SPEED (120 msg/s × 16 ms credited each)
 assert.ok(/const dtS = Math\.min\(0\.5, Math\.max\(0, \(t - \(b\.lastPoseAt \|\| t\)\) \/ 1000\)\);/.test(hostSrc),
@@ -1513,7 +1573,17 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 		'kept weapons pass the arsenal whitelist again on restore (disk is hostile input)');
 	assert.ok(/function despawnBody\(s, entry\)\{\s*\n\s*if\(!entry\.body\) return;\s*\n\s*endDuel\(s, entry, true\);[^\n]*\n[\s\S]{0,140}keepBody\(entry\);/.test(hostSrc),
 		'demote/leave forfeits any duel, vacates any cab and banks the body');
-	assert.ok(/if\(entry\.body\) keepBody\(entry\); \/\/ a vanished player/.test(hostSrc), 'a dropped connection banks the body');
+	// P0-7: a dropped connection tears the body down through ONE centralized path —
+	// settle the duel, eject from the mech cab (no phantom rider), bank the pouch, then
+	// stash the SAME body object so a token-proven reconnect resumes hp/status/pos/cds
+	assert.ok(/if\(entry\.body\)\{\s*\n\s*endDuel\(s, entry, true\);\s*\n[\s\S]{0,160}guestUnboard\(entry\.gid\);[\s\S]{0,120}keepBody\(entry\);/.test(hostSrc),
+		'a dropped connection ends the duel, vacates the mech cab and banks the body — one teardown path');
+	assert.ok(/s\.modeMemory\.set\(entry\.gid, \{ mode: entry\.mode, ts: now\(\), body: entry\.body \}\);/.test(hostSrc),
+		'the reconnect memory carries the authoritative body (hp/status/pos/cooldowns) — reconnect resumes, never heals');
+	assert.ok(/entry\.body = kept\.body;/.test(hostSrc) && /entry\.body\.duelWith = null;/.test(hostSrc),
+		'a token-proven reconnect reattaches the preserved body (not a fresh full-HP spawn)');
+	assert.ok(/mode === 'play' && wasHero && entry\.body/.test(hostSrc) && /entry\.body\.maxHp = Math\.min\(entry\.body\.maxHp \|\| NET\.PLAY_RULES\.MAX_HP, NET\.PLAY_RULES\.MAX_HP\);/.test(hostSrc),
+		'a hero→play demotion clamps the body into the play HP pool');
 	assert.ok(/keepAllBodies\(s\); \/\/ slow-cadence flush/.test(hostSrc) && /keepAllBodies\(session\); \/\/ ending the stream/.test(hostSrc),
 		'the reap tick and session stop both flush every live body');
 	assert.ok(/keepBody\(entry\); \/\/ earned gear is banked the moment it exists/.test(hostSrc), 'a successful craft banks immediately');

@@ -92,10 +92,15 @@ const ghostHost = (function(){
 			lastChargeAt: 0,
 			lastSimAt: now(), // a fresh session is not "idle" before its first sim frame
 			duelAsks: new Map(), // 'challenger>target' → ts; a duel starts only on MUTUAL asks
-			modeMemory: new Map(), // gid → {mode, ts}: embodied rungs survive a reconnect (auto-regrant)
+			modeMemory: new Map(), // gid → {mode, ts, body}: embodied rungs + combat state survive a reconnect
+			tokens: new Map(), // gid → resume token: the ONLY proof of gid ownership this session
 			listen: null
 		};
-		s.listen = NET.hostListen(room, { rtc: opts.rtc !== false, onPeer: (peer) => onPeer(s, peer) });
+		// remote WebRTC is OFF by default (opt-in only): its signaling rides
+		// unauthenticated public MQTT topics, so until the handshake is signed
+		// end-to-end the host accepts only same-machine loopback watchers. `rtc:true`
+		// is a deliberate choice to accept the current remote risk.
+		s.listen = NET.hostListen(room, { rtc: opts.rtc === true, onPeer: (peer) => onPeer(s, peer) });
 		// world.js notifyTileChanged fans out to this global when hosting
 		if(MMR) MMR.ghostHostTile = (x, y, old, v) => { captureTile(s, x, y, v); };
 		// mobs.js credits a fright to the spirit that caused it (watcher progression)
@@ -210,19 +215,40 @@ const ghostHost = (function(){
 		// abusive senders get dropped, not served — every message costs the host CPU
 		if(t - entry.rateT > PEER_MSG_WINDOW_MS){ entry.rateT = t; entry.rateN = 0; }
 		if(++entry.rateN > PEER_MSG_MAX){ dropPeer(s, entry, true); return; }
+		// authenticated hello phase: before a valid hello lands, the ONLY messages a
+		// connection may send are hello and bye. A pre-hello buff/power/pose/pact is
+		// dropped untouched — no viewer is created, no state moves, nothing is served.
+		if(!entry.hello && pl.t !== 'hello' && pl.t !== 'bye') return;
 		if(pl.t === 'hello'){
 			if(!entry.hello){
 				if(typeof pl.gid === 'string' && pl.gid) entry.gid = pl.gid.slice(0, 40);
+				// protocol handshake: an incompatible client is refused BEFORE a viewer,
+				// a snapshot or any permission exists — a mismatched wire shape must not
+				// reach the sim at all
+				if(pl.proto !== NET.GHOST_PROTO){
+					try{ entry.peer.send({ t: 'incompatible', proto: NET.GHOST_PROTO }); }catch(e){ /* fine */ }
+					dropPeer(s, entry, true);
+					return;
+				}
 				if(s.banned.has(entry.gid)){
 					entry.peer.send({ t: 'banned' });
 					dropPeer(s, entry, true);
 					return;
 				}
-				// one gid = one seat: a watcher reconnecting after a dirty drop must not
-				// be twinned with (or squeezed out by) its own corpse the reaper hasn't
-				// swept yet — the newest connection wins the seat. An impostor who
-				// captured a gid gains nothing: the fresh entry starts at defaults (no
-				// assistant seat, default mode) and the ousted watcher can just rejoin.
+				// gid ownership: a gid is PUBLIC (it rides presence, pb rows, duels), so
+				// trusting hello.gid alone lets anyone who saw it claim the seat, evict the
+				// owner and inherit its rung/body via modeMemory. If this gid was already
+				// claimed this session, only its resume-token holder may re-seat it — an
+				// impostor is refused HERE, before the current owner is touched.
+				const known = s.tokens.get(entry.gid);
+				if(known && !NET.resumeTokenMatch(pl.rt, known)){
+					try{ entry.peer.send({ t: 'taken' }); }catch(e){ /* fine */ }
+					dropPeer(s, entry, true);
+					return;
+				}
+				// one gid = one seat: the token holder reconnecting after a dirty drop
+				// evicts its own corpse the reaper hasn't swept yet (newest wins). An
+				// impostor never reaches here — the token gate above already refused it.
 				for(const other of Array.from(s.peers.values())){
 					if(other !== entry && other.hello && other.gid === entry.gid) dropPeer(s, other, true);
 				}
@@ -233,13 +259,18 @@ const ghostHost = (function(){
 				}
 				entry.hello = true;
 				s.watchers++;
+				// mint the resume token on the FIRST successful claim of this gid; a
+				// reconnect reuses the stored one. It rides the private welcome (on this
+				// peer's own locked channel) and never leaks onto any broadcast plane.
+				if(!s.tokens.has(entry.gid)) s.tokens.set(entry.gid, NET.mintResumeToken());
+				entry.resumeToken = s.tokens.get(entry.gid);
 				entry.name = String(pl.name || 'Duch').slice(0, 24);
 				if(NET.validAvatar(pl.avatar)) entry.avatar = pl.avatar;
 				if(Number.isFinite(pl.lvl)) entry.level = Math.max(1, Math.min(NET.PROG.MAX_LEVEL, Math.floor(pl.lvl)));
 				// active challenge mods ride the welcome: guests mirror the world's laws
 				// (endless night, doubled wounds) — display/law parity, re-whitelisted there
 				const chalMods = (MMR && MMR.challenge && MMR.challenge.list) ? MMR.challenge.list() : [];
-				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room, mode: entry.mode, chal: chalMods.length ? chalMods : undefined });
+				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room, mode: entry.mode, rt: entry.resumeToken, chal: chalMods.length ? chalMods : undefined });
 				entry.lastSnapAt = now();
 				sendSnapshot(s, entry.peer);
 				sendInvFull(s, entry.peer); // the world save carries invasions, but a fresh
@@ -247,14 +278,27 @@ const ghostHost = (function(){
 				// chosen body colors, so a late joiner paints every player right away
 				for(const other of entries()){ if(other !== entry && other.look){ try{ entry.peer.send({ t: 'plook', gid: other.gid, c: other.look }); }catch(e){ /* fine */ } } }
 				sendDeed(entry, 'join', 1);
-				// auto-regrant: a returning embodied guest gets its rung back — the ban
-				// path above already refused anyone the host threw out
+				// auto-regrant: a returning embodied guest (proven by its resume token,
+				// checked above) gets its rung back — AND its authoritative combat state.
+				// The stored body reattaches with its existing HP, statuses, position and
+				// cooldowns intact, so a reconnect RESUMES the fight, it never heals a
+				// player out of danger. The ban path already refused anyone thrown out.
 				const kept = s.modeMemory ? s.modeMemory.get(entry.gid) : null;
 				if(kept && now() - kept.ts < MODE_MEMORY_MS && (kept.mode === 'play' || kept.mode === 'hero')){
 					s.modeMemory.delete(entry.gid);
 					entry.mode = kept.mode;
 					entry.heroMode = kept.mode === 'hero';
-					if(!entry.body) spawnBody(s, entry);
+					if(kept.body && typeof kept.body === 'object'){
+						entry.body = kept.body;
+						entry.body.duelWith = null; // the old duel was settled at drop time
+						entry.body.disp = null;     // the display interp restarts at the true pose
+						entry.body.mine = null;     // any in-progress dig is cancelled
+						entry.bodyLike = null;      // bodyTick rebuilds the creature-contact hook
+						sendVitals(s, entry);       // the client re-learns its PRESERVED hp/pouch
+						updateUi();
+					} else if(!entry.body){
+						spawnBody(s, entry);
+					}
 					entry.peer.send({ t: 'perm', mode: kept.mode });
 					try{ bridge.msg('🎮 ' + entry.name + ' wraca do gry po zerwaniu'); }catch(e){ /* fine */ }
 				} else {
@@ -334,8 +378,17 @@ const ghostHost = (function(){
 				b.lastPoseAt = t;
 				const maxStep = NET.PLAY_RULES.MAX_SPEED * dtS;
 				const px = b.x, py = b.y;
-				b.x = NET.clampBodyStep(b.x, +pl.x, maxStep);
-				b.y = NET.clampBodyStep(b.y, +pl.y, maxStep);
+				// swept AABB against the HOST's own tiles: the pose is clamped to the
+				// speed envelope AND resolved out of solids, so a hostile claim cannot
+				// tunnel the tracked body through a wall or bedrock (and then act, aim or
+				// ping from inside rock). solidAt reads out-of-world as solid, so the body
+				// also cannot leave the world. This shapes the host-side shadow only —
+				// honest guest movement stays guest-authoritative and never feels it.
+				const solidAt = (typeof bridge.solidAt === 'function')
+					? ((tx, ty) => { try{ return !!bridge.solidAt(tx, ty, 'y'); }catch(e){ return true; } })
+					: null;
+				const moved = NET.sweepBodyMove({ x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }, +pl.x, +pl.y, maxStep, solidAt, null);
+				b.x = moved.x; b.y = moved.y;
 				// velocity is DERIVED from the accepted movement, never read off the
 				// claim: party-aware attackers lead their aim by vx/vy, so a spoofed
 				// velocity would let a stationary cheater dodge every predictive shot
@@ -354,7 +407,11 @@ const ghostHost = (function(){
 					if(b.dead && b.duelWith) endDuel(s, entry); // a hero death settles the duel too
 				}
 			}
-			if(Number.isFinite(pl.x) && Number.isFinite(pl.y)) entry.cam = { x: +pl.x, y: +pl.y };
+			// an embodied guest's powers/pings/actions originate from the ACCEPTED body
+			// position (collision-resolved above), NEVER the raw camera claim — a plain
+			// spectator (no body) still points its own camera freely
+			if(b){ entry.cam = { x: b.x, y: b.y }; }
+			else if(Number.isFinite(pl.x) && Number.isFinite(pl.y)) entry.cam = { x: +pl.x, y: +pl.y };
 			if(pl.act) markActive(entry);
 		} else if(pl.t === 'pact'){
 			handlePlayAct(s, entry, pl);
@@ -373,13 +430,28 @@ const ghostHost = (function(){
 	}
 	function dropPeer(s, entry, silent){
 		if(!s.peers.has(entry.peer)) return;
-		// remember the embodied rung: the grant was the HOST's own decision for this
-		// gid, and a transport blip must not demote a player mid-session
-		if(entry.hello && (entry.mode === 'play' || entry.mode === 'hero') && s.modeMemory) s.modeMemory.set(entry.gid, { mode: entry.mode, ts: now() });
-		if(entry.body) keepBody(entry); // a vanished player's pouch survives its connection
+		// Centralized body teardown: a mid-fight disconnect must never leave dangling
+		// authority. Settle the duel (the partner's duelWith is cleared), eject from any
+		// mech cab (a serialized guestGid would be a phantom rider stealing the host's
+		// keys), and bank the pouch. Then stash the AUTHORITATIVE combat state — the
+		// SAME body object, so HP, statuses, position and cooldowns survive for a
+		// token-proven reconnect: it resumes the fight, it never heals.
+		if(entry.body){
+			endDuel(s, entry, true);
+			try{ if(MMR && MMR.mechs && MMR.mechs.guestUnboard) MMR.mechs.guestUnboard(entry.gid); }catch(e){ /* fine */ }
+			keepBody(entry);
+			if(entry.hello && (entry.mode === 'play' || entry.mode === 'hero') && s.modeMemory){
+				s.modeMemory.set(entry.gid, { mode: entry.mode, ts: now(), body: entry.body });
+			}
+		}
+		entry.body = null;
+		entry.bodyLike = null;
 		s.peers.delete(entry.peer);
 		if(entry.hello) s.watchers = Math.max(0, s.watchers - 1);
 		try{ entry.peer.close(); }catch(e){ /* fine */ }
+		// dropping the last (or any) embodied guest immediately prunes MM.coopBodies —
+		// creatures must not keep hunting a body no connection is driving
+		if(MMR) MMR.coopBodies = entries().filter(e => e.bodyLike && e.body && !e.body.dead).map(e => e.bodyLike);
 		if(entry.hello && !silent){ try{ bridge.msg('👻 ' + (entry.name || 'Duch') + ' opuszcza warstwę'); }catch(e){ /* fine */ } }
 		updateUi();
 	}
@@ -472,6 +544,7 @@ const ghostHost = (function(){
 			// replay buffer go stale the moment the audience empties — a re-join
 			// inside the cache window must get a fresh serialization, not old cells
 			s.snapCache = null; s.sinceCache.length = 0;
+			if(MMR) MMR.coopBodies = []; // no live peers → no embodied bodies for creatures to hunt
 			reap(s, t);
 			return;
 		}
@@ -1694,9 +1767,19 @@ const ghostHost = (function(){
 			// either way); hero mode additionally flips the body to guest-local
 			// vitals — the flag every body pass below branches on
 			const embodied = (mode === 'play' || mode === 'hero');
+			const wasHero = entry.heroMode;
 			entry.heroMode = mode === 'hero';
 			if(embodied && !entry.body) spawnBody(session, entry);
 			else if(!embodied && entry.body) despawnBody(session, entry);
+			// demotion hero → play must clamp the body into the zero-trust rung's HP pool:
+			// a hero body may carry up to HERO_RULES.HP_MAX (1000); play tops out at 80,
+			// so an un-clamped demotion would leave a play-mode guest with a boss-grade
+			// health bar the host is fully authoritative over.
+			else if(mode === 'play' && wasHero && entry.body){
+				entry.body.maxHp = Math.min(entry.body.maxHp || NET.PLAY_RULES.MAX_HP, NET.PLAY_RULES.MAX_HP);
+				entry.body.hp = Math.min(entry.body.hp, entry.body.maxHp);
+				sendVitals(session, entry);
+			}
 			entry.peer.send({ t: 'perm', mode });
 			hit = true;
 		}
@@ -1959,7 +2042,7 @@ const ghostHost = (function(){
 	const APPROVE_KEY = 'mm_ghost_approve_v1';
 	const VIEW_KEY = 'mm_ghost_view_v1';
 	const MODE_LABEL = { watch: 'tylko ogląda', chat: '+ czat', full: '+ czat i wpływ', play: '🎮 gra (sakwa)', hero: '🕹 gra (pełny bohater)' };
-	let defaultMode = 'full'; // what a viewer gets on join, until the host says otherwise
+	let defaultMode = 'watch'; // the SAFE FLOOR a viewer gets on join — spectate only until the host raises it by hand
 	// the embodied rungs are NEVER a door policy: play and hero are granted per
 	// viewer, by hand — an embodied stranger by default would be a griefing invitation
 	const DEFAULT_MODES = NET.PERMISSION_MODES.filter(m => m !== 'play' && m !== 'hero');
@@ -1968,7 +2051,10 @@ const ghostHost = (function(){
 	const viewPrefs = { spirits: true, bubbles: true, fx: true };
 	try{
 		const saved = (typeof localStorage !== 'undefined') ? localStorage.getItem(PERM_KEY) : null;
-		if(NET.validPermissionMode(saved)) defaultMode = saved;
+		// restrict to the door-policy set (watch/chat/full): a corrupted PERM_KEY of
+		// 'play'/'hero' must NEVER become the default — that would auto-embody every
+		// joiner. The embodied rungs are only ever granted per viewer, by hand.
+		if(DEFAULT_MODES.includes(saved)) defaultMode = saved;
 		approvalMode = (typeof localStorage !== 'undefined') && localStorage.getItem(APPROVE_KEY) === '1';
 		const view = (typeof localStorage !== 'undefined') ? JSON.parse(localStorage.getItem(VIEW_KEY) || 'null') : null;
 		if(view && typeof view === 'object'){ for(const k of Object.keys(viewPrefs)){ if(k in view) viewPrefs[k] = !!view[k]; } }

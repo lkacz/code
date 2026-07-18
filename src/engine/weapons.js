@@ -2070,12 +2070,16 @@ import { damageBlastCreatures } from './explosion_damage.js';
       return;
     }
     if(a.splat==='gascloud'){
-      // gas grenade: releases a poison cloud where it lands (fire detonates it)
+      // gas grenade: releases a poison cloud where it lands (fire detonates it). A
+      // coop arrow can never reach this (its splat whitelist is 'wet' only), but the
+      // gate is explicit: a guest projectile spawns no world hazard.
+      if(a.coopOwner) return;
       spawnGasCloud(a.x,a.y,1.6,{source:'hero'});
       try{ if(MM.audio && MM.audio.play) MM.audio.play('gas',{x:a.x,y:a.y}); }catch(e){}
       return;
     }
     if(a.splat==='bomb'){
+      if(a.coopOwner) return; // a guest projectile never detonates terrain
       const gt=(typeof getTile==='function') ? getTile : lastGetTile;
       const st=(typeof setTile==='function') ? setTile : lastSetTile;
       if(gt && st) explodeAt(a.x,a.y,gt,st,{force:true,radius:1.6});
@@ -2517,8 +2521,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
         continue;
       }
       a.ignoreUndergroundT=Math.max(0,(Number(a.ignoreUndergroundT)||0)-dt);
-      // a burning arrow flying into a gas cloud detonates it
-      if(a.fire){
+      // a burning arrow flying into a gas cloud detonates it — but NEVER a coop
+      // (guest) arrow: detonation removes terrain, spreads fire and hurts the host,
+      // all of which a guest projectile is forbidden from doing (world stays host truth)
+      if(a.fire && !a.coopOwner){
         for(const q of puffs){
           if(q.kind!=='gas') continue;
           const ddx=q.x-a.x, ddy=q.y-a.y;
@@ -2535,8 +2541,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
         a.x+=dx; a.y+=dy;
         a.travel=(Number(a.travel)||0)+Math.hypot(dx,dy);
         const tx=Math.floor(a.x), ty=Math.floor(a.y);
-        // an arrow flying through open flame or over lava catches fire
-        if(!a.fire && ((FIRE && FIRE.isBurning(tx,ty)) || getTile(tx,ty)===T.LAVA)) a.fire=true;
+        // an arrow flying through open flame or over lava catches fire — but never a
+        // coop (guest) arrow: a fire arrow ignites terrain on impact, and a guest
+        // projectile must stay inert to the world (it may still wound creatures)
+        if(!a.fire && !a.coopOwner && ((FIRE && FIRE.isBurning(tx,ty)) || getTile(tx,ty)===T.LAVA)) a.fire=true;
         // Sand needs contact detection without ever entering a target's damage
         // handler (many of those deliberately clamp even zero to chip damage).
         // Its status splat is the entire effect.
@@ -3788,9 +3796,16 @@ import { damageBlastCreatures } from './explosion_damage.js';
       life:ARROW_LIFE*0.85, stuck:false, stuckT:ARROW_STUCK,
       tier:'wood', color:'#caa472', headColor:'#dfe6f1',
       recoverable:false, coopOwner:true, windCap:cap*1.35,
-      fire:!!spec.fire, snowball:!!spec.snowball, rock:!!spec.rock, thrown:!!spec.thrown, harpoon:!!spec.harpoon,
+      // A coop (guest) projectile is INERT to the world by contract: it may wound
+      // creatures but must never edit terrain, ignite the world, spawn/detonate gas or
+      // hurt the host. So world-hazard flags a hostile client might smuggle are dropped
+      // at the source — no `fire` (no world ignition), and the burst whitelist is 'wet'
+      // ONLY (a soak: douses fire, waters crops, wets mobs — no terrain, no host damage).
+      // The gas-grenade and bomb bursts stay hero-only. Defense in depth: the arrow
+      // simulation also gates every world-touching branch on !a.coopOwner.
+      snowball:!!spec.snowball, rock:!!spec.rock, thrown:!!spec.thrown, harpoon:!!spec.harpoon,
       stickyFuse:spec.sticky?2.5:0, // the fuse length is the HOST's, the guest only names the kind
-      splat:(spec.splat==='wet'||spec.splat==='gascloud')?spec.splat:undefined, // burst kind only — radii/durations are the handlers' own
+      splat:(spec.splat==='wet')?'wet':undefined, // burst kind only — radii/durations are the handlers' own
       // duel identity, HOST-stamped: consent is re-verified at impact time
       ownerGid:(typeof spec.ownerGid==='string')?spec.ownerGid.slice(0,20):null,
       duelGid:(typeof spec.duelGid==='string')?spec.duelGid.slice(0,20):null
