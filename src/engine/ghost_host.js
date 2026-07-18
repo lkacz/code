@@ -94,13 +94,18 @@ const ghostHost = (function(){
 			duelAsks: new Map(), // 'challenger>target' → ts; a duel starts only on MUTUAL asks
 			modeMemory: new Map(), // gid → {mode, ts, body}: embodied rungs + combat state survive a reconnect
 			tokens: new Map(), // gid → resume token: the ONLY proof of gid ownership this session
+			// per-session invite secret (≥128-bit): the capability that gates AUTHENTICATED
+			// remote join. It rides the shared link's #fragment; every RTC signaling
+			// envelope is HMAC-signed with it, so only holders of the link can connect
+			// remotely. A plain link without it only ever connects same-machine (loopback).
+			secret: NET.mintInviteSecret(),
 			listen: null
 		};
-		// remote WebRTC is OFF by default (opt-in only): its signaling rides
-		// unauthenticated public MQTT topics, so until the handshake is signed
-		// end-to-end the host accepts only same-machine loopback watchers. `rtc:true`
-		// is a deliberate choice to accept the current remote risk.
-		s.listen = NET.hostListen(room, { rtc: opts.rtc === true, onPeer: (peer) => onPeer(s, peer) });
+		// Remote WebRTC is now AUTHENTICATED (signed signaling bound to the invite
+		// secret + host DTLS fingerprint), so it is on by default again — but a peer can
+		// only join remotely with the secret-bearing link. `rtc:false` forces
+		// loopback-only (used by the headless authority tests).
+		s.listen = NET.hostListen(room, { rtc: opts.rtc !== false, secret: s.secret, onPeer: (peer) => onPeer(s, peer) });
 		// world.js notifyTileChanged fans out to this global when hosting
 		if(MMR) MMR.ghostHostTile = (x, y, old, v) => { captureTile(s, x, y, v); };
 		// mobs.js credits a fright to the spirit that caused it (watcher progression)
@@ -148,7 +153,11 @@ const ghostHost = (function(){
 	function link(via){
 		if(!session) return null;
 		const base = (typeof location !== 'undefined') ? (location.origin + location.pathname) : '';
-		return NET.watchLink(base, session.room, via || null);
+		// the shared link carries the invite secret in its #fragment, so it works for a
+		// second tab here (loopback) AND for a remote friend (authenticated RTC). The
+		// secret only enables remote join for whoever the host actually sends it to.
+		const rtcOn = !!(session.listen && session.listen.transports && session.listen.transports.rtc);
+		return NET.watchLink(base, session.room, via || null, rtcOn ? session.secret : null);
 	}
 
 	function entries(){ return session ? Array.from(session.peers.values()).filter(e => e.hello) : []; }

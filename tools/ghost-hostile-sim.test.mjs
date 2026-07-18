@@ -103,16 +103,62 @@ assert.equal(NET.validSignalSize({ c: 'x'.repeat(NET.WIRE_LIMITS.ICE_MAX + 1) })
 	assert.equal((await NET.verifySignal(NET.mintInviteSecret(), env, { room: 'ROOM', role: 'g', now: 1000 })).ok, false, 'a wrong invite secret cannot forge a signature');
 }
 
-// --- RTC posture (P0-4/P0-5): remote is OFF by default -------------------------------
+// --- P0-4: the signed signaling CHANNEL end to end (the API the real RTC uses) --------
+// This is the whole remote-auth decision layer: only invite-secret holders can produce
+// a valid envelope, replays are refused, roles are bound, tampering breaks the MAC, and
+// the DTLS fingerprint is pinned. Node has no RTCPeerConnection, so this — not the socket
+// plumbing around it — is where the security is proven executably.
+{
+	const secret = NET.mintInviteSecret();
+	const room = 'ROOMKX';
+	const host = NET.createSignedChannel(secret, room, 'h');
+	const guest = NET.createSignedChannel(secret, room, 'gABC');
+	assert.equal(host.ready && guest.ready, true, 'a channel with a valid secret is ready');
+	assert.equal(NET.createSignedChannel('nothex', room, 'h').ready, false, 'no valid secret ⇒ the channel is not ready (remote stays closed)');
+
+	// a guest hi signed with the shared secret is accepted; the same envelope replayed
+	// is refused; a wrong-role or wrong-secret hi is refused
+	const hi = await guest.seal({ k: 'hi' });
+	assert.equal((await host.open(hi, 'gABC')).ok, true, 'the host accepts a correctly signed guest hi');
+	assert.equal((await host.open(hi, 'gABC')).reason, 'replay', 'a replayed hi is refused');
+	assert.equal((await host.open(await guest.seal({ k: 'hi' }), 'h')).reason, 'role', 'a hi that signed as the wrong role is refused');
+	const outsider = NET.createSignedChannel(NET.mintInviteSecret(), room, 'gABC'); // no shared secret
+	assert.equal((await host.open(await outsider.seal({ k: 'hi' }), 'gABC')).ok, false, 'an un-invited peer (wrong secret) cannot make the host open a connection');
+
+	// the host offer carries + binds its DTLS fingerprint; the guest verifies and pins it
+	const offerSdp = { type: 'offer', sdp: 'v=0\r\na=fingerprint:sha-256 AA:BB:CC:DD:EE:FF\r\n' };
+	const offer = await host.seal({ k: 'offer', sdp: offerSdp });
+	assert.equal(offer.fp, 'AA:BB:CC:DD:EE:FF', 'the sealed offer carries its SDP fingerprint');
+	assert.equal((await guest.open(offer, 'h')).ok, true, 'the guest accepts a correctly signed host offer');
+	// a broker-squatting attacker swapping the SDP (fresh guest guard so it is not a replay)
+	const guest2 = NET.createSignedChannel(secret, room, 'gABC');
+	const tampered = { ...offer, sdp: { type: 'offer', sdp: 'v=0\r\na=fingerprint:sha-256 EV:IL\r\n' }, nonce: 'n-tamper' };
+	assert.equal((await guest2.open(tampered, 'h')).reason, 'sig', 'a tampered offer SDP breaks the signature');
+	// ICE is bound to the pinned fingerprint: a candidate carrying a different fp is refused
+	const ice = await host.seal({ k: 'ice', c: { candidate: 'x' } }, offer.fp);
+	assert.equal((await guest.open(ice, 'h', offer.fp)).ok, true, 'host ICE matching the pinned fingerprint is accepted');
+	const iceEvil = await host.seal({ k: 'ice', c: { candidate: 'x' } }, 'ZZ:ZZ');
+	assert.equal((await guest.open(iceEvil, 'h', offer.fp)).reason, 'fingerprint', 'host ICE with a mismatched fingerprint is refused');
+
+	// a FORGED message must not consume a replay-guard slot (auth precedes anti-replay):
+	// otherwise a room-code-knowing attacker could flood garbage nonces and starve guests
+	const host2 = NET.createSignedChannel(secret, room, 'h');
+	const legit = await guest.seal({ k: 'hi' });
+	const forged = { ...legit, sig: 'deadbeef'.repeat(8) }; // same nonce, broken signature
+	assert.equal((await host2.open(forged, 'gABC')).reason, 'sig', 'a forged signature is refused');
+	assert.equal((await host2.open(legit, 'gABC')).ok, true, 'the forgery did NOT burn the nonce — the legit message still verifies');
+}
+
+// --- RTC posture: remote requires an invite secret, and is off without RTCPeerConnection
 assert.ok(NET.RTC_LIMITS.PENDING_MAX > 0 && NET.RTC_LIMITS.NEGOTIATE_MS > 0 && NET.RTC_LIMITS.HELLO_MS > 0, 'RTC negotiation limits are defined');
 {
-	// hostListen must NOT stand up the RTC transport unless rtc:true is passed
-	const off = NET.hostListen('ROOMAA', { rtc: false, onPeer(){} });
-	assert.equal(off.transports.rtc, false, 'RTC is off by default (opt-in only)');
+	// no secret ⇒ RTC never stands up, even asked for; and headless Node has no RTC anyway
+	const noSecret = NET.hostListen('ROOMAA', { rtc: true, onPeer(){} });
+	assert.equal(noSecret.transports.rtc, false, 'RTC does not start without a valid invite secret');
+	noSecret.stop();
+	const off = NET.hostListen('ROOMAB', { rtc: false, secret: NET.mintInviteSecret(), onPeer(){} });
+	assert.equal(off.transports.rtc, false, 'rtc:false forces loopback-only regardless of secret');
 	off.stop();
-	const dflt = NET.hostListen('ROOMAB', { onPeer(){} });
-	assert.equal(dflt.transports.rtc, false, 'RTC stays off when unspecified');
-	dflt.stop();
 }
 
 // ============================ PART B — host driven over loopback ============================

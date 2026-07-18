@@ -33,12 +33,21 @@ assert.equal(NET.watchLink('http://x/y', 'R2D2X9', 'bc'), 'http://x/y?watch=R2D2
 // --- parseWatch -----------------------------------------------------------------
 assert.equal(NET.parseWatch(''), null, 'no watch param -> null');
 assert.equal(NET.parseWatch('?watch=ab'), null, 'invalid room -> null');
-assert.deepEqual(NET.parseWatch('?watch=qa42x7'), { room: 'QA42X7', via: null, name: null }, 'room normalized');
-assert.deepEqual(NET.parseWatch('?title=1&watch=ROOM42&via=bc&name=Zed'), { room: 'ROOM42', via: 'bc', name: 'Zed' }, 'via+name parsed');
+assert.deepEqual(NET.parseWatch('?watch=qa42x7'), { room: 'QA42X7', via: null, name: null, secret: null }, 'room normalized');
+assert.deepEqual(NET.parseWatch('?title=1&watch=ROOM42&via=bc&name=Zed'), { room: 'ROOM42', via: 'bc', name: 'Zed', secret: null }, 'via+name parsed');
 assert.equal(NET.parseWatch('?watch=ROOM42&via=evil').via, null, 'unknown via rejected');
 // decodeURIComponent throws on malformed escapes — a truncated invite link runs at
 // module import time and must degrade to the raw text, never crash the boot
-assert.deepEqual(NET.parseWatch('?watch=ROOM42%'), { room: 'ROOM42', via: null, name: null }, 'malformed percent-escape degrades, never throws');
+assert.deepEqual(NET.parseWatch('?watch=ROOM42%'), { room: 'ROOM42', via: null, name: null, secret: null }, 'malformed percent-escape degrades, never throws');
+// the invite secret rides the #fragment (kept off the wire); a garbage fragment is not a key
+{
+	const sec = NET.mintInviteSecret();
+	assert.equal(NET.parseWatch('?watch=ROOM42', '#k=' + sec).secret, sec, 'the invite secret is parsed from the URL fragment');
+	assert.equal(NET.parseWatch('?watch=ROOM42', '#k=nothex').secret, null, 'a non-secret fragment is rejected');
+	assert.equal(NET.parseWatch('?watch=ROOM42').secret, null, 'no fragment ⇒ no secret (loopback-only link)');
+	assert.ok(NET.watchLink('http://x/y', 'ROOM42', null, sec).endsWith('#k=' + sec), 'watchLink appends the secret to the fragment');
+	assert.equal(NET.watchLink('http://x/y', 'ROOM42', null, 'bad').indexOf('#'), -1, 'watchLink omits an invalid secret');
+}
 assert.equal(NET.parseWatch('?watch=ROOM42&name=%E0%A4%A').name, '%E0%A4%A', 'malformed name escape falls back to raw text');
 
 // --- snapshot chunking -----------------------------------------------------------
@@ -455,7 +464,7 @@ assert.ok(/function notifyTileChanged\(x,y,old,v\)\{\s*try\{ if\(MM\.ghostHostTi
 // --- source pins: ghost_client boot contract ------------------------------------------------------
 const clientSrc = readFileSync(new URL('../src/engine/ghost_client.js', import.meta.url), 'utf8');
 assert.ok(/MMR\.ghostMode = true;/.test(clientSrc), 'client stamps MM.ghostMode at import time');
-assert.ok(/NET\.parseWatch\(location\.search\)/.test(clientSrc), 'watch param comes from the URL');
+assert.ok(/NET\.parseWatch\(location\.search, location\.hash\)/.test(clientSrc), 'watch param + invite secret come from the URL (search + #fragment)');
 assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY|NET\.GID_KEY|NET\.GID_LEASE_KEY|NET\.LOOK_KEY|NET\.HERO_KEY)/.test(clientSrc),
 	'client persists nothing but its display name, avatar, own career, stable gid (+lease), chosen look and hero state');
 assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY, NET\.HERO_KEY\]\)/.test(clientSrc),
@@ -513,13 +522,26 @@ assert.ok(/conn\.onMessage\(\{ t: 'connLost' \}\)/.test(netSrc),
 	'a dropped DataChannel surfaces as connLost (reconnectable), not hostGone (final)');
 
 // --- P0-4/P0-5: transport hardening wiring (the RTC path can't run headless, so pin it) ------
-// remote RTC is OFF by default — a caller must pass rtc:true deliberately
-assert.ok(/if\(opts\.rtc === true && typeof RTCPeerConnection/.test(netSrc),
-	'P0-4: hostListen only stands up RTC when rtc:true is passed (off by default)');
-assert.ok(/if\(\(opts\.via === 'rtc' \|\| opts\.rtc === true\) && typeof RTCPeerConnection/.test(netSrc),
-	'P0-4: joinRoom only accepts an RTC offer on an explicit opt-in (off by default)');
-assert.ok(/s\.listen = NET\.hostListen\(room, \{ rtc: opts\.rtc === true,/.test(hostSrc),
-	'P0-4: the host starts with remote RTC disabled unless explicitly opted in');
+// remote RTC requires the invite SECRET on BOTH ends — the signaling is signed with it,
+// so a peer without the secret can neither be answered nor make us open a PeerConnection
+assert.ok(/if\(opts\.rtc === true && validInviteSecret\(opts\.secret\) && typeof RTCPeerConnection/.test(netSrc),
+	'P0-4: hostListen only stands up RTC with rtc:true AND a valid invite secret');
+assert.ok(/if\(validInviteSecret\(opts\.secret\) && typeof RTCPeerConnection/.test(netSrc),
+	'P0-4: joinRoom only attempts remote RTC when the link carried a valid invite secret');
+assert.ok(/s\.listen = NET\.hostListen\(room, \{ rtc: opts\.rtc !== false, secret: s\.secret,/.test(hostSrc),
+	'P0-4: the host serves AUTHENTICATED remote RTC by default, bound to its session invite secret');
+assert.ok(/secret: NET\.mintInviteSecret\(\),/.test(hostSrc), 'P0-4: the host mints a per-session 128-bit invite secret');
+// the RTC handshake routes through the signed channel and gates on the secret
+assert.ok(/function createRtcHost\(room, handlers, secret\)\{[\s\S]{0,120}createSignedChannel\(secret, room, 'h'\);\s*\n\s*if\(!sc\.ready\) return/.test(netSrc),
+	'P0-4: createRtcHost refuses to signal without a valid secret (signed channel)');
+assert.ok(/function createRtcJoin\(room, gid, handlers, secret\)\{[\s\S]{0,140}createSignedChannel\(secret, room, 'g' \+ gid\);\s*\n\s*if\(!sc\.ready\)/.test(netSrc),
+	'P0-4: createRtcJoin refuses to join without a valid secret (signed channel)');
+assert.ok(/const v = await sc\.open\(m, gid\);\s*\n\s*if\(!v\.ok\) return;/.test(netSrc),
+	'P0-4: an unsigned/forged/replayed guest envelope never opens a PeerConnection (DoS + auth gate)');
+assert.ok(/const v = await sc\.open\(m, 'h', hostFp \|\| null\);\s*\n\s*if\(!v\.ok\) return;/.test(netSrc),
+	'P0-4: the guest only acts on host envelopes it verified (and pins the host fingerprint)');
+assert.ok(/hostFp = sdpFingerprint\(m\.sdp\);/.test(netSrc) && /entry\.peerFp = fp;/.test(netSrc),
+	'P0-4: both ends pin the peer DTLS fingerprint from the signed offer/answer');
 // signaling size caps before parse + SDP/ICE bounds
 assert.ok(/if\(!withinWireLimit\(payload, WIRE_LIMITS\.SIG_MAX\)\) return;/.test(netSrc) && /if\(!validSignalSize\(m\)\) return;/.test(netSrc),
 	'P0-5: signaling envelopes are size-capped before parse and their SDP/ICE bounded');

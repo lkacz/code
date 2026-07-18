@@ -583,11 +583,23 @@ export function normalizeRoom(room){
 	const up = String(room || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 	return (up.length >= 4 && up.length <= 12) ? up : null;
 }
-export function watchLink(baseUrl, room, via){
+// The invite secret rides the URL FRAGMENT (#k=…): fragments are not sent in HTTP
+// requests or Referer headers, so the capability that gates authenticated remote join
+// stays on the two devices that hold the link. The base watch link (no secret) only
+// ever connects same-machine (loopback) — sharing it by accident exposes no remote.
+export function watchLink(baseUrl, room, via, secret){
 	const base = String(baseUrl || '').split('#')[0].split('?')[0];
-	return base + '?watch=' + encodeURIComponent(room) + (via ? '&via=' + encodeURIComponent(via) : '');
+	const q = '?watch=' + encodeURIComponent(room) + (via ? '&via=' + encodeURIComponent(via) : '');
+	return base + q + (validInviteSecret(secret) ? '#k=' + secret : '');
 }
-export function parseWatch(search){
+// Extract the invite secret from a URL fragment or query — validated to the secret
+// shape so a garbage fragment can never be mistaken for a key.
+export function parseInviteSecret(str){
+	const m = /[#?&]k=([0-9a-fA-F]{32,64})\b/.exec(String(str || ''));
+	const k = m ? m[1].toLowerCase() : null;
+	return validInviteSecret(k) ? k : null;
+}
+export function parseWatch(search, hash){
 	const q = String(search || '');
 	const m = /[?&]watch=([^&#]+)/.exec(q);
 	if(!m) return null;
@@ -599,7 +611,9 @@ export function parseWatch(search){
 	if(!room) return null;
 	const via = /[?&]via=(bc|rtc)\b/.exec(q);
 	const name = /[?&]name=([^&#]+)/.exec(q);
-	return { room, via: via ? via[1] : null, name: name ? dec(name[1]).slice(0, 24) : null };
+	// the secret lives in the fragment; fall back to the query for robustness
+	const secret = parseInviteSecret(hash != null ? hash : '') || parseInviteSecret(q);
+	return { room, via: via ? via[1] : null, name: name ? dec(name[1]).slice(0, 24) : null, secret: secret || null };
 }
 
 // --- payload chunking --------------------------------------------------------
@@ -838,6 +852,24 @@ async function hmacHex(secretHex, msg){
 function sigCanon(room, role, nonce, ts, fp, contentStr){
 	return [String(room), String(role), String(nonce), String(ts | 0), String(fp || ''), String(contentStr == null ? '' : contentStr)].join('');
 }
+// The SDP text carried by an offer/answer — accepts a raw string or an
+// RTCSessionDescription-shaped {type, sdp}. This IS the security-relevant payload
+// (it embeds the DTLS fingerprint), so it is what the signature covers.
+function sdpString(x){ return typeof x === 'string' ? x : (x && typeof x.sdp === 'string' ? x.sdp : ''); }
+// The DTLS fingerprint line from an SDP — the cryptographic identity of the peer's
+// media session. A verified (signed) SDP therefore pins exactly who you connect to.
+export function sdpFingerprint(x){
+	const m = /a=fingerprint:\S+\s+([0-9A-Fa-f:]+)/.exec(sdpString(x));
+	return m ? m[1].toUpperCase() : '';
+}
+// The exact bytes an envelope's signature covers: the SDP TEXT for an offer/answer,
+// the candidate JSON for an ICE trickle, empty for a bare hi. Both ends derive it
+// identically so a tampered SDP/ICE breaks the MAC.
+function sigContentOf(obj){
+	if(obj && obj.sdp != null) return sdpString(obj.sdp);
+	if(obj && obj.c != null) return JSON.stringify(obj.c);
+	return '';
+}
 export async function signSignal(secret, room, role, nonce, ts, contentStr, fp){
 	return hmacHex(secret, sigCanon(room, role, nonce, ts, fp, contentStr));
 }
@@ -854,16 +886,19 @@ export async function verifySignal(secret, env, expect){
 	if(Math.abs(now - env.ts) > (expect.window || SIG_REPLAY_WINDOW_MS)) return { ok: false, reason: 'stale' };
 	if(expect.role && env.role !== expect.role) return { ok: false, reason: 'role' };
 	if(expect.fp && env.fp && env.fp !== expect.fp) return { ok: false, reason: 'fingerprint' };
-	if(expect.guard && !expect.guard.accept(env.nonce, now)) return { ok: false, reason: 'replay' };
-	const content = env.sdp != null ? (typeof env.sdp === 'string' ? env.sdp : JSON.stringify(env.sdp))
-		: env.c != null ? (typeof env.c === 'string' ? env.c : JSON.stringify(env.c)) : '';
+	// AUTHENTICATE before touching the replay guard: the nonce store is bounded, so if a
+	// forged message could consume a slot, a room-code-knowing attacker could saturate it
+	// and starve legit guests. Only a valid (secret-signed) message may record its nonce.
+	const content = sigContentOf(env);
 	let mac = '';
 	try{ mac = await hmacHex(secret, sigCanon(expect.room, env.role, env.nonce, env.ts, env.fp || '', content)); }
 	catch(e){ return { ok: false, reason: 'crypto' }; }
-	if(mac.length !== env.sig.length) return { ok: false, reason: 'sig' };
-	let diff = 0;
-	for(let i = 0; i < mac.length; i++) diff |= mac.charCodeAt(i) ^ env.sig.charCodeAt(i);
-	return diff === 0 ? { ok: true } : { ok: false, reason: 'sig' };
+	let diff = mac.length === env.sig.length ? 0 : 1;
+	for(let i = 0; i < mac.length && i < env.sig.length; i++) diff |= mac.charCodeAt(i) ^ env.sig.charCodeAt(i);
+	if(diff !== 0) return { ok: false, reason: 'sig' };
+	// authenticated — now (and only now) enforce single-use of the nonce
+	if(expect.guard && !expect.guard.accept(env.nonce, now)) return { ok: false, reason: 'replay' };
+	return { ok: true };
 }
 // Bounded nonce memory with TTL — a replay of an accepted nonce inside the window is
 // refused; old nonces age out so the set can't grow without bound.
@@ -882,6 +917,40 @@ export function createReplayGuard(windowMs){
 			return true;
 		},
 		size(){ return seen.size; }
+	};
+}
+
+// --- the signed signaling channel: the whole trust decision, transport-agnostic ------
+// Both RTC peers wrap their raw pub/sub in one of these. `seal` stamps an outgoing
+// envelope (fresh nonce + timestamp + DTLS-fingerprint binding + HMAC over the SDP/ICE
+// content); `open` verifies an incoming one against the shared invite secret, the
+// expected sender role, freshness and the per-channel replay guard. A peer that lacks
+// the secret can neither forge a signature nor replay a captured one, so the public
+// broker carries only envelopes the invited parties produced. This is the security
+// boundary; createRtcHost/createRtcJoin are dumb plumbing around it (and the reason
+// the crypto is tested here directly — headless Node has no RTCPeerConnection).
+export function createSignedChannel(secret, room, selfRole, opts){
+	opts = opts || {};
+	const guard = createReplayGuard(opts.window);
+	return {
+		role: selfRole,
+		ready: validInviteSecret(secret), // no secret ⇒ no authenticated channel at all
+		// fpOverride binds a non-SDP envelope (an ICE trickle) to the sender's OWN
+		// media fingerprint, so ICE can't be injected across a different peer session.
+		async seal(obj, fpOverride){
+			const nonce = randBytesHex(12);
+			const ts = Date.now();
+			const fp = (obj && obj.sdp != null) ? sdpFingerprint(obj.sdp) : (fpOverride || '');
+			const sig = await signSignal(secret, room, selfRole, nonce, ts, sigContentOf(obj), fp);
+			return Object.assign({}, obj, { role: selfRole, nonce, ts, fp, sig });
+		},
+		// expectRole: the identity the sender MUST have signed as (e.g. a guest expects
+		// 'h'; the host expects the guest's own inbox id). fpPin (optional): a fingerprint
+		// learned from an earlier verified message this one must still match.
+		async open(env, expectRole, fpPin){
+			const v = await verifySignal(secret, env, { room, role: expectRole, guard, fp: fpPin || null });
+			return v;
+		}
 	};
 }
 
@@ -1144,8 +1213,10 @@ function rtcPeerWrap(id, dc){
 		close(){ try{ dc.close(); }catch(e){ /* fine */ } }
 	};
 }
-function createRtcHost(room, handlers){
-	const pcs = new Map(); // ghostId -> {pc, peer, negT, helloT, alive}
+function createRtcHost(room, handlers, secret){
+	const sc = createSignedChannel(secret, room, 'h');
+	if(!sc.ready) return { stop(){ /* no secret ⇒ no authenticated remote signaling */ } };
+	const pcs = new Map(); // ghostId -> {pc, peer, negT, helloT, alive, myFp, peerFp}
 	// fail-closed teardown: a half-open peer that never finishes negotiating, or a
 	// connected channel that never speaks a valid hello, is dropped with its timers
 	function drop(gid){
@@ -1157,23 +1228,28 @@ function createRtcHost(room, handlers){
 		try{ e.pc.close(); }catch(err){ /* fine */ }
 		pcs.delete(gid);
 	}
+	// every outgoing signaling envelope is SEALED (signed) before it hits the broker
+	const send = (gid, obj, fp) => { sc.seal(obj, fp).then(env => sig.sendTo(gid, env)).catch(() => { /* crypto unavailable */ }); };
 	const sig = openSignal(room, 'h', {
 		onReady: handlers.onStatus ? () => handlers.onStatus('signal-ready') : null,
 		onFail: handlers.onStatus ? () => handlers.onStatus('signal-fail') : null,
-		onMsg(m){
+		async onMsg(m){
 			const gid = m.from;
+			// only a guest inbox may talk to the host, and it must have SIGNED as itself
+			if(typeof gid !== 'string' || !/^g[a-zA-Z0-9._-]{1,44}$/.test(gid)) return;
+			const v = await sc.open(m, gid);
+			if(!v.ok) return; // unsigned / wrong secret / replay / tampered / stale — ignored.
+			// This is also the RTC DoS gate: an un-invited peer cannot even make us open a
+			// PeerConnection, because its `hi` never carries a valid signature.
 			if(m.k === 'hi'){
 				if(pcs.has(gid)) return; // one connection per ghost id
-				// flood guard: a stranger cannot make us open RTCPeerConnections without
-				// bound before the player cap is even consulted (each is real CPU/memory)
-				if(pcs.size >= RTC_LIMITS.PENDING_MAX) return;
+				if(pcs.size >= RTC_LIMITS.PENDING_MAX) return; // flood guard (now: invited peers only)
 				const pc = new RTCPeerConnection(RTC_CONFIG);
-				const entry = { pc, peer: null, negT: 0, helloT: 0, alive: false };
+				const entry = { pc, peer: null, negT: 0, helloT: 0, alive: false, myFp: '', peerFp: '' };
 				pcs.set(gid, entry);
-				// negotiation deadline: no connected channel within the window → drop
 				entry.negT = setTimeout(() => { if(!entry.alive) drop(gid); }, RTC_LIMITS.NEGOTIATE_MS);
 				const dc = pc.createDataChannel('mm', { ordered: true });
-				pc.onicecandidate = (e) => { if(e.candidate) sig.sendTo(gid, { k: 'ice', c: e.candidate }); };
+				pc.onicecandidate = (e) => { if(e.candidate) send(gid, { k: 'ice', c: e.candidate }, entry.myFp); };
 				pc.onconnectionstatechange = () => {
 					if(pc.connectionState === 'failed' || pc.connectionState === 'closed'){ drop(gid); }
 				};
@@ -1181,8 +1257,6 @@ function createRtcHost(room, handlers){
 					entry.alive = true;
 					if(entry.negT){ clearTimeout(entry.negT); entry.negT = 0; }
 					entry.peer = rtcPeerWrap(gid, dc);
-					// mandatory hello timeout: a channel that opens and then sits silent
-					// (or never says a valid hello) is a resource leak — reap it
 					entry.helloT = setTimeout(() => { if(!entry.helloSeen) drop(gid); }, RTC_LIMITS.HELLO_MS);
 					dc.onmessage = (ev) => {
 						if(!withinWireLimit(ev.data, WIRE_LIMITS.JSON_MAX)) return; // oversized frame ignored
@@ -1193,11 +1267,20 @@ function createRtcHost(room, handlers){
 					dc.onclose = () => { if(entry.peer && entry.peer.onMessage) entry.peer.onMessage({ t: 'bye' }); drop(gid); };
 					handlers.onPeer(entry.peer);
 				};
-				pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => sig.sendTo(gid, { k: 'offer', sdp: pc.localDescription })).catch(() => drop(gid));
+				pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => {
+					entry.myFp = sdpFingerprint(pc.localDescription); // ICE we send binds to this
+					send(gid, { k: 'offer', sdp: pc.localDescription }, entry.myFp);
+				}).catch(() => drop(gid));
 			} else if(m.k === 'answer' && pcs.has(gid)){
-				pcs.get(gid).pc.setRemoteDescription(m.sdp).catch(() => {});
+				const entry = pcs.get(gid);
+				const fp = sdpFingerprint(m.sdp);
+				if(entry.peerFp && fp !== entry.peerFp) return; // fingerprint may not change mid-handshake
+				entry.peerFp = fp; // pin the guest's media identity for its ICE
+				entry.pc.setRemoteDescription(m.sdp).catch(() => {});
 			} else if(m.k === 'ice' && pcs.has(gid) && m.c){
-				pcs.get(gid).pc.addIceCandidate(m.c).catch(() => {});
+				const entry = pcs.get(gid);
+				if(entry.peerFp && m.fp && m.fp !== entry.peerFp) return; // ICE must match the pinned peer
+				entry.pc.addIceCandidate(m.c).catch(() => {});
 			}
 		}
 	});
@@ -1208,18 +1291,27 @@ function createRtcHost(room, handlers){
 		}
 	};
 }
-function createRtcJoin(room, gid, handlers){
-	let pc = null, hiT = null, closed = false;
+function createRtcJoin(room, gid, handlers, secret){
+	const sc = createSignedChannel(secret, room, 'g' + gid);
+	if(!sc.ready){ return { close(){ /* no invite secret ⇒ no authenticated remote join */ } }; }
+	let pc = null, hiT = null, closed = false, myFp = '', hostFp = '';
+	const send = (obj, fp) => { sc.seal(obj, fp).then(env => sig.sendTo('h', env)).catch(() => { /* crypto unavailable */ }); };
 	const sig = openSignal(room, 'g' + gid, {
 		onReady(){
-			sig.sendTo('h', { k: 'hi' });
-			hiT = setInterval(() => { if(!pc) sig.sendTo('h', { k: 'hi' }); }, 2500);
+			send({ k: 'hi' });
+			hiT = setInterval(() => { if(!pc) send({ k: 'hi' }); }, 2500);
 		},
 		onFail: handlers.onFail || null,
-		onMsg(m){
+		async onMsg(m){
+			if(m.from !== 'h') return; // only the host inbox
+			// verify the host signed it (and, once learned, that it carries the pinned
+			// host fingerprint) — a leaked-secret passive attacker still can't hijack ICE
+			const v = await sc.open(m, 'h', hostFp || null);
+			if(!v.ok) return;
 			if(m.k === 'offer' && !pc){
+				hostFp = sdpFingerprint(m.sdp); // pin exactly whose DTLS session we will join
 				pc = new RTCPeerConnection(RTC_CONFIG);
-				pc.onicecandidate = (e) => { if(e.candidate) sig.sendTo('h', { k: 'ice', c: e.candidate }); };
+				pc.onicecandidate = (e) => { if(e.candidate) send({ k: 'ice', c: e.candidate }, myFp); };
 				pc.ondatachannel = (ev) => {
 					const dc = ev.channel;
 					const conn = rtcPeerWrap('host', dc);
@@ -1229,7 +1321,10 @@ function createRtcJoin(room, gid, handlers){
 					// reconnects on connLost but treats hostGone as final
 					dc.onclose = () => { if(!closed && conn.onMessage) conn.onMessage({ t: 'connLost' }); };
 				};
-				pc.setRemoteDescription(m.sdp).then(() => pc.createAnswer()).then(a => pc.setLocalDescription(a)).then(() => sig.sendTo('h', { k: 'answer', sdp: pc.localDescription })).catch(() => {});
+				pc.setRemoteDescription(m.sdp).then(() => pc.createAnswer()).then(a => pc.setLocalDescription(a)).then(() => {
+					myFp = sdpFingerprint(pc.localDescription);
+					send({ k: 'answer', sdp: pc.localDescription }, myFp);
+				}).catch(() => {});
 			} else if(m.k === 'ice' && pc && m.c){
 				pc.addIceCandidate(m.c).catch(() => {});
 			}
@@ -1241,20 +1336,20 @@ function createRtcJoin(room, gid, handlers){
 }
 
 // --- facades --------------------------------------------------------------------
-// Host listens on the loopback transport (a second tab on this machine) always;
-// the remote WebRTC transport is OPT-IN and OFF BY DEFAULT. Until the signaling
-// handshake is signed end-to-end (mintInviteSecret + signSignal/verifySignal), the
-// public MQTT brokers carry unauthenticated envelopes to any listener, so remote
-// join is a security hole we do not open for untrusted peers. A caller must pass
-// `rtc:true` deliberately to accept that risk.
+// Host listens on the loopback transport (a second tab on this machine) always; the
+// remote WebRTC transport is authenticated by an invite SECRET and only stands up when
+// one is present. Its signaling rides public MQTT brokers, so every offer/answer/ICE is
+// HMAC-signed with that secret (createRtcHost via createSignedChannel) — a peer without
+// the secret can neither be answered nor make us open a PeerConnection. A caller opts in
+// with `rtc:true` AND a valid `secret`; without the secret, remote stays closed.
 export function hostListen(room, opts){
 	const stops = [];
 	const status = { bc: false, rtc: false };
 	try{
 		if(typeof BroadcastChannel !== 'undefined'){ stops.push(createLoopbackHost(room, opts.onPeer).stop); status.bc = true; }
 	}catch(e){ /* no loopback */ }
-	if(opts.rtc === true && typeof RTCPeerConnection !== 'undefined' && typeof WebSocket !== 'undefined'){
-		try{ stops.push(createRtcHost(room, { onPeer: opts.onPeer, onStatus: opts.onStatus }).stop); status.rtc = true; }catch(e){ /* rtc unavailable */ }
+	if(opts.rtc === true && validInviteSecret(opts.secret) && typeof RTCPeerConnection !== 'undefined' && typeof WebSocket !== 'undefined'){
+		try{ stops.push(createRtcHost(room, { onPeer: opts.onPeer, onStatus: opts.onStatus }, opts.secret).stop); status.rtc = true; }catch(e){ /* rtc unavailable */ }
 	}
 	return { transports: status, stop(){ for(const s of stops){ try{ s(); }catch(e){ /* fine */ } } } };
 }
@@ -1280,13 +1375,13 @@ export function joinRoom(room, opts){
 	if(opts.via !== 'rtc'){
 		try{ if(typeof BroadcastChannel !== 'undefined') wire(createLoopbackJoin(room, opts.id)); }catch(e){ /* no loopback */ }
 	}
-	// Remote RTC join is opt-in too: without an explicit `via:'rtc'` (or `rtc:true`)
-	// the guest never accepts an offer from the unauthenticated broker — a hostile
-	// host cannot answer a naive join and push a poisoned world. The default watch
-	// link (no `via`) therefore only connects same-machine (loopback).
-	if((opts.via === 'rtc' || opts.rtc === true) && typeof RTCPeerConnection !== 'undefined' && typeof WebSocket !== 'undefined'){
+	// Remote RTC join requires the invite SECRET: the guest signs its `hi`, verifies the
+	// host's offer signature and pins the host's DTLS fingerprint, so a broker-squatting
+	// impostor can neither be answered nor answer a naive join with a poisoned world. The
+	// default watch link (no secret) therefore only connects same-machine (loopback).
+	if(validInviteSecret(opts.secret) && typeof RTCPeerConnection !== 'undefined' && typeof WebSocket !== 'undefined'){
 		try{
-			const j = createRtcJoin(room, opts.id, { onOpen: (c) => { wire(c); if(opts.onTransportUp) opts.onTransportUp(c); }, onFail: opts.onSignalFail });
+			const j = createRtcJoin(room, opts.id, { onOpen: (c) => { wire(c); if(opts.onTransportUp) opts.onTransportUp(c); }, onFail: opts.onSignalFail }, opts.secret);
 			closers.push(j.close);
 		}catch(e){ /* rtc unavailable */ }
 	}
@@ -1312,6 +1407,7 @@ const api = {
 	utf8Len, WIRE_LIMITS, withinWireLimit, validSignalSize,
 	RESUME_TOKEN_BYTES, RESUME_TOKEN_KEY, mintResumeToken, validResumeTokenShape, resumeTokenMatch,
 	INVITE_SECRET_BYTES, SIG_REPLAY_WINDOW_MS, mintInviteSecret, validInviteSecret, signSignal, verifySignal, createReplayGuard,
+	sdpFingerprint, createSignedChannel, parseInviteSecret,
 	clampStep, sweepBodyMove, createSendQueue, DC_QUEUE, RTC_LIMITS,
 	PROG_KEY, PROG, DEED_XP, validDeed, deedXp, xpForLevel, levelFor, RANKS, rankFor,
 	ACHIEVEMENTS, achievementById, achievementProgress, createProgress, normalizeProgress, statView, progressAfter,

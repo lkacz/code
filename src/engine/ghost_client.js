@@ -14,7 +14,9 @@ import { MOVE, T } from '../constants.js';
 import { applyHorizontalMovement } from './movement.js';
 
 const MMR = (typeof window !== 'undefined' && window.MM) ? window.MM : null;
-const WATCH = (typeof location !== 'undefined') ? NET.parseWatch(location.search) : null;
+// the invite secret rides the URL #fragment (kept off the wire); without it a guest
+// only ever connects same-machine (loopback), never authenticated remote RTC
+const WATCH = (typeof location !== 'undefined') ? NET.parseWatch(location.search, location.hash) : null;
 if(WATCH && MMR){
 	MMR.ghostMode = true;
 	MMR.ghostWatch = WATCH;
@@ -549,6 +551,7 @@ const ghostClient = (function(){
 		return NET.joinRoom(WATCH.room, {
 			id: gid,
 			via: WATCH.via,
+			secret: WATCH.secret || null, // present ⇒ authenticated remote RTC is attempted
 			onMessage: onMessage,
 			onSignalFail: () => { if(state === 'connect') showVeil('Nie mogę dosięgnąć serwerów sygnałowych.<br>Spróbuj ponownie za chwilę.'); }
 		});
