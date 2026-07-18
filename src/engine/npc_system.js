@@ -210,7 +210,7 @@ function validateQuestDefinition(def){
     if(!sid) errors.push('step '+i+' has no id');
     if(ids.has(sid)) errors.push('duplicate step '+sid);
     ids.add(sid);
-    if(!['handoff','observe','duel','choice','done'].includes(step.kind)) errors.push('step '+sid+' has unsupported kind '+step.kind);
+    if(!['briefing','handoff','observe','duel','choice','done'].includes(step.kind)) errors.push('step '+sid+' has unsupported kind '+step.kind);
   });
   steps.forEach(step=>{
     if(!step || typeof step!=='object') return;
@@ -223,6 +223,9 @@ function validateQuestDefinition(def){
     if(step.kind==='observe'){
       if(!(Number(step.seconds)>0)) errors.push('observe '+sid+' has invalid seconds');
       if(!ids.has(cleanId(step.next))) errors.push('observe '+sid+' points to missing next '+step.next);
+    }
+    if(step.kind==='briefing' && !ids.has(cleanId(step.next))){
+      errors.push('briefing '+sid+' points to missing next '+step.next);
     }
     if(step.kind==='choice'){
       const choices=Array.isArray(step.choices) ? step.choices : (Array.isArray(def.choiceRewards) ? def.choiceRewards : []);
@@ -553,6 +556,7 @@ function createQuestNpc(def){
     line:'',
     lineT:0,
     lineLong:false,
+    handoffHoldT:0,
     attackCd:0,
     hurtT:0,
     defeatedT:0,
@@ -750,6 +754,7 @@ function createQuestNpc(def){
     const step=currentStep();
     if(!step) return 'unknown';
     if(step.kind==='done') return 'completed';
+    if(step.kind==='briefing') return 'briefing';
     if(step.kind==='observe') return 'observe';
     if(step.kind==='duel') return 'duel';
     if(step.kind==='choice') return 'choice';
@@ -802,9 +807,10 @@ function createQuestNpc(def){
     if(!step || step.kind!=='choice') return [];
     return (Array.isArray(step.choices) ? step.choices : choiceRewards).map(clonePlain);
   }
-  function rewardForChoice(choice){
+  function rewardForChoice(choice,step){
     const key=String(choice||'').trim().toLowerCase();
-    return choiceRewards.find(r=>String(r.key||'').toLowerCase()===key || String(r.id||'').toLowerCase()===key || String(r.weaponType||'').toLowerCase()===key) || null;
+    const rewards=step && Array.isArray(step.choices) ? step.choices : choiceRewards;
+    return rewards.find(r=>String(r.key||'').toLowerCase()===key || String(r.id||'').toLowerCase()===key || String(r.weaponType||'').toLowerCase()===key) || null;
   }
   function spendResource(key,amount){
     const inv=root.inv;
@@ -922,7 +928,13 @@ function createQuestNpc(def){
     markChanged(ctx);
     message(rewardText(reward.message,item));
     const line=rewardText(reward.line,item);
-    if(line) setLine(line,Number(reward.lineT)||5,true);
+    const lineT=line ? setLine(line,Number(reward.lineT)||5,true) : 0;
+    // If a reward introduces the next handoff, let the NPC issue that command
+    // before an already-carried item can be accepted on the following frame.
+    const introducedStep=reward.next ? currentStep() : null;
+    if(lineT>0 && introducedStep && introducedStep.kind==='handoff'){
+      state.handoffHoldT=Math.max(state.handoffHoldT,lineT);
+    }
     return true;
   }
   function duelReward(){
@@ -942,17 +954,20 @@ function createQuestNpc(def){
   }
   function advanceStep(step,ctx){
     const inv=root.inv;
+    const consume=step.consume!==false;
     const resourceBefore=inv && typeof inv[step.item]==='number' ? inv[step.item] : null;
     const before={phase:state.phase,hp:state.hp,attackCd:state.attackCd,hurtT:state.hurtT};
-    if(!spendResource(step.item,step.amount)) return false;
-    refreshInventory(ctx);
+    if(consume){
+      if(!spendResource(step.item,step.amount)) return false;
+      refreshInventory(ctx);
+    }else if(resourceCount(step.item)<Math.max(1,step.amount|0)) return false;
     const next=cleanPhase(step.next);
     const nextStep=stepMap[next];
     if(nextStep && nextStep.kind==='duel') beginDuel();
     else state.phase=next;
     if(step.complete) setLine(step.complete,4.5,true);
     if(step.reward && !applyReward(step.reward,ctx)){
-      if(inv && resourceBefore!==null) inv[step.item]=resourceBefore;
+      if(consume && inv && resourceBefore!==null) inv[step.item]=resourceBefore;
       state.phase=before.phase;
       state.hp=before.hp;
       state.attackCd=before.attackCd;
@@ -964,23 +979,58 @@ function createQuestNpc(def){
     markChanged(ctx);
     return true;
   }
-  function advanceObserveStep(step,ctx){
-    const before={phase:state.phase,hp:state.hp,attackCd:state.attackCd,hurtT:state.hurtT,observe:Object.assign({},state.observe)};
+  function advanceBriefingStep(step,ctx){
+    const before={phase:state.phase,hp:state.hp,attackCd:state.attackCd,hurtT:state.hurtT};
     const next=cleanPhase(step.next);
     const nextStep=stepMap[next];
-    state.observe={phase:'',t:0,best:0,ok:false,lineCd:0};
     if(nextStep && nextStep.kind==='duel') beginDuel();
     else state.phase=next;
-    if(step.complete) setLine(step.complete,5.2,true);
     if(step.reward && !applyReward(step.reward,ctx)){
       state.phase=before.phase;
       state.hp=before.hp;
       state.attackCd=before.attackCd;
       state.hurtT=before.hurtT;
+      markChanged(ctx);
+      return false;
+    }
+    if(!step.reward){
+      setLine(step.complete || step.prompt,Number(step.lineT)||6,true);
+      markChanged(ctx);
+    } else if(!step.reward.line && step.complete){
+      setLine(step.complete,Number(step.lineT)||6,true);
+    }
+    if(step.completeMessage) message(textOf(step.completeMessage));
+    return true;
+  }
+  function briefingReady(step,player,ctx){
+    if(!step || typeof step.check!=='function') return true;
+    try{
+      return !!step.check({step,player,ctx,state,root,MM,helpers:{T,finite,clamp,distToPlayer,safeGet,npcBodyH,npcBodyW}});
+    }catch(e){ return false; }
+  }
+  function advanceObserveStep(step,ctx){
+    const before={phase:state.phase,hp:state.hp,attackCd:state.attackCd,hurtT:state.hurtT,handoffHoldT:state.handoffHoldT,observe:Object.assign({},state.observe)};
+    const next=cleanPhase(step.next);
+    const nextStep=stepMap[next];
+    state.observe={phase:'',t:0,best:0,ok:false,lineCd:0};
+    if(nextStep && nextStep.kind==='duel') beginDuel();
+    else state.phase=next;
+    const completionT=step.complete ? setLine(step.complete,5.2,true) : 0;
+    // Do not let an already-carried resource skip over the observation result
+    // on the very next frame.  The completion line gets a fair reading window,
+    // then the usual adjacent auto-handoff resumes.
+    if(nextStep && nextStep.kind==='handoff') state.handoffHoldT=Math.max(state.handoffHoldT,completionT);
+    if(step.reward && !applyReward(step.reward,ctx)){
+      state.phase=before.phase;
+      state.hp=before.hp;
+      state.attackCd=before.attackCd;
+      state.hurtT=before.hurtT;
+      state.handoffHoldT=before.handoffHoldT;
       state.observe=before.observe;
       markChanged(ctx);
       return false;
     }
+    if(step.completeMessage) message(textOf(step.completeMessage));
     markChanged(ctx);
     return true;
   }
@@ -1008,7 +1058,7 @@ function createQuestNpc(def){
       return;
     }
     const step=current && current.kind==='handoff' ? current : null;
-    if(step && distToPlayer(player)<=interactR && resourceCount(step.item)>=step.amount){
+    if(step && state.handoffHoldT<=0 && distToPlayer(player)<=interactR && resourceCount(step.item)>=step.amount){
       advanceStep(step,ctx);
     }
   }
@@ -1040,10 +1090,19 @@ function createQuestNpc(def){
     return lines.map(l=>String(l||'').trim()).filter(Boolean);
   }
   // Make the NPC speak: turn to the player and surface the next line in its repertoire.
-  function talk(player){
+  function talk(player,ctx){
+    if(player && finite(player.x) && finite(state.x)) state.move.facing = player.x>=state.x ? 1 : -1;
+    const step=currentStep();
+    if(step && step.kind==='briefing'){
+      if(briefingReady(step,player,ctx)) return advanceBriefingStep(step,ctx);
+      const reminder=step.missing || step.prompt;
+      if(!reminder) return false;
+      setLine(reminder,Number(step.lineT)||4.6,true);
+      state.talkT=state.lineT;
+      return true;
+    }
     const lines=talkLines();
     if(!lines.length) return false;
-    if(player && finite(player.x) && finite(state.x)) state.move.facing = player.x>=state.x ? 1 : -1;
     let idx=(state.talkIdx|0) % lines.length;
     let text=lines[idx];
     if(lines.length>1 && text===state.lastTalkLine){
@@ -1074,13 +1133,13 @@ function createQuestNpc(def){
     return true;
   }
   // Click-to-talk: returns true (and speaks) when a non-duel NPC is clicked within reach.
-  function interactAt(tileX,tileY,player){
+  function interactAt(tileX,tileY,player,ctx){
     if(isHidden()) return false;
     const step=currentStep();
     if(step && step.kind==='duel') return false;
     if(!bodyCoversTile(tileX,tileY)) return false;
     if(player && distToPlayer(player)>Math.max(interactR,3.2)) return false;
-    return talk(player);
+    return talk(player,ctx);
   }
   function damageHero(player,amount,ctx){
     ctx=contextFor(ctx);
@@ -1290,6 +1349,7 @@ function createQuestNpc(def){
     dt=Math.max(0,Math.min(0.1,Number(dt)||0));
     state.tick+=dt;
     state.lineT=Math.max(0,state.lineT-dt);
+    state.handoffHoldT=Math.max(0,(Number(state.handoffHoldT)||0)-dt);
     if(state.lineT<=0) state.lineLong=false;
     state.hurtT=Math.max(0,state.hurtT-dt);
     state.defeatedT=Math.max(0,state.defeatedT-dt);
@@ -1361,7 +1421,7 @@ function createQuestNpc(def){
       setLine(step.missing || step.prompt,3,true);
       return false;
     }
-    const item=rewardForChoice(choice);
+    const item=rewardForChoice(choice,step);
     if(!item){
       setLine(step.missing || step.prompt,3,true);
       return false;
@@ -1421,6 +1481,7 @@ function createQuestNpc(def){
       kind:step.kind,
       item:step.item || null,
       amount:step.amount || 0,
+      consume:step.kind==='handoff' ? step.consume!==false : null,
       seconds:step.kind==='observe' ? observeSeconds(step) : 0,
       mode:step.mode || null,
       label:step.label || null,
@@ -1461,6 +1522,7 @@ function createQuestNpc(def){
     state.line='';
     state.lineT=0;
     state.lineLong=false;
+    state.handoffHoldT=0;
     state.attackCd=0;
     state.hurtT=0;
     const defeatedT=Number(restored.defeatedT);
@@ -1480,6 +1542,7 @@ function createQuestNpc(def){
     state.line='';
     state.lineT=0;
     state.lineLong=false;
+    state.handoffHoldT=0;
     state.attackCd=0;
     state.hurtT=0;
     state.defeatedT=0;

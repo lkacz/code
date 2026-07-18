@@ -26,13 +26,32 @@ const storyProgression = (function(){
     watch_area:  {title:'Obserwacja okolicy',      detail:'Stary Kwadrat chce wiedziec, czy teren zachowuje sie grzecznie pod spojrzeniem.'},
     tree_watch_short:{title:'Dowolne drzewo (10 s)',detail:'Wejdz na dowolne drzewo. Zielony licznik nad glowa potwierdzi, ze czas plynie.'},
     tree_watch_long:{title:'Dowolne drzewo (30 s)', detail:'Stan na dowolnym drzewie. Dluga obserwacja sprawdza obserwatora, nie teren.'},
-    sand_hide:   {title:'Ukrycie w piasku (30 s)', detail:'Znikniecie tez jest pomiarem. Piasek ma dobre referencje.'},
+    sand_hide:   {title:'Miedzy piaskiem (30 s)',  detail:'Stan na piasku pomiedzy dwoma blokami piasku. Dach nie jest potrzebny; zloty licznik potwierdzi pomiar.'},
     water:       {title:'Woda dla mentora',        detail:'Przynies 1 blok wody. Pragnienie albo skrypt - sprawdzimy.'},
-    raw_meat:    {title:'Surowe mieso',            detail:'Przynies 1 surowe mieso. Tutorial nie ocenia.'},
-    cooked_meat: {title:'Pieczone mieso',          detail:'Upiecz mieso ogniem i wroc, gdy pachnie zwyciestwem.'},
+    raw_meat:    {title:'Blok miesa (3 skrawki)',  detail:'Zwierzeta zostawiaja skrawki miesa. Zbierz 3 i w craftingu, w zakladce Start, zrob 1 Blok miesa.'},
+    cooked_meat: {title:'Upiecz Blok miesa',       detail:'Nie zabral miesa. Drewno lub wegiel to paliwo. Symulator miotacza: przytrzymaj LPM. Wegiel dymi czarno. Symulator mozesz zatrzymac.'},
     duel:        {title:'Ostatnia lekcja',         detail:'Pokonaj nauczyciela. On to zaplanowal, wiec sie nie krepuj.'},
     master_stone:{title:'Kamien mistrza',          detail:'Aktywny wulkan gubi kamien mistrza po odpowiednim zamieszaniu.'},
-    reward_choice:{title:'Wybor nagrody',          detail:'Wroc do Starego Kwadrata: waz wodny, miotacz ognia albo emiter gazu.'}
+    reward_choice:{title:'Wybor nagrody',          detail:'Wroc do Starego Kwadrata: waz wodny, miotacz ognia albo emiter gazu.'},
+    guardian_return:{title:'Wroc po dwoch straznikach',detail:'Pokonaj Straznika Zachodu i Straznika Wschodu. Potem wroc do Starego Kwadrata i powiedz, ktory byl trudniejszy.'},
+    guardian_verdict:{title:'Ktory byl trudniejszy?',detail:'Wroc do Starego Kwadrata i wybierz: Straznik Zachodu albo Straznik Wschodu.'}
+  };
+  const FOLLOWUP_MENTOR_TASKS = {
+    mentor_triangle:{
+      name:'Trojkat',
+      briefing:{title:'Odnajdz Trojkata',detail:'Mentor budowy czeka w okolicy pola +500.'},
+      build_house:{title:'Zbuduj bezpieczny domek',detail:'Zamknij podloge, sciany i dach, dodaj tlo oraz swiatlo, potem stan w srodku.'}
+    },
+    mentor_tesseract:{
+      name:'Teserakt',
+      briefing:{title:'Odnajdz Teserakta',detail:'Mentor craftingu i energii czeka w okolicy pola -500.'},
+      coal_power:{title:'Energia z wegla',detail:'Podpal wegiel pod poziomym dynamem. Gorace powietrze musi przejsc przez srodkowy wirnik.'}
+    },
+    mentor_trapezoid:{
+      name:'Trapezoid',
+      briefing:{title:'Odnajdz Trapezoida',detail:'Mentor zeglugi stoi na brzegu pierwszej duzej wody.'},
+      build_boat:{title:'Zbuduj drewniana tratwe',detail:'Poloz drewno na glebszej wodzie, powieksz tratwe i stan na jej pokladzie.'}
+    }
   };
   const ARC_TASKS = {
     west: {id:'story:west',   title:'Cisza na zachodzie', detail:'Zachodni wezel odmawia odpowiedzi. Idz w strone chlodu.',   label:'Zachodni Guardian'},
@@ -73,6 +92,12 @@ const storyProgression = (function(){
     const api = mentorApi();
     if(!api || typeof api.summary!=='function') return null;
     try{ return api.summary(); }catch(e){ return null; }
+  }
+  function npcSummary(id){
+    try{
+      const api=MM.npcs && MM.npcs[id];
+      return api && typeof api.summary==='function' ? api.summary() : null;
+    }catch(e){ return null; }
   }
   function playBeat(id,lines){
     if(state.seen[id]) return false;
@@ -177,16 +202,39 @@ const storyProgression = (function(){
     if(summary.required && Number.isFinite(Number(summary.required.have)) && Number(summary.required.amount)>0){
       const amount=Number(summary.required.amount);
       const have=Math.min(Number(summary.required.have),amount);
-      const suffix=summary.observe && summary.observe.mode==='tree_top'
-        ? (summary.observe.active ? ' - naliczanie trwa' : ' - wejdz na korone drzewa')
+      const suffix=summary.observe
+        ? (summary.observe.active ? ' - naliczanie trwa'
+          : summary.observe.mode==='tree_top' ? ' - wejdz na korone drzewa'
+          : summary.observe.mode==='sand_hide' ? ' - stan w piaskowym U'
+          : '')
         : '';
       detail = meta.detail+' ('+have+'/'+amount+')'+suffix;
     }
     const def = {id:'story:mentor', title:'Stary Kwadrat: '+meta.title, detail, label:'Stary Kwadrat'};
-    const anywhere=summary.phase==='tree_watch_short' || summary.phase==='tree_watch_long';
+    const anywhere=summary.phase==='tree_watch_short' || summary.phase==='tree_watch_long' || summary.phase==='sand_hide';
     const target = !anywhere && (Number.isFinite(Number(summary.x)) && Number.isFinite(Number(summary.y)))
       ? {x:Number(summary.x), y:Number(summary.y)} : null;
     return {def, target};
+  }
+  function followupMentorTaskFor(id,summary){
+    const track=FOLLOWUP_MENTOR_TASKS[id];
+    if(!track || !summary || summary.phase==='done' || summary.status==='completed') return null;
+    const meta=track[summary.phase];
+    if(!meta) return null;
+    let detail=meta.detail;
+    if(summary.observe){
+      detail += summary.observe.active ? ' Naliczanie trwa.' : ' Warunek nie jest jeszcze spelniony.';
+    }
+    const def={id:'story:'+id,title:track.name+': '+meta.title,detail,label:track.name};
+    const target=summary.phase==='briefing' && Number.isFinite(Number(summary.x)) && Number.isFinite(Number(summary.y))
+      ? {x:Number(summary.x),y:Number(summary.y)} : null;
+    return {def,target};
+  }
+  function addFollowupMentorTasks(desired){
+    for(const id of Object.keys(FOLLOWUP_MENTOR_TASKS)){
+      const task=followupMentorTaskFor(id,npcSummary(id));
+      if(task) desired.push(task);
+    }
   }
 
   function centerPhase(){
@@ -199,7 +247,7 @@ const storyProgression = (function(){
   function evaluate(getTile,setTile){
     const hearts = heartsNow();
     const summary = mentorSummary();
-    const mentorDone = !summary || summary.phase==='done' || summary.status==='completed';
+    const mentorTrainingDone = !summary || ['done','guardian_return','guardian_verdict','vanished'].includes(summary.phase) || summary.status==='completed';
     const desired = [];
 
     // The center's call outranks everything, including an unfinished tutorial:
@@ -209,31 +257,38 @@ const storyProgression = (function(){
       (phase==='calling' || phase==='reveal' || phase==='battle');
     if(centerActive){
       desired.push({def:ARC_TASKS.center, target:centerTarget()});
-    } else if(!mentorDone){
+    } else if(!mentorTrainingDone){
       desired.push(mentorTaskFor(summary));
-    } else if(!hearts.ice || !hearts.fire){
-      playBeat('horizons', BEATS.horizons);
-      if(!hearts.ice) desired.push({def:ARC_TASKS.west, target:lairTarget('ice')});
-      if(!hearts.fire) desired.push({def:ARC_TASKS.east, target:lairTarget('fire')});
-      if(hearts.ice) playBeat('ice', BEATS.ice);
-      if(hearts.fire) playBeat('fire', BEATS.fire);
-    } else if(!hearts.earth){
-      playBeat('ice', BEATS.ice);
-      playBeat('fire', BEATS.fire);
-      playBeat('gate', BEATS.gate);
-      // Self-heal the passage if the defeat-time hook was missed (old save).
-      try{
-        if(MM.guardianLairs && MM.guardianLairs.enableUndergroundGate) MM.guardianLairs.enableUndergroundGate(getTile,setTile);
-      }catch(e){}
-      desired.push({def:ARC_TASKS.gate, target:gateTarget()});
-    } else if(!hearts.air){
-      playBeat('earth', BEATS.earth);
-      // The tower rises with the earth beat: materialize the sky arena (with its
-      // ladder spire) so ambition is visible from the ground.
-      try{
-        if(MM.skyGuardian && MM.skyGuardian.materializeArena) MM.skyGuardian.materializeArena(getTile,setTile);
-      }catch(e){}
-      desired.push({def:ARC_TASKS.sky, target:skyTarget()});
+    } else {
+      // The weapon reward ends the lessons, but Square's final return request
+      // remains alongside the horizon goals until the player gives a verdict.
+      const mentorReturn=mentorTaskFor(summary);
+      if(mentorReturn) desired.push(mentorReturn);
+      addFollowupMentorTasks(desired);
+      if(!hearts.ice || !hearts.fire){
+        playBeat('horizons', BEATS.horizons);
+        if(!hearts.ice) desired.push({def:ARC_TASKS.west, target:lairTarget('ice')});
+        if(!hearts.fire) desired.push({def:ARC_TASKS.east, target:lairTarget('fire')});
+        if(hearts.ice) playBeat('ice', BEATS.ice);
+        if(hearts.fire) playBeat('fire', BEATS.fire);
+      } else if(!hearts.earth){
+        playBeat('ice', BEATS.ice);
+        playBeat('fire', BEATS.fire);
+        playBeat('gate', BEATS.gate);
+        // Self-heal the passage if the defeat-time hook was missed (old save).
+        try{
+          if(MM.guardianLairs && MM.guardianLairs.enableUndergroundGate) MM.guardianLairs.enableUndergroundGate(getTile,setTile);
+        }catch(e){}
+        desired.push({def:ARC_TASKS.gate, target:gateTarget()});
+      } else if(!hearts.air){
+        playBeat('earth', BEATS.earth);
+        // The tower rises with the earth beat: materialize the sky arena (with its
+        // ladder spire) so ambition is visible from the ground.
+        try{
+          if(MM.skyGuardian && MM.skyGuardian.materializeArena) MM.skyGuardian.materializeArena(getTile,setTile);
+        }catch(e){}
+        desired.push({def:ARC_TASKS.sky, target:skyTarget()});
+      }
     }
     // hearts.air with the center still dormant: the false-final omen (played by
     // the center guardian) carries the beat until the call opens the final goal.
@@ -277,7 +332,7 @@ const storyProgression = (function(){
   function metrics(){
     return {seen:Object.keys(state.seen).length, queued:state.beatQueue.length};
   }
-  function _debug(){ return {state, evaluate, playBeat, ARC_TASKS, MENTOR_TASKS}; }
+  function _debug(){ return {state, evaluate, playBeat, ARC_TASKS, MENTOR_TASKS,FOLLOWUP_MENTOR_TASKS}; }
 
   const api={update, snapshot, restore, reset, metrics, config:CFG, _debug};
   MM.storyProgression=api;

@@ -19,7 +19,7 @@ has(/markMobAttack\(m,cause,\{target:touchPoint,power:piranhaTouchTarget\?0\.8:1
 
 [
   /function shootAt\(m, target, speed, dmg\)[\s\S]*markMobAttack\(m,'throw',\{target,power:0\.9\}\);/,
-  /function sentinelLaserAt\(m,target,dmg,getTile,setTile,lines\)[\s\S]*markMobAttack\(m,'laser',\{target,power:1\.1,strikeMs:300\}\);/,
+  /function sentinelLaserAt\(m,target,dmg,getTile,setTile,lines,damageTarget\)[\s\S]*markMobAttack\(m,'laser',\{target,power:1\.1,strikeMs:300\}\);/,
   /function shootSandWormSpit\(m,target,speed,dmg\)[\s\S]*markMobAttack\(m,'spit',\{target,power:1\.15\}\);/,
   /function shootStoneGolemRock\(m,target,speed,dmg\)[\s\S]*markMobAttack\(m,'throw',\{target,power:1\.25\}\);/,
   /function shootGoldDragonBreath\(m,target,speed,dmg,getTile,setTile\)[\s\S]*spawnExternalStream\('flame'[\s\S]*cause:'gold_dragon_fire'[\s\S]*markMobAttack\(m,'gold_dragon_fire',\{target,power:1\.55,strikeMs:460\}\);/,
@@ -48,6 +48,7 @@ has(/markMobAttack\(m,cause,\{target:touchPoint,power:piranhaTouchTarget\?0\.8:1
   /markMobTelegraph\(m,'shock',\{target:player,power:0\.95,ms:540\}\);/,
   /markMobTelegraph\(m,'gold_dwarf_hammer',\{target:player,power:1\.15,ms:420\}\);/
 ].forEach((pattern) => has(pattern, 'wakeups and windups should telegraph before striking'));
+has(/markMobTelegraph\(m,'sentinel_laser',\{target:\{x:aim\.x,y:aim\.y\},power:1\.15,ms:SENTINEL_CHARGE_SECONDS\*1000\}\);/, 'each city sentinel eye-laser should expose its full one-second warning');
 
 has(/case 'GOLD_DRAGON':[\s\S]*const breath=m\.state==='breath'[\s\S]*flameX\+faceDir\*len/, 'gold dragon rendering should visibly show fire breath');
 has(/case 'GOLD_DWARF_GUARD':[\s\S]*const hammer=m\.state==='hammer'[\s\S]*ctx\.arc\(screenX\+faceDir\*12,screenY-12,16/, 'gold dwarf rendering should visibly show the hammer swing');

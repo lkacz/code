@@ -33,6 +33,7 @@ import { createHotPickerModel, createHotPicker } from './engine/hot_picker.js';
 import './inventory.js';
 import { mobs as MOBS } from './engine/mobs.js';
 import { tutorialNpc as TUTORIAL_NPC } from './engine/tutorial_npc.js';
+import './engine/mentor_npcs.js';
 import { npcRegistry as NPCS } from './engine/npc_system.js';
 import { generatedNpcs as GENERATED_NPCS } from './engine/generated_npcs.js';
 import { background as BACKGROUND } from './engine/background.js';
@@ -9548,7 +9549,11 @@ function buildWeaponTip(k){
 		}else if(WEAPONS && WEAPONS.fuelInfo){
 			const fuel=WEAPONS.fuelInfo(kind);
 			if(fuel){
-				frag.appendChild(hudTipRow(RES_COLOR[fuel.key]||'#9ca3af','Paliwo: '+(RES_LABEL[fuel.key]||fuel.key),'×'+fuel.count));
+				if(Array.isArray(fuel.fuels) && fuel.fuels.length>1){
+					frag.appendChild(hudTipNode('tipSection','Paliwa - najpierw zuzywane jest drewno'));
+					fuel.fuels.forEach(f=>frag.appendChild(hudTipRow(RES_COLOR[f.key]||'#9ca3af',RES_LABEL[f.key]||f.key,'×'+f.count)));
+					frag.appendChild(hudTipNode('tipHint','Wegiel zasila miotacz, ale razem z ogniem wypuszcza czarny dym.'));
+				}else frag.appendChild(hudTipRow(RES_COLOR[fuel.key]||'#9ca3af','Paliwo: '+(RES_LABEL[fuel.key]||fuel.key),'×'+fuel.count));
 				if(fuel.count<=0) frag.appendChild(hudTipNode('tipWarn','Brak paliwa — broń nie wystrzeli'));
 			}
 		}
@@ -13373,7 +13378,17 @@ function updateInventory(opts){
 }
 // Inventory overlay (resources tab) refreshes the HUD after dropping resources
 window.updateInventoryHud = updateInventory;
-const tutorialNpcCtx = {player, damageHero:window.damageHero, onInventoryChange:updateInventory, onChange:saveState, worldGen:WORLDGEN, gameDayFloat:()=>{ const m=(SEASONS && SEASONS.metrics) ? SEASONS.metrics() : null; return m && Number.isFinite(Number(m.dayFloat)) ? Number(m.dayFloat) : 1; }};
+const tutorialNpcCtx = {
+	player,
+	damageHero:window.damageHero,
+	onInventoryChange:updateInventory,
+	onChange:saveState,
+	worldGen:WORLDGEN,
+	backgroundAt:getConstructionBackgroundTile,
+	isBurning:(x,y)=>!!(FIRE && FIRE.isBurning && FIRE.isBurning(x,y)),
+	isFurnishingPowered:(x,y)=>furnishingPoweredAt(x,y),
+	gameDayFloat:()=>{ const m=(SEASONS && SEASONS.metrics) ? SEASONS.metrics() : null; return m && Number.isFinite(Number(m.dayFloat)) ? Number(m.dayFloat) : 1; }
+};
 if(NPCS && NPCS.setContext) NPCS.setContext(tutorialNpcCtx);
 if(TASKS && TASKS.setContext) TASKS.setContext({onChange:saveState});
 if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateInventory, onChange:saveState});

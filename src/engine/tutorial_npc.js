@@ -13,6 +13,29 @@ const QUEST_BOW = {
   fireCooldown:0.50,
   desc:'Prosty drewniany luk od starego mentora.'
 };
+const COOKING_FLAME_SIMULATOR = {
+  id:'mentor_cooking_flame_simulator',
+  kind:'weapon',
+  weaponType:'flame',
+  name:'Symulator miotacza Starego Kwadrata',
+  tier:'common',
+  fireDps:4,
+  fireRange:5.8,
+  desc:'To nie jest prawdziwy miotacz, tylko symulacja ognia. Spala drewno albo wegiel; wegiel dodatkowo kopci na czarno.'
+};
+const COOKING_FLAME_REWARD = {
+  once:'cooking_flame_simulator',
+  gear:COOKING_FLAME_SIMULATOR,
+  message:'Stary Kwadrat sprawdzil Blok miesa bez zabierania go i dal ci Symulator miotacza bez darmowego paliwa.',
+  line:'Widze Blok miesa i nie zabieram go. Symulator spala drewno albo wegiel; wegiel daje tez czarny dym. Jesli nie masz paliwa, zbierz je sam. Postaw mieso i przytrzymaj LPM. Symulator zostaje twoj.',
+  lineT:10
+};
+// Saves already on the cooking step may come from the older build which
+// consumed the raw block before the simulator existed. Repair only those saves.
+const COOKING_FLAME_CATCHUP_REWARD = Object.assign({},COOKING_FLAME_REWARD,{
+  resources:{meat:1},
+  message:'Stary Kwadrat uzupelnil brakujacy Blok miesa i dal ci Symulator. Paliwo musisz zebrac sam.'
+});
 const STREAM_REWARDS = [
   {
     key:'1',
@@ -48,6 +71,22 @@ const STREAM_REWARDS = [
     desc:'Questowy emiter gazu: stawia trujace oblokowe problemy tam, gdzie celujesz.'
   }
 ];
+const GUARDIAN_VERDICT_CHOICES = [
+  {key:'1',id:'guardian_west',guardianVerdict:'west',name:'Straznik Zachodu'},
+  {key:'2',id:'guardian_east',guardianVerdict:'east',name:'Straznik Wschodu'}
+];
+function horizonGuardiansDefeated(){
+  const root=(typeof window!=='undefined') ? window : globalThis;
+  const MM=root.MM || {};
+  try{
+    if(MM.progress && typeof MM.progress.guardianHearts==='function'){
+      const hearts=MM.progress.guardianHearts() || {};
+      return !!hearts.ice && !!hearts.fire;
+    }
+  }catch(e){}
+  const inv=root.inv || {};
+  return (Number(inv.heartIce)||0)>0 && (Number(inv.heartFire)||0)>0;
+}
 const LORE_TUTORIAL = STORY_LORE.tutorial;
 const TREE_SHORT_REWARD = {
   once:'tree_watch_short_chest',
@@ -117,7 +156,8 @@ const QUEST_STEPS = [
     prompt:LORE_TUTORIAL.sandHide.prompt,
     missing:LORE_TUTORIAL.sandHide.missing,
     progress:'Cicho. Piasek jest tani, ale ma dobre referencje jako zaslona.',
-    complete:LORE_TUTORIAL.sandHide.complete
+    complete:LORE_TUTORIAL.sandHide.complete,
+    completeMessage:'Stary Kwadrat: proba ukrycia w piasku zaliczona. Piasek milczal podejrzanie dobrze.'
   },
   {
     id:'water',
@@ -134,25 +174,35 @@ const QUEST_STEPS = [
       'Bez wody nie sprawdzimy, czy pragnienie jest funkcja organizmu, czy skryptu.'
     ],
     complete:[
-      'Glup! Dobra woda. Teraz przynies surowe mieso. Naukowo, oczywiscie.',
-      'Woda przyjeta. Jesli to byla czesc symulacji, smakowala bardzo mokro. Teraz mieso.',
-      'Tak. Blok wody zniknal w mentorze. To normalne zdanie w tym swiecie. Przynies mieso.'
+      'Glup! Dobra woda. Zwierzeta zostawiaja skrawki miesa: zbierz 3, w craftingu w zakladce Start zrob Blok miesa i przynies go.',
+      'Woda przyjeta. Teraz zbierz 3 skrawki miesa ze zwierzat i skraftuj z nich Blok miesa w zakladce Start.',
+      'Tak. Blok wody zniknal w mentorze. Teraz 3 skrawki ze zwierzat polacz w craftingu w 1 Blok miesa i przynies go.'
     ]
   },
   {
     id:'raw_meat',
     kind:'handoff',
     item:'meat', amount:1, next:'cooked_meat',
-    prompt:'Potrzebuje 1 surowego miesa. Nie pytaj z czego. Tutorial nie ocenia.',
-    missing:'Surowe mieso wypada ze zwierzat. Badz mily, ale skuteczny.',
-    complete:'Mieso jest. Nie zjem go, bo mam standardy. Upiecz je.'
+    consume:false,
+    prompt:[
+      'Potrzebuje 1 Bloku miesa. Upoluj zwierzeta, zbierz 3 skrawki miesa i wybierz Blok miesa w craftingu, w zakladce Start.',
+      'Przynies mi Blok miesa. Zwierzeta daja skrawki, a 3 skrawki skladaja sie w blok w zakladce Start.',
+      'Zadanie jest kwadratowe: 3 skrawki miesa ze zwierzat, potem crafting Start i 1 Blok miesa.'
+    ],
+    missing:[
+      'Pelny Blok miesa nie wypada ze zwierzat. Wypadaja skrawki: zbierz 3 i skraftuj blok w zakladce Start.',
+      'Brakuje Bloku miesa. Trzy skrawki miesa z upolowanej zwierzyny lacza sie w jeden blok w craftingu.',
+      'Najpierw 3 skrawki ze zwierzat, potem crafting, zakladka Start, przepis Blok miesa.'
+    ],
+    complete:'Mieso widze. Nie zabieram go: ten sam blok masz upiec. Dam ci narzedzie do pieczenia.',
+    reward:COOKING_FLAME_REWARD
   },
   {
     id:'cooked_meat',
     kind:'handoff',
     item:'bakedMeat', amount:1, next:'duel',
-    prompt:'Teraz przynies 1 pieczone mieso. Ognia uzywaj odpowiedzialnie, czyli daleko ode mnie.',
-    missing:'Upiecz mieso ogniem. Jak zacznie pachniec zwyciestwem, wroc.',
+    prompt:'Zbierz drewno albo wegiel na paliwo. Postaw Blok miesa, wyposaz Symulator i przytrzymaj LPM. Wegiel zasila ogien, ale wypuszcza tez czarny dym. Gdy mieso sie upiecze, przynies je.',
+    missing:'Symulator potrzebuje drewna albo wegla. Jesli nie masz paliwa, zbierz je sam; potem postaw surowy Blok miesa i ogrzewaj je plomieniem.',
     complete:'Chrup. Swietne. Ostatnia lekcja: pokonaj nauczyciela.'
   },
   {
@@ -177,9 +227,25 @@ const QUEST_STEPS = [
     complete:'Dobra decyzja. Albo przynajmniej decyzja.'
   },
   {
-    id:'done',
+    id:'guardian_return',
+    kind:'briefing',
+    next:'guardian_verdict',
+    check:horizonGuardiansDefeated,
+    prompt:'Trening skonczony. Pokonaj Straznika Zachodu i Straznika Wschodu. Jesli w ogole przezyjesz, wroc i powiedz mi, ktory byl trudniejszy.',
+    missing:'Jeszcze nie masz obu zwyciestw. Pokonaj obu Straznikow i wroc. Trojkat czeka przy +500, Teserakt przy -500, a Trapezoid przy pierwszej duzej wodzie.',
+    complete:'Wrociles po pokonaniu obu. Ktory byl trudniejszy? 1 Straznik Zachodu, 2 Straznik Wschodu.'
+  },
+  {
+    id:'guardian_verdict',
+    kind:'choice',
+    choices:GUARDIAN_VERDICT_CHOICES,
+    prompt:'Ktory byl trudniejszy? 1 Straznik Zachodu, 2 Straznik Wschodu.',
+    missing:'Podejdz blizej i wybierz: 1 Straznik Zachodu albo 2 Straznik Wschodu.'
+  },
+  {
+    id:'vanished',
     kind:'done',
-    prompt:'Pamietaj: wulkan uczy pokory, a mentor tylko udaje, ze mial plan.'
+    prompt:'Aha'
   }
 ];
 
@@ -251,6 +317,29 @@ function treeCanopyContactAtPlayer(player,getTile){
   }
   return null;
 }
+function sandHideContactAtPlayer(player,getTile){
+  const px=Number(player && player.x), py=Number(player && player.y);
+  if(!Number.isFinite(px) || !Number.isFinite(py)) return null;
+  const width=Math.max(0.2,Math.min(1.8,Number(player.w)||0.7));
+  const height=Math.max(0.2,Math.min(2.5,Number(player.h)||0.95));
+  const halfW=width*0.5, halfH=height*0.5;
+  const bottom=py+halfH;
+  const supportY=Math.floor(bottom+0.12);
+  const gap=supportY-bottom;
+  // A safe hiding place is a small sand U: sand under the feet and on both
+  // sides of the body.  No roof is required, so gravity never has to bury or
+  // visually cover the hero to satisfy the quest.
+  if(gap < -0.08 || gap > 0.16) return null;
+  const footSamples=[px-width*0.28,px,px+width*0.28];
+  if(!footSamples.some(x=>safeTile(getTile,Math.floor(x),supportY)===T.SAND)) return null;
+  const leftX=Math.floor(px-halfW+0.02)-1;
+  const rightX=Math.floor(px+halfW-0.02)+1;
+  const sideRows=[];
+  for(let y=Math.floor(py-halfH+0.08);y<=Math.floor(py+halfH-0.08);y++) sideRows.push(y);
+  const left=sideRows.some(y=>safeTile(getTile,leftX,y)===T.SAND);
+  const right=sideRows.some(y=>safeTile(getTile,rightX,y)===T.SAND);
+  return left && right ? {leftX,rightX,supportY} : null;
+}
 function mentorObserveCheck(step,player,getTile,setTile,ctx,state){
   void setTile; void ctx;
   if(!player || !Number.isFinite(Number(player.x)) || !Number.isFinite(Number(player.y))) return false;
@@ -260,8 +349,6 @@ function mentorObserveCheck(step,player,getTile,setTile,ctx,state){
     const dy=Math.abs(Number(player.y)-Number(state.y));
     return dx>=4 && dx<=20 && dy<=8;
   }
-  const tx=Math.floor(Number(player.x));
-  const footY=Math.floor(Number(player.y)+1.05);
   if(mode==='tree_top'){
     // Natural leaves are intentionally passable. Count either a proper perch
     // on wood or direct body contact with a connected crown/trunk, otherwise a
@@ -269,7 +356,7 @@ function mentorObserveCheck(step,player,getTile,setTile,ctx,state){
     return !!(treeSupportAtPlayer(player,getTile) || treeCanopyContactAtPlayer(player,getTile));
   }
   if(mode==='sand_hide'){
-    return safeTile(getTile,tx,footY)===T.SAND || safeTile(getTile,tx,footY-1)===T.SAND;
+    return !!sandHideContactAtPlayer(player,getTile);
   }
   return false;
 }
@@ -277,7 +364,8 @@ function mentorObserveCheck(step,player,getTile,setTile,ctx,state){
 function drawMentorObservationSignal(api,ctx,tileSize,player,visible,clockMs){
   if(!ctx || !player || visible===false || !api || typeof api.summary!=='function') return false;
   const phase=typeof api.phase==='function' ? api.phase() : '';
-  if(!['tree_watch_short','tree_watch_long'].includes(phase)) return false;
+  const sandSignal=phase==='sand_hide';
+  if(!sandSignal && !['tree_watch_short','tree_watch_long'].includes(phase)) return false;
   const summary=api.summary();
   const observation=summary && summary.observe;
   if(!observation || !observation.active) return false;
@@ -298,8 +386,8 @@ function drawMentorObservationSignal(api,ctx,tileSize,player,visible,clockMs){
   ctx.globalAlpha=0.96;
   ctx.lineCap='round';
   ctx.lineJoin='round';
-  ctx.fillStyle='rgba(8,24,18,0.90)';
-  ctx.strokeStyle='rgba(154,255,139,0.42)';
+  ctx.fillStyle=sandSignal?'rgba(30,23,10,0.92)':'rgba(8,24,18,0.90)';
+  ctx.strokeStyle=sandSignal?'rgba(255,211,112,0.48)':'rgba(154,255,139,0.42)';
   ctx.lineWidth=Math.max(1.2,size*0.075);
   ctx.beginPath();
   ctx.arc(0,0,radius,0,Math.PI*2);
@@ -310,19 +398,28 @@ function drawMentorObservationSignal(api,ctx,tileSize,player,visible,clockMs){
   ctx.beginPath();
   ctx.arc(0,0,radius+size*0.11,-Math.PI*0.5,Math.PI*1.5);
   ctx.stroke();
-  ctx.strokeStyle='#91f47d';
+  ctx.strokeStyle=sandSignal?'#f2c36b':'#91f47d';
   ctx.lineWidth=Math.max(2,size*0.105);
   ctx.beginPath();
   ctx.arc(0,0,radius+size*0.11,-Math.PI*0.5,-Math.PI*0.5+Math.PI*2*ratio);
   ctx.stroke();
-  // Small vector tree: no font/emoji dependency and readable at every zoom.
-  ctx.fillStyle='#8b5a32';
-  ctx.fillRect(-size*0.075,size*0.02,size*0.15,size*0.30);
-  ctx.fillStyle='#76da62';
-  for(const crown of [[0,-0.16,0.22],[-0.15,-0.02,0.16],[0.15,-0.02,0.16]]){
-    ctx.beginPath();
-    ctx.arc(crown[0]*size,crown[1]*size,crown[2]*size,0,Math.PI*2);
-    ctx.fill();
+  // Small vector icon: no font/emoji dependency and readable at every zoom.
+  if(sandSignal){
+    ctx.fillStyle='#e6b85f';
+    for(const grain of [[-0.18,0.12,0.13],[0,0.10,0.16],[0.18,0.12,0.13],[-0.09,-0.04,0.13],[0.10,-0.05,0.14],[0,-0.18,0.10]]){
+      ctx.beginPath();
+      ctx.arc(grain[0]*size,grain[1]*size,grain[2]*size,0,Math.PI*2);
+      ctx.fill();
+    }
+  } else {
+    ctx.fillStyle='#8b5a32';
+    ctx.fillRect(-size*0.075,size*0.02,size*0.15,size*0.30);
+    ctx.fillStyle='#76da62';
+    for(const crown of [[0,-0.16,0.22],[-0.15,-0.02,0.16],[0.15,-0.02,0.16]]){
+      ctx.beginPath();
+      ctx.arc(crown[0]*size,crown[1]*size,crown[2]*size,0,Math.PI*2);
+      ctx.fill();
+    }
   }
   const label=remaining+' s';
   ctx.font='800 '+Math.max(9,Math.round(size*0.46))+'px system-ui, "Segoe UI", sans-serif';
@@ -332,7 +429,7 @@ function drawMentorObservationSignal(api,ctx,tileSize,player,visible,clockMs){
   const labelW=Math.max(size*1.15,ctx.measureText(label).width+size*0.42);
   ctx.fillStyle='rgba(5,13,11,0.90)';
   ctx.fillRect(-labelW*0.5,labelY-size*0.32,labelW,size*0.64);
-  ctx.fillStyle='#e8ffe3';
+  ctx.fillStyle=sandSignal?'#fff1c9':'#e8ffe3';
   ctx.fillText(label,0,labelY+0.5);
   ctx.restore();
   return true;
@@ -340,6 +437,8 @@ function drawMentorObservationSignal(api,ctx,tileSize,player,visible,clockMs){
 
 function choiceShortLabel(item){
   if(!item) return '';
+  if(item.guardianVerdict==='west') return 'Zachod';
+  if(item.guardianVerdict==='east') return 'Wschod';
   if(item.weaponType==='hose') return 'Waz';
   if(item.weaponType==='flame') return 'Ogien';
   if(item.weaponType==='gas') return 'Gaz';
@@ -347,6 +446,8 @@ function choiceShortLabel(item){
 }
 function choiceFill(item){
   if(!item) return 'rgba(255,255,255,0.82)';
+  if(item.guardianVerdict==='west') return 'rgba(116,184,255,0.28)';
+  if(item.guardianVerdict==='east') return 'rgba(255,136,56,0.28)';
   if(item.weaponType==='hose') return 'rgba(116,184,255,0.28)';
   if(item.weaponType==='flame') return 'rgba(255,136,56,0.28)';
   if(item.weaponType==='gas') return 'rgba(132,216,86,0.28)';
@@ -354,7 +455,7 @@ function choiceFill(item){
 }
 function snapshotMentor(state,helpers){
   return {
-    v:6,
+    v:7,
     x:helpers.finite(state.x)?+state.x.toFixed(3):null,
     y:helpers.finite(state.y)?+state.y.toFixed(3):null,
     phase:helpers.cleanPhase(state.phase),
@@ -363,21 +464,33 @@ function snapshotMentor(state,helpers){
     bowRewarded:!!state.rewards.bow,
     treeShortRewarded:!!state.rewards.tree_watch_short_chest,
     treeLongRewarded:!!state.rewards.tree_watch_long_master_stone,
+    cookingFlameRewarded:!!state.rewards.cooking_flame_simulator,
     pendingTreeShortChest:!!(state.data && state.data.pendingTreeShortChest),
     pendingTreeLongStone:!!(state.data && state.data.pendingTreeLongStone),
     streamRewarded:!!state.rewards.stream,
     streamChoice:state.data.streamChoice || null,
+    guardianVerdictRewarded:!!state.rewards.guardian_verdict,
+    guardianVerdict:state.data.guardianVerdict || null,
+    pendingVanish:!!(state.data && state.data.pendingVanish),
+    hidden:!!(state.data && state.data.hidden),
     observe:helpers.cleanObserve ? helpers.cleanObserve(state.observe) : null
   };
 }
 function migrateMentorSnapshot(data,helpers){
-  const restoredPhase=helpers.cleanPhase(data.phase);
+  const rawPhase=String(data.phase||'').trim().toLowerCase();
+  const legacyDone=rawPhase==='done';
+  const restoredPhase=legacyDone ? 'guardian_return' : helpers.cleanPhase(rawPhase);
   const streamItem=helpers.rewardForChoice(data.streamChoice);
   const streamChoice=streamItem ? streamItem.id : null;
-  const streamRewarded=!!data.streamRewarded || (restoredPhase==='done' && !!streamChoice);
-  const bowRewarded=!!data.bowRewarded || !!data.rewarded || streamRewarded || ['master_stone','reward_choice','done'].includes(restoredPhase);
-  const passedShort=['tree_watch_long','sand_hide','water','raw_meat','cooked_meat','duel','master_stone','reward_choice','done'].includes(restoredPhase);
-  const passedLong=['sand_hide','water','raw_meat','cooked_meat','duel','master_stone','reward_choice','done'].includes(restoredPhase);
+  const guardianVerdict=['west','east'].includes(String(data.guardianVerdict||'').toLowerCase()) ? String(data.guardianVerdict).toLowerCase() : null;
+  const guardianVerdictRewarded=!!data.guardianVerdictRewarded || restoredPhase==='vanished';
+  const pendingVanish=guardianVerdictRewarded && !!data.pendingVanish && !data.hidden;
+  const hidden=!!data.hidden || (guardianVerdictRewarded && !pendingVanish);
+  const streamRewarded=!!data.streamRewarded || (legacyDone && !!streamChoice) || guardianVerdictRewarded;
+  const finalPhases=['guardian_return','guardian_verdict','vanished'];
+  const bowRewarded=!!data.bowRewarded || !!data.rewarded || streamRewarded || legacyDone || ['master_stone','reward_choice',...finalPhases].includes(restoredPhase);
+  const passedShort=legacyDone || ['tree_watch_long','sand_hide','water','raw_meat','cooked_meat','duel','master_stone','reward_choice',...finalPhases].includes(restoredPhase);
+  const passedLong=legacyDone || ['sand_hide','water','raw_meat','cooked_meat','duel','master_stone','reward_choice',...finalPhases].includes(restoredPhase);
   const knowsShortReward=Object.prototype.hasOwnProperty.call(data,'treeShortRewarded');
   const knowsLongReward=Object.prototype.hasOwnProperty.call(data,'treeLongRewarded');
   const pendingTreeShortChest=!!data.pendingTreeShortChest || (!knowsShortReward && passedShort);
@@ -385,10 +498,13 @@ function migrateMentorSnapshot(data,helpers){
   let phase=restoredPhase;
   const rawHp=Number(data.hp);
   let hp=helpers.clamp(helpers.finite(rawHp)?rawHp:helpers.maxHp,0,helpers.maxHp);
-  if(streamRewarded){
-    phase='done';
+  if(guardianVerdictRewarded){
+    phase='vanished';
     hp=0;
-  } else if(bowRewarded && restoredPhase==='done'){
+  } else if(streamRewarded){
+    phase=restoredPhase==='guardian_verdict' ? 'guardian_verdict' : 'guardian_return';
+    hp=0;
+  } else if(bowRewarded && legacyDone){
     phase='master_stone';
     hp=0;
   } else if(bowRewarded && phase==='duel'){
@@ -408,10 +524,12 @@ function migrateMentorSnapshot(data,helpers){
     rewards:{
       bow:bowRewarded,
       stream:streamRewarded,
+      guardian_verdict:guardianVerdictRewarded,
       tree_watch_short_chest:!!data.treeShortRewarded,
-      tree_watch_long_master_stone:!!data.treeLongRewarded
+      tree_watch_long_master_stone:!!data.treeLongRewarded,
+      cooking_flame_simulator:!!data.cookingFlameRewarded
     },
-    data:{streamChoice,pendingTreeShortChest,pendingTreeLongStone},
+    data:{streamChoice,guardianVerdict,pendingVanish,hidden,pendingTreeShortChest,pendingTreeLongStone},
     observe:data.observe
   };
 }
@@ -437,9 +555,18 @@ const tutorialNpc = createQuestNpc({
       if(state.rewards.tree_watch_long_master_stone){ state.data.pendingTreeLongStone=false; helpers.markChanged(); }
       else helpers.applyReward(TREE_LONG_REWARD);
     }
+    // Saves already waiting for cooked meat predate the simulator reward.
+    if(state.phase==='cooked_meat' && !state.rewards.cooking_flame_simulator){
+      helpers.applyReward(COOKING_FLAME_CATCHUP_REWARD);
+    }
+    if(state.phase==='vanished' && state.data && state.data.pendingVanish && state.lineT<=0){
+      state.data.pendingVanish=false;
+      state.data.hidden=true;
+      helpers.markChanged();
+    }
   },
   choiceRewards:STREAM_REWARDS,
-  rewardOnceKeys:['stream'],
+  rewardOnceKeys:['stream','guardian_verdict'],
   duelReward:{
     once:'bow',
     gear:QUEST_BOW,
@@ -453,15 +580,26 @@ const tutorialNpc = createQuestNpc({
     lineT:6
   },
   choiceReward(item){
+    if(item && item.guardianVerdict){
+      return {
+        once:'guardian_verdict',
+        resources:{rottenMeat:1},
+        next:'vanished',
+        data:{guardianVerdict:item.guardianVerdict,pendingVanish:true,hidden:false},
+        message:'Otrzymujesz 1 kawalek zgniłego miesa.',
+        line:'Aha',
+        lineT:2
+      };
+    }
     return {
       once:'stream',
       gear:item,
-      next:'done',
+      next:'guardian_return',
       data:{streamChoice:item.id},
       failureLine:'Masz pelny plecak. Zrob miejsce na nagrode, bo inaczej bede musial ja nazwac wystawa.',
       message:'Stary Kwadrat dal ci: '+(item.name||item.id)+'.',
-      line:'Masz '+(item.name||item.id)+'. Teraz swiat moze bac sie ciebie bardziej precyzyjnie.',
-      lineT:5
+      line:'Masz '+(item.name||item.id)+'. To koniec treningu. Dalej jestes zdany na siebie; nikomu nie ufaj. Pokonaj Straznika Zachodu i Wschodu. Jesli przezyjesz, wroc i powiedz, ktory byl trudniejszy.',
+      lineT:8
     };
   },
   combat:{
@@ -478,7 +616,12 @@ const tutorialNpc = createQuestNpc({
       rewarded:!!state.rewards.bow,
       bowRewarded:!!state.rewards.bow,
       streamRewarded:!!state.rewards.stream,
+      guardianVerdictRewarded:!!state.rewards.guardian_verdict,
+      cookingFlameRewarded:!!state.rewards.cooking_flame_simulator,
       streamChoice:state.data.streamChoice || null,
+      guardianVerdict:state.data.guardianVerdict || null,
+      pendingVanish:!!state.data.pendingVanish,
+      hidden:!!state.data.hidden,
       questBow:Object.assign({},QUEST_BOW),
       streamRewards:STREAM_REWARDS.map(r=>Object.assign({},r))
     };
@@ -486,6 +629,7 @@ const tutorialNpc = createQuestNpc({
 });
 
 tutorialNpc.questBow=()=>Object.assign({},QUEST_BOW);
+tutorialNpc.cookingFlameSimulator=()=>Object.assign({},COOKING_FLAME_SIMULATOR);
 tutorialNpc.streamRewards=()=>STREAM_REWARDS.map(r=>Object.assign({},r));
 tutorialNpc.drawObservationSignal=(ctx,tileSize,player,visible,clockMs)=>drawMentorObservationSignal(tutorialNpc,ctx,tileSize,player,visible,clockMs);
 

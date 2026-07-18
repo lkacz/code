@@ -155,7 +155,10 @@ assert.match(src, /GENERATED_NPCS\.restore\(data\.generatedNpcs\)/, 'load path r
 assert.match(src, /NPCS\.restore\(data\.npcs\)/, 'load path restores the registered NPC system state');
 assert.match(src, /TUTORIAL_NPC\.restore\(data\.tutorialNpc\)/, 'load path restores tutorial mentor quest state');
 assert.match(src, /TUTORIAL_NPC\.placeNearWorldStart\(getTile,WORLDGEN\)/, 'old saves place the tutorial mentor near the world start');
-assert.match(src, /const tutorialNpcCtx = \{player, damageHero:window\.damageHero, onInventoryChange:updateInventory, onChange:saveState, worldGen:WORLDGEN, gameDayFloat:\(\)=>\{[^}]+SEASONS && SEASONS\.metrics[^}]+\}\};\s*if\(NPCS && NPCS\.setContext\) NPCS\.setContext\(tutorialNpcCtx\);/, 'main registers one shared NPC context for positioned quest rewards, saves, HUD refreshes, hero damage, and in-game day scheduling');
+assert.match(src, /const tutorialNpcCtx = \{[\s\S]*?player,[\s\S]*?damageHero:window\.damageHero,[\s\S]*?onInventoryChange:updateInventory,[\s\S]*?onChange:saveState,[\s\S]*?worldGen:WORLDGEN,[\s\S]*?gameDayFloat:\(\)=>\{[^}]+SEASONS && SEASONS\.metrics[^}]+\}[\s\S]*?\};\s*if\(NPCS && NPCS\.setContext\) NPCS\.setContext\(tutorialNpcCtx\);/, 'main registers one shared NPC context for positioned quest rewards, saves, HUD refreshes, hero damage, and in-game day scheduling');
+assert.match(src, /backgroundAt:getConstructionBackgroundTile/, 'the shared NPC context exposes real construction backgrounds to the house mentor');
+assert.match(src, /isBurning:\(x,y\)=>!!\(FIRE && FIRE\.isBurning/, 'the shared NPC context exposes real fire state to mentor validation');
+assert.match(src, /isFurnishingPowered:\(x,y\)=>furnishingPoweredAt\(x,y\)/, 'the shared NPC context exposes furnishing power to the house validator');
 assert.match(src, /NPCS\.handleKey\(e\.key,player,tutorialNpcCtx\)/, 'NPC reward-choice keys are handled before weapon shortcuts through the shared quest context');
 assert.match(src, /function selectWeaponKey\(key\)\{\s*if\(NPCS && NPCS\.handleKey && NPCS\.handleKey\(key,player,tutorialNpcCtx\)\) return;/, 'on-screen weapon buttons can also answer NPC reward choices through the shared quest context');
 assert.match(src, /NPCS\.attackAt\(tx,ty,atkBonus,tutorialNpcCtx\)/, 'direct melee attacks pass the shared NPC quest context');

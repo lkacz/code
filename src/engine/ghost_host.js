@@ -939,7 +939,7 @@ const ghostHost = (function(){
 	// The one damage inlet for a guest body (mob contact today, hazards tomorrow):
 	// i-frames live HERE, knockback is advisory (the guest applies the impulse to
 	// its locally-simulated hero), death is host-decided and host-respawned.
-	function hurtBody(s, entry, amount, sx, sy, cause){
+	function hurtBody(s, entry, amount, sx, sy, cause, combatOpts){
 		const b = entry.body;
 		if(!b || b.dead) return;
 		const t = now();
@@ -948,10 +948,12 @@ const ghostHost = (function(){
 		// hero mode: the wound is FORWARDED, not applied — the guest runs it through
 		// its real damage pipeline (armor, toughness, i-frames) and the resulting hp
 		// comes back as a ppose claim. The i-frame stamp above still rate-limits.
+		const requestedKb = combatOpts && Number.isFinite(Number(combatOpts.kb)) ? Math.max(0,Math.min(12,Number(combatOpts.kb))) : 5;
+		const requestedKbY = combatOpts && Number.isFinite(Number(combatOpts.kbY)) ? Math.max(-10,Math.min(4,Number(combatOpts.kbY))) : -3.2;
 		if(entry.heroMode){
 			let kbxH = 0;
-			if(Number.isFinite(sx)){ const dx = b.x - sx; const d = Math.abs(dx) || 1; kbxH = (dx / d) * 5; }
-			try{ entry.peer.send({ t: 'pdmg', amt: +Math.max(1, Number(amount) || 1).toFixed(1), kbx: +kbxH.toFixed(2), kby: -3.2, cause: String(cause || 'mob').slice(0, 16) }); }catch(e){ /* fine */ }
+			if(Number.isFinite(sx)){ const dx = b.x - sx; const d = Math.abs(dx) || 1; kbxH = (dx / d) * requestedKb; }
+			try{ entry.peer.send({ t: 'pdmg', amt: +Math.max(1, Number(amount) || 1).toFixed(1), kbx: +kbxH.toFixed(2), kby: requestedKbY, cause: String(cause || 'mob').slice(0, 16) }); }catch(e){ /* fine */ }
 			return;
 		}
 		// the elemental matrix applies to bodies too: a soaked body conducts (the
@@ -962,8 +964,8 @@ const ghostHost = (function(){
 		}
 		b.hp = Math.max(0, b.hp - amt);
 		let kbx = 0;
-		if(Number.isFinite(sx)){ const dx = b.x - sx; const d = Math.abs(dx) || 1; kbx = (dx / d) * 5; }
-		try{ entry.peer.send({ t: 'pdmg', hp: +b.hp.toFixed(1), kbx: +kbx.toFixed(2), kby: -3.2, cause: String(cause || 'mob').slice(0, 16) }); }catch(e){ /* fine */ }
+		if(Number.isFinite(sx)){ const dx = b.x - sx; const d = Math.abs(dx) || 1; kbx = (dx / d) * requestedKb; }
+		try{ entry.peer.send({ t: 'pdmg', hp: +b.hp.toFixed(1), kbx: +kbx.toFixed(2), kby: requestedKbY, cause: String(cause || 'mob').slice(0, 16) }); }catch(e){ /* fine */ }
 		sendVitals(s, entry);
 		if(b.hp <= 0){
 			b.dead = true;
@@ -1493,7 +1495,7 @@ const ghostHost = (function(){
 			if(!entry.heroMode && !b.dead && dt > 0) bodySurvivalPass(s, entry, b, dt, t);
 			list.push([entry.gid, entry.name || 'Duch', +b.x.toFixed(2), +b.y.toFixed(2), +(b.vx || 0).toFixed(2), +(b.vy || 0).toFixed(2), b.f < 0 ? -1 : 1, +b.hp.toFixed(1), b.maxHp, b.dead ? 1 : 0, b.poseSeq || 0, ((b.cloakUntil || 0) > t) ? 1 : 0]);
 			if(!b.dead){
-				if(!entry.bodyLike) entry.bodyLike = { gid: entry.gid, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c) => hurtBody(s, entry, a, sx, sy, c) };
+				if(!entry.bodyLike) entry.bodyLike = { gid: entry.gid, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, dead: false, hurt: (a, sx, sy, c, o) => hurtBody(s, entry, a, sx, sy, c, o) };
 				// vx/vy are advisory (aim-lead for party-aware attackers) — never authority.
 				// duelWith lets in-flight duel arrows re-check consent at IMPACT time.
 				// cloaked is the antenna gate flag mobs.js nearestCoopBody skips on.

@@ -558,8 +558,24 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
     }
     return {machines:machines.size, active, currentPower:+currentPower.toFixed(2), storedEnergy:+storedEnergy.toFixed(2), rotorSpeed:+rotorSpeed.toFixed(2)};
   }
+  function generatedNear(x,y,kind,range=10){
+    const px=Number(x), py=Number(y);
+    if(!Number.isFinite(px) || !Number.isFinite(py)) return null;
+    const wanted=String(kind||'').trim().toLowerCase();
+    const radius=Math.max(0.5,Math.min(64,Number(range)||10));
+    let best=null, bestD=Infinity;
+    for(const m of machines.values()){
+      const source=String(m && m.lastKind || '').toLowerCase();
+      if(!m || !(Number(m.energy)>0) || (wanted && source!==wanted)) continue;
+      const d=Math.hypot((Number(m.x)||0)+0.5-px,(Number(m.y)||0)+0.5-py);
+      if(d>radius || d>=bestD) continue;
+      bestD=d;
+      best={x:m.x,y:m.y,kind:source,energy:+Math.max(0,Number(m.energy)||0).toFixed(2),power:+Math.max(0,Number(m.power)||0).toFixed(2),distance:+d.toFixed(2)};
+    }
+    return best;
+  }
 
-  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,dismantleRefundForCells,recordFlow,absorbNear,energyAt,drainAt,receiveElectricChargeAt,windEnergyPerSecAt,onTileChanged,update,catchUp,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC,CATCHUP_MAX_SECONDS,isGeneratingState}};
+  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,dismantleRefundForCells,recordFlow,absorbNear,energyAt,drainAt,receiveElectricChargeAt,windEnergyPerSecAt,generatedNear,onTileChanged,update,catchUp,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC,CATCHUP_MAX_SECONDS,isGeneratingState}};
   MM.dynamo=api;
 })();
 

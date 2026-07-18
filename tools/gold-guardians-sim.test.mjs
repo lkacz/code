@@ -10,6 +10,8 @@ globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem()
 let simNow = 0;
 globalThis.performance = { now:()=>simNow };
 globalThis.msg = () => {};
+let gameDayFloat=1.25;
+globalThis.MM.seasons = { metrics(){ return {dayFloat:gameDayFloat}; } };
 
 const { T } = await import('../src/constants.js');
 const { weapons } = await import('../src/engine/weapons.js');
@@ -22,11 +24,11 @@ function seededRandom(){
   return seed/4294967296;
 }
 
-function makeGoldCave(){
+function makeGoldCave(offsetX=0){
   const cells = new Map();
   const key=(x,y)=>Math.floor(x)+','+Math.floor(y);
-  for(let x=-3; x<=5; x++) cells.set(key(x,12), T.STONE);
-  [[-1,12],[0,12],[1,12],[2,12],[3,12],[0,13],[1,13],[2,13]].forEach(([x,y])=>cells.set(key(x,y),T.GOLD_ORE));
+  for(let x=-3; x<=5; x++) cells.set(key(x+offsetX,12), T.STONE);
+  [[-1,12],[0,12],[1,12],[2,12],[3,12],[0,13],[1,13],[2,13]].forEach(([x,y])=>cells.set(key(x+offsetX,y),T.GOLD_ORE));
   return {
     getTile(x,y){
       const k=key(x,y);
@@ -71,6 +73,7 @@ try{
   assert.ok(species.GOLD_DWARF_GUARD && mobs.species.includes('GOLD_DWARF_GUARD'), 'gold dwarf guardian species is registered');
   assert.ok(species.GOLD_DRAGON.hp >= 200 && species.GOLD_DRAGON.dmg >= 35 && species.GOLD_DRAGON.xp >= 260, 'gold dragons are tuned as major hoard guardians');
   assert.ok(species.GOLD_DWARF_GUARD.hp >= 70 && species.GOLD_DWARF_GUARD.dmg >= 20 && species.GOLD_DWARF_GUARD.xp >= 80, 'gold dwarves are tuned as strong mine guardians');
+  assert.equal(species.GOLD_DWARF_GUARD.max,10,'no more than ten gold dwarves can be alive at once');
 
   const cave = makeGoldCave();
   const empty = makeEmptyCave();
@@ -138,6 +141,77 @@ try{
   simNow += 2400;
   mobs.update(0.12,player,cave.getTile,cave.setTile);
   assert.ok(hits.some(h=>h.opts && h.opts.cause==='gold_dwarf_hammer'), 'gold dwarf guards have an identifiable hammer strike');
+
+  // Killing a guardian used to make the same vein immediately summon another
+  // one. The cooldown belongs to the coarse vein area, not to the whole world.
+  gameDayFloat=5.25;
+  Math.random=()=>0.99; // rich vein consistently chooses dwarves, not a dragon
+  mobs.clearAll();
+  player=resetPlayer(1.2,10.8);
+  installDamageRecorder(player);
+  simNow+=5200;
+  mobs.update(0.16,player,cave.getTile,cave.setTile);
+  let areaState=mobs.goldGuardAreaState();
+  assert.ok(areaState.liveDwarfs>=1,'the first visit spawns one dwarf encounter at the vein');
+  assert.equal(areaState.areas.length,1,'the first defended vein records exactly one used area for the day');
+
+  const firstAreaDay=mobs.serialize().goldGuardAreas;
+  mobs.deserialize({v:6,list:[],aggro:{mode:'rel',m:{}},goldGuardAreas:firstAreaDay});
+  simNow+=5200;
+  mobs.update(0.16,player,cave.getTile,cave.setTile);
+  assert.equal(mobs.goldGuardAreaState().liveDwarfs,0,'a defeated dwarf encounter cannot respawn at the same vein that day');
+
+  const eastCave=makeGoldCave(36);
+  player=resetPlayer(37.2,10.8);
+  installDamageRecorder(player);
+  simNow+=5200;
+  mobs.update(0.16,player,eastCave.getTile,eastCave.setTile);
+  areaState=mobs.goldGuardAreaState();
+  assert.ok(areaState.liveDwarfs>=1,'a different gold-vein area can still spawn dwarves on the same day');
+  assert.equal(areaState.areas.length,2,'daily usage is tracked independently for separate vein areas');
+
+  // Dragon and dwarf encounters share the same area marker: changing the
+  // randomly chosen guardian type cannot bypass the once-per-area rule.
+  gameDayFloat=6.25;
+  Math.random=()=>0; // rich vein consistently chooses a dragon
+  const previousDay=mobs.serialize().goldGuardAreas;
+  mobs.deserialize({v:6,list:[],aggro:{mode:'rel',m:{}},goldGuardAreas:previousDay});
+  player=resetPlayer(1.2,10.8);
+  simNow+=5200;
+  mobs.update(0.16,player,cave.getTile,cave.setTile);
+  areaState=mobs.goldGuardAreaState();
+  assert.equal(areaState.liveDragons,1,'a new day can choose a dragon for the vein encounter');
+  assert.equal(areaState.areas.length,1,'the dragon consumes the same daily area slot as dwarves');
+
+  const dragonAreaDay=mobs.serialize().goldGuardAreas;
+  mobs.deserialize({v:6,list:[],aggro:{mode:'rel',m:{}},goldGuardAreas:dragonAreaDay});
+  Math.random=()=>0.99;
+  simNow+=5200;
+  mobs.update(0.16,player,cave.getTile,cave.setTile);
+  areaState=mobs.goldGuardAreaState();
+  assert.equal(areaState.liveDragons+areaState.liveDwarfs,0,'a defeated dragon cannot be replaced by dwarves in the same area and day');
+
+  gameDayFloat=7.05;
+  const savedDaySix=mobs.serialize().goldGuardAreas;
+  mobs.deserialize({v:6,list:[],aggro:{mode:'rel',m:{}},goldGuardAreas:savedDaySix});
+  simNow+=5200;
+  mobs.update(0.16,player,cave.getTile,cave.setTile);
+  areaState=mobs.goldGuardAreaState();
+  assert.ok(areaState.liveDwarfs>=1,'the same vein may start one new encounter on the next day');
+  assert.equal(areaState.day,7,'changing the game day resets the per-area markers');
+  assert.equal(areaState.areas.length,1,'the renewed day starts a fresh independent area set');
+
+  const areaRoundTrip=mobs.serialize();
+  mobs.deserialize(areaRoundTrip);
+  assert.deepEqual(mobs.serialize().goldGuardAreas,areaRoundTrip.goldGuardAreas,'per-area guardian cooldowns survive a save/load round trip');
+
+  const tooMany=Array.from({length:14},(_,i)=>({
+    id:'GOLD_DWARF_GUARD',x:i+0.5,y:10.75,vx:0,vy:0,hp:76,maxHp:76,state:'guard',facing:1,
+    scale:1,speedMul:1,jumpMul:1,attackCd:0,goldGuardKey:i+',1',guardGoldX:i+0.5,guardGoldY:12.5
+  }));
+  mobs.deserialize({v:5,list:tooMany,aggro:{mode:'rel',m:{}}});
+  assert.equal(mobs.goldGuardAreaState().liveDwarfs,10,'legacy or malformed saves are clamped to ten live gold dwarves');
+  assert.equal(mobs.goldGuardAreaState().areas.length,10,'restored live guardians seed their own per-area cooldown markers');
 
   console.log('gold-guardians-sim: all assertions passed');
 } finally {

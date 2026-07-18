@@ -79,7 +79,7 @@ MM.gases={
   consumeRadius(){ return 0; }
 };
 const RESOURCE_SEED={
-  water:1000, wood:1000, rottenMeat:1000,
+  water:1000, wood:1000, coal:0, rottenMeat:1000,
   arrowWood:1000, arrowStone:0, arrowObsidian:0, arrowDiamond:0, arrowIridium:0
 };
 function refillResources(overrides={}){
@@ -895,10 +895,50 @@ assert.equal(weapons.setArrowPref('bogus'), 'auto', 'unknown tier ids normalize 
 const flameFuel=weapons.fuelInfo('flame');
 assert.equal(flameFuel.key, 'wood', 'flamethrower reports wood as its fuel');
 assert.equal(flameFuel.count, inv.wood|0, 'fuel count mirrors the block inventory');
+assert.deepEqual(flameFuel.fuels.map(f=>f.key),['wood','coal'],'flamethrower HUD exposes wood and coal fuel pools');
+refillResources({wood:0,coal:7});
+const coalFuel=weapons.fuelInfo('flame');
+assert.equal(coalFuel.key,'coal','HUD switches to coal when no wood remains');
+assert.equal(coalFuel.count,7,'HUD counts the available coal fallback');
 assert.equal(weapons.fuelInfo('electric'), null, 'electric weapons have no resource fuel (hero energy instead)');
 const hud=weapons.hudStatus();
 assert.ok(hud.ult>=0 && hud.ult<=1 && typeof hud.bowActive==='boolean' && typeof hud.bowRatio==='number',
 	'hudStatus exposes ult charge and bow draw state for the slot gauges');
+
+tiles=new Map(); weapons.reset(); fire.reset();
+refillResources({wood:0,coal:1});
+equipped=weaponItems.flame;
+for(let i=0;i<60;i++){
+  assert.equal(weapons.fireHeld(player,6,0.5,1/60),true,'coal keeps the flamethrower firing without wood');
+  weapons.update(1/60,getTile,setTile);
+}
+assert.equal(globalThis.inv.coal,0,'coal fuel is consumed at the stream fuel rate');
+assert.ok(weapons._debug.puffs.some(p=>p.kind==='flame'&&p.coalSmoke),'coal-fired flame puffs carry the black-smoke render signal');
+const coalGhostFx=weapons.ghostFxState();
+assert.ok(coalGhostFx.pf.some(p=>p[7]===1),'multiplayer FX snapshots preserve smoky coal flames');
+weapons.reset();
+assert.equal(weapons.ghostApplyFx(coalGhostFx),true,'a watcher accepts smoky flame FX');
+assert.ok(weapons._debug.puffs.some(p=>p.coalSmoke),'a watcher restores black smoke alongside the flame');
+
+tiles=new Map(); weapons.reset(); fire.reset();
+refillResources({wood:1,coal:1});
+equipped=weaponItems.flame;
+for(let i=0;i<60;i++){
+  weapons.fireHeld(player,6,0.5,1/60);
+  weapons.update(1/60,getTile,setTile);
+}
+assert.equal(globalThis.inv.wood,0,'clean wood fuel is consumed before coal');
+assert.equal(globalThis.inv.coal,1,'coal is preserved while wood remains available');
+assert.ok(weapons._debug.puffs.filter(p=>p.kind==='flame').every(p=>!p.coalSmoke),'wood-fired flames do not emit black coal smoke');
+assert.equal(weapons.fireHeld(player,6,0.5,1/60),true,'flamethrower switches to coal after wood runs out');
+assert.ok(weapons._debug.puffs.some(p=>p.kind==='flame'&&p.coalSmoke),'the first coal-fired burst adds black smoke');
+
+tiles=new Map(); weapons.reset(); fire.reset();
+refillResources({wood:0,coal:4});
+equipped=weaponItems.flame;
+assert.equal(weapons.fireUlt(player,6,0.5),true,'the flamethrower power burst accepts coal as fuel');
+assert.ok(globalThis.inv.coal<4,'a coal-fired power burst spends coal');
+assert.ok(weapons._debug.puffs.some(p=>p.kind==='flame'&&p.coalSmoke),'a coal-fired power burst also emits black smoke');
 
 Math.random = realRandom;
 console.log('OK: all stream-weapon elemental interaction tests passed');

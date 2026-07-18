@@ -108,6 +108,36 @@ assert.equal(granted[0].opts.essential, true, 'quest reward gear is essential by
 assert.equal(equipped, 'qa_spanner', 'quest reward gear is equipped by default');
 assert.ok(messages.some(m=>m.includes('qa_spanner')), 'choice reward announces itself through the runtime message hook');
 
+let returnUnlocked=false;
+const conditionalChoiceNpc=createQuestNpc({
+  id:'qa_conditional_choice',
+  displayName:'QA Conditional Choice',
+  steps:[
+    {id:'return_later',kind:'briefing',next:'verdict',prompt:'Return later',missing:'Not yet',check(){ return returnUnlocked; }},
+    {id:'verdict',kind:'choice',prompt:'Choose',choices:[
+      {key:'1',id:'west',name:'West'},
+      {key:'2',id:'east',name:'East'}
+    ]},
+    {id:'done',kind:'done',prompt:'Done'}
+  ],
+  rewardOnceKeys:['verdict'],
+  choiceReward(item){
+    return {once:'verdict',next:'done',data:{verdict:item.id},line:'Accepted'};
+  }
+});
+conditionalChoiceNpc.placeNearWorldStart(getTile,worldGen);
+const conditionalPosition=conditionalChoiceNpc._debug();
+player.x=conditionalPosition.x;
+player.y=conditionalPosition.y;
+assert.equal(conditionalChoiceNpc.talk(player),true,'a locked conditional briefing still gives its reminder');
+assert.equal(conditionalChoiceNpc.phase(),'return_later','a false briefing condition cannot advance the quest');
+returnUnlocked=true;
+assert.equal(conditionalChoiceNpc.talk(player),true,'a satisfied briefing condition advances on return interaction');
+assert.equal(conditionalChoiceNpc.phase(),'verdict','the satisfied return opens its dedicated choice');
+assert.equal(conditionalChoiceNpc.handleKey('2',player),true,'step-specific choices resolve independently of global reward choices');
+assert.equal(conditionalChoiceNpc.phase(),'done','the step-specific choice applies its configured reward');
+assert.equal(conditionalChoiceNpc._debug().data.verdict,'east','the selected step-specific choice reaches the reward callback');
+
 const snap=npcRegistry.snapshot();
 vendor.reset();
 assert.equal(vendor.phase(), 'water', 'reset returns the generic NPC to its initial phase');
@@ -201,6 +231,24 @@ globalThis.MM.inventory.grantItem=workingGrant;
 rewardGateNpc.update(0.1,player,getTile,setTile,ctx);
 assert.equal(rewardGateNpc.phase(),'done','handoff retries successfully once its reward can be granted');
 assert.equal(globalThis.inv.water,0,'a successful retried handoff consumes its resource once');
+
+const proofNpc=createQuestNpc({
+  id:'qa_non_consuming_proof',
+  displayName:'QA Proof',
+  steps:[
+    {id:'show',kind:'handoff',item:'meat',amount:1,consume:false,next:'done',prompt:'Show meat'},
+    {id:'done',kind:'done',prompt:'Verified'}
+  ]
+});
+proofNpc.placeNearWorldStart(getTile,worldGen);
+const proofPosition=proofNpc._debug();
+player.x=proofPosition.x;
+player.y=proofPosition.y;
+globalThis.inv.meat=1;
+assert.equal(proofNpc.questSteps()[0].consume,false,'quest metadata exposes a non-consuming proof handoff');
+proofNpc.update(0.1,player,getTile,setTile,ctx);
+assert.equal(proofNpc.phase(),'done','a non-consuming handoff advances when the required item is present');
+assert.equal(globalThis.inv.meat,1,'a non-consuming handoff never removes the verified item');
 
 const pollutedSnapshot=vendor.snapshot();
 pollutedSnapshot.data=JSON.parse('{"__proto__":{"npcPolluted":true},"constructor":{"prototype":{"npcPolluted":true}},"safeValue":7}');

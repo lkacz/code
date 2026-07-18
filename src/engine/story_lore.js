@@ -144,14 +144,14 @@ const STORY_LORE = {
     },
     sandHide:{
       prompt:[
-        'Teraz schowaj sie w piasku na 30 sekund. Jesli nikt nie widzi obserwatora, czy obserwator nadal uruchamia swiat?',
-        'Wejdz na piasek i zniknij w nim na chwile. Pustynia jest dobra w udawaniu pustki.',
-        'Ukryj sie w piasku przez 30 sekund. Chce sprawdzic, czy swiat nudzi sie, gdy my znikamy.'
+        'Teraz schowaj sie w piasku na 30 sekund: piasek pod stopami i po obu stronach. Dach nie jest potrzebny. Zloty licznik pokaze, ze pomiar ruszyl.',
+        'Zbuduj z piasku male U i stan w srodku na 30 sekund. Nie zasypuj glowy; pustynia ma cie ukryc, nie pogrzebac.',
+        'Ukryj sie pomiedzy blokami piasku przez 30 sekund. Piasek pod nogami, sciana z lewej i prawej, a nad glowa wolne miejsce.'
       ],
       missing:[
-        'To nie piasek. Piasek ma miec w sobie twoje watpliwosci, najlepiej po kostki.',
-        'Potrzebuje piasku, nie wspomnienia o piasku. Schowaj sie tam, gdzie krok robi szept.',
-        'Jeszcze nie licze. Symulacja widzi cie zbyt latwo.'
+        'Jeszcze nie licze. Stan na piasku pomiedzy dwoma blokami piasku; nad glowa zostaw powietrze.',
+        'Potrzebuje piaskowego U: podloga oraz lewa i prawa sciana. Dach tylko sprowadzilby grawitacje.',
+        'Symulacja nadal cie widzi. Wejdz pomiedzy dwie piaskowe scianki i poczekaj na zloty licznik.'
       ],
       complete:[
         'Piasek milczal. To najgorsze, bo rzeczy niewinne zwykle gadaja bez przerwy.',

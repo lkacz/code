@@ -1243,6 +1243,9 @@ assert.ok(/const embodied = \(mode === 'play' \|\| mode === 'hero'\);/.test(host
 assert.ok(/function sendVitals\(s, entry\)/.test(hostSrc) && /t: 'pvit'/.test(hostSrc), 'the host owns and streams the guest vitals + pouch');
 assert.ok(/function hurtBody\(s, entry/.test(hostSrc) && /b\.invulUntil = t \+ NET\.PLAY_RULES\.HURT_INVUL_MS/.test(hostSrc),
 	'guest damage is host-decided with i-frames; death and respawn are host-owned');
+assert.ok(/requestedKb[^\n]*Math\.min\(12/.test(hostSrc) && /requestedKbY[^\n]*Math\.max\(-10/.test(hostSrc)
+	&& /hurt: \(a, sx, sy, c, o\) => hurtBody\(s, entry, a, sx, sy, c, o\)/.test(hostSrc),
+	'host-authored attacks can request bounded knockback for guest bodies, including molekin charges');
 // the movement envelope: a claimed pose is followed at most MAX_SPEED fast
 assert.ok(/pl\.t === 'ppose'/.test(hostSrc) && /NET\.clampBodyStep\(b\.x, \+pl\.x, maxStep\)/.test(hostSrc),
 	'the guest pose is followed inside a per-axis speed envelope (a teleport hack rubber-bands)');
@@ -1373,20 +1376,26 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	const inv = readFileSync(new URL('../src/engine/invasions.js', import.meta.url), 'utf8');
 	assert.ok(/function nearestPartyMember\(wx,wy,player\)\{\s*\n\s*const bodies=\(typeof MM!=='undefined' && MM\.coopBodies\) \|\| null;\s*\n\s*if\(!bodies \|\| !bodies\.length\) return player;/.test(inv),
 		'invasions read MM.coopBodies and return the host untouched with no bodies (zero cost in solo play)');
-	assert.ok(/function hurtPartyTarget\(tgt,dmg,opts\)\{\s*\n\s*if\(tgt && typeof tgt\.hurt==='function'\)\{ tgt\.hurt\(dmg,opts\.srcX,opts\.srcY,opts\.cause\); return; \}/.test(inv),
+	assert.ok(/function hurtPartyTarget\(tgt,dmg,opts\)\{\s*\n\s*if\(tgt && typeof tgt\.hurt==='function'\)\{ tgt\.hurt\(dmg,opts\.srcX,opts\.srcY,opts\.cause,opts\); return; \}/.test(inv),
 		'invader damage routes through body.hurt() for a guest target, damageHero for the host');
 	assert.ok(/const tgt = nearestPartyMember\(a\.x,a\.y,player\);[\s\S]{0,200}const px = tgt && Number\.isFinite\(tgt\.x\) \? tgt\.x : a\.x;/.test(inv),
 		'updateAlien tracks (melee + facing) the nearest party member');
-	assert.ok(/hurtPartyTarget\(tgt, Math\.max\(1,Math\.round\(baseDmg \* \(Number\(a\.damageMult\) \|\| 1\)\)\)/.test(inv),
-		'invader melee lands on whoever the alien is actually next to');
-	// both hitscan weapons aim at and damage the retargeted party member
-	assert.ok((inv.match(/const tgt = nearestPartyMember\(a\.x,a\.y,player\); \/\/ shots chase the nearest hero, host or guest/g) || []).length === 2,
-		'both fireAlienLaser and fireMolekinAttack retarget to the nearest party member');
-	assert.ok(/Number\.isFinite\(tgt\.vx\) \? tgt\.x \+ tgt\.vx \* 0\.08 : tgt\.x/.test(inv) && /Number\.isFinite\(tgt\.vx\) \? tgt\.x \+ tgt\.vx \* 0\.06 : tgt\.x/.test(inv),
-		'hitscan aim-lead reads the target (host or body), not always the host');
-	assert.ok(/hurtPartyTarget\(tgt, Math\.max\(1, Math\.round\(\(5 \+ Math\.min\(6, Math\.floor\(threat \/ 5\)\)\) \* dmgMult\)\)/.test(inv)
-		&& /hurtPartyTarget\(tgt, Math\.max\(1, Math\.round\(\(4 \+ Math\.min\(7, Math\.floor\(threat \/ 4\)\)\) \* dmgMult\)\)/.test(inv),
-		'a clear hitscan hit damages the aimed-at party member through the routing helper');
+	assert.ok(/!isMolekinTeam\(team\) && dist < profile\.meleeRange/.test(inv)
+		&& /hurtPartyTarget\(tgt, Math\.max\(1,Math\.round\(3 \* \(Number\(a\.damageMult\) \|\| 1\)\)\)/.test(inv),
+		'UFO aliens retain close melee while molekin use their separate charge/throw system');
+	assert.ok((inv.match(/const tgt = nearestPartyMember\(a\.x,a\.y,player\);/g) || []).length >= 2,
+		'both UFO lasers and molekin attacks retarget to the nearest party member');
+	assert.ok(/Number\.isFinite\(tgt\.vx\) \? tgt\.x \+ tgt\.vx \* 0\.08 : tgt\.x/.test(inv) && /Number\.isFinite\(tgt\.vx\) \? tgt\.x \+ tgt\.vx \* 0\.10 : tgt\.x/.test(inv),
+		'charged UFO aim and physical molekin throws can lead the selected host or guest target before locking');
+	assert.ok(/const partyHit=!c\.tileAim \? partyTargetOnLaser\(ox,oy,hit\.x,hit\.y,player\) : null;/.test(inv)
+		&& /hurtPartyTarget\(partyHit,Math\.max\(1,Math\.round\(\(5\+Math\.min\(6,Math\.floor\(threat\/5\)\)\)\*dmgMult\)\)/.test(inv)
+		&& /if\(target\)\{\s*\n\s*hurtPartyTarget\(target,s\.damage/.test(inv)
+		&& /hurtPartyTarget\(tgt,c\.damage,[^\n]*kb:8\.4/.test(inv),
+		'charged UFO release, physical clod impacts and charge collisions all route host-authoritative party damage');
+	assert.ok(/shots:moleShots\.slice\(-MOLE_SHOT_GHOST_CAP\)/.test(inv) && /chargeCode=Number\(p\[7\]\)\|0/.test(inv),
+		'molekin projectiles and charge telegraphs are mirrored to multiplayer watchers');
+	assert.ok(/a\.alienCharge \? 1 : 0/.test(inv) && /beams:lasers\.slice\(-16\)/.test(inv) && /Number\(p\[9\]\)/.test(inv),
+		'Alien Team charge points and released beams are mirrored to multiplayer watchers');
 	// the squad brain marches on the party member nearest the squad, not blindly on the host
 	assert.ok(/function squadPartyTarget\(steerable,player\)\{\s*\n\s*const bodies=\(typeof MM!=='undefined' && MM\.coopBodies\) \|\| null;\s*\n\s*if\(!bodies \|\| !bodies\.length \|\| !steerable\.length\) return player;/.test(inv),
 		'the squad-brain retarget is zero-cost in solo play (host returned before any centroid math)');

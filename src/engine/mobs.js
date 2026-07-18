@@ -53,6 +53,7 @@ const mobs = (function(){
   // Spawn throttle/freeze (used after world regeneration)
   let spawnFreezeUntil = 0; // timestamp (ms). While now < this, no new spawns are attempted.
   let lastDayState = null;
+  const goldGuardDay = {day:0, areas:new Set()};
   // Spatial partitioning (uniform grid) to speed up point queries (attackAt)
   const CELL=16; // tiles per cell both axes
   const MOB_BODY_SLOP=0.005; // sub-pixel tolerance prevents endless contact jitter
@@ -198,6 +199,8 @@ const mobs = (function(){
   const GOLD_GUARD_KEY_W = 12;
   const GOLD_GUARD_KEY_H = 10;
   const GOLD_GUARD_LOCAL_CAP = 4;
+  const GOLD_DWARF_MAX_LIVE = 10;
+  const GOLD_GUARD_AREA_SAVE_CAP = 4096;
   // Gold defenders must never act as a surface ore detector. Their dedicated
   // scan only wakes after the hero has entered the underground, and neither a
   // qualifying vein nor a spawn cell may sit directly under open daylight.
@@ -1048,7 +1051,7 @@ const mobs = (function(){
         const signal=goldClusterSignal(x,y,getTile);
         if(!signal.qualifies) continue;
         const key=goldGuardKeyFor(x,y);
-        if(goldGuardianAlreadyForKey(key)) continue;
+        if(goldGuardianAlreadyForKey(key) || !canGoldGuardAreaSpawnToday(key)) continue;
         const dx=x+0.5-player.x, dy=y+0.5-player.y;
         const d2=dx*dx+dy*dy;
         const rank=signal.score - Math.sqrt(d2)*0.18;
@@ -1631,6 +1634,75 @@ const mobs = (function(){
       if(isFinite(now)) return 1 + Math.max(0,now) / (XP_FALLBACK_DAY_SECONDS*1000);
     }catch(e){}
     return 1;
+  }
+  function currentGameDayIndex(){
+    return Math.max(1,Math.floor(currentGameDayFloat()));
+  }
+  function cleanGoldGuardAreaKey(value){
+    const key=typeof value==='string' ? value.trim() : '';
+    return key.length>0 && key.length<=64 && /^-?\d+,-?\d+$/.test(key) ? key : '';
+  }
+  function goldGuardAreaCoords(key){
+    key=cleanGoldGuardAreaKey(key);
+    if(!key) return null;
+    const parts=key.split(',');
+    return {x:Number(parts[0]),y:Number(parts[1])};
+  }
+  function syncGoldGuardDay(){
+    const day=currentGameDayIndex();
+    if(goldGuardDay.day!==day){
+      goldGuardDay.day=day;
+      goldGuardDay.areas.clear();
+    }
+    return day;
+  }
+  function canGoldGuardAreaSpawnToday(key){
+    key=cleanGoldGuardAreaKey(key);
+    syncGoldGuardDay();
+    const cell=goldGuardAreaCoords(key);
+    if(!cell || goldGuardDay.areas.size>=GOLD_GUARD_AREA_SAVE_CAP) return false;
+    // Adjacent coarse cells are one encounter area. This prevents a single
+    // vein crossing a grid boundary from masquerading as two independent veins.
+    for(const used of goldGuardDay.areas){
+      const other=goldGuardAreaCoords(used);
+      if(other && Math.abs(other.x-cell.x)<=1 && Math.abs(other.y-cell.y)<=1) return false;
+    }
+    return true;
+  }
+  function noteGoldGuardAreaSpawn(key){
+    key=cleanGoldGuardAreaKey(key);
+    syncGoldGuardDay();
+    if(!key || goldGuardDay.areas.size>=GOLD_GUARD_AREA_SAVE_CAP && !goldGuardDay.areas.has(key)) return false;
+    goldGuardDay.areas.add(key);
+    return true;
+  }
+  function goldGuardDaySnapshot(){
+    const day=syncGoldGuardDay();
+    return {
+      v:1,
+      day,
+      areas:Array.from(goldGuardDay.areas).slice(0,GOLD_GUARD_AREA_SAVE_CAP)
+    };
+  }
+  function restoreGoldGuardDay(data){
+    const currentDay=currentGameDayIndex();
+    goldGuardDay.day=currentDay;
+    goldGuardDay.areas.clear();
+    if(!data || typeof data!=='object') return;
+    const savedDay=Math.floor(Number(data.day));
+    if(savedDay!==currentDay || !Array.isArray(data.areas)) return;
+    for(const raw of data.areas.slice(0,GOLD_GUARD_AREA_SAVE_CAP)){
+      const key=cleanGoldGuardAreaKey(raw);
+      if(key) goldGuardDay.areas.add(key);
+    }
+  }
+  function reconcileGoldGuardDay(){
+    syncGoldGuardDay();
+    for(const m of mobs){
+      if(!validMobState(m) || m.hp<=0 || !isGoldGuardianId(m.id)) continue;
+      const key=cleanGoldGuardAreaKey(m.goldGuardKey);
+      if(key) noteGoldGuardAreaSpawn(key);
+    }
   }
   function notifyTempleDisturbed(tx,ty,opts){
     opts=opts||{};
@@ -3214,6 +3286,7 @@ const mobs = (function(){
   const SENTINEL_RELOAD_SECONDS=3;
   const SENTINEL_BURST_MIN=3;
   const SENTINEL_BURST_MAX=5;
+  const SENTINEL_CHARGE_SECONDS=1;
   const SENTINEL_MEAT_SCAN_MS=180;
   const SENTINEL_MEAT_RANGE=12;
   let laserTraceCalls=0, laserTileChecks=0;
@@ -3305,6 +3378,7 @@ const mobs = (function(){
     ];
   }
   function sentinelAimPoint(target,m){
+    if(target&&target.kind==='locked') return {x:target.x,y:target.y};
     return predictiveAimPoint(m,target,24,-0.42,{laser:true});
   }
   function traceLaser(sx,sy,tx,ty,getTile,maxDist){
@@ -3454,28 +3528,73 @@ const mobs = (function(){
     }
     return true;
   }
-  function sentinelLaserAt(m,target,dmg,getTile,setTile,lines){
+  function sentinelTargetTouchesLines(target,lines){
+    if(!target||!Array.isArray(lines)||target.dead||(finiteNum(target.hp)&&target.hp<=0)) return false;
+    const center=targetAimBase(target,-0.42);
+    const radius=target.kind==='meat'?0.42:Math.max(0.32,Math.min(0.55,Math.max((Number(target.w)||0.70)*0.48,(Number(target.h)||0.95)*0.32)));
+    for(const line of lines){
+      const o=line&&line.origin,end=line&&line.end;
+      if(!o||!end) continue;
+      const dx=end.x-o.x,dy=end.y-o.y,len2=dx*dx+dy*dy;
+      if(len2<=0.0001) continue;
+      const rawAlong=((center.x-o.x)*dx+(center.y-o.y)*dy)/len2;
+      if(rawAlong<=0.015||rawAlong>1.015) continue;
+      const along=Math.max(0,Math.min(1,rawAlong));
+      if(Math.hypot(center.x-(o.x+dx*along),center.y-(o.y+dy*along))<=radius) return true;
+    }
+    return false;
+  }
+  function beginSentinelCharge(m,target,dmg){
+    if(!m||!target||m.sentinelCharge) return false;
+    const aim=targetAimBase(target,-0.42);
+    m.sentinelCharge={
+      t:SENTINEL_CHARGE_SECONDS,duration:SENTINEL_CHARGE_SECONDS,
+      aimX:aim.x,aimY:aim.y,dmg:Number(dmg)||0,kind:String(target.kind||'hero'),
+      tx:finiteNum(target.tx)?target.tx:null,ty:finiteNum(target.ty)?target.ty:null,target,ghost:false
+    };
+    m.facing=aim.x>=m.x?1:-1;
+    markMobTelegraph(m,'sentinel_laser',{target:{x:aim.x,y:aim.y},power:1.15,ms:SENTINEL_CHARGE_SECONDS*1000});
+    try{ if(MM.audio&&MM.audio.play) MM.audio.play('warning',{x:m.x,y:m.y}); }catch(e){}
+    return true;
+  }
+  function lockedSentinelDamageTarget(charge,player,getTile,lines){
+    if(!charge) return null;
+    if(charge.kind==='meat'&&finiteNum(charge.tx)&&finiteNum(charge.ty)&&typeof getTile==='function'&&isSentinelMeatTile(getTile(charge.tx,charge.ty))){
+      const meat=sentinelMeatTargetAt(charge.tx,charge.ty);
+      if(sentinelTargetTouchesLines(meat,lines)) return meat;
+    }
+    const candidates=[];
+    if(charge.target) candidates.push(charge.target);
+    if((charge.kind==='alien'||charge.kind==='molekin')&&typeof nearestAlienTarget==='function'){
+      const invader=nearestAlienTarget(charge.aimX,charge.aimY,1.2,{source:'sentinel'});
+      if(invader&&!candidates.includes(invader)) candidates.push(invader);
+    }
+    if(player&&!candidates.includes(player)) candidates.push(player);
+    for(const candidate of candidates){ if(sentinelTargetTouchesLines(candidate,lines)) return candidate; }
+    return null;
+  }
+  function sentinelLaserAt(m,target,dmg,getTile,setTile,lines,damageTarget){
     if(!m || !target || mobLasers.length>=MOB_LASER_CAP-1) return false;
     if(target.kind==='meat' && (!isSentinelMeatTile(getTile(target.tx,target.ty)) || typeof setTile!=='function')) return false;
     const shotLines=Array.isArray(lines) ? lines : sentinelShotLines(m,target,getTile,16);
-    const clearLines=shotLines.filter(l=>l && l.end && l.end.clear);
-    if(!clearLines.length) return false;
+    const emittedLines=shotLines.filter(l=>l&&l.origin&&l.end);
+    if(!emittedLines.length) return false;
     const impacts=[];
     markMobAttack(m,'laser',{target,power:1.1,strikeMs:300});
-    for(const line of clearLines){
+    for(const line of emittedLines){
       const o=line.origin, end=line.end;
       if(!o || !end) continue;
       impacts.push(end);
       mobLasers.push({
         x1:o.x, y1:o.y, x2:end.x, y2:end.y,
-        t:0, life:0.18, hit:end.clear, blocked:end.blocked,
+        t:0, life:0.18, hit:!!damageTarget&&sentinelTargetTouchesLines(damageTarget,[line]), blocked:end.blocked,
         phase:Math.random()*Math.PI*2
       });
     }
-    if(target.kind==='meat') applySentinelMeatLaser(target,getTile,setTile);
-    else if(isInvasionTarget(target)) damageAlienTarget(target,dmg*(m.dmgMult||1),m.x,m.y-0.6,'sentinel');
-    else if(target.kind==='companion') damageCompanionTarget(target,dmg*(m.dmgMult||1),m.x,m.y-0.6,'sentinel');
-    else damagePlayer(dmg*(m.dmgMult||1), m.x, m.y-0.6);
+    if(damageTarget&&damageTarget.kind==='meat') applySentinelMeatLaser(damageTarget,getTile,setTile);
+    else if(isInvasionTarget(damageTarget)) damageAlienTarget(damageTarget,dmg*(m.dmgMult||1),m.x,m.y-0.6,'sentinel');
+    else if(damageTarget&&damageTarget.kind==='companion') damageCompanionTarget(damageTarget,dmg*(m.dmgMult||1),m.x,m.y-0.6,'sentinel');
+    else if(damageTarget) damagePlayer(dmg*(m.dmgMult||1), m.x, m.y-0.6);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('beam',{x:m.x,y:m.y}); }catch(e){}
     try{
       const p=MM.particles;
@@ -3489,6 +3608,19 @@ const mobs = (function(){
     }catch(e){}
     sentinelRecordShot(m);
     return true;
+  }
+  function releaseSentinelCharge(m,player,getTile,setTile){
+    const c=m&&m.sentinelCharge;
+    if(!c) return false;
+    const locked=c.kind==='meat'
+      ? {kind:'meat',tx:c.tx,ty:c.ty,x:c.aimX,y:c.aimY}
+      : {kind:'locked',x:c.aimX,y:c.aimY};
+    const dir=c.aimX>=m.x?1:-1;
+    m.facing=dir;
+    const lines=sentinelShotLines(m,locked,getTile,16,dir);
+    const damageTarget=lockedSentinelDamageTarget(c,player,getTile,lines);
+    m.sentinelCharge=null;
+    return sentinelLaserAt(m,locked,c.dmg,getTile,setTile,lines,damageTarget);
   }
   function reserveSentinelLaserShot(now){
     const t=(typeof now==='number' && isFinite(now)) ? now : performance.now();
@@ -3720,7 +3852,7 @@ const mobs = (function(){
 
   registerSpecies({
     id:'GOLD_DWARF_GUARD', displayName:'Gold dwarf guard',
-    max:12, localMax:4, spawnChance:0, hp:76, dmg:22, speed:3.15, wanderInterval:[1.4,3.6], xp:88, ground:true, alwaysAggro:true,
+    max:GOLD_DWARF_MAX_LIVE, localMax:4, spawnChance:0, hp:76, dmg:22, speed:3.15, wanderInterval:[1.4,3.6], xp:88, ground:true, alwaysAggro:true,
     sightRange:18, pursueRange:30,
     move:{jumpVel:-4.9, maxClimb:2.2, avoidWater:true},
     body:{w:0.95,h:1.28},
@@ -3832,6 +3964,20 @@ const mobs = (function(){
       const weaponReady=sentinelShotReady(m,dt);
       const moveSpeed=speed||spec.speed||2.4;
       const cdMul=(m && m.attackCdMult)||1;
+      if(m.sentinelCharge&&!m.sentinelCharge.ghost){
+        const c=m.sentinelCharge;
+        m.facing=c.aimX>=m.x?1:-1;
+        m.vx*=Math.max(0,1-dt*9);
+        c.t=Math.max(0,(Number(c.t)||0)-dt);
+        if(c.t<=0&&weaponReady){
+          if(!reserveSentinelLaserShot(now)) c.t=0.06;
+          else {
+            const fired=releaseSentinelCharge(m,player,getTile,setTile);
+            m.shootCd=(fired?(1.55+Math.random()*0.75):0.25)*Math.max(0.75,cdMul);
+          }
+        }
+        return;
+      }
       const meatTarget = typeof setTile==='function' ? findSentinelMeatTarget(m,getTile,now) : null;
       const alienTarget = meatTarget ? null : nearestAlienTarget(m.x,m.y,Math.max(spec.sightRange||18,spec.pursueRange||24),{source:'sentinel'});
       let target = meatTarget || player;
@@ -3886,12 +4032,9 @@ const mobs = (function(){
         const minRange = targetIsMeat ? 0.8 : 3;
         const maxRange = targetIsMeat ? SENTINEL_MEAT_RANGE : 13;
         if(distToTarget<maxRange && distToTarget>minRange && m.shootCd<=0){
-          const shotLines = (targetIsMeat && target.lines) ? target.lines : (m._sentinelLosFresh ? lines : null);
           if(!weaponReady){
             m.shootCd=Math.min(m.shootCd,0);
-          } else if(!reserveSentinelLaserShot(now)){
-            m.shootCd=(0.18+Math.random()*0.22)*Math.max(0.75,cdMul);
-          } else if(sentinelLaserAt(m,target,targetIsMeat?0:spec.dmg,getTile,setTile,shotLines)) m.shootCd=(1.55+Math.random()*0.75)*cdMul;
+          } else if(beginSentinelCharge(m,target,targetIsMeat?0:spec.dmg)) m.shootCd=0;
           else m.shootCd=0.25*Math.max(0.75,cdMul);
         }
       } else {
@@ -5898,6 +6041,7 @@ const mobs = (function(){
       }
     }
     if(born>0){
+      noteGoldGuardAreaSpawn(vein.key || goldGuardKeyFor(vein.x,vein.y));
       setAggro(born===1 && kind==='dragon' ? 'GOLD_DRAGON' : 'GOLD_DWARF_GUARD');
       try{ if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks((vein.x+0.5)*(MM.TILE||20),(vein.y+0.5)*(MM.TILE||20),'epic',10); }catch(e){}
     }
@@ -5911,7 +6055,7 @@ const mobs = (function(){
     nextGoldGuardianScan=now+GOLD_GUARD_SCAN_MS+Math.random()*GOLD_GUARD_SCAN_MS;
     if(countGoldGuardiansNear(player.x,player.y,34)>=GOLD_GUARD_LOCAL_CAP) return;
     const vein=scanGoldVeinNearPlayer(player,getTile);
-    if(!vein || goldGuardianAlreadyForKey(vein.key)) return;
+    if(!vein || goldGuardianAlreadyForKey(vein.key) || !canGoldGuardAreaSpawnToday(vein.key)) return;
     spawnGoldGuardianGroup(vein,getTile);
   }
 
@@ -9334,19 +9478,37 @@ const mobs = (function(){
           const laserHot = mobLasers.some(l=>Math.abs(l.x1-m.x)<0.7 && Math.abs(l.y1-(m.y-0.62))<0.35);
           const reloading = m.sentinelReloadT>0;
           const reloadFrac = reloading ? Math.max(0,Math.min(1,m.sentinelReloadT/SENTINEL_RELOAD_SECONDS)) : 0;
+          const charging=m.sentinelCharge||null;
+          const chargeFrac=charging?Math.max(0,Math.min(1,1-(Number(charging.t)||0)/Math.max(0.001,Number(charging.duration)||SENTINEL_CHARGE_SECONDS))):0;
+          if(charging){
+            const tx=charging.aimX*TILE,ty=charging.aimY*TILE;
+            const ox=screenX+faceDir*5,oy=screenY-25;
+            ctx.save();
+            ctx.globalAlpha=0.22+chargeFrac*0.42;
+            ctx.strokeStyle=chargeFrac>0.72?'#fff098':'#56eaff';
+            ctx.lineWidth=1+chargeFrac;
+            if(ctx.setLineDash) ctx.setLineDash([4,4]);
+            ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(tx,ty);ctx.stroke();
+            if(ctx.setLineDash) ctx.setLineDash([]);
+            ctx.globalAlpha=0.75+0.20*pulse;
+            const rr=4+chargeFrac*3;
+            ctx.beginPath();ctx.arc(tx,ty,rr,0,Math.PI*2);ctx.stroke();
+            ctx.beginPath();ctx.moveTo(tx-rr-4,ty);ctx.lineTo(tx-rr+1,ty);ctx.moveTo(tx+rr-1,ty);ctx.lineTo(tx+rr+4,ty);ctx.stroke();
+            ctx.restore();
+          }
           box(screenX-7, screenY-22,14,17,body,'#3f4852');
           shade(screenX-7,screenY-22,14,4,'#fff',0.14);
           shade(screenX-7,screenY-9,14,4,'#000',0.15);
           ctx.fillStyle='#5f6872';
           ctx.fillRect(screenX-4,screenY-28,8,7); hpTop(screenY-28);
-          const eyeGlow = reloading ? 0.22+0.12*pulse : (laserHot ? 1 : (0.45+0.35*pulse));
-          ctx.fillStyle=laserHot?'#f8ffff':(reloading?'#f0a642':'#42e7ff');
+          const eyeGlow = reloading ? 0.22+0.12*pulse : (charging?0.72+chargeFrac*0.28:(laserHot ? 1 : (0.45+0.35*pulse)));
+          ctx.fillStyle=laserHot?'#f8ffff':(reloading?'#f0a642':(charging&&chargeFrac>0.72?'#fff098':'#42e7ff'));
           const eyeA=screenX+(faceDir>0?2:-4);
           const eyeB=screenX+(faceDir>0?-2:2);
           ctx.fillRect(eyeA,screenY-26,3,2);
           ctx.fillRect(eyeB,screenY-25,3,2);
           ctx.globalAlpha=eyeGlow*0.45;
-          ctx.fillStyle=reloading?'#f0a642':'#42e7ff';
+          ctx.fillStyle=reloading?'#f0a642':(charging&&chargeFrac>0.72?'#fff098':'#42e7ff');
           ctx.fillRect(screenX-7,screenY-28,14,5);
           ctx.globalAlpha=1;
           if(reloading){
@@ -11037,6 +11199,14 @@ const mobs = (function(){
     if(m.id==='STRAZNIK'){
       if(finiteNum(m.sentinelReloadT)) out.sentinelReloadT=clampFinite(m.sentinelReloadT,0,0,SENTINEL_RELOAD_SECONDS);
       if(finiteNum(m.sentinelShotsUntilReload)) out.sentinelShotsUntilReload=clampFinite(m.sentinelShotsUntilReload,SENTINEL_BURST_MIN,0,SENTINEL_BURST_MAX);
+      if(m.sentinelCharge&&finiteNum(m.sentinelCharge.aimX)&&finiteNum(m.sentinelCharge.aimY)){
+        out.sentinelCharge={
+          t:clampFinite(m.sentinelCharge.t,0,0,SENTINEL_CHARGE_SECONDS),duration:SENTINEL_CHARGE_SECONDS,
+          aimX:+m.sentinelCharge.aimX.toFixed(4),aimY:+m.sentinelCharge.aimY.toFixed(4),
+          dmg:clampFinite(m.sentinelCharge.dmg,0,0,200),kind:String(m.sentinelCharge.kind||'hero').slice(0,16),
+          tx:finiteNum(m.sentinelCharge.tx)?Math.floor(m.sentinelCharge.tx):null,ty:finiteNum(m.sentinelCharge.ty)?Math.floor(m.sentinelCharge.ty):null
+        };
+      }
     }
     if(m.id==='VULTURE' || m.id==='VULTURE_HATCHLING'){
       if(finiteNum(m.nestX)) out.nestX=+m.nestX.toFixed(4);
@@ -11087,7 +11257,7 @@ const mobs = (function(){
   function serialize(){ const now=Date.now(); const rel={}; for(const k in speciesAggro){ const rem = speciesAggro[k]-now; if(rem>0) rel[k]=rem; }
     // the golden sprinter is a transient event creature: its _g state isn't saved,
     // so restoring it would produce a broken husk — the visit just ends instead
-    return { v:5, list: mobs.map(serializeMob).filter(Boolean), aggro:{mode:'rel', m:rel}, golden:goldenSnapshot(), xpFatigue:{mode:'day',m:serializeXpFatigue()} }; }
+    return { v:6, list: mobs.map(serializeMob).filter(Boolean), aggro:{mode:'rel', m:rel}, golden:goldenSnapshot(), goldGuardAreas:goldGuardDaySnapshot(), xpFatigue:{mode:'day',m:serializeXpFatigue()} }; }
   function deserialize(data){ // clear
     for(const m of mobs) removeFromGrid(m); mobs.length=0; // reset live counts before rebuild
     mobDeathFx.length=0;
@@ -11097,10 +11267,12 @@ const mobs = (function(){
     lastDayState = null;
     restoreXpFatigue(data && data.xpFatigue);
     goldenRestore(data && data.golden);
+    restoreGoldGuardDay(data && data.goldGuardAreas);
     if(data && Array.isArray(data.list)){
       for(const r of data.list){
         if(!r || !SPECIES[r.id] || !finiteCoord(r.x) || !finiteCoord(r.y)) continue;
         const spec=SPECIES[r.id];
+        if(r.id==='GOLD_DWARF_GUARD' && countSpecies(r.id)>=GOLD_DWARF_MAX_LIVE) continue;
         const m=create(spec, r.x, r.y);
         const restoredMax=m.maxHp || spec.hp || 999;
         m.vx=clampFinite(r.vx,0,-80,80);
@@ -11163,6 +11335,15 @@ const mobs = (function(){
         if(r.id==='STRAZNIK'){
           if(finiteNum(r.sentinelReloadT)) m.sentinelReloadT=clampFinite(r.sentinelReloadT,0,0,SENTINEL_RELOAD_SECONDS);
           if(finiteNum(r.sentinelShotsUntilReload)) m.sentinelShotsUntilReload=clampFinite(r.sentinelShotsUntilReload,SENTINEL_BURST_MIN,0,SENTINEL_BURST_MAX);
+          const c=r.sentinelCharge;
+          if(c&&typeof c==='object'&&finiteCoord(c.aimX)&&finiteCoord(c.aimY)){
+            m.sentinelCharge={
+              t:clampFinite(c.t,SENTINEL_CHARGE_SECONDS,0,SENTINEL_CHARGE_SECONDS),duration:SENTINEL_CHARGE_SECONDS,
+              aimX:clampFinite(c.aimX,m.x,-10000000,10000000),aimY:clampFinite(c.aimY,m.y,WORLD_TOP,WORLD_BOTTOM),
+              dmg:clampFinite(c.dmg,spec.dmg||0,0,200),kind:typeof c.kind==='string'?c.kind.slice(0,16):'hero',
+              tx:finiteNum(c.tx)?Math.floor(c.tx):null,ty:finiteNum(c.ty)?Math.floor(c.ty):null,target:null,ghost:false
+            };
+          }
         }
         if(r.id==='VULTURE' || r.id==='VULTURE_HATCHLING'){
           if(finiteNum(r.nestX)) m.nestX=clampFinite(r.nestX,m.x,-10000000,10000000);
@@ -11193,6 +11374,7 @@ const mobs = (function(){
         mobs.push(m);
       }
     }
+    reconcileGoldGuardDay();
     for(const k in speciesAggro) delete speciesAggro[k];
     if(data && data.aggro){ const now=Date.now(); if(data.aggro.mode==='rel' && data.aggro.m){ for(const k in data.aggro.m){ const rem=data.aggro.m[k]; if(typeof rem==='number' && rem>0){ speciesAggro[k]= now + Math.min(rem, 5*60*1000); } }
       } else { // legacy absolute timestamps
@@ -11280,7 +11462,10 @@ const mobs = (function(){
     const live=ghostLiveMobs();
     return {
       sig: live.map(m=>m.id).join('|'),
-      poses: live.map(m=>[+m.x.toFixed(3), +m.y.toFixed(3), m.facing<0?-1:1, finiteNum(m.hp)?+m.hp.toFixed(2):0, typeof m.state==='string'?m.state:'idle'])
+      poses: live.map(m=>[+m.x.toFixed(3), +m.y.toFixed(3), m.facing<0?-1:1, finiteNum(m.hp)?+m.hp.toFixed(2):0, typeof m.state==='string'?m.state:'idle',
+        m.sentinelCharge?1:0,m.sentinelCharge?+(Number(m.sentinelCharge.t)||0).toFixed(2):0,m.sentinelCharge?+(Number(m.sentinelCharge.duration)||SENTINEL_CHARGE_SECONDS).toFixed(2):0,
+        m.sentinelCharge?+(Number(m.sentinelCharge.aimX)||0).toFixed(3):0,m.sentinelCharge?+(Number(m.sentinelCharge.aimY)||0).toFixed(3):0]),
+      lasers:mobLasers.slice(-MOB_LASER_CAP).map(l=>[+l.x1.toFixed(3),+l.y1.toFixed(3),+l.x2.toFixed(3),+l.y2.toFixed(3),+(l.life-l.t).toFixed(2),l.hit?1:0,l.blocked?1:0])
     };
   }
   function ghostApplyRoster(roster){
@@ -11295,6 +11480,15 @@ const mobs = (function(){
       m.facing=p[2]<0?-1:1;
       if(finiteNum(p[3])) m.hp=Math.max(0,Math.min(m.maxHp||p[3],p[3]));
       if(typeof p[4]==='string') m.state=p[4];
+      if(Number(p[5])) m.sentinelCharge={t:Math.max(0,Number(p[6])||0),duration:Math.max(0.1,Number(p[7])||SENTINEL_CHARGE_SECONDS),aimX:Number(p[8])||0,aimY:Number(p[9])||0,target:null,ghost:true};
+      else m.sentinelCharge=null;
+    }
+    if(Array.isArray(roster.lasers)){
+      mobLasers.length=0;
+      for(const l of roster.lasers.slice(0,MOB_LASER_CAP)){
+        if(!Array.isArray(l)||!finiteNum(Number(l[0]))||!finiteNum(Number(l[1]))||!finiteNum(Number(l[2]))||!finiteNum(Number(l[3]))) continue;
+        mobLasers.push({x1:Number(l[0]),y1:Number(l[1]),x2:Number(l[2]),y2:Number(l[3]),t:0,life:Math.max(0.03,Number(l[4])||0.03),hit:!!Number(l[5]),blocked:!!Number(l[6]),phase:0,ghost:true});
+      }
     }
     return true;
   }
@@ -11305,6 +11499,17 @@ const mobs = (function(){
       const dx=m._ghostTX-m.x, dy=m._ghostTY-m.y;
       if(Math.abs(dx)>4 || Math.abs(dy)>4){ m.x=m._ghostTX; m.y=m._ghostTY; continue; } // teleport, don't glide
       m.x+=dx*k; m.y+=dy*k;
+      if(m.sentinelCharge&&m.sentinelCharge.ghost){
+        m.sentinelCharge.t=Math.max(0,(Number(m.sentinelCharge.t)||0)-Math.max(0,Number(dt)||0));
+        if(m.sentinelCharge.t<=0) m.sentinelCharge=null;
+      }
+    }
+    const d=Math.max(0,Math.min(0.08,Number(dt)||0));
+    for(let i=mobLasers.length-1;i>=0;i--){
+      const l=mobLasers[i];
+      if(!l||!l.ghost) continue;
+      l.t+=d;
+      if(l.t>=l.life) mobLasers.splice(i,1);
     }
   }
 
@@ -11349,6 +11554,7 @@ const mobs = (function(){
       for(const k in speciesAggro){ delete speciesAggro[k]; }
       for(const k in xpFatigue){ delete xpFatigue[k]; }
       goldenReset();
+      restoreGoldGuardDay(null);
       // Push out next spawn check and freeze spawns for a short time
       nextSpawnCheck = performance.now() + 2000;
       nextPiranhaAmbush = performance.now() + 2000;
@@ -11427,10 +11633,11 @@ const mobs = (function(){
     function debugCombat(){
       return {
         projectiles:mobProjectiles.map(p=>({x:p.x,y:p.y,vx:p.vx,vy:p.vy,dmg:p.dmg,lead:p.lead||0,type:p.type||'bone',cause:p.cause||'mob_projectile',ownerId:p.ownerId||'',aimX:p.aimX,aimY:p.aimY})),
-        lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit}))
+        lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit,blocked:!!l.blocked})),
+        sentinelCharges:mobs.filter(m=>m&&m.id==='STRAZNIK'&&m.sentinelCharge).map(m=>({x:m.x,y:m.y,t:m.sentinelCharge.t,duration:m.sentinelCharge.duration,aimX:m.sentinelCharge.aimX,aimY:m.sentinelCharge.aimY}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, thermalTargets, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugPiranhas:()=>({coastProfile:piranhaCoastProfile,coastalRange:PIRANHA_COASTAL_RANGE,coastalCore:PIRANHA_COASTAL_CORE,offshoreDensity:PIRANHA_OFFSHORE_DENSITY}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, thermalTargets, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), goldGuardAreaState:()=>Object.assign(goldGuardDaySnapshot(),{liveDwarfs:countSpecies('GOLD_DWARF_GUARD'),liveDragons:countSpecies('GOLD_DRAGON'),maxLiveDwarfs:GOLD_DWARF_MAX_LIVE}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugPiranhas:()=>({coastProfile:piranhaCoastProfile,coastalRange:PIRANHA_COASTAL_RANGE,coastalCore:PIRANHA_COASTAL_CORE,offshoreDensity:PIRANHA_OFFSHORE_DENSITY}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,
     _debugProgression:{heroProfile:heroProgressionProfile,threatProfile:heroThreatProfile,mobPower:mobCombatPower,challenge:mobChallengeProfile,multiplier:challengeXpMultiplier,levelGraceMultiplier:levelGraceXpMultiplier,tier:challengeTier,progressionFloor:challengeProgressionFloor,xpNeed:heroXpNeed,TRIVIAL_RATIO:XP_TRIVIAL_RATIO,FATIGUE_GRACE_KILLS:XP_FATIGUE_GRACE_KILLS}
   };
   MM.mobs = api;

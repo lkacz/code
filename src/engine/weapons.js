@@ -44,7 +44,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
     steam:{speed:2,  emit:0, grav:-3.2, lifeMult:1.0}  // cosmetic, spawned by boiling
   };
   const STREAM_FUEL={
-    flame:{key:'wood', label:'drewna', rate:1},
+    // Wood stays the clean/default fuel. Coal is an automatic fallback and is
+    // deliberately marked smoky so the renderer can expose that choice.
+    flame:{key:'wood', primaryLabel:'drewna', label:'drewna lub wegla', rate:1, alternatives:[{key:'coal',label:'wegla',smoke:true}]},
     hose: {key:'water', label:'wody', rate:1},
     gas:  {key:'rottenMeat', label:'zepsutego miesa', rate:1}
   };
@@ -592,10 +594,43 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(!spec) return;
     sayLimited('res_'+spec.key,'Brak: '+spec.label);
   }
+  function streamFuelChoices(kind){
+    const spec=STREAM_FUEL[kind];
+    if(!spec) return [];
+    return [{key:spec.key,label:spec.primaryLabel||spec.label,smoke:!!spec.smoke}].concat(Array.isArray(spec.alternatives)?spec.alternatives:[]);
+  }
+  function streamFuelTotal(kind){
+    return streamFuelChoices(kind).reduce((sum,f)=>sum+resourceCount(f.key),0);
+  }
+  function activeStreamFuel(kind){
+    const choices=streamFuelChoices(kind);
+    return choices.find(f=>resourceCount(f.key)>0) || choices[0] || null;
+  }
+  function canSpendStreamFuel(kind,n){
+    return streamFuelTotal(kind)>=Math.max(0,n|0);
+  }
+  function spendStreamFuel(kind,n){
+    let left=Math.max(0,n|0);
+    const choices=streamFuelChoices(kind);
+    if(left<=0) return {key:(choices[0]&&choices[0].key)||'',smoke:false};
+    if(!choices.length || !canSpendStreamFuel(kind,left)) return null;
+    let key=choices[0].key, smoke=false;
+    for(const fuel of choices){
+      const take=Math.min(left,resourceCount(fuel.key));
+      if(take<=0) continue;
+      if(!spendResource(fuel.key,take)) return null;
+      key=fuel.key;
+      smoke=smoke||!!fuel.smoke;
+      left-=take;
+      if(left<=0) break;
+    }
+    return left<=0 ? {key,smoke} : null;
+  }
   function consumeStreamFuel(kind,dt){
     const spec=STREAM_FUEL[kind];
     if(!spec) return true;
-    if(resourceCount(spec.key)<=0){
+    let fuel=activeStreamFuel(kind);
+    if(!fuel || streamFuelTotal(kind)<=0){
       warnMissingResource(spec);
       return false;
     }
@@ -603,14 +638,16 @@ import { damageBlastCreatures } from './explosion_damage.js';
     streamFuelDebt[kind]=(streamFuelDebt[kind]||0)+step*(spec.rate||1);
     const due=Math.floor(streamFuelDebt[kind]+1e-9);
     if(due>0){
-      if(!spendResource(spec.key,due)){
+      const spent=spendStreamFuel(kind,due);
+      if(!spent){
         streamFuelDebt[kind]=Math.min(streamFuelDebt[kind],0.99);
         warnMissingResource(spec);
         return false;
       }
+      fuel=Object.assign({},fuel,spent);
       streamFuelDebt[kind]=Math.max(0,streamFuelDebt[kind]-due);
     }
-    return true;
+    return {key:fuel.key,smoke:!!fuel.smoke};
   }
   function streamBurstFuelCost(kind,charge){
     const spec=STREAM_FUEL[kind];
@@ -622,11 +659,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const spec=STREAM_FUEL[kind];
     const cost=streamBurstFuelCost(kind,charge);
     if(!spec || cost<=0) return true;
-    if(!spendResource(spec.key,cost)){
+    const spent=spendStreamFuel(kind,cost);
+    if(!spent){
       warnMissingResource(spec);
       return false;
     }
-    return true;
+    return spent;
   }
   // Arrow tier preference: 'auto' fires the strongest owned tier; a pinned tier id
   // fires that tier while it lasts (saving rare arrows for real threats) and falls
@@ -677,7 +715,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
   function fuelInfo(kind){
     const spec=STREAM_FUEL[kind];
     if(!spec) return null;
-    return {key:spec.key, label:spec.label, count:resourceCount(spec.key), rate:spec.rate||1};
+    const fuels=streamFuelChoices(kind).map(f=>({key:f.key,label:f.label,count:resourceCount(f.key),smoke:!!f.smoke}));
+    const active=fuels.find(f=>f.count>0) || fuels[0];
+    return {key:active.key, label:spec.label, count:fuels.reduce((sum,f)=>sum+f.count,0), rate:spec.rate||1, fuels};
   }
   // Per-frame HUD gauge state (kept allocation-light next to the full metrics()).
   function hudStatus(){
@@ -1147,7 +1187,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(STREAMS[type] && ultCharge>=0.35){
       const spec=STREAM_FUEL[type];
       const plannedCost=streamBurstFuelCost(type,Math.min(1,ultCharge));
-      if(spec && plannedCost>0 && !canSpendResource(spec.key,plannedCost)){
+      if(spec && plannedCost>0 && !canSpendStreamFuel(type,plannedCost)){
         warnMissingResource(spec);
         return false;
       }
@@ -1620,14 +1660,15 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return true;
   }
   function fireStream(player, aimX, aimY, w, dt, kind){
-    if(!consumeStreamFuel(kind,dt)) return false;
+    const fuel=consumeStreamFuel(kind,dt);
+    if(!fuel) return false;
     try{ if(MM.audio && MM.audio.play) MM.audio.play(kind==='flame'?'flame': kind==='hose'?'hose':'gas'); }catch(e){}
     let dx=aimX-player.x, dy=aimY-player.y;
     const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d;
     player.facing = dx>=0?1:-1;
     const range=(w && w.fireRange)||6;
     const dps=(w && w.fireDps)||(kind==='hose'?2:6);
-    spawnExternalStream(kind,player.x,player.y-0.1,dx,dy,{range,dps,source:'hero'});
+    spawnExternalStream(kind,player.x,player.y-0.1,dx,dy,{range,dps,source:'hero',coalSmoke:kind==='flame'&&!!fuel.smoke});
     triggerHeldActionFx(kind,0.72,125,true);
     // Elemental streams tick direct damage into boss bodies along the ray.
     // Guardian-specific weaknesses are resolved by guardian_lairs.damageAt.
@@ -1681,14 +1722,16 @@ import { damageBlastCreatures } from './explosion_damage.js';
         cause:opts.cause || undefined,
         ownerId:opts.ownerId || undefined,
         specialAttack:!!opts.specialAttack,
-        luckyStrike:!!opts.luckyStrike
+        luckyStrike:!!opts.luckyStrike,
+        coalSmoke:kind==='flame'&&!!opts.coalSmoke
       });
       made++;
     }
     return made;
   }
   function firePowerStream(player, aimX, aimY, w, kind, charge){
-    if(!consumeStreamBurstFuel(kind,charge)) return false;
+    const fuel=consumeStreamBurstFuel(kind,charge);
+    if(!fuel) return false;
     try{ if(MM.audio && MM.audio.play) MM.audio.play(kind==='flame'?'flame': kind==='hose'?'hose':'gas'); }catch(e){}
     const cfg=STREAMS[kind];
     const v=aimVector(player,aimX,aimY);
@@ -1715,7 +1758,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
         scale:1.25+charge*0.75,
         source:'hero',
         specialAttack:true,
-        luckyStrike:roll.lucky
+        luckyStrike:roll.lucky,
+        coalSmoke:kind==='flame'&&!!fuel.smoke
       });
     }
     for(const t of [0.35,0.55,0.75,0.95]){
@@ -3041,6 +3085,17 @@ import { damageBlastCreatures } from './explosion_damage.js';
       let comp='';
       for(const p of puffs){
         if(!tileVisible(p.x,p.y)) continue;
+        const smokeFr=Math.max(0,p.life/p.total);
+        if(p.kind==='flame' && p.coalSmoke){
+          if(comp!=='source-over'){ ctx.globalCompositeOperation='source-over'; comp='source-over'; }
+          const smokeSet=spriteCache.coalSmoke;
+          const smokeSp=smokeFr>0.62?smokeSet.hot:(smokeFr>0.28?smokeSet.mid:smokeSet.tail);
+          const smokeR=TILE*(0.27+(1-smokeFr)*0.48)*(p.scale||1);
+          const smokeX=p.x*TILE-(p.vx||0)*TILE*0.018;
+          const smokeY=p.y*TILE-smokeR*(0.18+(1-smokeFr)*0.42);
+          ctx.globalAlpha=0.48+0.26*(1-smokeFr);
+          ctx.drawImage(smokeSp,smokeX-smokeR,smokeY-smokeR,smokeR*2,smokeR*2);
+        }
         // flame glows additively; water and gas read better as murky overlays
         const want=p.kind==='flame'? 'lighter':'source-over';
         if(comp!==want){ ctx.globalCompositeOperation=want; comp=want; }
@@ -3606,6 +3661,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
     }
     spriteCache={
       flame:getFlamePuffSprites(),
+      coalSmoke:{
+        hot:  mk([[0,'rgba(12,11,10,0.78)'],[0.52,'rgba(34,31,28,0.58)'],[1,'rgba(48,44,40,0)']]),
+        mid:  mk([[0,'rgba(18,17,16,0.68)'],[0.58,'rgba(46,43,40,0.46)'],[1,'rgba(62,58,54,0)']]),
+        tail: mk([[0,'rgba(28,27,26,0.50)'],[0.62,'rgba(66,63,60,0.32)'],[1,'rgba(80,77,73,0)']])
+      },
       hose:{
         hot:  mk([[0,'rgba(225,245,255,0.9)'],[0.5,'rgba(140,195,255,0.6)'],[1,'rgba(60,120,230,0)']]),
         mid:  mk([[0,'rgba(150,200,255,0.65)'],[1,'rgba(60,110,220,0)']]),
@@ -3756,7 +3816,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     ]);
     if(puffs.length) st.pf=puffs.slice(-GHOST_FX_CAP.puffs).map(p=>[
       p.kind, +p.x.toFixed(2), +p.y.toFixed(2), +(p.vx||0).toFixed(2), +(p.vy||0).toFixed(2),
-      +(p.life||0).toFixed(2), +(p.total||0).toFixed(2)
+      +(p.life||0).toFixed(2), +(p.total||0).toFixed(2), p.coalSmoke?1:0
     ]);
     if(electricBeams.length) st.eb=electricBeams.slice(-GHOST_FX_CAP.beams).map(b=>[
       +b.x1.toFixed(2), +b.y1.toFixed(2), +b.x2.toFixed(2), +b.y2.toFixed(2),
@@ -3817,7 +3877,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
     for(const p of (Array.isArray(st.pf)?st.pf.slice(0,GHOST_FX_CAP.puffs):[])){
       if(!Array.isArray(p)) continue;
       puffs.push({kind:typeof p[0]==='string'?p[0].slice(0,12):'flame', x:num(p[1]), y:num(p[2]),
-        vx:num(p[3]), vy:num(p[4]), life:Math.max(0,num(p[5])), total:Math.max(0.05,num(p[6],0.5)), dps:0, ghost:true});
+        vx:num(p[3]), vy:num(p[4]), life:Math.max(0,num(p[5])), total:Math.max(0.05,num(p[6],0.5)),
+        coalSmoke:!!num(p[7]), dps:0, ghost:true});
     }
     electricBeams.length=0;
     for(const b of (Array.isArray(st.eb)?st.eb.slice(0,GHOST_FX_CAP.beams):[])){

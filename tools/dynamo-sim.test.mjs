@@ -274,6 +274,8 @@ gases.update(0.25,getTile,setTile,{x:20,y:20});
 assert.equal(getTile(0,4),T.HOT_AIR,'hot air exits above the slot');
 assert.ok(dynamo.metrics().storedEnergy>0,'hot air adds stored energy');
 assert.ok(dynamo.metrics().storedEnergy<steamEnergy,'hot air output is weaker than steam output');
+assert.equal(dynamo.generatedNear(0.5,5.5,'hot',3).kind,'hot','nearby generation queries expose the hot-air source for world lessons');
+assert.equal(dynamo.generatedNear(30,30,'hot',3),null,'nearby generation queries cannot claim a distant dynamo');
 const snap=dynamo.snapshot();
 
 // Powered gas is lossy at turbines: about 10% is consumed so one source cannot

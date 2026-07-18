@@ -21,10 +21,11 @@ const { mobs } = await import('../src/engine/mobs.js');
 const { invasions } = await import('../src/engine/invasions.js');
 
 let beamSounds = 0;
+let warningSounds = 0;
 let bursts = 0;
 let sparks = 0;
 globalThis.MM.audio = {
-  play(id){ if(id === 'beam') beamSounds++; }
+  play(id){ if(id === 'beam') beamSounds++; if(id === 'warning') warningSounds++; }
 };
 globalThis.MM.particles = {
   spawnBurst(){ bursts++; },
@@ -111,14 +112,38 @@ const sentinelSpec = mobs._debugSpecies().STRAZNIK;
 
 resetWorld();
 spawnSentinel();
-runFrames(60);
+const beforeDodge = {damageEvents,beamSounds,warningSounds};
+assert.equal(runUntil(()=>mobs._debugCombat().sentinelCharges.length===1,80),true,'visible hero makes the sentinel begin a one-second warning charge');
+const lockedRobotAim={...mobs._debugCombat().sentinelCharges[0]};
+assert.equal(damageEvents,beforeDodge.damageEvents,'sentinel warning phase cannot damage the hero');
+assert.equal(beamSounds,beforeDodge.beamSounds,'sentinel warning phase does not emit the laser early');
+assert.equal(warningSounds,beforeDodge.warningSounds+1,'every sentinel shot starts with an audible warning signal');
+assert.equal(lockedRobotAim.duration,1,'city sentinel warning lasts exactly one second');
+assert.ok(mobs.ghostRoster().poses[0][5]===1,'multiplayer pose stream exposes the sentinel warning phase');
+const savedRobotCharge=mobs.serialize().list[0];
+assert.ok(savedRobotCharge.sentinelCharge&&Math.abs(savedRobotCharge.sentinelCharge.aimX-lockedRobotAim.aimX)<0.01,'save data preserves an in-progress robot warning and its locked point');
+mobs.deserialize({v:5,list:[savedRobotCharge],aggro:{mode:'rel',m:{}}});
+mobs.freezeSpawns(10000);
+assert.ok(mobs._debugCombat().sentinelCharges.length===1,'loading a save resumes the committed robot warning instead of firing immediately');
+player.y=17;
+assert.equal(runUntil(()=>beamSounds>beforeDodge.beamSounds,90),true,'sentinel fires after its warning even when the hero has already dodged');
+assert.equal(damageEvents,beforeDodge.damageEvents,'moving away from the locked point avoids the city robot laser');
+let firedLines=mobs._debugCombat().lasers;
+assert.ok(firedLines.length>=2&&firedLines.every(l=>Math.hypot(l.x2-lockedRobotAim.aimX,l.y2-lockedRobotAim.aimY)<0.8),'robot fires at the point captured before the dodge');
+assert.ok(mobs.ghostRoster().lasers.length>=2,'released city robot beams are mirrored to multiplayer spectators');
+
+resetWorld();
+spawnSentinel();
+const beforeStationary = {damageEvents,beamSounds,warningSounds,sparks,bursts};
+assert.equal(runUntil(()=>damageEvents>beforeStationary.damageEvents,150),true,'hero who remains at the warned point is hit after the one-second charge');
 let metrics = mobs.metrics();
-assert.equal(damageEvents, 1, 'clear line-of-sight sentinel eye laser damages the hero once');
+assert.equal(damageEvents, beforeStationary.damageEvents+1, 'clear line-of-sight sentinel eye laser damages the stationary hero once');
 assert.ok(metrics.lasers >= 2, 'sentinel emits dual eye laser effects');
 assert.equal(metrics.projectiles, 0, 'sentinel laser attack does not create mob projectiles');
-assert.equal(beamSounds, 1, 'clear sentinel laser shot plays one beam sound');
-assert.equal(sparks, 2, 'clear sentinel laser shot emits two lightweight eye-impact sparks');
-assert.equal(bursts, 0, 'sentinel laser no longer uses heavy chest-style bursts');
+assert.equal(beamSounds, beforeStationary.beamSounds+1, 'clear sentinel laser shot plays one beam sound');
+assert.equal(warningSounds,beforeStationary.warningSounds+1,'the successful follow-up shot also has its own warning');
+assert.equal(sparks, beforeStationary.sparks+2, 'clear sentinel laser shot emits two lightweight eye-impact sparks');
+assert.equal(bursts, beforeStationary.bursts, 'sentinel laser no longer uses heavy chest-style bursts');
 
 resetWorld();
 spawnSentinel(1, {scale:1, speedMul:1, jumpMul:1});
@@ -127,7 +152,7 @@ const alienTarget = alienTeam.aliens[0];
 alienTarget.hp = alienTarget.maxHp = 80;
 const beforeAlienShot = {hp:alienTarget.hp, damageEvents, beamSounds};
 assert.equal(typeof invasions.nearestForEnemy, 'function', 'invasions expose alien targets for hostile city systems');
-assert.equal(runUntil(()=>alienTarget.hp < beforeAlienShot.hp, 140), true, 'city sentinel targets and shoots a visible alien invader');
+assert.equal(runUntil(()=>alienTarget.hp < beforeAlienShot.hp, 180), true, 'city sentinel targets and shoots a visible alien invader after warning');
 assert.equal(damageEvents, beforeAlienShot.damageEvents, 'sentinel attacking an alien does not damage the hero');
 assert.equal(beamSounds, beforeAlienShot.beamSounds + 1, 'alien shot uses the same city sentinel eye laser');
 
@@ -135,7 +160,7 @@ resetWorld();
 spawnSentinel(1, {scale:1, speedMul:1, jumpMul:1});
 const moleTarget = spawnActiveMolekinTarget(5.5,21.15);
 const beforeMoleShot = {hp:moleTarget.hp, damageEvents, beamSounds};
-assert.equal(runUntil(()=>moleTarget.hp < beforeMoleShot.hp, 140), true, 'city sentinel also targets and shoots a visible molekin invader');
+assert.equal(runUntil(()=>moleTarget.hp < beforeMoleShot.hp, 180), true, 'city sentinel also targets and shoots a visible molekin invader after warning');
 assert.equal(damageEvents, beforeMoleShot.damageEvents, 'sentinel attacking a molekin does not damage the hero');
 assert.equal(beamSounds, beforeMoleShot.beamSounds + 1, 'molekin shot uses the same city sentinel eye laser');
 
@@ -150,10 +175,10 @@ assert.equal(runUntil(()=>beamSounds > beforePartial.beamSounds, 120), true, 'pa
 sentinelSpec.speed = originalSentinelSpeed;
 metrics = mobs.metrics();
 assert.equal(damageEvents, beforePartial.damageEvents + 1, 'partly exposed hero can still be hit by one clear robot eye');
-assert.equal(metrics.lasers, 1, 'partly blocked sentinel renders only the eye beam that actually reaches the hero');
+assert.equal(metrics.lasers, 2, 'partly blocked sentinel shows both fired eye beams, including the one stopped by cover');
 assert.equal(metrics.projectiles, 0, 'partly blocked sentinel still avoids projectiles');
 assert.equal(beamSounds, beforePartial.beamSounds + 1, 'partly blocked sentinel plays one beam sound for the real hit');
-assert.equal(sparks, beforePartial.sparks + 1, 'partly blocked sentinel emits sparks only for the clear impact');
+assert.equal(sparks, beforePartial.sparks + 2, 'partly blocked sentinel emits one lightweight impact for each fired eye');
 assert.equal(bursts, beforePartial.bursts, 'partly blocked sentinel still avoids heavy burst particles');
 
 resetWorld();
@@ -174,18 +199,18 @@ assert.equal(mobs.serialize().list[0].facing, -1, 'blocked sentinel does not tur
 
 resetWorld();
 spawnSentinel();
-runFrames(50);
+assert.equal(runUntil(()=>mobs._debugCombat().sentinelCharges.length===1,80),true,'sentinel visibly locks its target before fresh cover is placed');
 const beforeFreshCover = {damageEvents, beamSounds, sparks, bursts};
 setTile(4,19,T.STONE);
 setTile(4,20,T.STONE);
 setTile(4,21,T.STONE);
-runFrames(20);
+assert.equal(runUntil(()=>beamSounds>beforeFreshCover.beamSounds,90),true,'sentinel completes the warned shot into newly placed cover');
 metrics = mobs.metrics();
 assert.equal(damageEvents, beforeFreshCover.damageEvents, 'fresh cover blocks a robot shot even if it was visible a few frames earlier');
-assert.equal(metrics.lasers, 0, 'fresh cover prevents stale cached sight from rendering lasers');
+assert.equal(metrics.lasers, 2, 'fresh cover receives the two already-committed robot beams');
 assert.equal(metrics.projectiles, 0, 'fresh cover does not produce fallback projectiles');
-assert.equal(beamSounds, beforeFreshCover.beamSounds, 'fresh cover prevents stale cached sight from playing a beam sound');
-assert.equal(sparks, beforeFreshCover.sparks, 'fresh cover prevents stale cached sight from emitting sparks');
+assert.equal(beamSounds, beforeFreshCover.beamSounds+1, 'committed robot shot still plays its beam sound when cover catches it');
+assert.equal(sparks, beforeFreshCover.sparks+2, 'fresh cover receives both lightweight eye impacts');
 assert.equal(bursts, beforeFreshCover.bursts, 'fresh cover still avoids heavy burst particles');
 
 resetWorld();
@@ -219,7 +244,7 @@ withRandom(0, ()=>{
   try{
     spawnSentinel(1, {scale:1, speedMul:1, jumpMul:1, sentinelShotsUntilReload:3});
     const beforeReloadDamage = damageEvents;
-    assert.equal(runUntil(()=>mobs.metrics().sentinelReloads >= 1, 420), true, 'sentinel enters reload after its fixed three-shot burst');
+    assert.equal(runUntil(()=>mobs.metrics().sentinelReloads >= 1, 520), true, 'sentinel enters reload after its fixed three warned shots');
     assert.equal(damageEvents - beforeReloadDamage, 3, 'fixed three-shot burst deals exactly three laser hits before reload');
     const damageAtReload = damageEvents;
     const savedReloadState = mobs.serialize().list[0];
@@ -229,7 +254,7 @@ withRandom(0, ()=>{
     assert.ok(mobs.serialize().list[0].sentinelReloadT > 0, 'sentinel reload timer survives save restore');
     runFrames(120);
     assert.equal(damageEvents, damageAtReload, 'sentinel cannot fire during the first two seconds of its reload window');
-    assert.equal(runUntil(()=>damageEvents > damageAtReload, 240), true, 'sentinel resumes firing after the three-second reload');
+    assert.equal(runUntil(()=>damageEvents > damageAtReload, 280), true, 'sentinel resumes warning and firing after the three-second reload');
   } finally {
     sentinelSpec.speed = savedSpeed;
   }
@@ -257,7 +282,7 @@ mobs.deserialize({
   aggro:{mode:'rel',m:{}}
 });
 mobs.freezeSpawns(10000);
-assert.equal(runUntil(()=>mobs.metrics().sentinelShots > 0, 80), true, 'dense city patrol eventually opens fire');
+assert.equal(runUntil(()=>mobs.metrics().sentinelShots > 0, 180), true, 'dense city patrol eventually opens fire after its warning phase');
 metrics = mobs.metrics();
 assert.ok(metrics.laserTraceCalls >= metrics.sentinelShots*2, 'dense city patrol revalidates every fired robot eye');
 assert.ok(metrics.laserTraceCalls <= 32, 'dense city patrol avoids retracing more than one full dual-eye scan');

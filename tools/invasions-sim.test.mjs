@@ -236,7 +236,7 @@ for(let y=45; y<=49; y++){ setTile(-2,y,T.STONE); setTile(2,y,T.STONE); }
 for(let x=-2; x<=2; x++) setTile(x,45,T.STONE);
 invasions.forceNightInvasion(player,getTile,setTile,{day:6,teams:1,alienCount:5});
 let sawLaser = false, sawSiege = false, sawTileDamage = false;
-for(let i=0;i<420;i++){
+for(let i=0;i<700;i++){
   invasions.update(0.1, player, getTile, setTile, ctx);
   const m = invasions.metrics();
   if(m.lasers > 0) sawLaser = true;
@@ -563,8 +563,50 @@ const legacyHealer = legacyAliens.find(a=>a.role === 'healer');
 assert.ok(legacyTank && legacyTank.damageTakenMult < 0.85 && legacyTank.hitboxScale > 1, 'legacy saves re-roll tank traits with tank durability and body shape');
 assert.ok(legacyHealer && legacyHealer.healMult > 1 && legacyHealer.damageMult < 0.75, 'legacy saves re-roll healer traits with support behavior stats');
 
-// molekin night teams are a second, distinct invasion system: they burrow up,
-// worship the eastern fire guardian, use fire/lava pressure, and dig terrain.
+// Alien Team lasers lock a visible point, charge for 1-2 seconds, and only then fire.
+invasions.reset();
+overrides.clear();
+player.x=6; player.y=49; player.vx=0; player.vy=0; player.hp=player.maxHp;
+const laserTeam=invasions.spawnRuinCommander(0,49,{key:'laser-charge-regression',player,getTile,setTile,day:6});
+const laserShooter=laserTeam.aliens[0];
+laserShooter.x=0; laserShooter.y=49; laserShooter.vx=0; laserShooter.vy=0; laserShooter.onGround=true; laserShooter.facing=1;
+let alienLaserDamage=0;
+const damageHeroBeforeLaser=globalThis.damageHero;
+globalThis.damageHero=(amount)=>{ alienLaserDamage+=amount; player.hp-=amount; return true; };
+try{
+  const beforeLasers=invasions._debug.lasers.length;
+  const charge=invasions._debug.fireAlienLaser(laserShooter,laserTeam,player,getTile,setTile,ctx,{aim:1});
+  assert.ok(charge&&charge.t>=1&&charge.t<=2,'Alien Team pistol charges for a randomized one-to-two-second warning');
+  assert.equal(invasions._debug.lasers.length,beforeLasers,'starting the visible charge does not fire a laser immediately');
+  const locked={x:charge.aimX,y:charge.aimY};
+  const laserPose=invasions.ghostRoster().poses[0];
+  assert.ok(laserPose&&laserPose[9]===1&&Math.abs(laserPose[12]-locked.x)<0.01,'multiplayer pose packets expose the alien charge and its locked aim point');
+  player.y=46;
+  for(let i=0;i<110&&laserShooter.alienCharge;i++) invasions._debug.updateAlienLaserCharge(laserShooter,laserTeam,0.02,player,getTile,setTile,ctx);
+  assert.equal(alienLaserDamage,0,'hero who leaves the marked point before release avoids the Alien Team shot');
+  const missedBeam=invasions._debug.lasers.at(-1);
+  assert.ok(missedBeam&&Math.hypot(missedBeam.x2-locked.x,missedBeam.y2-locked.y)<0.8,'released alien laser still ends at the point selected before the dodge');
+  assert.ok(invasions.ghostRoster().beams.length>0,'released Alien Team laser is mirrored to multiplayer spectators');
+
+  player.y=49; player.hp=player.maxHp;
+  const hitCharge=invasions._debug.fireAlienLaser(laserShooter,laserTeam,player,getTile,setTile,ctx,{aim:1});
+  for(let i=0;i<110&&laserShooter.alienCharge;i++) invasions._debug.updateAlienLaserCharge(laserShooter,laserTeam,0.02,player,getTile,setTile,ctx);
+  assert.ok(hitCharge&&alienLaserDamage>0,'hero who stays on the marked point is hit after the charge completes');
+
+  const damageBeforeCover=alienLaserDamage;
+  const coverCharge=invasions._debug.fireAlienLaser(laserShooter,laserTeam,player,getTile,setTile,ctx,{aim:1});
+  setTile(3,48,T.STONE);
+  for(let i=0;i<110&&laserShooter.alienCharge;i++) invasions._debug.updateAlienLaserCharge(laserShooter,laserTeam,0.02,player,getTile,setTile,ctx);
+  assert.ok(coverCharge&&invasions._debug.lasers.at(-1).blocked,'cover raised during charging catches the committed alien shot');
+  assert.equal(alienLaserDamage,damageBeforeCover,'new cover prevents the charged alien laser from damaging the hero');
+  setTile(3,48,T.AIR);
+} finally {
+  globalThis.damageHero=damageHeroBeforeLaser;
+  player.hp=player.maxHp;
+}
+
+// Molekin night teams are a second, distinct invasion system: they burrow up,
+// worship the eastern fire guardian, throw physical clods, charge, and dig terrain.
 invasions.reset();
 overrides.clear();
 player.x = 0; player.y = 49; player.hp = player.maxHp; player.xp = 0;
@@ -618,20 +660,77 @@ try{
 }
 assert.ok(moleTeam.aliens.every(a=>!a.speechText), 'molekin chatter also stays silent without a world event');
 let moleHeroDamage = 0;
+let lastMoleDamageOpts = null;
 const previousDamageHero = globalThis.damageHero;
-globalThis.damageHero = (amount,opts)=>{ moleHeroDamage += amount; player.hp -= amount; invasions.onHeroAction(opts && opts.cause === 'molekin_invasion' ? 'hero_hit' : 'hero_hurt',{player,force:true,cause:opts && opts.cause}); return true; };
+globalThis.damageHero = (amount,opts)=>{ moleHeroDamage += amount; lastMoleDamageOpts=opts||null; player.hp -= amount; invasions.onHeroAction(opts && opts.cause === 'molekin_invasion' ? 'hero_hit' : 'hero_hurt',{player,force:true,cause:opts && opts.cause}); return true; };
 try{
   const shooter = moleTeam.aliens.find(a=>a.role === 'sniper') || moleTeam.aliens[0];
   shooter.x = player.x - 4;
   shooter.y = player.y;
   shooter.facing = 1;
   clearSquadSpeech(moleTeam);
-  const hit = invasions._debug.fireMolekinAttack(shooter,moleTeam,player,getTile,setTile,ctx,{aim:1});
-  assert.ok(hit && hit.clear, 'molekin fire attack can hit the hero through line of sight');
-  assert.ok(moleHeroDamage > 0, 'molekin fire attack damages the hero with its own invasion cause');
+  const lasersBeforeThrow=invasions._debug.lasers.length;
+  const thrown = invasions._debug.fireMolekinAttack(shooter,moleTeam,player,getTile,setTile,ctx,{aim:1});
+  assert.ok(thrown && Number.isFinite(thrown.vx) && Number.isFinite(thrown.vy), 'molekin launches a physical arcing clod at the hero');
+  assert.equal(invasions._debug.lasers.length,lasersBeforeThrow,'molekin throw does not reuse the UFO laser system');
+  assert.ok(invasions.ghostRoster().shots.some(s=>s[0]===thrown.id),'multiplayer pose packets include the thrown molekin projectile');
+  for(let i=0;i<90 && moleHeroDamage<=0;i++) invasions._debug.updateMoleShots(0.02,player,getTile,setTile,ctx);
+  assert.ok(moleHeroDamage > 0, 'the physical molekin projectile damages the hero only after travelling to the target');
   assert.ok(squadSaid(moleTeam,'heroHit'), 'molekin team reacts to an effective hit on the hero');
-assert.ok(invasions._debug.lasers.some(l=>/^mole_/.test(l.kind)), 'molekin attack uses fire/lava visual effects instead of alien lasers');
+
+  const charger=moleTeam.aliens.find(a=>a.role === 'rusher') || moleTeam.aliens.find(a=>a.role === 'flanker') || moleTeam.aliens[0];
+  charger.role='rusher';
+  charger.x=player.x-5;
+  charger.y=50;
+  charger.vx=0; charger.vy=0; charger.onGround=true;
+  charger.moleCharge=null; charger.lastMoleChargeAt=0;
+  assert.ok(invasions._debug.molekinChargeLane(charger,player,getTile),'a flat, supported five-tile corridor is valid charge space');
+  const chargeAttack=invasions._debug.fireMolekinAttack(charger,moleTeam,player,getTile,setTile,ctx,{aim:1});
+  assert.equal(chargeAttack.charge,true,'the real molekin attack selector chooses a charge when the lane is free');
+  const chargePose=invasions.ghostRoster().poses.find((p,i)=>invasions._debug.teams[0].aliens.filter(a=>!a.dead&&a.hp>0)[i]===charger);
+  assert.ok(chargePose && chargePose[7]===1,'multiplayer pose packets expose the charge windup');
+  const damageBeforeCharge=moleHeroDamage;
+  for(let i=0;i<100 && moleHeroDamage===damageBeforeCharge;i++) invasions._debug.updateMolekinCharge(charger,moleTeam,0.02,player,getTile);
+  assert.ok(moleHeroDamage>damageBeforeCharge,'the completed molekin charge collides with and damages the hero');
+  assert.ok(lastMoleDamageOpts && lastMoleDamageOpts.kb>=8,'charge damage requests a strong displacement impulse');
+  assert.ok(charger.lastChargeHitAt>0,'the charging body records a real collision instead of contact damage by proximity');
+
+  let guestChargeDamage=0,guestChargeOpts=null;
+  const guestBody={x:player.x+1,y:player.y,w:0.7,h:0.95,dead:false,hurt(amount,_sx,_sy,_cause,opts){ guestChargeDamage+=amount; guestChargeOpts=opts; }};
+  MM.coopBodies=[guestBody];
+  charger.moleCharge=null; charger.lastMoleChargeAt=0; charger.x=player.x-5; charger.y=50; charger.vx=0; charger.vy=0; charger.onGround=true;
+  const interceptCharge=invasions._debug.fireMolekinAttack(charger,moleTeam,player,getTile,setTile,ctx,{aim:1});
+  assert.equal(interceptCharge.charge,true,'molekin starts its charge toward the initially nearest party member');
+  guestBody.x=player.x-3;
+  const hostDamageBeforeIntercept=moleHeroDamage;
+  for(let i=0;i<100 && guestChargeDamage===0;i++) invasions._debug.updateMolekinCharge(charger,moleTeam,0.02,player,getTile);
+  assert.ok(guestChargeDamage>0,'a co-op hero who enters the lane intercepts the physical charge');
+  assert.equal(moleHeroDamage,hostDamageBeforeIntercept,'an intercepted charge does not also damage its original host target');
+  assert.ok(guestChargeOpts && guestChargeOpts.kb>=8,'the intercepting co-op hero receives the same strong charge impulse');
+  delete MM.coopBodies;
+
+  charger.moleCharge=null; charger.lastMoleChargeAt=0; charger.x=player.x-5; charger.y=50; charger.onGround=true;
+  setTile(Math.floor(charger.x+2),49,T.STONE);
+  assert.equal(invasions._debug.molekinChargeLane(charger,player,getTile),null,'a wall in the run-up cancels the charge lane');
+  const blockedFallback=invasions._debug.fireMolekinAttack(charger,moleTeam,player,getTile,setTile,ctx,{aim:1});
+  assert.ok(!blockedFallback.charge && Number.isFinite(blockedFallback.vx),'a blocked molekin throws instead of charging through terrain');
+  setTile(Math.floor(charger.x+2),49,T.AIR);
+  setTile(Math.floor(charger.x+2),50,T.AIR);
+  assert.equal(invasions._debug.molekinChargeLane(charger,player,getTile),null,'a gap in the run-up also cancels the charge lane');
+  setTile(Math.floor(charger.x+2),50,T.STONE);
+
+  charger.moleCharge=null; charger.lastMoleChargeAt=0; charger.x=player.x-5; charger.y=50; charger.vx=0; charger.vy=0; charger.onGround=true;
+  const changingLaneAttack=invasions._debug.fireMolekinAttack(charger,moleTeam,player,getTile,setTile,ctx,{aim:1});
+  assert.equal(changingLaneAttack.charge,true,'molekin can begin a charge before the terrain changes');
+  const changingGapX=Math.floor(charger.x+2);
+  const damageBeforeChangingLane=moleHeroDamage;
+  setTile(changingGapX,50,T.AIR);
+  for(let i=0;i<35;i++) invasions._debug.updateMolekinCharge(charger,moleTeam,0.02,player,getTile);
+  assert.equal(moleHeroDamage,damageBeforeChangingLane,'a gap opened during the windup stops the charge before it reaches the hero');
+  assert.ok(charger.moleCharge && charger.moleCharge.phase==='recover','a charge interrupted by a new gap enters recovery');
+  setTile(changingGapX,50,T.STONE);
 } finally {
+  delete MM.coopBodies;
   globalThis.damageHero = previousDamageHero;
   player.hp = player.maxHp;
 }

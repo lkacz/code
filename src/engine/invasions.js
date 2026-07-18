@@ -30,6 +30,11 @@ const invasions = (function(){
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
   const LASER_CAP = 80;
+  const MOLE_SHOT_CAP = 72;
+  const MOLE_SHOT_GHOST_CAP = 24;
+  const MOLE_SHOT_GRAVITY = 12.5;
+  const ALIEN_LASER_CHARGE_MIN = 1;
+  const ALIEN_LASER_CHARGE_MAX = 2;
   const TILE_DAMAGE_CAP = 220;
   const PLAYER_LEVEL_CAP = 99;
   const INVASION_MAX_TEAMS = 6;
@@ -41,9 +46,11 @@ const invasions = (function(){
   const teams = [];
   const caches = [];
   const lasers = [];
+  const moleShots = [];
   const tileDamage = new Map();
   const brains = new Map(); // team.id -> squad brain (transient, rebuilt after load)
   let seq = 1;
+  let moleShotSeq = 1;
   let lastNightDay = 0;
   let saveAcc = 0;
   let lastWorldAccess = {getTile:null,setTile:null,ctx:null};
@@ -1348,6 +1355,8 @@ const invasions = (function(){
       tx:plan.x, ty:plan.y,
       fxT:0
     };
+    a.alienCharge=null;
+    a.moleCharge=null;
     a.vx = 0; a.vy = 0;
     a.onGround = false;
     a._ai = null; // it re-plans from wherever it lands, with a clean slate
@@ -2458,12 +2467,6 @@ const invasions = (function(){
     const py = player && Number.isFinite(player.y) ? player.y : 0;
     return Math.hypot((hit.tx+0.5)-px,(hit.ty+0.5)-py) <= (Number.isFinite(range) ? range : 7.5);
   }
-  function shouldBreakBlockedTileForTeam(team,hit,player,range){
-    if(!hit || !hit.blocked || !isBreachableByTeam(team,hit.tile)) return false;
-    const px = player && Number.isFinite(player.x) ? player.x : 0;
-    const py = player && Number.isFinite(player.y) ? player.y : 0;
-    return Math.hypot((hit.tx+0.5)-px,(hit.ty+0.5)-py) <= (Number.isFinite(range) ? range : 7.5);
-  }
   function isAimedBreachHit(hit,aimX,aimY){
     return !!(hit && hit.blocked && Number.isFinite(aimX) && Number.isFinite(aimY) &&
       Math.hypot((hit.tx+0.5)-aimX,(hit.ty+0.5)-aimY) <= 1.65);
@@ -2486,7 +2489,7 @@ const invasions = (function(){
     return best;
   }
   function hurtPartyTarget(tgt,dmg,opts){
-    if(tgt && typeof tgt.hurt==='function'){ tgt.hurt(dmg,opts.srcX,opts.srcY,opts.cause); return; }
+    if(tgt && typeof tgt.hurt==='function'){ tgt.hurt(dmg,opts.srcX,opts.srcY,opts.cause,opts); return; }
     try{ if(root.damageHero) root.damageHero(dmg,opts); }catch(e){}
   }
   // The squad brain hunts the party member nearest to the squad's center — a guest
@@ -2499,15 +2502,67 @@ const invasions = (function(){
     for(const u of steerable){ cx+=u.x; cy+=u.y; }
     return nearestPartyMember(cx/steerable.length, cy/steerable.length, player);
   }
+  function partyTargetOnLaser(sx,sy,ex,ey,player){
+    const dx=ex-sx,dy=ey-sy,len2=dx*dx+dy*dy;
+    if(len2<=0.0001) return null;
+    let best=null,bestT=Infinity;
+    for(const tgt of livePartyTargets(player)){
+      const cx=tgt.x,cy=tgt.y-0.40;
+      const rawAlong=((cx-sx)*dx+(cy-sy)*dy)/len2;
+      if(rawAlong<=0.015||rawAlong>1.015) continue;
+      const along=clamp(rawAlong,0,1);
+      const px=sx+dx*along,py=sy+dy*along;
+      const radius=Math.max(0.32,Math.min(0.52,Math.max((Number(tgt.w)||0.70)*0.48,(Number(tgt.h)||0.95)*0.32)));
+      if(Math.hypot(cx-px,cy-py)<=radius && along<bestT){ best=tgt; bestT=along; }
+    }
+    return best;
+  }
+  function releaseAlienLaser(a,team,player,getTile,setTile,ctx,charge){
+    const c=charge || (a && a.alienCharge);
+    if(!a || !c) return null;
+    a.alienCharge=null;
+    const profile=profileFor(team);
+    const threat=teamThreatLevel(team);
+    const weaponTier=Math.max(teamWeaponTier(team),Number(a.weaponTier)||0);
+    const range=profile.fireRange+Math.min(6,(team.day||1)*0.35)+Math.min(4,Math.max(0,threat-(team.day||1))*0.11)+weaponTier*0.8;
+    const ox=a.x+(a.facing||1)*0.23,oy=a.y-0.62;
+    const hit=traceLine(ox,oy,c.aimX,c.aimY,getTile,range);
+    const weaponBoost=1+weaponTier*0.08;
+    const dmgMult=(Number.isFinite(c.damageMult)?c.damageMult:1)*(Number(a.damageMult)||1)*weaponBoost;
+    const partyHit=!c.tileAim ? partyTargetOnLaser(ox,oy,hit.x,hit.y,player) : null;
+    pushLaser(ox,oy,hit.x,hit.y,!!partyHit,hit.blocked,dmgMult>=1.5||weaponTier>=2,'alien',weaponTier);
+    a.lastShotAt=nowMs();
+    play('laser',{x:a.x,y:a.y-0.5});
+    if(partyHit){
+      hurtPartyTarget(partyHit,Math.max(1,Math.round((5+Math.min(6,Math.floor(threat/5)))*dmgMult)),{srcX:a.x,srcY:a.y-0.4,kb:3.5,kbY:-2.2,invulMs:430,cause:'alien_invasion'});
+      return Object.assign(hit,{partyHit});
+    }
+    const breakRange=c.breach?profile.breachRange:7.5;
+    const lockedPoint={x:c.aimX,y:c.aimY};
+    if((c.tileAim&&c.breach&&isAimedBreachHit(hit,c.aimX,c.aimY)&&isAttackableStructureTile(hit.tile))||
+       shouldBreakBlockedTile(hit,lockedPoint,breakRange)){
+      const damaged=damageStructureTile(hit.tx,hit.ty,(3.6+Math.min(4.4,threat*0.20))*dmgMult,getTile,setTile,ctx);
+      if(damaged) triggerTeamSpeech(team,'breach',{speaker:a,x:hit.tx+0.5,y:hit.ty+0.5,cooldown:1900,keyCooldown:6200,override:false});
+    }
+    return hit;
+  }
+  function updateAlienLaserCharge(a,team,dt,player,getTile,setTile,ctx){
+    const c=a&&a.alienCharge;
+    if(!c) return false;
+    const step=Math.max(0,Math.min(0.08,Number(dt)||0));
+    a.facing=c.aimX>=a.x?1:-1;
+    if(c.ghost) return true;
+    a.vx=(a.vx||0)*Math.max(0,1-step*11);
+    moveAlien(a,step,getTile);
+    c.t=Math.max(0,(Number(c.t)||0)-step);
+    if(c.t<=0) releaseAlienLaser(a,team,player,getTile,setTile,ctx,c);
+    return true;
+  }
   function fireAlienLaser(a,team,player,getTile,setTile,ctx,opts){
     opts = opts || {};
-    const profile = profileFor(team);
-    const threat = teamThreatLevel(team);
-    const weaponTier = Math.max(teamWeaponTier(team), Number(a && a.weaponTier) || 0);
-    const range = profile.fireRange + Math.min(6, (team.day || 1) * 0.35) + Math.min(4, Math.max(0, threat - (team.day || 1)) * 0.11) + weaponTier * 0.8;
+    if(!a) return null;
+    if(a.alienCharge) return a.alienCharge;
     const tgt = nearestPartyMember(a.x,a.y,player); // shots chase the nearest hero, host or guest
-    const ox = a.x + (a.facing || 1) * 0.23;
-    const oy = a.y - 0.62;
     let aimX, aimY;
     const tileAim = Number.isFinite(opts.aimX) && Number.isFinite(opts.aimY);
     if(tileAim){
@@ -2518,24 +2573,14 @@ const invasions = (function(){
       aimX = (Number.isFinite(tgt.vx) ? tgt.x + tgt.vx * 0.08 : tgt.x) + randRange(-wobble,wobble);
       aimY = (Number.isFinite(tgt.vy) ? tgt.y - 0.52 + tgt.vy * 0.035 : tgt.y - 0.52) + randRange(-wobble,wobble);
     }
-    const hit = traceLine(ox,oy,aimX,aimY,getTile,range);
-    const weaponBoost = 1 + weaponTier * 0.08;
-    const dmgMult = (Number.isFinite(opts.damageMult) ? opts.damageMult : 1) * (Number(a.damageMult) || 1) * weaponBoost;
-    pushLaser(ox,oy,hit.x,hit.y,hit.clear,hit.blocked,dmgMult >= 1.5 || weaponTier >= 2,'alien',weaponTier);
-    a.lastShotAt = nowMs();
-    if(hit.clear && !tileAim){
-      hurtPartyTarget(tgt, Math.max(1, Math.round((5 + Math.min(6, Math.floor(threat / 5))) * dmgMult)), {srcX:a.x,srcY:a.y-0.4,kb:3.5,kbY:-2.2,invulMs:430,cause:'alien_invasion'});
-      return hit;
-    }
-    const breakRange = opts.breach ? profile.breachRange : 7.5;
-    if((tileAim && opts.breach && isAimedBreachHit(hit,aimX,aimY) && isAttackableStructureTile(hit.tile)) ||
-       shouldBreakBlockedTile(hit,tgt,breakRange)){
-      const damaged = damageStructureTile(hit.tx,hit.ty,(3.6 + Math.min(4.4, threat * 0.20)) * dmgMult,getTile,setTile,ctx);
-      if(damaged){
-        triggerTeamSpeech(team,'breach',{speaker:a,x:hit.tx+0.5,y:hit.ty+0.5,cooldown:1900,keyCooldown:6200,override:false});
-      }
-    }
-    return hit;
+    const duration=randRange(ALIEN_LASER_CHARGE_MIN,ALIEN_LASER_CHARGE_MAX);
+    a.facing=aimX>=a.x?1:-1;
+    a.alienCharge={
+      t:duration,duration,aimX,aimY,tileAim,breach:!!opts.breach,
+      damageMult:Number.isFinite(opts.damageMult)?opts.damageMult:1,ghost:false
+    };
+    play('charge',{x:a.x,y:a.y-0.5});
+    return a.alienCharge;
   }
   function tryPlaceMoleHazard(team,tx,ty,player,getTile,setTile,ctx,heavy){
     if(!isMolekinTeam(team) || !inWorldY(ty,1)) return false;
@@ -2554,46 +2599,223 @@ const invasions = (function(){
     }
     return false;
   }
+  function molekinChargeRole(role){
+    return role === 'rusher' || role === 'tank' || role === 'flanker' || role === 'orbiter' || role === 'sapper' || role === 'commander';
+  }
+  function molekinChargeLane(a,tgt,getTile){
+    if(!a || !tgt || !a.onGround || !Number.isFinite(tgt.x) || !Number.isFinite(tgt.y)) return null;
+    const dx = tgt.x - a.x;
+    const dist = Math.abs(dx);
+    const vertical = Math.abs((tgt.y - 0.40) - (a.y - 0.45));
+    if(dist < 2.2 || dist > 8.6 || vertical > 1.05) return null;
+    const dir = dx < 0 ? -1 : 1;
+    for(let d=0.38; d<dist-0.48; d+=0.28){
+      const x = a.x + dir*d;
+      if(alienCollidesAt(a,x,a.y,getTile)) return null;
+      const floorTile = readTile(getTile,Math.floor(x),Math.floor(a.y+0.10));
+      if(!isSolid(floorTile) || floorTile === T.LAVA) return null;
+    }
+    return {dir,dist};
+  }
+  function tryStartMolekinCharge(a,team,tgt,getTile){
+    if(!isMolekinTeam(team) || !a || a.moleCharge || !molekinChargeRole(a.role || 'rusher')) return false;
+    const now=nowMs();
+    const last=Number(a.lastMoleChargeAt)||0;
+    if(last>0 && now-last<2300) return false;
+    const lane=molekinChargeLane(a,tgt,getTile);
+    if(!lane) return false;
+    const threat=teamThreatLevel(team);
+    const grade=teamGrade(team);
+    a.facing=lane.dir;
+    a.vx=0;
+    a.moleCharge={
+      phase:'windup',t:0.34,elapsed:0,dir:lane.dir,traveled:0,maxDist:Math.min(10,lane.dist+0.9),
+      speed:7.6+Math.min(3.0,threat*0.055)+grade*0.55,
+      damage:Math.max(3,Math.round((7+Math.min(8,threat*0.28))*(Number(a.damageMult)||1))),
+      target:tgt,hit:false,ghost:false
+    };
+    a.lastMoleChargeAt=now;
+    a.attackCd=Math.max(Number(a.attackCd)||0,1.25);
+    play('warning',{x:a.x,y:a.y-0.5});
+    return true;
+  }
+  function chargeTouchesPartyTarget(a,tgt){
+    if(!a || !tgt || tgt.dead || !Number.isFinite(tgt.x) || !Number.isFinite(tgt.y)) return false;
+    const scale=clamp(Number(a.hitboxScale)||1,0.78,1.36);
+    const targetHalf=Math.max(0.30,(Number(tgt.w)||0.70)*0.5);
+    return Math.abs(a.x-tgt.x)<=0.34*scale+targetHalf && Math.abs((a.y-0.45)-(tgt.y-0.40))<=1.08;
+  }
+  function enterMolekinChargeRecovery(a,c,hit){
+    c.phase='recover'; c.t=hit?0.46:0.34; c.hit=!!hit;
+    a.vx=(a.vx||0)*(hit?-0.18:0.22);
+    a.attackCd=Math.max(Number(a.attackCd)||0,hit?1.25:0.85);
+  }
+  function updateMolekinCharge(a,team,dt,player,getTile){
+    const c=a && a.moleCharge;
+    if(!c) return false;
+    const step=Math.max(0,Math.min(0.08,Number(dt)||0));
+    a.facing=c.dir<0?-1:1;
+    if(c.ghost) return true;
+    if(c.phase==='windup'){
+      a.vx=(a.vx||0)*Math.max(0,1-step*13);
+      c.t-=step;
+      moveAlien(a,step,getTile);
+      if(c.t<=0){ c.phase='rush'; c.t=0.90; c.elapsed=0; play('thud',{x:a.x,y:a.y}); }
+      return true;
+    }
+    if(c.phase==='recover'){
+      c.t-=step;
+      a.vx=(a.vx||0)*Math.max(0,1-step*9);
+      moveAlien(a,step,getTile);
+      if(c.t<=0) a.moleCharge=null;
+      return true;
+    }
+    c.t-=step;
+    c.elapsed+=step;
+    const speed=c.speed*(0.62+0.38*Math.min(1,c.elapsed/0.20));
+    const distance=speed*step;
+    const pieces=Math.max(1,Math.min(5,Math.ceil(distance/0.18)));
+    const chargeTargets=livePartyTargets(player);
+    if(c.target && !c.target.dead){
+      const preferredIndex=chargeTargets.indexOf(c.target);
+      if(preferredIndex>0) chargeTargets.unshift(chargeTargets.splice(preferredIndex,1)[0]);
+      else if(preferredIndex<0) chargeTargets.unshift(c.target);
+    }
+    for(let i=0;i<pieces;i++){
+      const dx=c.dir*distance/pieces;
+      const nx=a.x+dx;
+      const floorTile=readTile(getTile,Math.floor(nx),Math.floor(a.y+0.10));
+      if(alienCollidesAt(a,nx,a.y,getTile) || !isSolid(floorTile) || floorTile===T.LAVA){
+        enterMolekinChargeRecovery(a,c,false);
+        burst(a.x+c.dir*0.30,a.y-0.35,'common');
+        play('thud',{x:a.x,y:a.y});
+        return true;
+      }
+      a.x=nx;
+      a.vx=c.dir*speed;
+      c.traveled+=Math.abs(dx);
+      const tgt=chargeTargets.find(body=>chargeTouchesPartyTarget(a,body));
+      if(tgt){
+        hurtPartyTarget(tgt,c.damage,{srcX:a.x-c.dir*0.55,srcY:a.y-0.35,kb:8.4,kbY:-2.4,invulMs:620,cause:'molekin_invasion'});
+        a.lastChargeHitAt=nowMs();
+        burst(tgt.x,tgt.y-0.35,'rare');
+        play('thud',{x:tgt.x,y:tgt.y});
+        enterMolekinChargeRecovery(a,c,true);
+        return true;
+      }
+    }
+    if(c.t<=0 || c.traveled>=c.maxDist) enterMolekinChargeRecovery(a,c,false);
+    return true;
+  }
   function fireMolekinAttack(a,team,player,getTile,setTile,ctx,opts){
     opts = opts || {};
-    const profile = profileFor(team);
     const threat = teamThreatLevel(team);
     const weaponTier = Math.max(teamWeaponTier(team), Number(a && a.weaponTier) || 0);
     const role = a && a.role || 'rusher';
-    const range = profile.fireRange + Math.min(3.8, (team.day || 1) * 0.18) + weaponTier * 0.45;
-    const tgt = nearestPartyMember(a.x,a.y,player); // shots chase the nearest hero, host or guest
-    const ox = a.x + (a.facing || 1) * 0.22;
-    const oy = a.y - 0.52;
-    let aimX, aimY;
+    const tgt = nearestPartyMember(a.x,a.y,player);
     const tileAim = Number.isFinite(opts.aimX) && Number.isFinite(opts.aimY);
+    if(!tileAim && tryStartMolekinCharge(a,team,tgt,getTile)){
+      return {charge:true,clear:true,blocked:false,x:tgt.x,y:tgt.y};
+    }
+    const ox = a.x + (a.facing || 1) * 0.24;
+    const oy = a.y - 0.58;
+    let aimX, aimY;
     if(tileAim){
       aimX = opts.aimX; aimY = opts.aimY;
     } else {
-      const wobble = Math.min(0.78, Math.max(0, 1 - (opts.aim || 0.74)) * 1.5);
-      aimX = (Number.isFinite(tgt.vx) ? tgt.x + tgt.vx * 0.06 : tgt.x) + randRange(-wobble,wobble);
-      aimY = (Number.isFinite(tgt.vy) ? tgt.y - 0.44 + tgt.vy * 0.03 : tgt.y - 0.44) + randRange(-wobble,wobble);
+      const wobble = Math.min(0.68, Math.max(0, 1 - (opts.aim || 0.74)) * 1.35);
+      aimX = (Number.isFinite(tgt.vx) ? tgt.x + tgt.vx * 0.10 : tgt.x) + randRange(-wobble,wobble);
+      aimY = (Number.isFinite(tgt.vy) ? tgt.y - 0.42 + tgt.vy * 0.05 : tgt.y - 0.42) + randRange(-wobble,wobble);
     }
-    const hit = traceLine(ox,oy,aimX,aimY,getTile,range);
     const weaponBoost = 1 + weaponTier * 0.07;
     const dmgMult = (Number.isFinite(opts.damageMult) ? opts.damageMult : 1) * (Number(a.damageMult) || 1) * weaponBoost;
     const heavy = role === 'sniper' || role === 'sapper' || dmgMult >= 1.35 || weaponTier >= 2;
-    pushLaser(ox,oy,hit.x,hit.y,hit.clear,hit.blocked,heavy,heavy ? 'mole_lava' : 'mole_fire',weaponTier);
+    const dx = aimX - ox;
+    const flight = clamp(Math.abs(dx) / (7.8 + weaponTier * 0.7),0.34,1.18);
+    const shot = {
+      id:moleShotSeq++, team, owner:a, target:tileAim ? null : tgt,
+      x:ox, y:oy,
+      vx:dx / flight,
+      vy:(aimY - oy - 0.5 * MOLE_SHOT_GRAVITY * flight * flight) / flight,
+      age:0, life:Math.min(2.2,flight + 0.72), spin:Math.random()*Math.PI*2,
+      radius:heavy ? 0.22 : 0.17,
+      damage:Math.max(1,Math.round((4 + Math.min(7,Math.floor(threat/4))) * dmgMult)),
+      terrainDamage:(5.6 + Math.min(6.4,threat*0.28)) * dmgMult,
+      heavy, weaponTier, breach:!!opts.breach, tileAim,
+      aimX, aimY, ghost:false
+    };
+    moleShots.push(shot);
+    while(moleShots.length > MOLE_SHOT_CAP) moleShots.shift();
     a.lastShotAt = nowMs();
-    if(hit.clear && !tileAim){
-      hurtPartyTarget(tgt, Math.max(1, Math.round((4 + Math.min(7, Math.floor(threat / 4))) * dmgMult)), {srcX:a.x,srcY:a.y-0.35,kb:2.7,kbY:-1.9,invulMs:430,cause:'molekin_invasion'});
-      if(Math.random() < (heavy ? 0.38 : 0.16)) tryPlaceMoleHazard(team,floor(hit.x),floor(hit.y+0.55),tgt,getTile,setTile,ctx,heavy);
-      return hit;
-    }
-    const breakRange = opts.breach ? profile.breachRange : 6.5;
-    if((tileAim && opts.breach && isAimedBreachHit(hit,aimX,aimY) && isBreachableByTeam(team,hit.tile)) ||
-       shouldBreakBlockedTileForTeam(team,hit,tgt,breakRange)){
-      const damaged = damageTeamTile(team,hit.tx,hit.ty,(5.6 + Math.min(6.4, threat * 0.28)) * dmgMult,getTile,setTile,ctx);
-      if(damaged){
-        if(Math.random() < 0.33) tryPlaceMoleHazard(team,hit.tx,hit.ty-1,player,getTile,setTile,ctx,heavy);
-        triggerTeamSpeech(team,'breach',{speaker:a,x:hit.tx+0.5,y:hit.ty+0.5,cooldown:1850,keyCooldown:6000,override:false});
+    play('swing',{x:a.x,y:a.y-0.5});
+    return shot;
+  }
+  function livePartyTargets(player){
+    const out=[];
+    if(player && !player.dead && Number.isFinite(player.x) && Number.isFinite(player.y)) out.push(player);
+    const bodies=(typeof MM!=='undefined' && MM.coopBodies) || null;
+    if(Array.isArray(bodies)){
+      for(const b of bodies){
+        if(!b || b.dead || typeof b.hurt!=='function' || !Number.isFinite(b.x) || !Number.isFinite(b.y) || out.includes(b)) continue;
+        out.push(b);
       }
     }
-    return hit;
+    return out;
+  }
+  function moleShotTouchesTarget(s,tgt){
+    if(!s || !tgt || tgt.dead) return false;
+    const hw=Math.max(0.30,(Number(tgt.w)||0.70)*0.5)+(s.radius||0.17);
+    const hh=Math.max(0.42,(Number(tgt.h)||0.95)*0.5)+(s.radius||0.17);
+    return Math.abs(s.x-tgt.x)<=hw && Math.abs(s.y-(tgt.y-0.40))<=hh;
+  }
+  function impactMoleShot(s,target,tx,ty,getTile,setTile,ctx){
+    if(!s) return;
+    const team=s.team;
+    if(target){
+      hurtPartyTarget(target,s.damage,{srcX:s.x-(s.vx<0?-0.35:0.35),srcY:s.y,kb:s.heavy?4.6:3.3,kbY:-2.4,invulMs:470,cause:'molekin_invasion'});
+      if(Math.random()<(s.heavy?0.30:0.10)) tryPlaceMoleHazard(team,floor(s.x),floor(s.y+0.60),target,getTile,setTile,ctx,s.heavy);
+      burst(s.x,s.y,s.heavy?'rare':'common');
+      play('thud',{x:s.x,y:s.y});
+      return;
+    }
+    const tile=readTile(getTile,tx,ty);
+    if(s.breach && isBreachableByTeam(team,tile)){
+      const damaged=damageTeamTile(team,tx,ty,s.terrainDamage,getTile,setTile,ctx);
+      if(damaged){
+        if(Math.random()<0.28) tryPlaceMoleHazard(team,tx,ty-1,null,getTile,setTile,ctx,s.heavy);
+        triggerTeamSpeech(team,'breach',{speaker:s.owner,x:tx+0.5,y:ty+0.5,cooldown:1850,keyCooldown:6000,override:false});
+      }
+    }
+    burst(s.x,s.y,s.heavy?'rare':'common');
+    play('thud',{x:s.x,y:s.y});
+  }
+  function updateMoleShots(dt,player,getTile,setTile,ctx){
+    const frameDt=Math.max(0,Math.min(0.08,Number(dt)||0));
+    if(!frameDt) return;
+    const targets=livePartyTargets(player);
+    for(let i=moleShots.length-1;i>=0;i--){
+      const s=moleShots[i];
+      if(!s || s.ghost) continue;
+      s.age=(s.age||0)+frameDt;
+      s.life-=frameDt;
+      let remove=s.life<=0;
+      const distance=Math.hypot(s.vx||0,s.vy||0)*frameDt;
+      const pieces=Math.max(1,Math.min(6,Math.ceil(distance/0.18)));
+      for(let step=0;step<pieces && !remove;step++){
+        const d=frameDt/pieces;
+        s.vy=(s.vy||0)+MOLE_SHOT_GRAVITY*d;
+        s.x+=(s.vx||0)*d;
+        s.y+=(s.vy||0)*d;
+        s.spin=(s.spin||0)+(s.vx||0)*d*0.9;
+        let target=null;
+        for(const tgt of targets){ if(moleShotTouchesTarget(s,tgt)){ target=tgt; break; } }
+        if(target){ impactMoleShot(s,target,0,0,getTile,setTile,ctx); remove=true; break; }
+        const tx=floor(s.x),ty=floor(s.y);
+        const tile=readTile(getTile,tx,ty);
+        if(isSolid(tile) || tile===T.LAVA){ impactMoleShot(s,null,tx,ty,getTile,setTile,ctx); remove=true; break; }
+      }
+      if(remove) moleShots.splice(i,1);
+    }
   }
   function canPlaceBarricadeAt(tx,ty,player,team,getTile){
     const t = readTile(getTile,tx,ty);
@@ -2822,6 +3044,7 @@ const invasions = (function(){
     const dy = (py - 0.4) - (a.y - 0.45);
     const dist = Math.hypot(dx,dy) || 1;
     const speakingLong = longSpeechActive(a);
+    a.attackCd = Math.max(0, (a.attackCd || 0) - dt);
     if(alienCollidesAt(a,a.x,a.y,getTile)){
       a.buriedT = (a.buriedT || 0) + dt;
       unstuckAlien(team,a,{dir:intent && intent.moveX ? intent.moveX : (a.facing || (dx >= 0 ? 1 : -1)), reason:'buried', embedded:true},getTile,setTile,ctx);
@@ -2836,7 +3059,11 @@ const invasions = (function(){
     if(dread){
       a._ghostSpookUntil = (typeof performance!=='undefined' ? performance.now() : Date.now()) + 900;
       a.state = 'rout';
+      if(a.moleCharge) a.moleCharge=null;
+      if(a.alienCharge) a.alienCharge=null;
     }
+    if(!dread && isMolekinTeam(team) && a.moleCharge && updateMolekinCharge(a,team,dt,player,getTile)) return;
+    if(!dread && isAlienTeam(team) && a.alienCharge && updateAlienLaserCharge(a,team,dt,player,getTile,setTile,ctx)) return;
     // Immediate danger interrupts a speech pause: a haunted alien flees first
     // and can finish its sentence after the spirit is gone.
     const desired = dread ? dread.awayX * speed * 1.2 : (speakingLong ? 0 : (intent ? intent.moveX * speed : 0));
@@ -2873,12 +3100,9 @@ const invasions = (function(){
         }
       }
     }
-    a.attackCd = Math.max(0, (a.attackCd || 0) - dt);
     if(dread) a.attackCd = Math.max(a.attackCd, 0.6); // routed troops don't press the attack
-    if(!dread && dist < profile.meleeRange && Math.abs(dy) < 1.0 && a.attackCd <= 0.15){
-      const cause = isMolekinTeam(team) ? 'molekin_invasion' : 'alien_invasion';
-      const baseDmg = isMolekinTeam(team) ? 4 : 3;
-      hurtPartyTarget(tgt, Math.max(1,Math.round(baseDmg * (Number(a.damageMult) || 1))), {srcX:a.x,srcY:a.y,kb:isMolekinTeam(team)?2.1:2.4,invulMs:500,cause});
+    if(!dread && !isMolekinTeam(team) && dist < profile.meleeRange && Math.abs(dy) < 1.0 && a.attackCd <= 0.15){
+      hurtPartyTarget(tgt, Math.max(1,Math.round(3 * (Number(a.damageMult) || 1))), {srcX:a.x,srcY:a.y,kb:2.4,invulMs:500,cause:'alien_invasion'});
       a.attackCd = 0.55;
     }
     const steps = Math.max(1, Math.min(4, Math.ceil(Math.max(Math.abs(a.vx || 0), Math.abs(a.vy || 0)) * dt / 0.25)));
@@ -3127,6 +3351,7 @@ const invasions = (function(){
     rememberWorldAccess(getTile,setTile,ctx);
     maybeScheduleNight(player,getTile,setTile,ctx);
     updateTeams(dt,player,getTile,setTile,ctx);
+    updateMoleShots(dt,player,getTile,setTile,ctx);
     updateLasers(dt);
     maybeSave(dt);
   }
@@ -3324,6 +3549,68 @@ const invasions = (function(){
     ctx.fillRect(cx-w/2, topY, w*f, 3);
     ctx.fillStyle = 'rgba(255,255,255,0.28)';
     ctx.fillRect(cx-w/2, topY, w*f, 1);
+  }
+  function drawMoleShotFx(ctx,TILE_SIZE,visible){
+    for(const s of moleShots){
+      if(!s || !visible(s.x,s.y)) continue;
+      const px=s.x*TILE_SIZE,py=s.y*TILE_SIZE;
+      const r=TILE_SIZE*(s.heavy?0.22:0.17);
+      const speed=Math.hypot(s.vx||0,s.vy||0)||1;
+      const nx=(s.vx||0)/speed,ny=(s.vy||0)/speed;
+      ctx.save();
+      ctx.globalAlpha=0.34;
+      ctx.strokeStyle=s.heavy?'#ff6a2a':'#9a6a43';
+      ctx.lineWidth=Math.max(1,r*0.62);
+      ctx.beginPath(); ctx.moveTo(px-nx*r*3.2,py-ny*r*3.2); ctx.lineTo(px-nx*r*0.7,py-ny*r*0.7); ctx.stroke();
+      ctx.globalAlpha=1;
+      ctx.translate(px,py);
+      ctx.rotate(s.spin||0);
+      ctx.fillStyle=s.heavy?'#3a2119':'#5f4935';
+      ctx.beginPath();
+      ctx.moveTo(-r*0.95,-r*0.35); ctx.lineTo(-r*0.25,-r); ctx.lineTo(r*0.82,-r*0.48);
+      ctx.lineTo(r*0.92,r*0.38); ctx.lineTo(r*0.08,r); ctx.lineTo(-r*0.88,r*0.46);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle=s.heavy?'#ff8a35':'#b18a63';
+      ctx.lineWidth=Math.max(1,TILE_SIZE*0.045);
+      ctx.beginPath(); ctx.moveTo(-r*0.45,-r*0.35); ctx.lineTo(r*0.15,0); ctx.lineTo(r*0.48,-r*0.50); ctx.stroke();
+      if(s.heavy){
+        ctx.fillStyle='rgba(255,92,30,0.78)';
+        ctx.beginPath(); ctx.arc(r*0.12,r*0.18,r*0.22,0,Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+  function drawAlienChargeFx(ctx,TILE_SIZE,visible,now){
+    for(const team of teams){
+      if(!isAlienTeam(team) || team.state==='defeated') continue;
+      for(const a of team.aliens){
+        const c=a&&a.alienCharge;
+        if(!c || a.dead || a.hp<=0 || (!visible(a.x,a.y)&&!visible(c.aimX,c.aimY))) continue;
+        const duration=Math.max(0.001,Number(c.duration)||1);
+        const progress=clamp(1-(Number(c.t)||0)/duration,0,1);
+        const dir=c.aimX>=a.x?1:-1;
+        const ox=(a.x+dir*0.28)*TILE_SIZE,oy=(a.y-0.61)*TILE_SIZE;
+        const tx=c.aimX*TILE_SIZE,ty=c.aimY*TILE_SIZE;
+        const pulse=0.55+0.45*Math.sin(now*0.018+progress*9);
+        ctx.save();
+        ctx.globalAlpha=0.20+progress*0.38;
+        ctx.strokeStyle=progress>0.72?'#fff39a':'#72ffe0';
+        ctx.lineWidth=Math.max(1,TILE_SIZE*(0.035+progress*0.025));
+        if(ctx.setLineDash) ctx.setLineDash([TILE_SIZE*0.18,TILE_SIZE*0.16]);
+        ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(tx,ty);ctx.stroke();
+        if(ctx.setLineDash) ctx.setLineDash([]);
+        ctx.globalAlpha=0.72+0.25*pulse;
+        ctx.fillStyle=progress>0.72?'#fff7b5':'#7affdf';
+        ctx.beginPath();ctx.arc(ox,oy,TILE_SIZE*(0.07+progress*0.11),0,Math.PI*2);ctx.fill();
+        ctx.strokeStyle='rgba(255,236,126,0.92)';
+        ctx.lineWidth=Math.max(1,TILE_SIZE*0.045);
+        const r=TILE_SIZE*(0.20+progress*0.10+pulse*0.035);
+        ctx.beginPath();ctx.arc(tx,ty,r,0,Math.PI*2);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(tx-r*1.45,ty);ctx.lineTo(tx-r*0.55,ty);ctx.moveTo(tx+r*0.55,ty);ctx.lineTo(tx+r*1.45,ty);
+        ctx.moveTo(tx,ty-r*1.45);ctx.lineTo(tx,ty-r*0.55);ctx.moveTo(tx,ty+r*0.55);ctx.lineTo(tx,ty+r*1.45);ctx.stroke();
+        ctx.restore();
+      }
+    }
   }
   function drawLaserFx(ctx,TILE_SIZE,visible){
     ctx.lineCap = 'round';
@@ -3894,12 +4181,25 @@ const invasions = (function(){
     const gait = a.onGround ? Math.sin(a.x*3.8*variant.gait) * (moving ? 1 : 0) : 0;
     const bob = a.onGround ? Math.abs(Math.cos(a.x*3.8*variant.gait)) * (moving ? T2*0.035 : 0) : -T2*0.04;
     const fleeing = !!(a._ai && a._ai.state === 'flee');
+    const charge=a.moleCharge || null;
+    const chargeWindup=!!(charge && charge.phase==='windup');
+    const chargeRush=!!(charge && charge.phase==='rush');
     ctx.save();
     ctx.translate(px,foot);
     if(a.onGround){
       ctx.fillStyle = 'rgba(8,5,4,0.38)';
       ctx.beginPath(); ctx.ellipse(0,T2*0.03,T2*0.34*bodyScale,T2*0.08,0,0,Math.PI*2); ctx.fill();
     }
+    if(chargeRush){
+      const back=a.facing<0?1:-1;
+      ctx.fillStyle='rgba(112,82,56,0.48)';
+      for(let i=0;i<4;i++){
+        const d=T2*(0.22+i*0.18);
+        const lift=T2*(0.03+(i%2)*0.08);
+        ctx.fillRect(back*d-T2*0.06,-lift,T2*(0.08+i*0.025),T2*(0.05+i*0.018));
+      }
+    }
+    if(chargeWindup || chargeRush) ctx.rotate((a.facing<0?-1:1)*(chargeRush?0.17:-0.08));
     ctx.scale((a.facing < 0 ? -1 : 1) * bodyScale, heightScale);
     ctx.translate(0,-bob);
     ctx.lineCap = 'round';
@@ -3982,6 +4282,14 @@ const invasions = (function(){
       ctx.beginPath(); ctx.arc(0,-T2*0.52,T2*0.34*bodyScale,0,Math.PI*2); ctx.stroke();
     }
     ctx.restore();
+    if(chargeWindup){
+      const pulse=0.55+0.45*Math.sin(now*0.035+a.phase);
+      ctx.strokeStyle='rgba(255,176,74,'+(0.45+0.40*pulse).toFixed(3)+')';
+      ctx.lineWidth=Math.max(1.2,T2*0.065);
+      ctx.beginPath();
+      ctx.moveTo(px-T2*0.22,foot-T2*1.08); ctx.lineTo(px,foot-T2*1.28); ctx.lineTo(px+T2*0.22,foot-T2*1.08);
+      ctx.stroke();
+    }
     if(fleeing){
       ctx.fillStyle = 'rgba(255,120,50,0.85)';
       ctx.fillRect(px+T2*0.22,foot-T2*0.98,T2*0.06,T2*0.16);
@@ -4081,7 +4389,9 @@ const invasions = (function(){
       const l = team.lander;
       if(l && visible(l.x,l.y)) drawLander(ctx,l,TILE_SIZE,now);
     }
+    drawAlienChargeFx(ctx,TILE_SIZE,visible,now);
     drawLaserFx(ctx,TILE_SIZE,visible);
+    drawMoleShotFx(ctx,TILE_SIZE,visible);
     for(const team of teams){
       if(!team || team.state === 'defeated') continue;
       for(const a of team.aliens){
@@ -4504,6 +4814,7 @@ const invasions = (function(){
     teams.length = 0;
     caches.length = 0;
     lasers.length = 0;
+    moleShots.length = 0;
     tileDamage.clear();
     brains.clear();
     if(!data || typeof data !== 'object') return false;
@@ -4532,10 +4843,12 @@ const invasions = (function(){
     teams.length = 0;
     caches.length = 0;
     lasers.length = 0;
+    moleShots.length = 0;
     tileDamage.clear();
     brains.clear();
     lastNightDay = 0;
     seq = 1;
+    moleShotSeq = 1;
     clearCacheTasks();
     saveLocal();
   }
@@ -4551,7 +4864,7 @@ const invasions = (function(){
       const brain = brains.get(t.id);
       if(brain && brain.mode === 'siege') siegeTeams++;
     }
-    return {teams:teams.length, activeTeams:activeInvasionTeams().length, alienTeams:activeAlienTeams().length, moleTeams:activeMolekinTeams().length, aliens, molekin, invasionUnits:aliens + molekin, siegeTeams, builtTiles, caches:caches.length, lasers:lasers.length, lastNightDay};
+    return {teams:teams.length, activeTeams:activeInvasionTeams().length, alienTeams:activeAlienTeams().length, moleTeams:activeMolekinTeams().length, aliens, molekin, invasionUnits:aliens + molekin, siegeTeams, builtTiles, caches:caches.length, lasers:lasers.length, moleShots:moleShots.length, lastNightDay};
   }
   function forceNightInvasion(player,getTile,setTile,opts){
     return spawnNightInvasion(player,getTile,setTile,opts || {});
@@ -4666,14 +4979,26 @@ const invasions = (function(){
         // the spoil heap play out on the watcher's screen too
         a.extract ? (a.extract.kind === 'beam' ? 1 : 2) : 0,
         a.extract ? +(a.extract.t||0).toFixed(2) : 0,
-        a.extract && a.extract.phase === 'in' ? 1 : 0
+        a.extract && a.extract.phase === 'in' ? 1 : 0,
+        a.moleCharge ? (a.moleCharge.phase==='windup'?1:(a.moleCharge.phase==='rush'?2:3)) : 0,
+        a.moleCharge ? +(Number(a.moleCharge.t)||0).toFixed(2) : 0,
+        a.alienCharge ? 1 : 0,
+        a.alienCharge ? +(Number(a.alienCharge.t)||0).toFixed(2) : 0,
+        a.alienCharge ? +(Number(a.alienCharge.duration)||1).toFixed(2) : 0,
+        a.alienCharge ? +(Number(a.alienCharge.aimX)||0).toFixed(3) : 0,
+        a.alienCharge ? +(Number(a.alienCharge.aimY)||0).toFixed(3) : 0
       ]),
       props: live4.map(t=>[
         String(t.id),
         t.lander ? +(Number(t.lander.y)||0).toFixed(2) : 0,
         t.burrow ? +(Number(t.burrow.progress)||0).toFixed(2) : 0,
         t.burrow && t.burrow.open ? 1 : 0
-      ])
+      ]),
+      shots:moleShots.slice(-MOLE_SHOT_GHOST_CAP).map(s=>[
+        Number(s.id)||0,+s.x.toFixed(3),+s.y.toFixed(3),+(s.vx||0).toFixed(3),+(s.vy||0).toFixed(3),
+        +(s.life||0).toFixed(2),+(s.spin||0).toFixed(2),s.heavy?1:0,Math.max(0,Math.min(3,Number(s.weaponTier)||0))
+      ]),
+      beams:lasers.slice(-16).map(l=>[+l.x1.toFixed(3),+l.y1.toFixed(3),+l.x2.toFixed(3),+l.y2.toFixed(3),+(l.life-l.t).toFixed(2),l.hit?1:0,l.blocked?1:0,l.heavy?1:0,Math.max(0,Math.min(3,Number(l.weaponTier)||0)),String(l.kind||'')])
     };
   }
   function ghostApplyRoster(roster){
@@ -4697,6 +5022,13 @@ const invasions = (function(){
           sx:a.x, sy:a.y, tx:a.x, ty:a.y, fxT:0
         });
       } else a.extract=null;
+      const chargeCode=Number(p[7])|0;
+      if(chargeCode){
+        a.moleCharge={phase:chargeCode===1?'windup':(chargeCode===2?'rush':'recover'),t:Math.max(0,Number(p[8])||0),dir:a.facing,ghost:true};
+      } else a.moleCharge=null;
+      if(Number(p[9])){
+        a.alienCharge={t:Math.max(0,Number(p[10])||0),duration:Math.max(0.1,Number(p[11])||1),aimX:Number(p[12])||0,aimY:Number(p[13])||0,ghost:true};
+      } else a.alienCharge=null;
     }
     if(Array.isArray(roster.props)){
       for(const p of roster.props){
@@ -4708,6 +5040,22 @@ const invasions = (function(){
           if(Number.isFinite(Number(p[2]))) team.burrow.progress=Number(p[2]);
           team.burrow.open=!!Number(p[3]);
         }
+      }
+    }
+    moleShots.length=0;
+    for(const s of (Array.isArray(roster.shots)?roster.shots.slice(0,MOLE_SHOT_GHOST_CAP):[])){
+      if(!Array.isArray(s) || !Number.isFinite(Number(s[1])) || !Number.isFinite(Number(s[2]))) continue;
+      moleShots.push({
+        id:Number(s[0])||0,x:Number(s[1]),y:Number(s[2]),vx:Number(s[3])||0,vy:Number(s[4])||0,
+        life:Math.max(0,Number(s[5])||0),spin:Number(s[6])||0,heavy:!!Number(s[7]),
+        weaponTier:Math.max(0,Math.min(3,Number(s[8])||0)),radius:Number(s[7])?0.22:0.17,ghost:true
+      });
+    }
+    if(Array.isArray(roster.beams)){
+      lasers.length=0;
+      for(const l of roster.beams.slice(0,16)){
+        if(!Array.isArray(l)||!Number.isFinite(Number(l[0]))||!Number.isFinite(Number(l[1]))||!Number.isFinite(Number(l[2]))||!Number.isFinite(Number(l[3]))) continue;
+        lasers.push({x1:Number(l[0]),y1:Number(l[1]),x2:Number(l[2]),y2:Number(l[3]),t:0,life:Math.max(0.03,Number(l[4])||0.03),hit:!!Number(l[5]),blocked:!!Number(l[6]),heavy:!!Number(l[7]),weaponTier:Math.max(0,Math.min(3,Number(l[8])||0)),kind:String(l[9]||''),phase:0,ghost:true});
       }
     }
     return true;
@@ -4722,7 +5070,28 @@ const invasions = (function(){
         const dx=a._ghostTX - a.x, dy=a._ghostTY - a.y;
         if(Math.abs(dx) > 4 || Math.abs(dy) > 4){ a.x=a._ghostTX; a.y=a._ghostTY; continue; } // a beam is a jump, not a glide
         a.x += dx * k; a.y += dy * k;
+        if(a.alienCharge&&a.alienCharge.ghost){
+          a.alienCharge.t=Math.max(0,(Number(a.alienCharge.t)||0)-Math.max(0,Number(dt)||0));
+          if(a.alienCharge.t<=0) a.alienCharge=null;
+        }
       }
+    }
+    const d=Math.max(0,Math.min(0.08,Number(dt)||0));
+    for(let i=moleShots.length-1;i>=0;i--){
+      const s=moleShots[i];
+      if(!s || !s.ghost) continue;
+      s.life-=d;
+      s.vy=(s.vy||0)+MOLE_SHOT_GRAVITY*d;
+      s.x+=(s.vx||0)*d;
+      s.y+=(s.vy||0)*d;
+      s.spin=(s.spin||0)+(s.vx||0)*d*0.9;
+      if(s.life<=0) moleShots.splice(i,1);
+    }
+    for(let i=lasers.length-1;i>=0;i--){
+      const l=lasers[i];
+      if(!l||!l.ghost) continue;
+      l.t+=d;
+      if(l.t>=l.life) lasers.splice(i,1);
     }
   }
 
@@ -4778,7 +5147,7 @@ const invasions = (function(){
     reset,
     metrics,
     state:()=>({teams:teams.map(serializeTeam), caches:caches.map(c=>deepCopy(c)), lastNightDay, seq}),
-    _debug:{teams,caches,lasers,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireMolekinAttack,unstuckAlien,beginExtraction,updateExtraction,extractionPlan,findSurfaceStandable,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,setAlienSpeech,longSpeechActive,updateAlien,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,updateAtomicWinterAwareness,atomicWinterSpeechLines,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
+    _debug:{teams,caches,lasers,moleShots,tileDamage,brains,nav,traceLine,damageStructureTile,damageTeamTile,isMoleDiggableTile,fireAlienLaser,releaseAlienLaser,updateAlienLaserCharge,fireMolekinAttack,molekinChargeLane,tryStartMolekinCharge,updateMolekinCharge,updateMoleShots,unstuckAlien,beginExtraction,updateExtraction,extractionPlan,findSurfaceStandable,alienEscapeCells,findCacheSpot,stealResources,stealGear,canPlaceBarricadeAt,placeBarricadeTile,canPlaceMoleVentAt,placeMoleVentTile,cleanupBuiltTiles,profileFor,playerLevelFor,threatLevelFor,gradeForThreat,teamCountForDay,alienCountForDay,molekinCountForDay,xpRewardForTeam,rewardProfileForTeam,westGuardianDefeated,eastGuardianDefeated,spawnRuinCommander,forceMolekinInvasion,forceAlienSpeech,setAlienSpeech,longSpeechActive,updateAlien,triggerTeamSpeech,updateAlienSpeech,updateHeroAwareness,updateAtomicWinterAwareness,atomicWinterSpeechLines,compactSpeechText,storyInvasionLinesForProgress,speechLines:ALIEN_SPEECH,moleSpeechLines:MOLEKIN_SPEECH,rareSpeechLines:ALIEN_RARE_SPEECH,moleRareSpeechLines:MOLEKIN_RARE_SPEECH,echoSpeechLines:ALIEN_ECHO_SPEECH,moleEchoSpeechLines:MOLEKIN_ECHO_SPEECH}
   };
   MM.invasions = api;
   return api;
