@@ -38,7 +38,9 @@ window.MM = window.MM || {};
       dur:{common:2.5, uncommon:3,   rare:3.5, epic:4.25, legendary:5} },
     echo:  { label:'Echolokacja', icon:'📡', cd:14, energy:8,
       dur:{common:4,   uncommon:5,   rare:6,   epic:7,    legendary:8},
-      range:{common:16, uncommon:19, rare:22,  epic:26,   legendary:30} }
+      // A ping shorter than ~20 tiles read as noise, not information (owner
+      // ruling): even the common aerial reaches a usable scouting radius now.
+      range:{common:20, uncommon:24, rare:27,  epic:31,   legendary:36} }
   };
   const UNIQUE_CD_MULT = 0.75; // a unique find cools down faster (its only boost)
 

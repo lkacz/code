@@ -27,9 +27,17 @@ assert.equal(bounded.length,BUILD_STROKE_CELL_LIMIT,'hostile pointer coordinates
 assert.deepEqual(rasterizeTileLine(NaN,0,4,0),[],'non-finite pointer coordinates are rejected');
 
 const mainSource=fs.readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
-assert.match(mainSource,/if\(beginBuildStroke\(e,tx,ty\)\) return;/,'a valid LMB world click can start a placement stroke');
+// Owner contract: LMB mines/attacks, RMB places — the stroke lives on the
+// RIGHT button only (an earlier build wired it to LMB and stole mining clicks).
+assert.match(mainSource,/function beginBuildStroke[\s\S]{0,200}e\.button!==2/,'the placement stroke arms ONLY on the right mouse button');
+assert.match(mainSource,/&2\)===0\) \|\| HOTBAR_ORDER\[hotbarIndex\]!==stroke\.selection/,'the stroke continues only while the RIGHT button stays held');
+assert.match(mainSource,/if\(beginBuildStroke\(e,tx,ty\)\) return;\s*\n\s*useToolSecondaryAt\(tx,ty\);/,'the RMB branch tries the stroke first, then the classic secondary action');
+{
+	const lmb=mainSource.slice(mainSource.indexOf('if(e.button===0){'),mainSource.indexOf('} else if(e.button===2){'));
+	assert.ok(lmb.length>200 && !lmb.includes('beginBuildStroke'),'the LEFT-button branch never places blocks');
+}
 assert.match(mainSource,/pointermove[\s\S]{0,220}continueBuildStroke\(e\)/,'held-pointer movement continues the placement stroke');
 assert.match(mainSource,/pointerup[\s\S]{0,180}clearBuildStroke\(e\.pointerId\)/,'releasing the owning pointer ends placement immediately');
-assert.match(mainSource,/function beginBuildStroke[\s\S]{0,300}placement=canPlaceAt\(tx,ty\)/,'drag placement uses the same validation rules as single-block placement');
+assert.match(mainSource,/function beginBuildStroke[\s\S]{0,400}placement=canPlaceAt\(tx,ty\)/,'drag placement uses the same validation rules as single-block placement');
 
 console.log('build-stroke-sim: all assertions passed');

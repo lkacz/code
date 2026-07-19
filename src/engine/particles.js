@@ -84,6 +84,7 @@ import { isSolidCollisionTile } from './material_physics.js';
     if(kind==='spark') return 0.24;
     if(kind==='glass') return 0.18;
     if(kind==='smoke') return 0.16;
+    if(kind==='flake') return 0.55;
     if(kind==='bubble' || kind==='energy') return 0;
     return 0.22;
   }
@@ -400,6 +401,45 @@ import { isSolidCollisionTile } from './material_physics.js';
     }
   };
 
+  // Soft-drift flakes (engine/soft_drifts.js): featherweight debris kicked out
+  // of a drift or shaken from a canopy. Snowflakes and leaves flutter down on
+  // the wind; soot motes rise off the film and thin out. Purely cosmetic.
+  const FLAKE_PRESETS = {
+    snow:  { fall: 1.6, sway: 0.9, shape:'dot',  life:[0.9,1.0], size:[1.6,1.6], palette:[[244,250,255],[220,236,252],[255,255,255]] },
+    leaves:{ fall: 2.2, sway: 1.5, shape:'leaf', life:[1.0,1.1], size:[2.4,2.2], palette:[[214,131,47],[143,90,42],[196,84,38],[176,142,58]] },
+    soot:  { fall:-0.55, sway: 0.8, shape:'dot',  life:[0.8,0.9], size:[1.4,1.4], palette:[[38,40,46],[56,58,64],[26,27,31]] },
+    sand:  { fall: 2.6, sway: 0.5, shape:'dot',  life:[0.7,0.8], size:[1.2,1.2], palette:[[217,192,120],[236,217,155],[168,144,92]] },
+  };
+  mod.spawnFlakes = function(x,y,opts){
+    opts=opts||{};
+    const preset=FLAKE_PRESETS[opts.mat]||FLAKE_PRESETS.snow;
+    const n=Math.max(1, Math.min(26, opts.count==null?8:(opts.count|0)));
+    const dir=Number.isFinite(opts.dir)?(opts.dir>=0?1:-1):0;
+    // loose flakes (ambient canopy fall) drift long and slow instead of bursting
+    const loose=!!opts.loose;
+    for(let i=0;i<n;i++){
+      if(particles.length>=currentParticleCap()) break;
+      const rgb=preset.palette[i%preset.palette.length];
+      particles.push({
+        kind:'flake', mat:opts.mat||'snow',
+        x:x+(Math.random()-0.5)*10,
+        y:y+(Math.random()-0.5)*6,
+        vx:(Math.random()-0.5)*(loose?0.5:1.7) + dir*(loose?0.25:0.6),
+        vy:loose ? 0.2+Math.random()*0.4 : -(0.4+Math.random()*1.2),
+        life:0,
+        max:(preset.life[0]+Math.random()*preset.life[1])*(loose?1.9:1),
+        rot:Math.random()*Math.PI,
+        spin:(Math.random()-0.5)*6,
+        phase:Math.random()*Math.PI*2,
+        sway:preset.sway*(0.7+Math.random()*0.6),
+        fall:preset.fall,
+        shape:preset.shape,
+        size:preset.size[0]+Math.random()*preset.size[1],
+        rgb
+      });
+    }
+  };
+
   // Water splash: droplets fan upward from the surface, fall back under gravity.
   // x,y in world pixels; intensity 0..1 scales count and speed.
   mod.spawnSplash = function(x,y,intensity){
@@ -489,6 +529,16 @@ import { isSolidCollisionTile } from './material_physics.js';
         const side=Math.sin(p.life*26 + (p.phase||0))*(p.wobble||0.5)*(1-age);
         p.x += dx*pull + side*dt*tileSize;
         p.y += dy*pull + Math.cos(p.life*22 + (p.phase||0))*side*0.35*dt*tileSize;
+      } else if(p.kind==='flake'){
+        // featherweight flutter: wind + sinusoidal sway, terminal fall (soot rises)
+        const worldWind=windAtParticle(p,tileSize,tileFn);
+        p.vx += worldWind*windResponse('flake')*dt;
+        p.vx *= Math.pow(0.5,dt*1.6);
+        p.vy += (p.fall||1.6)*dt;
+        if(p.fall>=0){ if(p.vy>2.2) p.vy=2.2; } else if(p.vy<-1.2) p.vy=-1.2;
+        p.x += (p.vx + Math.sin(p.life*4.2+(p.phase||0))*(p.sway||1))*dt*tileSize;
+        p.y += p.vy*dt*tileSize;
+        p.rot=(p.rot||0)+(p.spin||0)*dt;
       } else {
         const worldWind=windAtParticle(p,tileSize,tileFn);
         p.vx += worldWind*windResponse(p.kind)*dt;
@@ -580,6 +630,21 @@ import { isSolidCollisionTile } from './material_physics.js';
           ctx.fillRect(-s*0.55,-Math.max(1,s*0.32),s*1.1,Math.max(1.5,s*0.64));
           ctx.fillStyle='rgba(255,255,255,'+(alpha*0.34).toFixed(3)+')';
           ctx.fillRect(-s*0.18,-s*0.48,Math.max(1,s*0.36),s*0.92);
+        }
+        ctx.restore();
+      } else if(p.kind==='flake'){
+        const rgb=Array.isArray(p.rgb) ? p.rgb : [244,250,255];
+        const s=p.size||2;
+        ctx.save();
+        ctx.translate(p.x,p.y);
+        ctx.rotate(p.rot||0);
+        ctx.fillStyle='rgba('+rgb[0]+','+rgb[1]+','+rgb[2]+','+(alpha*0.9).toFixed(3)+')';
+        if(p.shape==='leaf'){
+          ctx.fillRect(-s*0.6,-s*0.32,s*1.2,s*0.64);
+          ctx.fillStyle='rgba('+Math.max(0,rgb[0]-52)+','+Math.max(0,rgb[1]-40)+','+Math.max(0,rgb[2]-24)+','+(alpha*0.7).toFixed(3)+')';
+          ctx.fillRect(-s*0.6,-0.5,s*1.2,1);
+        } else {
+          ctx.fillRect(-s*0.5,-s*0.5,s,s);
         }
         ctx.restore();
       } else if(p.kind==='spark'){

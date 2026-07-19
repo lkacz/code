@@ -120,6 +120,7 @@ const drops = (function(){
     JACKPOT_YETI:{chance:0.50, tiers:T_JACKPOT, options:[{kind:'cape',name:'Peleryna yeti',desc:'Dowód, że yeti istnieje. Istniało.'},{kind:'outfit',name:'Futro yeti',desc:'Nikt nie uwierzy, skąd je masz.'}]},
     // Hot east: fire-breathers shed flame throwers, venom shed gas
     FIRE_SHAMAN:{chance:0.16, tiers:T_ELITE, options:[{kind:'charm',name:'Fetysz ognistego szamana',desc:'Ciepły w dłoni. Podejrzanie.'},{kind:'weapon',weaponType:'flame',name:'Miotacz pustynnego żaru',desc:'Pustynia w wersji przenośnej.'}]},
+    SOOT_SHAMAN:{chance:0.16, tiers:T_ELITE, options:[{kind:'charm',name:'Fetysz sadzowego zaklinacza',desc:'Brudzi palce. Szepcze o dymie.'},{kind:'outfit',name:'Kubrak z prasowanego węgla',desc:'Czarny, ciepły i lekko się tli.'}]},
     SAND_WORM: {chance:0.14, tiers:T_ELITE, options:[{kind:'charm',name:'Ząb pustynnego czerwia',desc:'Reszta czerwia była zdania odrębnego.'}]},
     GIANT_SCORPION:{chance:0.12, tiers:T_ELITE, options:[{kind:'weapon',weaponType:'melee',name:'Żądło skorpiona',desc:'Ogon dołączony osobno. Bardzo osobno.'},{kind:'weapon',weaponType:'gas',name:'Emiter jadu skorpiona',desc:'Jad prosto od producenta.'}]},
     // Swamp & night

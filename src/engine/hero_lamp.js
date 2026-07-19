@@ -7,10 +7,17 @@
   const DEFAULTS={
     drainPerSecond:1.5,
     minStartEnergy:1,
-    range:11,
+    range:13,
     level:15,
-    spread:0.28
+    spread:0.34
   };
+  // Upgrade tiers: the built-in eye lamp is the STARTER optic; owning a crafted
+  // halogen bulb (inv.halogen — main.js reconciles ownership into setTier)
+  // widens and lengthens the beam at a higher energy price.
+  const TIERS=[
+    {id:'standard', label:'Latarka',  range:13, spread:0.34, drainPerSecond:1.5},
+    {id:'halogen',  label:'Halogen',  range:17, spread:0.45, drainPerSecond:2.4}
+  ];
 
   function createHeroLampModel(options){
     const raw=Object.assign({},DEFAULTS,options||{});
@@ -23,7 +30,19 @@
       spread:Math.max(0.12,Math.min(0.55,finite(raw.spread,DEFAULTS.spread)))
     };
     let enabled=false;
+    let tier=0;
 
+    function setTier(next){
+      const idx=Math.max(0,Math.min(TIERS.length-1,Math.trunc(Number(next)||0)));
+      if(idx===tier) return false;
+      tier=idx;
+      const t=TIERS[tier];
+      cfg.range=Math.max(2,Math.min(18,t.range));
+      cfg.spread=Math.max(0.12,Math.min(0.55,t.spread));
+      cfg.drainPerSecond=Math.max(0.05,Math.min(50,t.drainPerSecond));
+      return true;
+    }
+    function tierInfo(){ return Object.assign({tier},TIERS[tier]); }
     function isOn(){ return enabled; }
     function energyAvailable(energy,opts){
       if(opts && opts.unlimited) return true;
@@ -93,10 +112,10 @@
       enabled=data===true || data===1 || !!(data && typeof data==='object' && data.on===true);
       return enabled;
     }
-    function reset(){ enabled=false; }
-    function info(){ return {on:enabled,drainPerSecond:cfg.drainPerSecond,minStartEnergy:cfg.minStartEnergy,range:cfg.range,level:cfg.level}; }
+    function reset(){ enabled=false; setTier(0); }
+    function info(){ return {on:enabled,tier,drainPerSecond:cfg.drainPerSecond,minStartEnergy:cfg.minStartEnergy,range:cfg.range,level:cfg.level}; }
 
-    return {isOn,setEnabled,toggle,update,lightSource,snapshot,restore,reset,info};
+    return {isOn,setEnabled,toggle,update,lightSource,snapshot,restore,reset,info,setTier,tierInfo};
   }
 
   const heroLamp=createHeroLampModel();

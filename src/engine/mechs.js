@@ -1101,6 +1101,46 @@ import { damageBlastCreatures } from './explosion_damage.js';
     }
     return 0;
   }
+  function externalSmrDrainNear(m,amount,getTile){
+    const api=root.MM.smr;
+    if(!api || typeof api.drainAt!=='function') return 0;
+    const need=Math.max(0,Number(amount)||0);
+    if(need<=0) return 0;
+    const cx=centerX(m), cy=centerY(m);
+    const r=Math.ceil(CFG.EXTERNAL_DRAIN_RADIUS);
+    for(let yy=Math.floor(cy)-r; yy<=Math.floor(cy)+r; yy++){
+      for(let xx=Math.floor(cx)-r; xx<=Math.floor(cx)+r; xx++){
+        if(getSafe(getTile,xx,yy,T.AIR)!==T.SMR_CELL) continue;
+        if(Math.hypot((xx+0.5)-cx,(yy+0.5)-cy)>CFG.EXTERNAL_DRAIN_RADIUS) continue;
+        try{
+          const got=api.drainAt(xx,yy,need);
+          if(got && got.amount>0) return got.amount;
+        }catch(e){}
+      }
+    }
+    return 0;
+  }
+  // Lightning rods are batteries too: a mech parked under the mast drinks the
+  // banked bolts (same explicit-branch ruling as SMR — no free generic source).
+  function externalRodDrainNear(m,amount,getTile){
+    const api=root.MM.weatherInstruments;
+    if(!api || typeof api.drainAt!=='function') return 0;
+    const need=Math.max(0,Number(amount)||0);
+    if(need<=0) return 0;
+    const cx=centerX(m), cy=centerY(m);
+    const r=Math.ceil(CFG.EXTERNAL_DRAIN_RADIUS);
+    for(let yy=Math.floor(cy)-r; yy<=Math.floor(cy)+r; yy++){
+      for(let xx=Math.floor(cx)-r; xx<=Math.floor(cx)+r; xx++){
+        if(getSafe(getTile,xx,yy,T.AIR)!==T.LIGHTNING_ROD) continue;
+        if(Math.hypot((xx+0.5)-cx,(yy+0.5)-cy)>CFG.EXTERNAL_DRAIN_RADIUS) continue;
+        try{
+          const got=api.drainAt(xx,yy,need);
+          if(got && got.amount>0) return got.amount;
+        }catch(e){}
+      }
+    }
+    return 0;
+  }
   function externalPowerDrainNear(m,amount,getTile){
     const need=Math.max(0,Number(amount)||0);
     if(need<=0 || typeof getTile !== 'function') return 0;
@@ -1113,6 +1153,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
       }
     }catch(e){}
     if(gained<need) gained+=externalSolarDrainNear(m,need-gained,getTile);
+    if(gained<need) gained+=externalSmrDrainNear(m,need-gained,getTile);
+    if(gained<need) gained+=externalRodDrainNear(m,need-gained,getTile);
     return Math.max(0,Math.min(need,gained));
   }
   function externalCharge(m,dt,getTile){
@@ -1128,6 +1170,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
       }
     }catch(e){}
     if(gained<need) gained+=externalSolarDrainNear(m,Math.min(need-gained,12*dt),getTile);
+    if(gained<need) gained+=externalSmrDrainNear(m,Math.min(need-gained,10*dt),getTile);
+    if(gained<need) gained+=externalRodDrainNear(m,Math.min(need-gained,10*dt),getTile);
     return gained;
   }
   function updateEnergy(m,dt,getTile){

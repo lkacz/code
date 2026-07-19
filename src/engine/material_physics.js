@@ -19,6 +19,11 @@ export const BUILD_MATERIAL_PROFILES = Object.freeze({
   [T.BASALT]: Object.freeze({strength:17, support:12.5, weight:1.24, compression:0.40, lateral:1.06, flex:0.95, down:0.25, warn:0.25, fail:0.925, wind:0.009, rubbleRoll:4}),
   [T.GRANITE]: Object.freeze({strength:15, support:12, weight:1.18, compression:0.38, lateral:1.06, flex:0.96, down:0.24, warn:0.26, fail:0.920, wind:0.011, rubbleRoll:4}),
   [T.RADIOACTIVE_ORE]: Object.freeze({strength:15.5, weight:1.48, compression:0.44, lateral:1.16, flex:0.80, down:0.30, warn:0.22, fail:0.880, wind:0.012, rubbleRoll:3}),
+  // Carbon chain: graphite is a soft layered mineral (pressed soot), graphene
+  // the strongest and LIGHTEST sheet in the game — beats steel on strength at
+  // half the weight, the whole point of annealing it.
+  [T.GRAPHITE]: Object.freeze({strength:9.5, weight:0.95, compression:0.46, lateral:1.14, flex:0.82, down:0.22, warn:0.24, fail:0.870, wind:0.030, rubbleRoll:3}),
+  [T.GRAPHENE]: Object.freeze({strength:25, support:18, weight:0.62, compression:0.16, lateral:0.92, flex:1.30, down:0.20, warn:0.36, fail:0.980, wind:0.006, rubbleRoll:4}),
   [T.STONE]: Object.freeze({strength:11, support:11, weight:1.05, compression:0.37, lateral:1.05, flex:1.00, down:0.21, warn:0.28, fail:0.930, wind:0.014, rubbleWind:0.022, rubbleRoll:4}),
   [T.STONE_DOOR]: Object.freeze({strength:8.9, support:7.4, weight:0.92, compression:0.43, lateral:1.14, flex:0.86, down:0.25, warn:0.25, fail:0.890, wind:0.030, rubbleRoll:3}),
   [T.STONE_TRAPDOOR]: Object.freeze({strength:8.0, support:6.7, weight:0.86, compression:0.46, lateral:1.18, flex:0.82, down:0.25, warn:0.24, fail:0.875, wind:0.034, rubbleRoll:3}),
@@ -362,7 +367,7 @@ export function isMountedFixtureTile(t){
 }
 
 export function isNaturalHazardMaterial(t){
-  return t===T.UNSTABLE_SAND || t===T.UNSTABLE_GRASS || t===T.QUICKSAND;
+  return t===T.UNSTABLE_SAND || t===T.UNSTABLE_GRASS || t===T.QUICKSAND || t===T.THIN_ICE;
 }
 
 export function isPlayerBuiltMaterial(t){

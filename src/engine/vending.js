@@ -191,6 +191,29 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
         }catch(e){}
         return {kind:'solar',x:nx,y:ny};
       }
+      // The SMR cell has a real battery API — it must PAY for the vend, never
+      // fall through to the free generic power-source pass.
+      if(t===T.SMR_CELL){
+        try{
+          const R=MM.smr;
+          if(R && R.sourceAt){
+            const s=R.sourceAt(nx,ny,getTile);
+            if(s) return {kind:'smr',x:s.x,y:s.y};
+          }
+        }catch(e){}
+        return {kind:'smr',x:nx,y:ny};
+      }
+      // Same ruling for the lightning rod: banked bolts pay, never a free vend.
+      if(t===T.LIGHTNING_ROD){
+        try{
+          const W=MM.weatherInstruments;
+          if(W && W.sourceAt){
+            const s=W.sourceAt(nx,ny,getTile);
+            if(s) return {kind:'rod',x:s.x,y:s.y};
+          }
+        }catch(e){}
+        return {kind:'rod',x:nx,y:ny};
+      }
       if(INFO[t] && INFO[t].powerSource) return {kind:'source',x:nx,y:ny};
     }
     return null;
@@ -242,6 +265,22 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
       try{
         if(typeof S.energyAt==='function' && finiteAmount(S.energyAt(source.x,source.y,getTile))+1e-6<ENERGY_COST) return false;
         const got=S.drainAt(source.x,source.y,ENERGY_COST,getTile);
+        return !!(got && finiteAmount(got.amount)+1e-6>=ENERGY_COST);
+      }catch(e){ return false; }
+    }
+    const R=(opts && opts.smr) || MM.smr;
+    if(source.kind==='smr' && R && R.drainAt){
+      try{
+        if(typeof R.energyAt==='function' && finiteAmount(R.energyAt(source.x,source.y))+1e-6<ENERGY_COST) return false;
+        const got=R.drainAt(source.x,source.y,ENERGY_COST);
+        return !!(got && finiteAmount(got.amount)+1e-6>=ENERGY_COST);
+      }catch(e){ return false; }
+    }
+    const W=(opts && opts.weatherInstruments) || MM.weatherInstruments;
+    if(source.kind==='rod' && W && W.drainAt){
+      try{
+        if(typeof W.energyAt==='function' && finiteAmount(W.energyAt(source.x,source.y))+1e-6<ENERGY_COST) return false;
+        const got=W.drainAt(source.x,source.y,ENERGY_COST);
         return !!(got && finiteAmount(got.amount)+1e-6>=ENERGY_COST);
       }catch(e){ return false; }
     }

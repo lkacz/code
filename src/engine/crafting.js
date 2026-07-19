@@ -70,7 +70,19 @@ const crafting = (function(){
     bedrockLadder: 'craft: skała macierzysta (Budowle)',
     fish: 'wędkuj: F przy wodzie (potrzebna wędka)',
     goldenFish: 'rzadki połów — wygraj walkę z dużą rybą',
-    glowshroom: 'świecące jaskinie w lasach i na bagnach'
+    glowshroom: 'świecące jaskinie w lasach i na bagnach',
+    graphite: 'gęsta sadza pod czarnym dymem prasuje się w żyłę',
+    graphene: 'ostrzeliwuj grafit prądem, aż się wyżarzy',
+    smrCell: 'craft: grafit + ruda radioaktywna + elektronika (Maszyny)',
+    ice: 'odwilż strąca sople — zbierz odłamki z ziemi',
+    soot: 'przebiegnij gęsty czarny nalot albo rozkrusz węgiel',
+    weathervane: 'craft: stal + drewno (Maszyny) — czytaj wiatr z dachu',
+    lightningRod: 'craft: stal + srebrny przewód (Maszyny) — burza jako żniwa',
+    throwingStoneGranite: 'craft: granit (Bronie) — twardszy rzut, częściej przeżywa',
+    throwingStoneBasalt: 'craft: bazalt (Bronie) — ciężki twardy pocisk',
+    throwingStoneObsidian: 'craft: obsydian (Bronie) — tnie i niemal nie pęka',
+    throwingStoneDiamond: 'craft: diament (Bronie) — pocisk praktycznie wieczny',
+    halogen: 'craft: stal + srebrny przewód + szkło (Przetrwanie) — mocniejsza latarka'
   };
 
   function createCraftingModel(cfg){

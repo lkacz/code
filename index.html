@@ -1104,8 +1104,8 @@
     </div>
     <div id="weaponBar" role="toolbar" aria-label="Skróty broni (klawisze 1–4)">
       <div class="wepSlot" data-wkey="1"><span class="key">1</span><span class="wcyc"></span><span class="wicon">⛏️</span><span class="wname"></span><span class="wsub"></span><span class="wgauge"><i></i></span></div>
-      <div class="wepSlot" data-wkey="2"><span class="key">2</span><span class="wcyc"></span><span class="wicon">⚔️</span><span class="wname"></span><span class="wsub"></span><span class="wgauge"><i></i></span></div>
-      <div class="wepSlot" data-wkey="3"><span class="key">3</span><span class="wcyc"></span><span class="wicon">🏹</span><span class="wname"></span><span class="wsub"></span><span class="wpips"></span><span class="wgauge"><i></i></span></div>
+      <div class="wepSlot" data-wkey="2"><span class="key">2</span><span class="wcyc"></span><span class="wicon">👊</span><span class="wname"></span><span class="wsub"></span><span class="wgauge"><i></i></span></div>
+      <div class="wepSlot" data-wkey="3"><span class="key">3</span><span class="wcyc"></span><span class="wicon">🎯</span><span class="wname"></span><span class="wsub"></span><span class="wpips"></span><span class="wgauge"><i></i></span></div>
       <div class="wepSlot" data-wkey="4"><span class="key">4</span><span class="wcyc"></span><span class="wicon">🔥</span><span class="wname"></span><span class="wsub"></span><span class="wgauge"><i></i></span></div>
     </div>
     <!-- Slot labels/colors/counts are synced from HOTBAR_ORDER by refreshHotbarDom()
@@ -1157,6 +1157,20 @@
     .invSlotUnequip{ background:rgba(255,255,255,.12); border:none; color:#fff; border-radius:6px; width:22px; height:22px; cursor:pointer; flex:none; }
     .invSlotUnequip:hover{ background:rgba(248,113,113,.35); }
     #invTabs{ display:flex; gap:6px; flex-wrap:wrap; }
+    /* weapon fusion (merge) panel */
+    .invMergeOpen{ grid-column:1/-1; margin:2px 0 6px; padding:8px 12px; border-radius:10px; border:1px dashed rgba(196,151,255,.5); background:rgba(120,60,200,.14); color:#e6d6ff; font-weight:700; cursor:pointer; font-size:12px; text-align:left; }
+    .invMergeOpen:hover{ background:rgba(140,80,220,.24); }
+    .invMergePanel{ grid-column:1/-1; display:flex; flex-direction:column; gap:8px; }
+    .invMergeList{ display:flex; flex-direction:column; gap:4px; max-height:300px; overflow-y:auto; }
+    .invMergeRow{ display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:8px; border:1px solid rgba(255,255,255,.14); border-left:3px solid var(--tier,#666); background:rgba(255,255,255,.05); color:#dfe7f2; cursor:pointer; font-size:12px; text-align:left; }
+    .invMergeRow.sel{ background:rgba(140,80,220,.22); border-color:rgba(196,151,255,.6); }
+    .invMergeRow .invMergeName{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .invMergeRow .invMergeScore{ opacity:.7; font-size:11px; }
+    .invMergeBar{ display:flex; align-items:center; gap:10px; }
+    .invMergeChance{ flex:1; font-weight:800; color:#e6d6ff; font-size:12px; }
+    .invMergeGo{ padding:7px 14px; border-radius:9px; border:1px solid rgba(196,151,255,.6); background:linear-gradient(180deg,#8b46e8,#6a2fc4); color:#fff; font-weight:800; cursor:pointer; }
+    .invMergeGo:disabled{ opacity:.4; cursor:default; }
+    .invMergeCancel{ padding:7px 12px; border-radius:9px; border:1px solid rgba(255,255,255,.2); background:rgba(255,255,255,.08); color:#cfd8e6; cursor:pointer; }
     .invTabBtn{ position:relative; display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,.07); color:#d7e0ef; border:1px solid rgba(255,255,255,.13); border-radius:10px; padding:6px 11px; font-weight:650; cursor:pointer; font-size:12px; transition:background .12s,border-color .12s,color .12s; }
     .invTabBtn:hover{ background:rgba(255,255,255,.13); color:#fff; }
     .invTabBtn.sel{ background:linear-gradient(180deg,#3486ff,#2668d8); border-color:rgba(150,200,255,.55); color:#fff; box-shadow:0 4px 14px -6px rgba(44,126,248,.9), inset 0 1px 0 rgba(255,255,255,.22); }

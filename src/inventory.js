@@ -23,10 +23,14 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {id:'eyes',   label:'Oczy',     accepts:'eyes',   required:true,  def:'bright'},
     {id:'outfit', label:'Strój',    accepts:'outfit', required:true,  def:'default'},
     {id:'weapon', label:'Broń',     accepts:'weapon', required:false, def:null, emptyLabel:'Pięści'},
+    // Pickaxe HEADS ride on top of the key-1 tool tier: the gear item adds its
+    // mining-speed multiplier and one perk identity (main.js PICK_PERKS owns
+    // the numbers) to whatever pick the hero currently swings.
+    {id:'pickaxe',label:'Kilof',    accepts:'pickaxe',required:false, def:null, emptyLabel:'Zwykły trzonek'},
     {id:'charm',  label:'Talizman', accepts:'charm',  required:false, def:null, emptyLabel:'—'},
     {id:'antenna',label:'Antenka',  accepts:'antenna',required:false, def:null, emptyLabel:'—'}
   ];
-  const KIND_LABELS={cape:'Peleryny', eyes:'Oczy', outfit:'Stroje', weapon:'Bronie', charm:'Talizmany', antenna:'Antenki'};
+  const KIND_LABELS={cape:'Peleryny', eyes:'Oczy', outfit:'Stroje', weapon:'Bronie', pickaxe:'Kilofy', charm:'Talizmany', antenna:'Antenki'};
   // Loot-tier accent colors (single source — UI badges, held-weapon tinting, …)
   const TIER_COLORS={common:'#b07f2c', uncommon:'#3fa650', rare:'#a74cc9', epic:'#e0b341', legendary:'#58e0d8'};
   // Permanent item-enhancement stones. Every deliberate attempt consumes one.
@@ -41,10 +45,13 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   // Pressing a category's key cycles through the owned weapons of its types that the
   // player left enabled for the shortcut (see isShortcut/setShortcut). Adding a new
   // category is one entry here — input handling and the UI badge follow.
+  // Slot icons say what the SLOT is, not one weapon from it: 👊 = direct attack
+  // (fists to blades), 🎯 = anything aimed at range (bows, harpoons, throws).
+  // The stream slot's icon is dynamic in the HUD (🔥/💧/☠️/⚡ per selection).
   const WEAPON_CATEGORIES=[
-    {id:'melee',  key:'2', label:'Broń biała', icon:'⚔️', types:['melee']},
+    {id:'melee',  key:'2', label:'Broń biała', icon:'👊', types:['melee']},
     // Ranged slot: bows, underwater harpoon launchers and hand throws rotate here
-    {id:'bow',    key:'3', label:'Dystansowe', icon:'🏹', types:['bow','harpoon','thrown']},
+    {id:'bow',    key:'3', label:'Dystansowe', icon:'🎯', types:['bow','harpoon','thrown']},
     {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas','electric']}
   ];
 
@@ -91,6 +98,10 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
       chips.push({icon:item.meleeEffect==='bleed'?'🩸':item.meleeEffect==='stun'?'💫':'😱', label:'Efekt', text:MELEE_EFFECT_LABELS[item.meleeEffect]+' (szansa)', good:true});
     if(item.antennaActive && ANTENNA_ACTIVE_LABELS[item.antennaActive])
       chips.push({icon:item.antennaActive==='cloak'?'🫥':item.antennaActive==='surge'?'⚡':'📡', label:'Moc aktywna', text:ANTENNA_ACTIVE_LABELS[item.antennaActive]+' (Q)', good:true});
+    if(item.pickPerk && PICK_PERK_LABELS[item.pickPerk])
+      chips.push({icon:item.pickPerk==='lucky'?'🍀':item.pickPerk==='double'?'✌️':'⛓️', label:'Perk kilofa', text:PICK_PERK_LABELS[item.pickPerk]+' (szansa)', good:true});
+    if(item.mergePerk && MERGE_PERK_LABELS[item.mergePerk])
+      chips.push({icon:item.mergePerk==='vampire'?'🩸':item.mergePerk==='venom'?'☠️':item.mergePerk==='frost'?'❄️':item.mergePerk==='storm'?'⚡':'🔥', label:'Perk fuzji', text:MERGE_PERK_LABELS[item.mergePerk], good:true});
     if(typeof item.damageReductionBonus==='number' && item.damageReductionBonus)
       chips.push({icon:'🛡️', label:'Redukcja obrażeń', text:'+'+Math.round(item.damageReductionBonus*100)+'%', good:item.damageReductionBonus>0});
     if(typeof item.energyCost==='number' && item.energyCost>0)
@@ -151,6 +162,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(typeof item.visionRadius==='number') s+=(item.visionRadius-VISION_BASE)*3;
     if(item.meleeEffect && MELEE_EFFECT_LABELS[item.meleeEffect]) s+=4; // a material identity beats a plain blade of equal damage
     if(item.antennaActive && ANTENNA_ACTIVE_LABELS[item.antennaActive]) s+=16; // an active power is the antenna's whole job
+    if(item.pickPerk && PICK_PERK_LABELS[item.pickPerk]) s+=8; // a perked head beats a plain head of equal speed
+    if(item.mergePerk && MERGE_PERK_LABELS[item.mergePerk]) s+=10; // forged uniqueness is real power
     if(typeof item.damageReductionBonus==='number') s+=item.damageReductionBonus*300; // fraction stat: 0.05 ≈ 15 pts
     ['moveSpeedMult','jumpPowerMult','mineSpeedMult'].forEach(k=>{
       if(typeof item[k]==='number') s+=pctOf(item[k])*0.6;
@@ -292,6 +305,11 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'toxicSnowball', label:'Toksyczne śnieżki', color:'#7fd86e', tile:null},
     {key:'snowball', label:'Śnieżki', color:'#e8f4ff', tile:null},
     {key:'throwingStone', label:'Kamienie do rzucania', color:'#9aa0a8', tile:null},
+    {key:'throwingStoneGranite', label:'Kamienie granitowe', color:'#8d8f97', tile:null},
+    {key:'throwingStoneBasalt', label:'Kamienie bazaltowe', color:'#40444d', tile:null},
+    {key:'throwingStoneObsidian', label:'Kamienie obsydianowe', color:'#7a5cc1', tile:null},
+    {key:'throwingStoneDiamond', label:'Kamienie diamentowe', color:'#48f1ff', tile:null},
+    {key:'halogen', label:'Żarówka halogenowa', color:'#ffe9a8', tile:null},
     {key:'waterBalloon', label:'Balony wodne', color:'#7cc4ff', tile:null},
     {key:'gasGrenade', label:'Granaty gazowe', color:'#9dbf5a', tile:null},
     {key:'stickyBomb', label:'Lepkie bomby', color:'#b0703c', tile:null},
@@ -349,7 +367,16 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'heartEarth', label:'Serce ziemi', color:'#79c95d', tile:null},
     {key:'heartAir', label:'Serce powietrza', color:'#a8d7ff', tile:null},
     {key:'heartMother', label:'Serce macierzyste', color:'#9b8cff', tile:null}, // the center: what remains after meeting yourself
-    {key:'antimatter', label:'Antymateria', color:'#c46bff', tile:'ANTIMATTER_CRYSTAL'} // dropped by downed UFOs and rare antimatter meteors
+    {key:'antimatter', label:'Antymateria', color:'#c46bff', tile:'ANTIMATTER_CRYSTAL'}, // dropped by downed UFOs and rare antimatter meteors
+    // Carbon industry chain: compressed soot -> annealed sheet -> reactor
+    {key:'graphite', label:'Grafit', color:'#3d4048', tile:'GRAPHITE'},
+    {key:'graphene', label:'Grafen', color:'#5a6470', tile:'GRAPHENE'},
+    {key:'smrCell', label:'Ogniwo SMR', color:'#4a6a58', tile:'SMR_CELL'},
+    // Nature-details wave: icicle harvest, soot pigment, weather instruments
+    {key:'ice', label:'Lód', color:'#bfe8f6', tile:null},          // shaken loose by thaws (icicles.js)
+    {key:'soot', label:'Sadza', color:'#2c2f35', tile:null},       // graffiti pigment (G / Shift+G)
+    {key:'weathervane', label:'Wiatrowskaz', color:'#c8a860', tile:'WEATHERVANE'},
+    {key:'lightningRod', label:'Piorunochron', color:'#9fb2c4', tile:'LIGHTNING_ROD'}
   ];
 
   // --- State ---
@@ -380,11 +407,14 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     eyes:['specialVisionLevel','visionRadius'],
     outfit:['lootMagnetLevel','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus'],
     charm:['treasureSenseLevel','lootMagnetLevel','energyCapacityBonus','waterMoveSpeedMult','mineSpeedMult','moveSpeedMult','jumpPowerMult','crushResistBonus'],
+    // pickaxes dig: one speed number; their flavour lives in pickPerk (identity
+    // string like meleeEffect — main.js PICK_PERKS holds the numbers)
+    pickaxe:['mineSpeedMult'],
     // antennas: one signal per aerial — perception, focus or deflection. An
     // ACTIVE antenna carries no number at all, only its antennaActive identity.
     antenna:['visionRadius','attackDamage','damageReductionBonus']
   };
-  const KIND_STAT_MAX={cape:1, eyes:1, outfit:1, charm:1, antenna:1};
+  const KIND_STAT_MAX={cape:1, eyes:1, outfit:1, pickaxe:1, charm:1, antenna:1};
   const WEAPON_TYPE_STATS={
     // melee may carry fireRange as its REACH in whole tiles (spears strike along
     // a three-tile horizontal lane); plus an optional material identity string
@@ -464,15 +494,21 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
   const ITEM_NUM_FIELDS=['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus','damageReductionBonus'];
-  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode','antennaActive'];
+  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode','antennaActive','pickPerk','mergePerk'];
   // Material identity of a crafted hand weapon (weapons.js MELEE_EFFECTS holds
   // the numbers) — anything else smuggled into meleeEffect is dropped on ingest.
   const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika'};
   // Active-power identity of an antenna (antennas.js ACTIVES holds the numbers —
   // durations/cooldowns/ranges never ride the item, exactly like meleeEffect).
   const ANTENNA_ACTIVE_LABELS={cloak:'Kamuflaż', surge:'Przepięcie', echo:'Echolokacja'};
+  // Pickaxe perk identity (main.js PICK_PERKS holds the numbers): lucky = every
+  // so often a strike finishes the block at once, double = extra yield chance,
+  // vein = a matching neighbour sometimes shatters along.
+  const PICK_PERK_LABELS={lucky:'Szczęśliwy przebój', double:'Podwójny urobek', vein:'Pękająca żyła'};
+  // Merge-forged weapon perk identity (weapons.js MERGE_PERKS holds the numbers).
+  const MERGE_PERK_LABELS={vampire:'Wampiryzm', venom:'Jad', frost:'Szron', storm:'Burza', fury:'Furia'};
   const AQUATIC_STYLES={trident:'melee',crossbow:'bow',harpoon:'harpoon'};
-  const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm','antenna']);
+  const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','pickaxe','charm','antenna']);
   function sanitizeLootItem(raw,fallbackKind){
     if(!raw || typeof raw!=='object') return null;
     if(typeof raw.id!=='string' || !raw.id || raw.id.length>64) return null;
@@ -484,6 +520,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(Number.isFinite(raw.enhancement)) it.enhancement=Math.max(-99,Math.min(99,Math.trunc(raw.enhancement)));
     if(it.meleeEffect && (kind!=='weapon' || (it.weaponType||'melee')!=='melee' || !MELEE_EFFECT_LABELS[it.meleeEffect])) delete it.meleeEffect;
     if(it.antennaActive && (kind!=='antenna' || !ANTENNA_ACTIVE_LABELS[it.antennaActive])) delete it.antennaActive;
+    if(it.pickPerk && (kind!=='pickaxe' || !PICK_PERK_LABELS[it.pickPerk])) delete it.pickPerk;
+    if(it.mergePerk && (kind!=='weapon' || !MERGE_PERK_LABELS[it.mergePerk])) delete it.mergePerk;
     if(typeof it.damageReductionBonus==='number'){
       const f=Math.max(0,Math.min(0.25,+it.damageReductionBonus.toFixed(2)));
       if(f<=0) delete it.damageReductionBonus; else it.damageReductionBonus=f;
@@ -881,12 +919,88 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     return true;
   }
   function dynamicLootKeyForKind(kind){
-    return kind==='cape'?'capes':kind==='eyes'?'eyes':kind==='outfit'?'outfits':kind==='weapon'?'weapons':kind==='charm'?'charms':kind==='antenna'?'antennas':null;
+    return kind==='cape'?'capes':kind==='eyes'?'eyes':kind==='outfit'?'outfits':kind==='weapon'?'weapons':kind==='pickaxe'?'pickaxes':kind==='charm'?'charms':kind==='antenna'?'antennas':null;
+  }
+  // --- Weapon fusion (merge): sacrifice several LOOTED weapons for one chance
+  // at a superior forge. 2 ingredients = 50%, each extra +15%, capped at 95%.
+  // Success forges ONE weapon of the strongest ingredient's class: its best
+  // numbers, a tier bump and a unique mergePerk (weapons.js holds the numbers).
+  // Failure consumes everything — that is the wager (owner ruling).
+  const MERGE_TIER_ORDER=['common','uncommon','rare','epic','legendary'];
+  const MERGE_MIN_STATS=new Set(['fireCooldown','energyCost']); // smaller is better
+  function mergeChance(count){ return count<2 ? 0 : Math.min(0.95, 0.5+(count-2)*0.15); }
+  function mergeWeapons(ids,opts){
+    opts=opts||{};
+    const rand=typeof opts.rand==='function'?opts.rand:Math.random;
+    // bounded + bag-only + never thrown: throw TECHNIQUES are always-known
+    // builtins whose identity (thrownKind) is not a lootable stat — a forged
+    // "thrown" would come out of sanitize with no kind and could never fire
+    const unique=[...new Set(Array.isArray(ids)?ids:[])].slice(0,12);
+    const list=unique
+      .map(id=>state.bag.find(i=>i && i.id===id && i.kind==='weapon' && (i.weaponType||'melee')!=='thrown'))
+      .filter(Boolean);
+    if(list.length<2) return {ok:false, reason:'need2'};
+    const chance=mergeChance(list.length);
+    const ingredients=list.map(i=>effectiveItem(i));
+    // The wager consumes the ingredients up front, success or not.
+    const consumed=new Set(list.map(i=>i.id));
+    state.bag=state.bag.filter(i=>!consumed.has(i.id));
+    for(const id of consumed){
+      if(state.equipped.weapon===id) state.equipped.weapon=null;
+      delete state.enhancements[id];
+      state.newItems.delete(id);
+      state.shortcutOff.delete(id);
+      for(const cat in state.shortcutSelection){ if(state.shortcutSelection[cat]===id) delete state.shortcutSelection[cat]; }
+      if(MM.dynamicLoot){
+        Object.keys(MM.dynamicLoot).forEach(k=>{
+          const arr=MM.dynamicLoot[k]; if(!Array.isArray(arr)) return;
+          const idx=arr.findIndex(i=>i && i.id===id); if(idx>=0) arr.splice(idx,1);
+        });
+      }
+    }
+    try{ if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot(); }catch(e){}
+    if(rand()>=chance){
+      ensureValid();
+      notifyChange({key:'merge', value:'failed'});
+      return {ok:true, success:false, chance, consumed:consumed.size};
+    }
+    // Forge: strongest ingredient decides the class; every allowed stat takes
+    // the best value found among SAME-CLASS ingredients; the tier climbs one.
+    const base=ingredients.slice().sort((a,b)=>itemScore(b)-itemScore(a))[0];
+    const type=base.weaponType||'melee';
+    const sameClass=ingredients.filter(i=>(i.weaponType||'melee')===type);
+    const forged={
+      id:'merged_'+Date.now().toString(36)+'_'+Math.floor(rand()*1e6).toString(36),
+      kind:'weapon', weaponType:type,
+      name:'Fuzja: '+(base.name||base.id)
+    };
+    if(base.aquaticStyle) forged.aquaticStyle=base.aquaticStyle;
+    if(base.meleeEffect) forged.meleeEffect=base.meleeEffect;
+    for(const stat of allowedStatsFor('weapon',type)){
+      const values=sameClass.map(i=>i[stat]).filter(v=>typeof v==='number' && isFinite(v));
+      if(!values.length) continue;
+      forged[stat]=MERGE_MIN_STATS.has(stat) ? Math.min(...values) : Math.max(...values);
+    }
+    // the forge's own heat: +10% on the primary damage number
+    const prim=typeof forged.fireDps==='number' ? 'fireDps' : (typeof forged.attackDamage==='number' ? 'attackDamage' : null);
+    if(prim) forged[prim]=Math.max(1,Math.round(forged[prim]*1.1));
+    const tierIdx=Math.max(0,MERGE_TIER_ORDER.indexOf(base.tier||'common'));
+    forged.tier=MERGE_TIER_ORDER[Math.min(MERGE_TIER_ORDER.length-1,tierIdx+1)];
+    const perkKeys=Object.keys(MERGE_PERK_LABELS);
+    forged.mergePerk=perkKeys[Math.floor(rand()*perkKeys.length)]||perkKeys[0];
+    forged.desc='Zespolona w fuzji z '+consumed.size+' broni — unikalny perk: '+MERGE_PERK_LABELS[forged.mergePerk]+'.';
+    const clean=sanitizeLootItem(forged,'weapon');
+    if(!clean){ ensureValid(); notifyChange({key:'merge', value:'failed'}); return {ok:true, success:false, chance, consumed:consumed.size}; }
+    pushToBag(clean,{essential:true});
+    restoreDynamicLootItem(clean);
+    ensureValid();
+    notifyChange({key:'merge', value:clean.id});
+    return {ok:true, success:true, chance, item:findItem(clean.id), consumed:consumed.size};
   }
   function restoreDynamicLootItem(item){
     const key=dynamicLootKeyForKind(item && item.kind);
     if(!key) return;
-    if(!MM.dynamicLoot) MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[],antennas:[]};
+    if(!MM.dynamicLoot) MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],pickaxes:[],charms:[],antennas:[]};
     if(!Array.isArray(MM.dynamicLoot[key])) MM.dynamicLoot[key]=[];
     if(!MM.dynamicLoot[key].some(i=>i && i.id===item.id)) MM.dynamicLoot[key].push(Object.assign({}, item));
     if(MM.chests && MM.chests.saveDynamicLoot) MM.chests.saveDynamicLoot();
@@ -1047,7 +1161,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   }
 
   // --- Dynamic loot sync: chests.js fills MM.dynamicLoot; merge new items into the bag ---
-  const DYN_KIND_MAP={capes:'cape', eyes:'eyes', outfits:'outfit', weapons:'weapon', charms:'charm', antennas:'antenna'};
+  const DYN_KIND_MAP={capes:'cape', eyes:'eyes', outfits:'outfit', weapons:'weapon', pickaxes:'pickaxe', charms:'charm', antennas:'antenna'};
   function syncDynamicLoot(){
     const dl=MM.dynamicLoot; if(!dl) return {added:0, blocked:0};
     let added=0;
@@ -1133,6 +1247,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     SLOTS, KIND_LABELS, TIER_COLORS, STAT_LABELS, STAT_RULES, RESOURCES, BASE_ATTACK,
     MELEE_EFFECT_LABELS, ANTENNA_ACTIVE_LABELS, JEWELS,
     WEAPON_CATEGORIES, KIND_STAT_PRIORITY, WEAPON_TYPE_STATS, allowedStatsFor,
+    PICK_PERK_LABELS, MERGE_PERK_LABELS, mergeWeapons, mergeChance,
     weaponCategory, categoryWeapons, selectedWeaponForCategory, isShortcut, setShortcut, cycleWeaponCategory,
     statChips, itemScore, snapPct, fmtPct, VISION_BASE,
     items:itemsOfKind,

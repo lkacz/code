@@ -32,7 +32,7 @@ if(MMR && !MMR.ghostDreadAt){
 	};
 }
 
-const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500, mach: 800, story: 4000, npc: 5000 };
+const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500, drift: 700, mach: 800, story: 4000, npc: 5000, gfx: 2500 };
 const CHAT_MIN_MS = NET.CHAT.MIN_MS; // per-peer chat floor (shared with the client's local mirror)
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const ELECTRIC_CAUSE = /shock|electric|lightning|laser/; // wet bodies conduct these
@@ -80,7 +80,7 @@ const ghostHost = (function(){
 			snapCacheAt: 0,
 			sinceCache: [],
 			lastSnapAt: 0,
-			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0, pwat: 0, story: 0, npc: 0 },
+			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0, pwat: 0, drift: 0, story: 0, npc: 0 },
 			auraOwners: [],
 			lastMobSig: null,
 			lastInvSig: null,
@@ -783,6 +783,8 @@ const ghostHost = (function(){
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
 		if(t - s.last.presence >= CAD.presence) presenceTick(s, t);
 		if(t - s.last.pwat >= CAD.pwat) pwatTick(s, t);
+		if(t - (s.last.drift || 0) >= CAD.drift) driftTick(s, t);
+		if(t - (s.last.gfx || 0) >= CAD.gfx) gfxTick(s, t);
 		if(t - (s.last.mach || 0) >= (s.machFast ? 150 : CAD.mach)) machTick(s, t); // driven cab = smooth ride
 		if(t - s.last.prog >= CAD.prog) progTick(s, t, live);
 		chargeTick(s, t, live);
@@ -947,6 +949,77 @@ const ghostHost = (function(){
 		s.lastPwatSig = sig;
 		s.pwatWas = any;
 		broadcast({ t: 'pwat', w: payload });
+	}
+	// Soft-drift windows (engine/soft_drifts.js): sub-tile snow fluff / leaf
+	// litter / soot levels are cosmetic and deliberately unsaved, so — exactly
+	// like pwat — the watcher would never see them without a plane. Same window
+	// shape, same latch (a clearing packet follows the last dusty one), same
+	// sig-skip; the client side infers burst poofs from cleared cells.
+	function driftTick(s, t){
+		s.last.drift = t;
+		const D = MMR && MMR.softDrifts;
+		if(!D || !D.ghostLevelsIn) return;
+		const wins = [];
+		const p = bridge.player;
+		if(p && Number.isFinite(p.x) && Number.isFinite(p.y)) wins.push([Math.floor(p.x) - 12, Math.floor(p.y) - 7, Math.floor(p.x) + 12, Math.floor(p.y) + 7]);
+		for(const entry of entries()){
+			const b = entry.body;
+			if(b && !b.dead && wins.length < 6) wins.push([Math.floor(b.x) - 9, Math.floor(b.y) - 5, Math.floor(b.x) + 9, Math.floor(b.y) + 5]);
+		}
+		const payload = [];
+		const printsPayload = [];
+		let any = false;
+		for(const w of wins){
+			let rows = [];
+			try{ rows = D.ghostLevelsIn(w[0], w[1], w[2], w[3]) || []; }catch(e){ rows = []; }
+			if(rows.length) any = true;
+			payload.push([w[0], w[1], w[2], w[3], rows]);
+			// footprint tracks in the same windows (age quantized host-side, so an
+			// idle scene keeps a stable sig and the latch stays silent)
+			let prows = [];
+			try{ prows = D.ghostPrintsIn ? (D.ghostPrintsIn(w[0], w[1], w[2], w[3]) || []) : []; }catch(e){ prows = []; }
+			if(prows.length) any = true;
+			printsPayload.push([w[0], w[1], w[2], w[3], prows]);
+		}
+		// hanging icicles share the plane too (packet.i) — same windows, display-only
+		const icePayload = [];
+		const I = MMR && MMR.icicles;
+		if(I && I.ghostIciclesIn){
+			for(const w of wins){
+				let irows = [];
+				try{ irows = I.ghostIciclesIn(w[0], w[1], w[2], w[3]) || []; }catch(e){ irows = []; }
+				if(irows.length) any = true;
+				icePayload.push([w[0], w[1], w[2], w[3], irows]);
+			}
+		}
+		// an active gale (zamieć) rides the same packet so watchers render the
+		// haze and streamed flakes; its presence counts as activity for the latch
+		let gale = null;
+		try{ gale = D.ghostStormOut ? D.ghostStormOut() : null; }catch(e){ gale = null; }
+		if(gale) any = true;
+		if(!any && !s.driftWas) return;
+		const sig = JSON.stringify([payload, printsPayload, icePayload, gale]);
+		if(any && sig === s.lastDriftSig) return;
+		s.lastDriftSig = sig;
+		s.driftWas = any;
+		const packet = { t: 'drift', w: payload, p: printsPayload, i: icePayload };
+		if(gale) packet.s = gale;
+		broadcast(packet);
+	}
+	// Soot-graffiti plane: the full (bounded) mark list at low Hz, sig-skipped
+	// by the store's version counter — an untouched wall costs zero packets.
+	function gfxTick(s, t){
+		s.last.gfx = t;
+		const G = MMR && MMR.graffiti;
+		if(!G || !G.ghostVersion) return;
+		let v = 0;
+		try{ v = G.ghostVersion() | 0; }catch(e){ return; }
+		if(v === s.lastGfxVersion) return;
+		let rows = null;
+		try{ rows = G.ghostOut ? G.ghostOut() : null; }catch(e){ rows = null; }
+		if(!Array.isArray(rows)) return;
+		s.lastGfxVersion = v;
+		broadcast({ t: 'gfx', m: rows });
 	}
 	// Vehicles ride their own low-Hz plane: boats and mechs are save-codec state
 	// (the join snapshot already carries them), but between joins they used to
@@ -1652,6 +1725,32 @@ const ghostHost = (function(){
 			if(active === 'cloak') b.cloakUntil = t + durMs;
 			entry.peer.send({ t: 'hact', a: 'antenna', ok: true, k: active, ms: durMs });
 			s.stats.antenna = (s.stats.antenna || 0) + 1;
+			return;
+		}
+		if(pl.a === 'gfx'){
+			// soot graffiti: the guest NAMES a whitelisted glyph at a cell within
+			// reach — paintAt re-validates the backing against WORLD truth, so a
+			// modified client cannot hang pigment in the open air. The guest's soot
+			// is its own pouch truth (hero model): the host never spends it.
+			const G = MMR && MMR.graffiti;
+			if(!G || !G.paintAt){ return; }
+			if(t - (b.lastHeroGfxAt || 0) < NET.HERO_RULES.GFX_MS) return;
+			b.lastHeroGfxAt = t;
+			const gx = Math.floor(Number(pl.x)), gy = Math.floor(Number(pl.y));
+			if(!Number.isFinite(gx) || !Number.isFinite(gy)) return;
+			if(Math.abs(gx + 0.5 - b.x) > NET.HERO_RULES.REACH || Math.abs(gy + 0.5 - b.y) > NET.HERO_RULES.REACH){
+				entry.peer.send({ t: 'hact', a: 'gfx', ok: false, reason: 'reach' });
+				return;
+			}
+			const glyph = typeof pl.g === 'string' ? pl.g.slice(0, 12) : '';
+			if(!G.validGlyph || !G.validGlyph(glyph)){
+				entry.peer.send({ t: 'hact', a: 'gfx', ok: false, reason: 'glyph' });
+				return;
+			}
+			let ok = false;
+			try{ ok = bridge.ghostHeroGraffiti ? !!bridge.ghostHeroGraffiti(gx, gy, glyph, pl.d < 0 ? -1 : 1) : false; }catch(e){ ok = false; }
+			entry.peer.send({ t: 'hact', a: 'gfx', ok });
+			if(ok) s.stats.gfx = (s.stats.gfx || 0) + 1;
 			return;
 		}
 		if(pl.a === 'board' || pl.a === 'unboard'){

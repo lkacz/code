@@ -473,6 +473,18 @@ import { isHeroPassableTile } from './material_physics.js';
         return s ? {kind:'solar',x:s.x,y:s.y,cells:s.cells||1} : null;
       }catch(e){ return null; }
     }
+    if(t===T.SMR_CELL){
+      try{
+        const s=MM.smr && MM.smr.sourceAt ? MM.smr.sourceAt(x,y,getTile) : null;
+        return s ? {kind:'smr',x:s.x,y:s.y,cells:1} : null;
+      }catch(e){ return null; }
+    }
+    if(t===T.LIGHTNING_ROD){
+      try{
+        const s=MM.weatherInstruments && MM.weatherInstruments.sourceAt ? MM.weatherInstruments.sourceAt(x,y,getTile) : null;
+        return s ? {kind:'rod',x:s.x,y:s.y,cells:1} : null;
+      }catch(e){ return null; }
+    }
     return null;
   }
   function sourceCacheKey(source){
@@ -736,6 +748,14 @@ import { isHeroPassableTile } from './material_physics.js';
       const S=MM.solar;
       try{ return (S && S.energyAt) ? finiteNonNegative(S.energyAt(source.x,source.y,getTile),0) : 0; }catch(e){ return 0; }
     }
+    if(source.kind==='smr'){
+      const R=MM.smr;
+      try{ return (R && R.energyAt) ? finiteNonNegative(R.energyAt(source.x,source.y),0) : 0; }catch(e){ return 0; }
+    }
+    if(source.kind==='rod'){
+      const W=MM.weatherInstruments;
+      try{ return (W && W.energyAt) ? finiteNonNegative(W.energyAt(source.x,source.y),0) : 0; }catch(e){ return 0; }
+    }
     return 0;
   }
   function drainSource(source,amount,getTile,dynamo){
@@ -753,6 +773,20 @@ import { isHeroPassableTile } from './material_physics.js';
       const S=MM.solar;
       try{
         const got=(S && S.drainAt) ? S.drainAt(source.x,source.y,want,getTile) : null;
+        return got ? Math.min(want,finiteNonNegative(got.amount,0)) : 0;
+      }catch(e){ return 0; }
+    }
+    if(source.kind==='smr'){
+      const R=MM.smr;
+      try{
+        const got=(R && R.drainAt) ? R.drainAt(source.x,source.y,want) : null;
+        return got ? Math.min(want,finiteNonNegative(got.amount,0)) : 0;
+      }catch(e){ return 0; }
+    }
+    if(source.kind==='rod'){
+      const W=MM.weatherInstruments;
+      try{
+        const got=(W && W.drainAt) ? W.drainAt(source.x,source.y,want) : null;
         return got ? Math.min(want,finiteNonNegative(got.amount,0)) : 0;
       }catch(e){ return 0; }
     }

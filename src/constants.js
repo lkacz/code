@@ -21,7 +21,25 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   MIRROR:128,
   // Precious-metal pipeline. IDs are append-only because worlds persist raw
   // tile bytes: ore -> fire-smelted ingot -> high-conductivity cable.
-  SILVER_ORE:129,SILVER_INGOT:130,SILVER_WIRE:131
+  SILVER_ORE:129,SILVER_INGOT:130,SILVER_WIRE:131,
+  // Soft-drift litter (engine/soft_drifts.js): a full drift of autumn leaves
+  // solidifies into this passable pile; running through it shreds it back
+  // into leaf flakes. Snow drifts mint ordinary SNOW instead.
+  LEAF_PILE:132,
+  // Carbon industry chain (soot -> graphite -> graphene -> SMR):
+  // a maxed soot film under continued black-smoke fall can compress into
+  // GRAPHITE; repeated electric-beam hits anneal graphite into GRAPHENE
+  // (engine/reactions.js charge recipe); GRAPHITE feeds the SMR nuclear cell
+  // (engine/smr.js) — the smallest but endless power source in the game.
+  GRAPHITE:133, GRAPHENE:134, SMR_CELL:135,
+  // Winter lakes glaze over with THIN_ICE (engine/thin_ice.js): walkable, but
+  // it creaks under a body, cracks, and breaks back into the WATER it froze
+  // from (volume-true). Natural-only — never crafted or placed.
+  THIN_ICE:136,
+  // Weather instruments (engine/weather_instruments.js): the WEATHERVANE shows
+  // the live wind (direction + strength) on a rooftop rod; the LIGHTNING_ROD
+  // attracts storm bolts and banks their charge for the electric network.
+  LIGHTNING_ROD:137, WEATHERVANE:138
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -225,6 +243,25 @@ for(const [tileName,drop,color,hp,homeRegenBonus,furnitureCategory,lightLevel] o
 INFO[T.SILVER_ORE]={hp:10,color:'#aeb8c8',drop:'silverOre',passable:false,ore:true,silverOre:true};
 INFO[T.SILVER_INGOT]={hp:8,color:'#dce5ef',drop:'silver',passable:false,preciousIngot:true};
 INFO[T.SILVER_WIRE]={hp:1,color:'#d9ecff',drop:'silverWire',passable:true,machine:'silverWire',conductor:true,powerCable:'silver',conductivity:1};
+INFO[T.LEAF_PILE]={hp:1,color:'#b3812f',drop:'leaf',passable:true,flammable:true,burnTime:1.4,leafLitter:true};
+// Compressed soot: dense black-smoke fallout crystallized into a mineral seam.
+INFO[T.GRAPHITE]={hp:8,color:'#3d4048',drop:'graphite',passable:false,graphite:true};
+// Annealed graphite: the toughest buildable sheet material in the game —
+// harder than obsidian, softer only than the unmineable endgame shells.
+INFO[T.GRAPHENE]={hp:22,color:'#5a6470',drop:'graphene',passable:false,graphene:true};
+// SMR nuclear cell (engine/smr.js): powerSource with the SMALLEST but endless
+// output; runs only with a party member nearby and demands periodic
+// inspection. Submerged, it boils adjacent water into real steam gas on the
+// gases module's exact condensation ratio — a closed water<->steam loop.
+INFO[T.SMR_CELL]={hp:10,color:'#4a6a58',drop:'smrCell',passable:false,machine:'smrCell',powerSource:true,conductor:true,energyCapacity:80};
+// Frozen lake sheet: solid enough to walk on, fragile enough to creak, crack
+// and drop you into the freezing water it froze from (engine/thin_ice.js).
+INFO[T.THIN_ICE]={hp:3,color:'#cfe8f2',drop:null,passable:false,thinIce:true};
+// Weather instruments: passable rooftop fixtures (route: passable-utility).
+// The rod is a machine — clouds.js aims storm bolts at it and the banked
+// charge feeds the same networks that drink from dynamos/solar/SMR.
+INFO[T.LIGHTNING_ROD]={hp:6,color:'#9fb2c4',drop:'lightningRod',passable:true,machine:'lightningRod',powerSource:true,conductor:true,energyCapacity:120};
+INFO[T.WEATHERVANE]={hp:4,color:'#c8a860',drop:'weathervane',passable:true,machine:'weathervane'};
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;

@@ -17,8 +17,8 @@ import { rollChestFurnishing } from './furnishings.js';
     if(raw){
       const d=JSON.parse(raw);
       if(d && typeof d==='object'){
-        MM.dynamicLoot = MM.dynamicLoot || {capes:[],eyes:[],outfits:[],weapons:[],charms:[],antennas:[]};
-        ['capes','eyes','outfits','weapons','charms','antennas'].forEach(k=>{
+        MM.dynamicLoot = MM.dynamicLoot || {capes:[],eyes:[],outfits:[],weapons:[],pickaxes:[],charms:[],antennas:[]};
+        ['capes','eyes','outfits','weapons','pickaxes','charms','antennas'].forEach(k=>{
           if(!Array.isArray(MM.dynamicLoot[k])) MM.dynamicLoot[k]=[];
           if(Array.isArray(d[k])){
             d[k].forEach(it=>{
@@ -106,7 +106,7 @@ import { rollChestFurnishing } from './furnishings.js';
   }
 
   // Procedural display names: "<base> <suffix>" (tier shown separately in the UI)
-  const NAME_BASES={cape:'Peleryna', eyes:'Oczy', outfit:'Strój', weapon:'Ostrze', charm:'Talizman', antenna:'Antenka'};
+  const NAME_BASES={cape:'Peleryna', eyes:'Oczy', outfit:'Strój', weapon:'Ostrze', pickaxe:'Kilof', charm:'Talizman', antenna:'Antenka'};
   const WEAPON_NAME_BASES={melee:'Ostrze', bow:'Łuk', flame:'Miotacz', hose:'Sikawka', gas:'Emiter', electric:'Elektromiotacz'};
   const ANTENNA_NAME_BASES={vision:'Antenka radarowa', attack:'Antenka bojowa', guard:'Antenka ochronna',
     cloak:'Antenka kameleona', surge:'Antenka burzowa', echo:'Antenka echolokacyjna'};
@@ -121,7 +121,7 @@ import { rollChestFurnishing } from './furnishings.js';
 
   // Unique find (rarer the higher the tier chance): the item's PRIMARY stat gets a
   // further visible boost — a superior version of its own function, nothing new.
-  const UNIQUE_NAMES={cape:'sky_bound', eyes:'deep_vision', outfit:'earth_breaker', charm:'wind_dancer', weapon:'storm_edge', antenna:'signal_lord'};
+  const UNIQUE_NAMES={cape:'sky_bound', eyes:'deep_vision', outfit:'earth_breaker', charm:'wind_dancer', weapon:'storm_edge', pickaxe:'deep_delver', antenna:'signal_lord'};
   function applyUniqueBoost(item){
     item.unique=UNIQUE_NAMES[item.kind]||'storm_edge';
     if(item.kind==='cape'){ item.airJumps=(item.airJumps||0)+1; return; }
@@ -138,6 +138,7 @@ import { rollChestFurnishing } from './furnishings.js';
       if(typeof item.damageReductionBonus==='number'){ item.damageReductionBonus=+(Math.min(0.25,item.damageReductionBonus+0.03)).toFixed(2); return; }
       return;
     }
+    if(item.kind==='pickaxe'){ addPct(item,'mineSpeedMult',10); return; }
     if(item.kind==='outfit' || item.kind==='charm'){
       if(typeof item.treasureSenseLevel==='number'){ item.treasureSenseLevel=Math.min(4,item.treasureSenseLevel+1); return; }
       if(typeof item.lootMagnetLevel==='number'){ item.lootMagnetLevel=Math.min(4,item.lootMagnetLevel+1); return; }
@@ -156,7 +157,7 @@ import { rollChestFurnishing } from './furnishings.js';
 
   function genItem(r,tier,opts){
     opts=opts||{};
-    const kinds=['cape','eyes','outfit','weapon','charm','antenna'];
+    const kinds=['cape','eyes','outfit','weapon','pickaxe','charm','antenna'];
     // Species-themed drops (drops.js) force the kind/weapon class; chest rolls stay random.
     const kind=kinds.includes(opts.kind) ? opts.kind : kinds[randInt(r,0,kinds.length-1)];
     const item={kind, id:kind+'_'+Math.random().toString(36).slice(2,7), tier};
@@ -194,6 +195,15 @@ import { rollChestFurnishing } from './furnishings.js';
       else if(p==='crush') item.crushResistBonus=pick(r, td.crush);
       else if(p==='swim') item.waterMoveSpeedMult=pick(r, td.swim);
       else addPct(item, PROFILE_KEYS[p], pick(r, td.charmPct[p]));
+    }
+    else if(kind==='pickaxe'){
+      // A pickaxe HEAD: one mining-speed number (same percent ladder as outfit
+      // mine profiles) and — above common — a perk identity; main.js PICK_PERKS
+      // owns the perk numbers, exactly like meleeEffect/antennaActive.
+      addPct(item,'mineSpeedMult',pick(r, td.outfitPct.mine));
+      const perkPool= tier==='common' ? [null,null,'lucky'] : tier==='uncommon' ? [null,'lucky','double'] : ['lucky','double','vein'];
+      const perk=['lucky','double','vein'].includes(opts.profile)?opts.profile:pick(r,perkPool);
+      if(perk) item.pickPerk=perk;
     }
     else if(kind==='antenna'){
       // Passive aerials carry ONE stat; active aerials carry ONLY the power's
@@ -237,6 +247,9 @@ import { rollChestFurnishing } from './furnishings.js';
       ? (kind==='outfit'?'Strój zbieracza':'Wisiorek przyciągania')
       : kind==='weapon'? (WEAPON_NAME_BASES[item.weaponType]||'Ostrze') : (NAME_BASES[kind]||'Przedmiot');
     item.name = nameBase + ' ' + NAME_SUFFIXES[randInt(r,0,NAME_SUFFIXES.length-1)];
+    if(item.pickPerk==='lucky') item.desc='Mniej więcej co dziesiąty blok pęka od pierwszego uderzenia.';
+    else if(item.pickPerk==='double') item.desc='Blok ma szansę wysypać podwójny urobek.';
+    else if(item.pickPerk==='vein') item.desc='Sąsiedni blok tego samego surowca czasem pęka razem z kopanym.';
     // Guardian relics (drops.js) are always unique finds; chest rolls stay a chance.
     if(opts.forceUnique || r()<td.uniqueChance) applyUniqueBoost(item);
     if(typeof item.lootMagnetLevel==='number'){
@@ -317,10 +330,10 @@ import { rollChestFurnishing } from './furnishings.js';
     }
     if(spawned<items.length){
       // Fallback (DOM-less sims / drops module missing): straight to the bag.
-      if(!MM.dynamicLoot){ MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],charms:[],antennas:[]}; }
+      if(!MM.dynamicLoot){ MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],pickaxes:[],charms:[],antennas:[]}; }
       ['capes','eyes','outfits','weapons','charms','antennas'].forEach(k=>{ if(!Array.isArray(MM.dynamicLoot[k])) MM.dynamicLoot[k]=[]; });
       const leftovers=items.slice(spawned);
-      leftovers.forEach(it=>{ if(it.kind==='cape') MM.dynamicLoot.capes.push(it); else if(it.kind==='eyes') MM.dynamicLoot.eyes.push(it); else if(it.kind==='outfit') MM.dynamicLoot.outfits.push(it); else if(it.kind==='weapon') MM.dynamicLoot.weapons.push(it); else if(it.kind==='charm') MM.dynamicLoot.charms.push(it); else if(it.kind==='antenna') MM.dynamicLoot.antennas.push(it); });
+      leftovers.forEach(it=>{ if(it.kind==='cape') MM.dynamicLoot.capes.push(it); else if(it.kind==='eyes') MM.dynamicLoot.eyes.push(it); else if(it.kind==='outfit') MM.dynamicLoot.outfits.push(it); else if(it.kind==='weapon') MM.dynamicLoot.weapons.push(it); else if(it.kind==='pickaxe') (MM.dynamicLoot.pickaxes=MM.dynamicLoot.pickaxes||[]).push(it); else if(it.kind==='charm') MM.dynamicLoot.charms.push(it); else if(it.kind==='antenna') MM.dynamicLoot.antennas.push(it); });
       saveDynamicLoot();
       if(MM.onLootGained) MM.onLootGained(leftovers,tier);
     }

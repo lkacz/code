@@ -1,8 +1,12 @@
 // Sparse black-smoke density layer. Unlike world-backed gases, smoke does not
 // own a terrain cell: it can occupy the same position as steam, poison or fuel
-// gas. Density moves upward, pools below ceilings, diffuses sideways through
-// rooms and vents quickly outdoors. A capped rotating work queue keeps large
-// fires bounded without making the simulation depend on the rendered viewport.
+// gas. YOUNG density moves upward, pools below ceilings, diffuses sideways
+// through rooms and vents quickly outdoors. AGED density has shed the thermal
+// lift that carried it: past BUOYANT_SECONDS it stops climbing and slowly
+// sinks, pooling into a dense layer along the floor — the layer soft_drifts'
+// soot fallout consumes (deposition removes mass via consumeAt, closing the
+// smoke -> soot -> graphite carbon loop). A capped rotating work queue keeps
+// large fires bounded without making the simulation depend on the viewport.
 import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isSmokePorousTile } from './material_physics.js';
 
@@ -17,6 +21,18 @@ import { isSmokePorousTile } from './material_physics.js';
   const MAX_DENSITY=1.25;
   const MIN_DENSITY=0.012;
   const SOOT_FADE_SECONDS=75;
+  // Mixture age (mass-weighted through every transfer/emit) drives buoyancy:
+  // below BUOYANT_SECONDS a packet climbs, past it the lift wanes linearly and
+  // at SETTLED_SECONDS the packet only sinks. A fed fire keeps its plume young
+  // (fresh emission dilutes age), so settling starts when the source ebbs.
+  const BUOYANT_SECONDS=45;
+  const SETTLED_SECONDS=100;
+  // Trapped smoke decides faster: with no vent the mixture ages up to twice as
+  // fast (a sealed hall reaches the settling decision sooner) and settled smog
+  // wears away quicker, so a dead cloud either sinks into the soot-fallout
+  // layer or thins out — it cannot hover under a ceiling indefinitely.
+  const TRAPPED_AGE_BOOST=1.0;
+  const TRAPPED_WEAR=0.014;
   // Keep the sparse overlay inside the same horizontal storage envelope as
   // world.js. Bitwise key normalization would otherwise wrap corrupt, huge x
   // coordinates back into an unrelated valid cell (most visibly x=0).
@@ -31,6 +47,7 @@ import { isSmokePorousTile } from './material_physics.js';
   let drawCursor=0;
   let drawSeq=0;
   let emitEvictCursor=0;
+  let denseCursor=0;
   let spriteTile=0;
   let sprites=null;
 
@@ -62,6 +79,7 @@ import { isSmokePorousTile } from './material_physics.js';
     cursor=queue.length ? cursor%queue.length : 0;
     drawCursor=queue.length ? drawCursor%queue.length : 0;
     emitEvictCursor=queue.length ? emitEvictCursor%queue.length : 0;
+    denseCursor=queue.length ? denseCursor%queue.length : 0;
   }
   function evictForEmission(){
     if(!cells.size) return true;
@@ -81,7 +99,26 @@ import { isSmokePorousTile } from './material_physics.js';
       if(score<bestScore){ bestScore=score; bestKey=k; }
     }
     if(bestKey==null) return false;
+    const victim=cells.get(bestKey);
     removeCell(bestKey);
+    // Fold the sacrificed mass into a neighbouring cell instead of popping a
+    // visible hole into the cloud: the cap stays honoured and the eviction
+    // reads as local thickening rather than blinking.
+    if(victim && victim.d>MIN_DENSITY){
+      let best=null,room=0;
+      for(const [dx,dy] of [[0,-1],[-1,0],[1,0],[0,1]]){
+        const n=cellAt(victim.x+dx,victim.y+dy);
+        if(!n) continue;
+        const cap=MAX_DENSITY-n.d;
+        if(cap>room){ room=cap; best=n; }
+      }
+      if(best){
+        const moved=Math.min(victim.d,room);
+        const before=best.d;
+        best.d+=moved;
+        best.age=(Math.max(0,best.age||0)*before+Math.max(0,victim.age||0)*moved)/(before+moved);
+      }
+    }
     return true;
   }
   function ensureCell(x,y,getTile,dynamicOpen,allowEvict){
@@ -179,21 +216,42 @@ import { isSmokePorousTile } from './material_physics.js';
     const elapsedSteps=Math.max(1,stepSeq-previousTick);
     const elapsed=STEP*elapsedSteps;
     c._tick=stepSeq;
-    c.age+=elapsed;
+    c.age+=elapsed*(1+(1-vent)*TRAPPED_AGE_BOOST);
+    const settle=clamp((c.age-BUOYANT_SECONDS)/(SETTLED_SECONDS-BUOYANT_SECONDS),0,1);
+    // One packet never tugs both ways: the young half of the settling window
+    // climbs, the old half sinks. Overlapping ramps let mid-aged neighbours
+    // trade the same mass up and down forever — a standing density flicker.
+    const lift=clamp(1-settle*2,0,1);
+    const sink=clamp(settle*2-1,0,1);
     // Enclosed smoke lingers; a clear vertical route disperses it much faster.
     // Decay is proportional to density. A constant subtraction made a broad,
     // thin cloud vanish almost instantly merely because it occupied more cells.
-    c.d*=Math.exp(-elapsed*(0.006+vent*0.22));
+    // Settled smoke additionally sticks to surfaces and wears away on its own
+    // (faster when trapped), so a dead fire's smog is finite even where no
+    // soot fallout samples it.
+    c.d*=Math.exp(-elapsed*(0.006+vent*0.22+settle*(0.010+(1-vent)*TRAPPED_WEAR)));
     if(c.d<MIN_DENSITY){ removeCell(k); return true; }
 
     const aboveOpen=smokeOpenAt(c.x,c.y-1,getTile,dynamicOpen);
     const above=aboveOpen?cellAt(c.x,c.y-1):null;
     const aboveD=above?above.d:0;
 
-    // Buoyancy dominates until the layer above approaches saturation.
-    if(aboveOpen && aboveD<c.d+0.08){
+    // Buoyancy dominates until the layer above approaches saturation — and it
+    // wanes with age: an old packet has spent the heat that carried it.
+    if(aboveOpen && aboveD<c.d+0.08 && lift>0){
       const gradient=Math.max(0.08,c.d-aboveD);
-      transfer(c,c.x,c.y-1,Math.min(c.d*0.38,0.055+gradient*0.34),getTile,dynamicOpen);
+      transfer(c,c.x,c.y-1,Math.min(c.d*0.38,0.055+gradient*0.34)*lift,getTile,dynamicOpen);
+    }
+
+    // Aged smoke sinks instead: slower than the climb (ash sifting, not a
+    // plume), pooling until the floor layer is slightly DENSER than the cell
+    // above it — the inverse of the ceiling inversion young smoke builds.
+    const downOpen=smokeOpenAt(c.x,c.y+1,getTile,dynamicOpen);
+    const downCell=downOpen?cellAt(c.x,c.y+1):null;
+    const downD=downCell?downCell.d:0;
+    if(sink>0 && downOpen && downD<c.d+0.10){
+      const gradient=Math.max(0.06,c.d-downD);
+      transfer(c,c.x,c.y+1,Math.min(c.d*0.30,0.020+gradient*0.24)*sink,getTile,dynamicOpen);
     }
 
     // Outdoors the shared wind biases mass sideways. Indoors vent is small, so
@@ -204,7 +262,11 @@ import { isSmokePorousTile } from './material_physics.js';
       transfer(c,c.x+dir,c.y,Math.min(c.d*0.28,windPower*0.018+c.d*windPower*0.012),getTile,dynamicOpen);
     }
 
+    // A blocked layer spreads along its surface: young smoke along the ceiling
+    // it pools under, settled smoke along the floor it rests on (the smog
+    // blanket widening through the room instead of standing in one column).
     const ceiling=!aboveOpen || aboveD>0.78;
+    const floorRest=settle>0.5 && (!downOpen || downD>0.78);
     const first=((hash32(c.x,c.y,stepSeq)&1)===0)?-1:1;
     for(const dir of [first,-first]){
       if(c.d<MIN_DENSITY*2 || !smokeOpenAt(c.x+dir,c.y,getTile,dynamicOpen)) continue;
@@ -212,7 +274,7 @@ import { isSmokePorousTile } from './material_physics.js';
       const sideD=side?side.d:0;
       const gradient=c.d-sideD;
       if(gradient<=0.045) continue;
-      const rate=ceiling?0.24:0.105;
+      const rate=(ceiling||floorRest)?0.24:0.105;
       transfer(c,c.x+dir,c.y,Math.min(c.d*rate,gradient*0.31),getTile,dynamicOpen);
     }
 
@@ -226,9 +288,18 @@ import { isSmokePorousTile } from './material_physics.js';
     if(c.d<MIN_DENSITY) removeCell(k);
     return true;
   }
+  // A big cloud is exactly what pushes the frame time across a budget tier.
+  // Hard tier cliffs then oscillate (cheap frame -> more work -> expensive
+  // frame -> less work...), which reads as cloud-wide flicker. A smoothed,
+  // continuous ramp cannot flap between frames.
+  let emaFrameMs=16;
+  function loadFactor(){
+    const ms=typeof root.__mmFrameMs==='number'&&Number.isFinite(root.__mmFrameMs)?clamp(root.__mmFrameMs,4,80):16;
+    emaFrameMs+=(ms-emaFrameMs)*0.15;
+    return clamp((emaFrameMs-16)/(44-16),0,1);
+  }
   function moveBudget(){
-    const ms=typeof root.__mmFrameMs==='number'&&Number.isFinite(root.__mmFrameMs)?root.__mmFrameMs:16;
-    return ms>38?38:(ms>24?82:180);
+    return Math.round(180-(180-38)*loadFactor());
   }
   function physicsStep(getTile,dynamicOpen){
     if(!cells.size || !queue.length){ lastProcessed=0; return; }
@@ -286,6 +357,38 @@ import { isSmokePorousTile } from './material_physics.js';
     if(!finiteCell(x,y)) return 0;
     const c=cellAt(Math.floor(x),Math.floor(y));
     return c?clamp(c.d,0,MAX_DENSITY):0;
+  }
+
+  // Bounded sample of the densest smoke for consumers that let the plume drive
+  // them (soot fallout). A rotating cursor keeps every part of a cloud larger
+  // than the per-call budget serviced across successive calls.
+  function denseCells(minD,limit){
+    const out=[];
+    if(!cells.size||!queue.length) return out;
+    const min=Number.isFinite(minD)?minD:0.7;
+    const max=Math.max(1,Math.min(Number.isFinite(limit)?Math.floor(limit):64,MAX_CELLS));
+    let visits=0;
+    const maxVisits=queue.length;
+    while(visits<maxVisits && out.length<max && queue.length){
+      if(denseCursor>=queue.length) denseCursor=0;
+      const c=cells.get(queue[denseCursor++]);
+      visits++;
+      if(!c||!(c.d>=min)) continue;
+      out.push({x:c.x,y:c.y,d:c.d,age:Math.max(0,c.age||0)});
+    }
+    return out;
+  }
+
+  // Deposition removes real mass from the layer (smoke that became a soot film
+  // is no longer airborne). Returns how much density was actually taken.
+  function consumeAt(x,y,amount){
+    if(!finiteCell(x,y)||!Number.isFinite(amount)||!(amount>0)) return 0;
+    const c=cellAt(Math.floor(x),Math.floor(y));
+    if(!c) return 0;
+    const taken=Math.min(c.d,amount);
+    c.d-=taken;
+    if(c.d<MIN_DENSITY) removeCell(key(c.x,c.y));
+    return taken;
   }
 
   // Creatures do not need their own particle simulation. Sampling at most three
@@ -420,9 +523,9 @@ import { isSmokePorousTile } from './material_physics.js';
     if(spriteTile!==TILE||!sprites) buildSprites(TILE);
     if(!sprites||!sprites.length) return;
     const visible=typeof canDrawTile==='function'?canDrawTile:null;
-    const ms=typeof root.__mmFrameMs==='number'&&Number.isFinite(root.__mmFrameMs)?root.__mmFrameMs:16;
-    const drawBudget=ms>38?130:(ms>24?240:480);
-    const minDraw=ms>38?0.075:(ms>24?0.040:MIN_DENSITY);
+    const load=loadFactor();
+    const drawBudget=Math.round(480-(480-130)*load);
+    const minDraw=MIN_DENSITY+(0.075-MIN_DENSITY)*load;
     let drawn=0,visits=0;
     const maxVisits=queue.length;
     drawSeq++;
@@ -446,7 +549,10 @@ import { isSmokePorousTile } from './material_physics.js';
       const jitterX=(((h>>>4)&15)/15-0.5)*TILE*0.24;
       const jitterY=(((h>>>8)&15)/15-0.5)*TILE*0.18;
       const r=TILE*(0.92+d*0.28);
-      ctx.globalAlpha=clamp(0.12+Math.pow(d,0.82)*0.78,0,0.90);
+      // Fade the cut-off in: a fringe cell hovering around the adaptive
+      // threshold dims smoothly instead of blinking on and off.
+      const fringe=clamp((c.d-minDraw)/0.035,0,1);
+      ctx.globalAlpha=clamp(0.12+Math.pow(d,0.82)*0.78,0,0.90)*(0.25+0.75*fringe);
       ctx.drawImage(sp,(c.x+0.5)*TILE-r+jitterX,(c.y+0.5)*TILE-r+jitterY,r*2,r*2);
       if(d>0.72){
         ctx.globalAlpha=(d-0.72)*0.30;
@@ -467,7 +573,7 @@ import { isSmokePorousTile } from './material_physics.js';
     return {v:1,list};
   }
   function reset(){
-    cells.clear(); queue.length=0; cursor=0; drawCursor=0; drawSeq=0; emitEvictCursor=0; accumulator=0; stepSeq=0; lastProcessed=0; lastBudget=0;
+    cells.clear(); queue.length=0; cursor=0; drawCursor=0; drawSeq=0; emitEvictCursor=0; denseCursor=0; accumulator=0; stepSeq=0; lastProcessed=0; lastBudget=0; emaFrameMs=16;
   }
   function restore(data,getTile){
     reset();
@@ -490,7 +596,7 @@ import { isSmokePorousTile } from './material_physics.js';
     return {active:cells.size,mass:+mass.toFixed(2),dense,cap:MAX_CELLS,queue:queue.length,processed:lastProcessed,budget:lastBudget};
   }
 
-  const api={update,draw,emit,densityAt,updateSoot,visualSoot,drawSootMarks,onTileChanged,snapshot,restore,reset,metrics,count:()=>cells.size,config:{STEP,MAX_CELLS,MAX_DENSITY,SOOT_FADE_SECONDS},_debug:{cells,smokeOpenTile,ventilationAt,physicsStep}};
+  const api={update,draw,emit,densityAt,denseCells,consumeAt,updateSoot,visualSoot,drawSootMarks,onTileChanged,snapshot,restore,reset,metrics,count:()=>cells.size,config:{STEP,MAX_CELLS,MAX_DENSITY,SOOT_FADE_SECONDS,BUOYANT_SECONDS,SETTLED_SECONDS,TRAPPED_AGE_BOOST,TRAPPED_WEAR},_debug:{cells,smokeOpenTile,ventilationAt,physicsStep}};
   root.MM.smoke=api;
 })();
 

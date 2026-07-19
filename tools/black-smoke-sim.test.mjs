@@ -236,6 +236,58 @@ assert.ok(Math.abs(sparseDecay.density-saturatedDecay.density)<0.015,
 assert.ok(Math.abs(sparseDecay.age-saturatedDecay.age)<1,
   'adaptive queue keeps smoke age tied to simulation time ('+sparseDecay.age.toFixed(1)+' vs '+saturatedDecay.age.toFixed(1)+')');
 
+// Aged smoke sheds its buoyancy: the same sealed room that pools young smoke
+// under the ceiling ends up with an OLD cloud lying along the floor — the
+// layer the soot fallout consumes. Ages ride the snapshot, so a saved smog
+// resumes settled instead of climbing again after a reload.
+assert.ok(smoke.config.BUOYANT_SECONDS>0&&smoke.config.SETTLED_SECONDS>smoke.config.BUOYANT_SECONDS,
+  'the settling window is exposed and ordered');
+smoke.reset();
+const settleRoomTile=(x,y)=>(x>=1&&x<=7&&y>=1&&y<=6)?T.AIR:T.STONE;
+const agedList=[];
+for(let x=1;x<=7;x++) agedList.push({x,y:1,d:1.0,age:smoke.config.SETTLED_SECONDS+30});
+assert.equal(smoke.restore({v:1,list:agedList},settleRoomTile),true,'aged ceiling smog restores');
+for(let i=0;i<200;i++) smoke.update(0.1,settleRoomTile);
+{
+  const settled=smoke.snapshot();
+  const ceilingMass=settled.list.filter(c=>c.y<=2).reduce((n,c)=>n+c.d,0);
+  const floorMass=settled.list.filter(c=>c.y>=5).reduce((n,c)=>n+c.d,0);
+  assert.ok(floorMass>ceilingMass,
+    'aged smoke settles into a floor layer instead of hugging the ceiling ('+floorMass.toFixed(2)+' vs '+ceilingMass.toFixed(2)+')');
+  assert.ok(settled.list.some(c=>c.y===6&&c.d>0.2),'a dense band rests directly on the floor');
+}
+
+// A fed fire keeps its plume young: fresh emission dilutes the mixture age,
+// so an active source cannot age into settling while it still burns.
+smoke.reset();
+smoke.restore({v:1,list:[{x:2,y:9,d:0.5,age:400}]},openTile);
+smoke.emit(2.5,9.5,0.75,{getTile:openTile});
+{
+  const mixed=smoke.snapshot().list.find(c=>c.x===2&&c.y===9);
+  assert.ok(mixed&&mixed.age<180,'fresh emission dilutes the age of the cell it feeds ('+(mixed&&mixed.age)+')');
+}
+
+// The soot-fallout seams: denseCells samples only cells at/above the requested
+// density inside a bounded budget, and consumeAt removes real airborne mass.
+smoke.reset();
+smoke.restore({v:1,list:[
+  {x:0,y:5,d:1.1,age:0},{x:3,y:5,d:0.9,age:0},{x:6,y:5,d:0.3,age:0},{x:9,y:5,d:0.75,age:0}
+]},openTile);
+{
+  const dense=smoke.denseCells(0.7,10);
+  assert.equal(dense.length,3,'denseCells returns only cells at/above the requested density');
+  assert.ok(dense.every(c=>c.d>=0.7&&Number.isFinite(c.x)&&Number.isFinite(c.y)),'dense samples carry usable coordinates');
+  assert.equal(smoke.denseCells(0.7,2).length,2,'the per-call budget bounds the sample');
+  const before=smoke.densityAt(0,5);
+  const taken=smoke.consumeAt(0,5,0.4);
+  assert.ok(Math.abs(taken-0.4)<1e-9,'consumeAt reports the mass it removed');
+  assert.ok(Math.abs(smoke.densityAt(0,5)-(before-0.4))<1e-9,'consumption removes real density');
+  assert.equal(smoke.consumeAt(500,500,1),0,'consuming where no smoke exists takes nothing');
+  smoke.consumeAt(6,5,10);
+  assert.equal(smoke.densityAt(6,5),0,'over-consumption clamps to the available mass and clears the cell');
+  assert.equal(smoke.consumeAt(6,5,1),0,'a cleared cell yields nothing further');
+}
+
 // Randomized sealed-room mutations exercise relocation and sparse-queue cleanup
 // against many wall arrangements without allowing cells to remain inside solids.
 let randomState=0x51f15e;

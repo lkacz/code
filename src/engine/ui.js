@@ -905,6 +905,223 @@ MM.ui = (function(){
     },1500);
     panel.appendChild(box);
   }
+
+  // Carbon chain + SMR (engine/smr.js): hand out the industry kit, place a
+  // reactor at the hero, force its inspection alarm, watch the loop metrics.
+  function injectSmrDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('smrDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='smrDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Grafit i SMR (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='smrDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      metrics.textContent=m
+        ? ('ogniwa '+m.cells+' (pracuje '+m.on+' | alarm '+m.alarms+' | wygasle '+m.off+') | energia '+m.energy
+          +' | kontrole '+m.inspections+' | scram '+m.scrams+' | woda '+m.boiledTiles+' kafli -> para '+m.ventedCells+' kom. (obieg '+m.loop.steamPerWaterTile+':1)')
+        : 'brak metryk SMR';
+    }
+    const SMR_DEBUG_BUTTONS=[
+      ['kit','Daj zestaw wegla','#3d4048'],
+      ['place','Postaw SMR','#4a6a58'],
+      ['alarm','Wymus alarm','#ffbe40'],
+      ['inspect','Skontroluj','#6eeb8c']
+    ];
+    SMR_DEBUG_BUTTONS.forEach(([act,txt,color])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=act==='kit' ? 'Grafit, grafen, ogniwo SMR i materialy do receptury'
+        : act==='place' ? 'Stawia ogniwo SMR obok bohatera'
+        : act==='alarm' ? 'Najblizsze ogniwo natychmiast prosi o kontrole'
+        : 'Kontroluje/wznawia najblizsze ogniwo';
+      b.style.cssText='flex:1 1 100px; font-size:11px; padding:3px 6px; border:1px solid '+color+'99;';
+      b.addEventListener('click',()=>{
+        try{
+          const ok=(typeof actions[act]==='function') ? actions[act]() : false;
+          msg(ok ? ('SMR debug: '+txt) : ('SMR debug: '+txt+' — brak celu'));
+          refreshMetrics();
+        }catch(e){ msg('SMR debug: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
+
+  // Nature-details wave (avalanche/icicles/thin_ice/geothermal/sky_moods/
+  // weather_instruments/graffiti + mob nature drives): every feature gets a
+  // one-click trigger here — the standing owner rule for new systems.
+  function injectNatureDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('natureDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='natureDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Natura: lawiny, sople, lód, źródła, niebo (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='natureDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      metrics.textContent=m
+        ? ('lawiny '+m.avalanche+' | sople '+m.icicles+' | tafle '+m.panes+' | zrodla '+m.pools
+          +' | mgla '+Math.round((m.fog||0)*100)+'% | zorza '+Math.round((m.aurora||0)*100)+'%'
+          +' | maszty '+m.rods+' (E '+m.rodEnergy+') | znaki '+m.marks
+          +' | mob: pije '+m.nature.drinks+' czai '+m.nature.lurks+' ucieka '+m.nature.flees+' kapie '+m.nature.baths)
+        : 'brak metryk natury';
+    }
+    const NATURE_DEBUG_BUTTONS=[
+      ['slope','Usyp stok sniegu','#e9f2fc','Buduje glęboki zasnieżony stok obok bohatera'],
+      ['avalanche','Wyzwol lawine','#cfe6ff','Wstrzasa najblizszym stokiem — glęboki snieg na zboczu rusza'],
+      ['icicles','Zasiej sople','#c8e6f8','Wyrasta dojrzale sople na kazdym nawisie w poblizu'],
+      ['dropIcicles','Strac sople','#9fc4dd','Wszystkie wiszace sople spadaja teraz'],
+      ['freeze','Zamroz tafle','#cfe8f2','Skuwa cienkim lodem otwarta wode w poblizu'],
+      ['spring','Zbuduj gorace zrodlo','#e8a04a','Basen + kamien + lawa pod spodem — grzeje organicznie'],
+      ['fog','Nawiej mgle','#dfe7ec','Poranna mgla nadciaga i sama sie rozwiewa (ponow: znow)'],
+      ['aurora','Rozpal zorze','#8de6b8','Zorza rozblyska i sama przygasa (ponow: znow)'],
+      ['instruments','Daj instrumenty','#c8a860','Wiatrowskaz, piorunochron, sadza i material do receptur'],
+      ['strikeRod','Piorun w maszt','#ffe27a','Uderza piorunem w najblizszy piorunochron (bankuje ladunek)'],
+      ['nature','Wymus zachowania','#a8d7a8','Natychmiastowy przydzial wodopoju/ucieczki/kapieli stadom'],
+      ['paint','Namaluj znak','#3a3d44','Stawia znak sadzy na najblizszej scianie przy bohaterze']
+    ];
+    NATURE_DEBUG_BUTTONS.forEach(([act,txt,color,tip])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=tip;
+      b.style.cssText='flex:1 1 100px; font-size:11px; padding:3px 6px; border:1px solid '+color+'99;';
+      b.addEventListener('click',()=>{
+        try{
+          const ok=(typeof actions[act]==='function') ? actions[act]() : false;
+          msg(ok!==false && ok!==0 ? ('Natura debug: '+txt) : ('Natura debug: '+txt+' — brak celu'));
+          refreshMetrics();
+        }catch(e){ msg('Natura debug: blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
+
+  // Soft drifts + drift gales (engine/soft_drifts.js): pour a drift belt around
+  // the hero, force/stop a leaf or snow gale, clear the fluff ledger.
+  function injectDriftDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('driftDebugBox')) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id='driftDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Zaspy i zamiecie (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id='driftDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      const m=(typeof actions.metrics==='function') ? actions.metrics() : null;
+      if(!m){ metrics.textContent='brak metryk zasp'; return; }
+      const GALE_NAMES={snow:'sniezna', leaves:'lisciowa', sand:'piaskowa', soot:'sadzy'};
+      const st=m.storm && m.storm.active
+        ? ('zamiec '+(GALE_NAMES[m.storm.mat]||m.storm.mat)+' '+Math.round((m.storm.k||0)*100)+'%'+(m.storm.forced?' (wymuszona)':' (naturalna)'))
+        : 'bez zamieci';
+      metrics.textContent='komorki '+m.cells+' (snieg '+m.byMat.snow+' | liscie '+m.byMat.leaves+' | sadza '+m.byMat.soot+' | piasek '+(m.byMat.sand||0)+')'
+        +' | kafle '+(m.minted.snow+m.minted.leaves+(m.minted.sand||0))+' | rozbicia '+m.bursts+' | '+st;
+    }
+    const DRIFT_GALE_BUTTONS=[
+      ['snow','Zamiec sniezna','#cfe6ff'],
+      ['leaves','Zamiec lisciowa','#d09a3c'],
+      ['sand','Zamiec piaskowa','#d9c078'],
+      ['soot','Zamiec sadzy','#3a3d44']
+    ];
+    DRIFT_GALE_BUTTONS.forEach(([mat,txt,color])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title='Wymus zamiec: wiatr niesie material i usypuje zaspy';
+      b.style.cssText='flex:1 1 100px; font-size:11px; padding:3px 6px; border:1px solid '+color+'99;';
+      b.addEventListener('click',()=>{
+        try{
+          const t=(typeof actions.gale==='function') ? actions.gale(mat) : null;
+          msg(t ? ('Zamiec ('+txt+'): '+Math.round(t.duration)+' s') : 'Zamiec: nie wystartowala');
+          refreshMetrics();
+        }catch(e){ msg('Debug zamieci: blad'); }
+      });
+      box.appendChild(b);
+    });
+    const stop=document.createElement('button');
+    stop.textContent='Stop zamieci';
+    stop.title='Zatrzymuje wymuszona zamiec (naturalna trwa poki wieje wiatr)';
+    stop.style.cssText='flex:1 1 100%; font-size:11px; padding:3px 6px; border:1px solid rgba(180,220,255,.55);';
+    stop.addEventListener('click',()=>{
+      try{
+        const ok=(typeof actions.stopGale==='function') ? actions.stopGale() : false;
+        msg(ok ? 'Zamiec zatrzymana' : 'Brak wymuszonej zamieci');
+        refreshMetrics();
+      }catch(e){ msg('Debug zamieci: blad stop'); }
+    });
+    box.appendChild(stop);
+    const DRIFT_SEED_BUTTONS=[
+      ['snow','Usyp snieg','#e9f2fc'],
+      ['leaves','Usyp liscie','#b3812f'],
+      ['soot','Usyp sadze','#3a3d44'],
+      ['sand','Usyp piasek','#d9c078']
+    ];
+    DRIFT_SEED_BUTTONS.forEach(([mat,txt,color])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title='Usypuje pas zasp wokol bohatera (te same reguly co pogoda)';
+      b.style.cssText='flex:1 1 84px; font-size:11px; padding:3px 6px; border:1px solid '+color+'99;';
+      b.addEventListener('click',()=>{
+        try{
+          const n=(typeof actions.seed==='function') ? actions.seed(mat) : 0;
+          msg(n ? ('Usypano ('+txt+'): '+n+' jednostek') : 'Brak miejsca na zaspy');
+          refreshMetrics();
+        }catch(e){ msg('Debug zasp: blad usypywania'); }
+      });
+      box.appendChild(b);
+    });
+    const clear=document.createElement('button');
+    clear.textContent='Wyczysc zaspy';
+    clear.title='Usuwa cale sypkie pokrycie (mintowane kafle zostaja)';
+    clear.style.cssText='flex:1 1 100%; font-size:11px; padding:3px 6px; border:1px solid rgba(180,220,255,.55);';
+    clear.addEventListener('click',()=>{
+      try{
+        const n=(typeof actions.clear==='function') ? actions.clear() : 0;
+        msg(n ? ('Usunieto zaspy: '+n+' komorek') : 'Brak zasp do usuniecia');
+        refreshMetrics();
+      }catch(e){ msg('Debug zasp: blad czyszczenia'); }
+    });
+    box.appendChild(clear);
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
   function injectInvasionDebugPanel(actions, menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel');
     if(!panel || document.getElementById('invasionDebugBox')) return;
@@ -1987,7 +2204,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

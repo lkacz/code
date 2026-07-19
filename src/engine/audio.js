@@ -481,6 +481,10 @@ window.MM = window.MM || {};
     parry:  (o)=>{ tone({...o,type:'triangle',f0:1560,f1:2080,dur:0.14,peak:0.14,bend:0.06,send:0.25,priority:true});
                    tone({...o,type:'sine',f0:3120,f1:2600,dur:0.1,peak:0.06,delay:0.03});
                    noise({...o,dur:0.05,peak:0.05,fLo:5200,fHi:11000,ftype:'highpass'}); },
+    // cave drip (icicles / wet ceilings): a tiny sine plink with a wet tail
+    drip:   (o)=>{ if(throttled('drip',260,o)) return; tone({...o,type:'sine',f0:1450,f1:820,dur:0.07,peak:0.05,bend:0.5,send:0.34}); noise({...o,dur:0.03,peak:0.014,fLo:2400,fHi:6400,ftype:'highpass',delay:0.015,send:0.2}); },
+    // thin ice under load: a dry fibrous groan before the break
+    creak:  (o)=>{ if(throttled('creak',420,o)) return; tone({...o,type:'sawtooth',f0:180,f1:120,dur:0.22,peak:0.06,bend:0.4}); noise({...o,dur:0.16,peak:0.05,fLo:900,fHi:3200,f1:520,ftype:'bandpass',delay:0.03}); tone({...o,type:'triangle',f0:520,f1:310,dur:0.1,peak:0.03,delay:0.08}); },
     step:   (o)=>{ noise({...o,dur:0.04,peak:0.055,fLo:120,fHi:380,buf:'brown'}); },
     jump:   (o)=>{ noise({...o,dur:0.1,peak:0.04,fLo:500,fHi:1300,f1:1600,attack:0.02}); },
     land:   (o)=>synthLanding(o),

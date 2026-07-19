@@ -9,6 +9,11 @@ const DAY_SECONDS = 600;
 const DAYS_PER_SEASON = 10;
 const TRANSITION_DAYS = 2;
 const HALF_TRANSITION_DAYS = TRANSITION_DAYS / 2;
+// The season CALENDAR is shifted so every world wakes up in early summer (past
+// the spring->summer blend): ~20 warm days before the first winter instead of
+// cold spring nights from minute one. Day counters stay elapsed-based — only
+// the calendar (profiles, daylight model, terrain epochs) carries the offset.
+const CALENDAR_START_OFFSET_DAYS = DAYS_PER_SEASON + HALF_TRANSITION_DAYS;
 // User-facing calibration for the simulation's open-ended temperature scale.
 // The weather model's snow cutoff (0.30) maps to 0°C; 0.5 is mild weather
 // (12°C), and 1.0 is extreme heat (42°C). Seasonal/day-night extremes may
@@ -73,9 +78,12 @@ const BASE_PROFILES = {
     stormFeedMult: 0.85,
     rainRateMult: 0.95,
     borderMoistureMult: 0.95,
-    freezeStrength: 0.05,
+    // Autumn is windy and grey, not frozen: early flurries/frost were common
+    // enough that the world read as sub-zero most of the year (owner report) —
+    // winter owns the freeze, autumn only hints at it.
+    freezeStrength: 0.02,
     thawStrength: 0.25,
-    snowStrength: 0.18,
+    snowStrength: 0.08,
     snowMeltStrength: 0.18,
     leafGrowStrength: 0,
     leafDropStrength: 1,
@@ -379,7 +387,17 @@ function currentState(){
   }
   if(cachedState && cachedAt === elapsedSeconds) return cachedState;
   cachedAt = elapsedSeconds;
-  cachedState = stateAtDays(elapsedSeconds / DAY_SECONDS);
+  const elapsedDays = elapsedSeconds / DAY_SECONDS;
+  const s = stateAtDays(elapsedDays + CALENDAR_START_OFFSET_DAYS);
+  // The CALENDAR opens in early summer (owner ruling: every run wakes to a warm
+  // morning), but day COUNTING stays elapsed-based — invasion difficulty, quests
+  // and every "day N" readout keep their original pacing. calendarDayFloat is
+  // the season-calendar position (daylight model, terrain epochs).
+  cachedState = Object.assign({}, s, {
+    day: Math.floor(elapsedDays) + 1,
+    dayFloat: elapsedDays + 1,
+    calendarDayFloat: s.dayFloat,
+  });
   return cachedState;
 }
 
@@ -878,7 +896,8 @@ function terrainTargetForState(s, sc){
 }
 
 function terrainSeasonNumberForTarget(s, target){
-  const totalDays = Math.max(0, elapsedSeconds / DAY_SECONDS);
+  // terrain epochs follow the CALENDAR (which starts in summer), not raw elapsed
+  const totalDays = Math.max(0, elapsedSeconds / DAY_SECONDS + CALENDAR_START_OFFSET_DAYS);
   let n = Math.floor(totalDays / DAYS_PER_SEASON);
   if(s && !s.forced && target && target !== s.season){
     const cur = SEASON_ORDER.indexOf(s.season);
@@ -1579,6 +1598,7 @@ function metrics(){
   return {
     day: s.day,
     dayFloat: +s.dayFloat.toFixed(2),
+    calendarDayFloat: +finiteNumber(s.calendarDayFloat, s.dayFloat).toFixed(2),
     seasonDay: +s.seasonDay.toFixed(2),
     season: s.season,
     label: s.label,
@@ -1636,9 +1656,12 @@ function forceSeason(id){
 }
 
 function setDay(day){
+  // Debug/event API in CALENDAR days: every caller picks a day for its SEASON
+  // ("31 = start of winter"), so the summer-start offset is subtracted here.
+  // Calendar days inside the pre-launch offset clamp to elapsed 0 (early summer).
   const prev = currentState();
   const d = Math.max(1, finiteNumber(day, 1));
-  elapsedSeconds = (d - 1) * DAY_SECONDS;
+  elapsedSeconds = Math.max(0, (d - 1 - CALENDAR_START_OFFSET_DAYS) * DAY_SECONDS);
   cachedState = null;
   cachedAt = -1;
   checkSeasonEvents(prev, currentState());
@@ -1646,15 +1669,23 @@ function setDay(day){
 }
 
 function advanceDays(days){
+  // RELATIVE elapsed-time jump — must not route through setDay, whose argument
+  // is now a CALENDAR day (routing would silently subtract the summer offset).
   const n = finiteNumber(days, 0);
   if(!Number.isFinite(n) || n === 0) return false;
-  return setDay(elapsedSeconds / DAY_SECONDS + 1 + n);
+  const prev = currentState();
+  elapsedSeconds = clamp(elapsedSeconds + n * DAY_SECONDS, 0, 60 * 60 * 24 * 3650);
+  cachedState = null;
+  cachedAt = -1;
+  checkSeasonEvents(prev, currentState());
+  return true;
 }
 
 function jumpToNextTransition(){
   const prev = currentState();
   forcedSeason = null;
-  const totalDays = Math.max(0, elapsedSeconds / DAY_SECONDS);
+  // transitions live on the CALENDAR (summer-start offset), not raw elapsed time
+  const totalDays = Math.max(0, elapsedSeconds / DAY_SECONDS + CALENDAR_START_OFFSET_DAYS);
   const seasonNumber = Math.floor(totalDays / DAYS_PER_SEASON);
   const seasonStart = seasonNumber * DAYS_PER_SEASON;
   const dayInSeason = totalDays - seasonStart;
@@ -1664,7 +1695,7 @@ function jumpToNextTransition(){
   } else {
     targetDays = seasonStart + DAYS_PER_SEASON - HALF_TRANSITION_DAYS * 0.5;
   }
-  elapsedSeconds = clamp(targetDays * DAY_SECONDS, 0, 60 * 60 * 24 * 3650);
+  elapsedSeconds = clamp((targetDays - CALENDAR_START_OFFSET_DAYS) * DAY_SECONDS, 0, 60 * 60 * 24 * 3650);
   cachedState = null;
   cachedAt = -1;
   const next = currentState();

@@ -307,18 +307,30 @@ function drawWarmTarget(ctx, target, level, phase) {
     ctx.fillRect(cx - glowRadius, cy - glowRadius, glowRadius * 2, glowRadius * 2);
   }
 
-  ctx.fillStyle = heat > 0.66 ? '#fff39a' : (heat > 0.33 ? '#ff9b2f' : '#ff5533');
+  // Translucent heat GLAZE, not an opaque blob: the creature's real sprite —
+  // already rendered under the thermal terrain wash — shows through tinted hot,
+  // which is what the goggles promise ("widoczne istoty stają się ciepłymi
+  // sylwetkami"). An opaque ellipse turned every species into the same egg.
+  const bodyColor = heat > 0.66 ? '255,243,154' : (heat > 0.33 ? '255,155,47' : '255,85,51');
   if (typeof ctx.beginPath === 'function' && typeof ctx.ellipse === 'function' && typeof ctx.fill === 'function') {
+    ctx.fillStyle = `rgba(${bodyColor},${(0.28 + heat * 0.12) * pulse})`;
     ctx.beginPath();
-    ctx.ellipse(cx, cy, Math.max(2, bounds.w * 0.42), Math.max(2, bounds.h * 0.46), 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, cy, Math.max(2, bounds.w * 0.5), Math.max(2, bounds.h * 0.52), 0, 0, Math.PI * 2);
+    ctx.fill();
+    // hotter core sits high in the chest, not dead-center — reads as a body
+    ctx.fillStyle = `rgba(255,247,180,${(0.18 + heat * 0.14) * pulse})`;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy - bounds.h * 0.12, Math.max(1.5, bounds.w * 0.3), Math.max(1.5, bounds.h * 0.3), 0, 0, Math.PI * 2);
     ctx.fill();
   } else {
+    ctx.fillStyle = `rgba(${bodyColor},0.34)`;
     ctx.fillRect(left + bounds.w * 0.08, top + bounds.h * 0.05, bounds.w * 0.84, bounds.h * 0.9);
   }
+  // soft designator rim — a faint bracket, not a hard white box over the sprite
   if (typeof ctx.strokeRect === 'function') {
-    ctx.strokeStyle = 'rgba(255,248,188,0.78)';
-    ctx.lineWidth = Math.max(1, Math.min(2, level * 0.5));
-    ctx.strokeRect(left, top, bounds.w, bounds.h);
+    ctx.strokeStyle = `rgba(255,248,188,${0.24 + heat * 0.16})`;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(left - 1, top - 1, bounds.w + 2, bounds.h + 2);
   }
 }
 

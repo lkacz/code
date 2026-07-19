@@ -79,6 +79,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     snowball:      {key:'snowball',      label:'Śnieżki',           color:'#eef7ff', head:'#ffffff', speed:15.5, lob:-2.2, life:2.4, splat:'snow', ball:true},
     toxicSnowball: {key:'toxicSnowball', label:'Toksyczne śnieżki', color:'#8fdd7f', head:'#d9ffd0', speed:15.0, lob:-2.2, life:2.4, splat:'toxic', ball:true},
     stone:         {key:'throwingStone', label:'Kamienie',          color:'#9aa0a8', head:'#c9ced6', speed:16.5, lob:-2.8, life:2.6, splat:'rock', rock:true},
+    // ^ the stone throw is TIERED like arrows: STONE_TIERS below picks the best
+    //   owned rock material (any stone type can be knapped into throwing rocks),
+    //   overrides damage/color per tier, and rolls a per-tier survival chance so
+    //   thrown rocks can be picked back up — cheap rocks shatter the most.
     // Combo enablers for the elemental matrix and area control:
     waterBalloon:  {key:'waterBalloon',  label:'Balony wodne',      color:'#7cc4ff', head:'#dff2ff', speed:14.5, lob:-2.0, life:2.4, splat:'wet', ball:true},
     gasGrenade:    {key:'gasGrenade',    label:'Granaty gazowe',    color:'#9dbf5a', head:'#e2f0b8', speed:14.0, lob:-2.4, life:2.6, splat:'gascloud', ball:true},
@@ -1258,6 +1262,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(hit && !collected && !chestHit){
       addUltCharge(0.08);
       rollMeleeEffect(w,tx,ty,{chanceMult:water.effectMult});
+      rollMergePerk(w,tx,ty,2+bonus,{chanceMult:water.effectMult});
       noteWeaponCombatHit(tx+0.5,ty+0.15,Math.max(1,2+bonus),{source:'hero',kind:'melee',charged:chargeRatio>0.05},weaponCombatVisualMeta(w,'melee',{major:chargeRatio>=0.75,dir:player.facing,power:0.82+chargeRatio*0.72+Math.min(0.45,bonus/16)}));
     }
     return !!hit;
@@ -1385,7 +1390,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       color:(full && !tier.snowball)?'#f5d66a':tier.color, headColor:(full && !tier.snowball)?'#fff1a8':tier.head, windCap:sp*1.35,
       aquatic:aquaticStyle(w)==='crossbow', gravityMult:profile.gravityMult,
       waterDrag:profile.waterDrag, windResponse:profile.windResponse,
-      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id,
+      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id, mergePerk:(w&&w.mergePerk)||undefined,
       pierceLeft:tier.id==='iridium' ? 3 : 0
     });
     player.facing = v.dx>=0?1:-1;
@@ -1411,7 +1416,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       recoverable:true, recoverKey:'harpoonBolt', breakChance:opts.powerShot?0.08:0.12,
       color:opts.powerShot?'#72e7ff':'#718896', headColor:opts.powerShot?'#e8fdff':'#dcebf2',
       gravityMult:profile.gravityMult, waterDrag:profile.waterDrag,
-      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id,
+      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id, mergePerk:(w&&w.mergePerk)||undefined,
       windResponse:profile.windResponse, windCap:sp*1.2
     });
     player.facing=v.dx>=0?1:-1;
@@ -1475,7 +1480,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       color:tier.color, headColor:tier.head, windCap:sp*1.25,
       aquatic:aquaticStyle(w)==='crossbow', gravityMult:profile.gravityMult,
       waterDrag:profile.waterDrag, windResponse:profile.windResponse,
-      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id,
+      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id, mergePerk:(w&&w.mergePerk)||undefined,
       pierceLeft:tier.id==='iridium' ? 5 : 0
     });
     player.facing = v.dx>=0?1:-1;
@@ -1810,7 +1815,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky})));
     if(hit && !chestHit && roll.lucky) noteLuckyStrike(tx+0.5,ty-0.15);
     if(hit && !chestHit) noteWeaponCombatHit(tx+0.5,ty+0.15,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky},weaponCombatVisualMeta(w,'melee',{major:true,dir:player.facing,power:1.35+chargeFx*0.45}));
-    if(hit && !collected && !chestHit) rollMeleeEffect(w,tx,ty,{chanceMult:1.5*water.effectMult}); // a charged blow procs its material more often
+    if(hit && !collected && !chestHit){
+      rollMeleeEffect(w,tx,ty,{chanceMult:1.5*water.effectMult}); // a charged blow procs its material more often
+      rollMergePerk(w,tx,ty,dmg,{chanceMult:1.5*water.effectMult});
+    }
     player.facing = form==='spear' ? (tx>=px?1:-1) : (v.dx>=0?1:-1);
     meleeCd=Math.max(meleeCd,0.25*water.cooldownMult);
     player.atkCd=Math.max(player.atkCd||0,0.35*water.cooldownMult);
@@ -1986,6 +1994,46 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     }catch(e){}
     return true;
   }
+  // Merge-forged weapon perks (identity on the item as mergePerk — the fusion
+  // forge in inventory.js mints it; ALL numbers live here). One roll per hit,
+  // wired into the same chokepoints as meleeEffect/projectile creature hits.
+  const MERGE_PERKS={
+    vampire:{chance:0.45, note:['merge_vampire','Wampiryczne ostrze oddaje ci część zadanego bólu!']},
+    venom:  {chance:0.35, dur:4,   dps:2, status:'poison', note:['merge_venom','Jadowa fuzja zatruwa cel!']},
+    frost:  {chance:0.35, dur:2.5, dps:0, status:'chill',  note:['merge_frost','Szron fuzji spowalnia cel!']},
+    storm:  {chance:0.30, dur:0.9, dps:0, status:'stun',   note:['merge_storm','Burzowa iskra wstrząsa celem!']},
+    fury:   {chance:0.22, note:['merge_fury','Furia fuzji uderza drugi raz!']}
+  };
+  function applyMergePerkAt(perk,tx,ty,dmg,opts){
+    const spec=MERGE_PERKS[perk];
+    if(!spec) return false;
+    if(Math.random()>=spec.chance*((opts && opts.chanceMult)||1)) return false;
+    let applied=false;
+    try{
+      if(perk==='vampire'){
+        const p=(typeof window!=='undefined' && window.player)||null;
+        if(p && Number.isFinite(p.hp) && Number.isFinite(p.maxHp) && p.hp>0){
+          p.hp=Math.min(p.maxHp,p.hp+Math.max(1,Math.round((dmg||1)*0.12)));
+          applied=true;
+        }
+      } else if(perk==='fury'){
+        if(MM.mobs && MM.mobs.damageAt) applied=!!MM.mobs.damageAt(tx,ty,Math.max(1,Math.round((dmg||1)*0.5)),{source:'hero',kind:'merge_fury'});
+      } else if(spec.status && MM.mobs && MM.mobs.statusAt){
+        applied=!!MM.mobs.statusAt(tx,ty,spec.status,{dur:spec.dur,dps:spec.dps,source:'hero',cause:'merge_'+perk});
+      }
+    }catch(e){}
+    if(!applied) return false;
+    try{ if(MM.discovery && MM.discovery.note) MM.discovery.note(spec.note[0],spec.note[1]); }catch(e){}
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnImpactChips) p.spawnImpactChips((tx+0.5)*tile,(ty+0.2)*tile,{power:0.9});
+    }catch(e){}
+    return true;
+  }
+  function rollMergePerk(w,tx,ty,dmg,opts){
+    if(!w || !w.mergePerk) return false;
+    return applyMergePerkAt(w.mergePerk,tx,ty,dmg,opts);
+  }
   function splatToxicSnowball(a){
     try{
       if(MM.mobs){
@@ -2020,6 +2068,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       return;
     }
     if(a.splat==='rock'){
+      // survival roll: a hard rock often lands whole and can be picked back up;
+      // the cheap stone shatters most of the time (per-tier chance)
+      const survive=Number.isFinite(a.stoneSurvive)?a.stoneSurvive:0.45;
+      if(a.stoneKey && Math.random()<survive){
+        try{
+          const D=MM.drops;
+          if(D && D.spawnResource) D.spawnResource(a.x,a.y-0.2,a.stoneKey,1,{source:'thrown_rock',vy:-1.2});
+        }catch(e){}
+      }
       try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:1.1}); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:a.x,y:a.y}); }catch(e){}
       return;
@@ -2102,10 +2159,37 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     }
   }
   function thrownSpec(w){ return (w && THROWN_KINDS[w.thrownKind]) || null; }
+  // Throwing-rock material ladder (mirrors the arrow-tier idea): every stone
+  // type knaps into throwing rocks. Harder rock = harder hit AND a better
+  // chance the rock survives the impact as a ground pickup (drops plane).
+  const STONE_TIERS=[
+    {id:'stone',    key:'throwingStone',         label:'Kamień',   color:'#9aa0a8', head:'#c9ced6', dmg:6,  survive:0.45},
+    {id:'granite',  key:'throwingStoneGranite',  label:'Granit',   color:'#8d8f97', head:'#c3c6ce', dmg:8,  survive:0.58},
+    {id:'basalt',   key:'throwingStoneBasalt',   label:'Bazalt',   color:'#40444d', head:'#6a707c', dmg:10, survive:0.70},
+    {id:'obsidian', key:'throwingStoneObsidian', label:'Obsydian', color:'#7a5cc1', head:'#a98df0', dmg:13, survive:0.82},
+    {id:'diamond',  key:'throwingStoneDiamond',  label:'Diament',  color:'#48f1ff', head:'#c9fbff', dmg:17, survive:0.93}
+  ];
+  function bestStoneTier(){
+    for(let i=STONE_TIERS.length-1;i>=0;i--){ if(resourceCount(STONE_TIERS[i].key)>0) return STONE_TIERS[i]; }
+    return null;
+  }
+  function stoneInfo(){
+    const active=bestStoneTier();
+    return {
+      tiers:STONE_TIERS.map(t=>({id:t.id,key:t.key,label:t.label,color:t.color,dmg:t.dmg,
+        surviveChance:t.survive,count:resourceCount(t.key),active:!!active&&active.id===t.id})),
+      active:active?{id:active.id,key:active.key,label:active.label,color:active.color,count:resourceCount(active.key)}:null
+    };
+  }
   // HUD readout for the ranged slot when a throw technique is selected.
   function thrownInfo(kind){
     const s=THROWN_KINDS[kind];
     if(!s) return null;
+    if(s.rock){
+      const t=bestStoneTier();
+      if(t) return {kind, key:t.key, label:s.label+' ('+t.label+')', count:resourceCount(t.key), color:t.color, tierId:t.id};
+      return {kind, key:s.key, label:s.label, count:0, color:s.color};
+    }
     return {kind, key:s.key, label:s.label, count:resourceCount(s.key), color:s.color};
   }
   function pushThrownProjectile(player,dx,dy,spec,w,opts){
@@ -2113,30 +2197,36 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const sp=spec.speed*(opts.speedMult||1);
     const toxicSpit=spec.visual==='spit' && !!opts.specialAttack;
     const sandSeed=spec.visual==='sand' ? (((Math.random()*0xffffffff)>>>0)||1) : 0;
+    const stoneTier=opts.stoneTier||null; // rock material overrides damage/color/survival
+    const baseDmg=stoneTier ? stoneTier.dmg : ((w && w.attackDamage)||2);
     return pushArrow({
       x:player.x + dx*0.6,
       y:player.y - 0.2 + dy*0.6,
       vx:dx*sp,
       vy:dy*sp + spec.lob,
-      dmg:spec.noDamage ? 0 : Math.max(1,Math.round(((w && w.attackDamage)||2)*(opts.dmgMult||1))),
+      dmg:spec.noDamage ? 0 : Math.max(1,Math.round(baseDmg*(opts.dmgMult||1))),
+      stoneKey:stoneTier?stoneTier.key:undefined, stoneSurvive:stoneTier?stoneTier.survive:undefined,
       life:spec.life, stuck:false, stuckT:ARROW_STUCK,
       thrown:true, snowball:!!spec.ball, rock:!!spec.rock, splat:spec.splat,
       sandSpray:spec.visual==='sand', sandSeed, spitDroplet:spec.visual==='spit', toxicSpit,
       noDamage:!!spec.noDamage,
       stickyFuse:spec.sticky ? (spec.fuse||1.5) : 0,
       power:!!opts.specialAttack, specialAttack:!!opts.specialAttack, luckyStrike:!!opts.luckyStrike,
-      tier:'thrown', color:toxicSpit?TOXIC_SPIT_COLOR:spec.color, headColor:toxicSpit?TOXIC_SPIT_HEAD:spec.head, windCap:sp*1.3,
-      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id
+      tier:'thrown', color:toxicSpit?TOXIC_SPIT_COLOR:(stoneTier?stoneTier.color:spec.color), headColor:toxicSpit?TOXIC_SPIT_HEAD:(stoneTier?stoneTier.head:spec.head), windCap:sp*1.3,
+      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id, mergePerk:(w&&w.mergePerk)||undefined
     });
   }
   function fireThrown(player, aimX, aimY, w){
     if(throwCd>0) return false;
     const spec=thrownSpec(w);
     if(!spec) return false;
-    if(!spendResource(spec.key,1)){ sayLimited('thrown_empty_'+spec.key,'Brak: '+spec.label); return false; }
+    // rocks spend the best owned material tier; other throws spend their own key
+    const stoneTier=spec.rock ? bestStoneTier() : null;
+    const spendKey=stoneTier ? stoneTier.key : spec.key;
+    if(!spendResource(spendKey,1)){ sayLimited('thrown_empty_'+spec.key,'Brak: '+spec.label); return false; }
     throwCd=Math.max(0.2,(w && w.fireCooldown)||0.45);
     const v=aimVector(player,aimX,aimY);
-    pushThrownProjectile(player,v.dx,v.dy,spec,w);
+    pushThrownProjectile(player,v.dx,v.dy,spec,w,{stoneTier});
     player.facing=v.dx>=0?1:-1;
     triggerHeldActionFx('thrown',0.9,190,false);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
@@ -2151,11 +2241,12 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const count=charge>0.85 ? 5 : 3;
     let thrown=0;
     for(let i=0;i<count;i++){
-      if(!spendResource(spec.key,1)) break;
+      const stoneTier=spec.rock ? bestStoneTier() : null; // re-resolve: a volley may drain a tier mid-burst
+      if(!spendResource(stoneTier?stoneTier.key:spec.key,1)) break;
       const ang=(i-(count-1)/2)*0.09;
       const ca=Math.cos(ang), sa=Math.sin(ang);
       pushThrownProjectile(player, v.dx*ca-v.dy*sa, v.dx*sa+v.dy*ca, spec, w,
-        {speedMult:1.05+charge*0.22, dmgMult:roll.mult, specialAttack:true, luckyStrike:roll.lucky && i===0});
+        {speedMult:1.05+charge*0.22, dmgMult:roll.mult, specialAttack:true, luckyStrike:roll.lucky && i===0, stoneTier});
       thrown++;
     }
     if(!thrown){ sayLimited('thrown_empty_'+spec.key,'Brak: '+spec.label); return false; }
@@ -2653,6 +2744,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           || (!a.coopOwner && MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,hitDmg)));
         if(creatureHit){
           noteWeaponCombatHit(a.x,a.y-0.18,hitDmg,arrowOpts,projectileCombatVisualMeta(a,{major:!!a.power,tier:a.tier,power:a.power?1.35:0.82}));
+          if(a.mergePerk && !a.coopOwner) applyMergePerkAt(a.mergePerk,tx,ty,hitDmg);
           if(a.fire && MM.mobs && MM.mobs.igniteAt) MM.mobs.igniteAt(tx,ty,{dur:2.5,dps:2,source:a.coopOwner?'coop':'hero',specialAttack:!!a.specialAttack});
           if(a.stagger && MM.mobs && MM.mobs.chillAt) MM.mobs.chillAt(tx,ty,{dur:a.stagger,source:a.coopOwner?'coop':'hero',cause:'stagger'}); // stone arrows stop the target in its tracks
           if(a.splat) splatProjectile(a,getTile,setTile);
@@ -3954,7 +4046,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,drawWorldLight,drawHeroReflection,lightSource:weaponLightSource,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
     coopMeleeAt,spawnCoopArrow,spawnHeroProjectile,
     ghostFxState,ghostApplyFx,ghostStepFx,
-    arrowInfo,setArrowPref,fuelInfo,thrownInfo,hudStatus,addUltCharge,
+    arrowInfo,setArrowPref,fuelInfo,thrownInfo,stoneInfo,hudStatus,addUltCharge,
     metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
     _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowResourceKey,dropSurvivingArrow,spawnDroppedArrowPickup,splatProjectile,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
 })();

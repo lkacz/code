@@ -163,7 +163,32 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
       else if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((cx+0.5)*tile,(cy+0.5)*tile,'rare');
       if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:cx+0.5,y:cy+0.5});
     }catch(e){}
+    if(recipe.discovery){
+      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note(recipe.discovery, recipe.discoveryMsg||''); }catch(e){}
+    }
     return {recipe:recipe.id, stimulus:recipe.stimulus, anchor:match.anchor, changed};
+  }
+  // Multi-hit recipes: `charges: N` makes a recipe complete only on the Nth
+  // stimulus at the same anchor (graphite needs several electric bolts to
+  // anneal into graphene). Charge progress is runtime-only — a reload starts
+  // the annealing over — and each partial hit sparks so the progress reads.
+  const chargeMap=new Map(); // 'recipeId:x,y' -> hits so far
+  const CHARGE_MAP_CAP=400;
+  function chargeHit(recipe,match){
+    const k=recipe.id+':'+match.anchor.x+','+match.anchor.y;
+    const n=(chargeMap.get(k)||0)+1;
+    if(n>=recipe.charges){ chargeMap.delete(k); return true; }
+    if(chargeMap.size>=CHARGE_MAP_CAP && !chargeMap.has(k)){
+      const oldest=chargeMap.keys().next().value;
+      if(oldest!==undefined) chargeMap.delete(oldest);
+    }
+    chargeMap.set(k,n);
+    try{
+      const tile=MM.TILE||20;
+      const cx=match.anchor.x, cy=match.anchor.y;
+      if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks((cx+0.5)*tile,(cy+0.5)*tile,'electric',3+n*2);
+    }catch(e){}
+    return false;
   }
   function apply(stimulus,x,y,getTile,setTile,opts){
     const list=byStimulus.get(String(stimulus||'')) || [];
@@ -172,6 +197,7 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     for(const recipe of list){
       const match=matchRecipe(recipe,tx,ty,getTile);
       if(!match) continue;
+      if(Number(recipe.charges)>1 && !chargeHit(recipe,match)) return {recipe:recipe.id, stimulus:recipe.stimulus, anchor:match.anchor, charging:true, changed:[]};
       const done=applyRecipe(recipe,match,getTile,setTile,opts||{});
       if(done) return done;
     }
@@ -187,8 +213,8 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     return t===T.GLASS || t===T.WIRE || t===T.TRANSISTOR;
   }
   function reset(){
-    // Stateless by design. Kept for symmetry with other engines and future
-    // timed recipes.
+    // Recipes are stateless; only multi-hit charge progress is runtime state.
+    chargeMap.clear();
   }
 
   register({
@@ -258,6 +284,21 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     mirror:false
   });
 
+  // Annealing: several electric-beam hits turn a graphite block into graphene
+  // (the carbon industry chain: soot -> graphite -> graphene).
+  register({
+    id:'electric_graphite_to_graphene',
+    stimulus:'electric',
+    priority:5,
+    charges:3,
+    pattern:['G'],
+    map:{G:'GRAPHITE'},
+    resultTile:'GRAPHENE',
+    mirror:false,
+    discovery:'graphene',
+    discoveryMsg:'Prąd wyżarzył grafit w grafen — najtwardszy arkusz świata!'
+  });
+
   const api={
     register,
     unregister,
@@ -266,7 +307,7 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
     canStimulus,
     reset,
     isSolarRecipeTile,
-    _debug:{recipes,byStimulus,byId,parsePattern,mirrorPattern,matchRecipe}
+    _debug:{recipes,byStimulus,byId,parsePattern,mirrorPattern,matchRecipe,chargeMap}
   };
   MM.reactions=api;
 })();

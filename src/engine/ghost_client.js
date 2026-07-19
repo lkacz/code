@@ -396,6 +396,14 @@ const ghostClient = (function(){
 			if(state !== 'live' || !conn) return false;
 			conn.send({ t: 'hact', a: 'antenna', k: String(k || '').slice(0, 16), tr: String(tier || 'common').slice(0, 12), u: unique ? 1 : 0 });
 			return true;
+		},
+		gfx(x, y, glyph, dir){
+			// soot graffiti: name a whitelisted stencil at a cell — the host
+			// re-validates backing/reach/rate; our soot is our own pouch truth,
+			// so the caller spends it locally and paints a local prediction
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'gfx', x: Math.floor(+x), y: Math.floor(+y), g: String(glyph || '').slice(0, 12), d: dir < 0 ? -1 : 1 });
+			return true;
 		}
 	};
 	// Replica damage entries, wrapped while embodied as a hero: the local call
@@ -1032,6 +1040,44 @@ const ghostClient = (function(){
 				}
 				stats.pwat = (stats.pwat || 0) + 1;
 			}
+			return;
+		}
+		if(pl.t === 'drift'){
+			// soft-drift windows (snow fluff / leaf litter / soot) — display-only
+			// like pwat: soft_drifts bounds and sanitizes, a watcher never runs the
+			// drift sim, and cleared cells poof into flakes locally. Rate-floored.
+			const tD = nowMs();
+			if(tD - (timers.drift || 0) < 200) return;
+			timers.drift = tD;
+			const D = MMR && MMR.softDrifts;
+			if(D && D.ghostApplyLevelsWindow && Array.isArray(pl.w)){
+				for(const w of pl.w.slice(0, 6)){
+					if(Array.isArray(w) && w.length >= 5) D.ghostApplyLevelsWindow(+w[0], +w[1], +w[2], +w[3], w[4]);
+				}
+				stats.drift = (stats.drift || 0) + 1;
+			}
+			// footprint windows (tracks of the host hero, party bodies and game
+			// animals) — display-only, window-authoritative like the levels
+			if(D && D.ghostApplyPrintsWindow && Array.isArray(pl.p)){
+				for(const w of pl.p.slice(0, 6)){
+					if(Array.isArray(w) && w.length >= 5) D.ghostApplyPrintsWindow(+w[0], +w[1], +w[2], +w[3], w[4]);
+				}
+			}
+			// hanging-icicle windows: TTL-faded mirror, same authority rules
+			const IC = MMR && MMR.icicles;
+			if(IC && IC.ghostApplyIciclesWindow && Array.isArray(pl.i)){
+				for(const w of pl.i.slice(0, 6)){
+					if(Array.isArray(w) && w.length >= 5) IC.ghostApplyIciclesWindow(+w[0], +w[1], +w[2], +w[3], w[4]);
+				}
+			}
+			// gale mirror (sanitized in soft_drifts, TTL-faded): null clears it
+			if(D && D.ghostApplyStorm) D.ghostApplyStorm(Array.isArray(pl.s) ? pl.s : null);
+			return;
+		}
+		if(pl.t === 'gfx'){
+			// soot-graffiti plane: bounded, sanitized wholesale replace (low Hz)
+			const G = MMR && MMR.graffiti;
+			if(G && G.ghostApply && Array.isArray(pl.m)) G.ghostApply(pl.m);
 			return;
 		}
 		if(pl.t === 'pstat'){
@@ -2716,6 +2762,7 @@ const ghostClient = (function(){
 		_heroRow: (dir, strong) => heroIntents.row(dir, strong !== false),
 		_heroTp: (dir) => heroIntents.tp(dir),
 		_heroAntenna: (k, tier, unique) => heroIntents.antenna(k, tier, unique),
+		_heroGfx: (x, y, glyph, dir) => heroIntents.gfx(x, y, glyph, dir),
 		_heroDmg: (x, y, n) => { if(state === 'live' && conn){ conn.send({ t: 'hact', a: 'dmg', x: +x, y: +y, n: Math.max(1, Math.min(45, n | 0)) }); return true; } return false; },
 		_heroSave: () => { saveHeroState(true); },
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).

@@ -90,7 +90,7 @@ import './inventory.js';
   // --- Tabs: one per item kind + resources ---
   const TABS=MM.inventory.SLOTS.map(s=>({key:s.accepts, label:INV.KIND_LABELS[s.accepts]||s.accepts, kind:s.accepts}))
     .concat([{key:'jewels', label:'Juwele'},{key:'resources', label:'Surowce'},{key:'discovery', label:'Odkrycia'}]);
-  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🧿', jewels:'💎', resources:'📦', discovery:'🧪'};
+  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', pickaxe:'⛏️', charm:'🧿', jewels:'💎', resources:'📦', discovery:'🧪'};
   let activeTab=TABS[0];
   let searchText='';
   let tierFilter='all';
@@ -527,13 +527,77 @@ import './inventory.js';
     const refScore=eq? INV.itemScore(eq):null;
     sorted.forEach(item=>grid.appendChild(makeCard(item,slot,maxScore,refScore)));
   }
+  // --- Weapon fusion (merge) UI: pick 2+ looted weapons, wager them all ------
+  // 2 = 50%, each extra +15% up to 95%. Success forges ONE upgraded weapon with
+  // a unique perk; failure consumes everything (inventory.js mergeWeapons).
+  let mergeMode=false;
+  const mergeSel=new Set();
+  function mergeEligible(){
+    // mirrors inventory.mergeWeapons: bag weapons only, never throw techniques
+    // (their thrownKind identity is not a lootable stat — the forge refuses them)
+    return (INV.bagItems?INV.bagItems():[]).filter(i=>i && i.kind==='weapon' && (i.weaponType||'melee')!=='thrown');
+  }
+  function buildMergePanel(){
+    const wrap=document.createElement('div'); wrap.className='invMergePanel';
+    const hint=document.createElement('div'); hint.className='invHint';
+    hint.textContent='Fuzja: zaznacz co najmniej 2 zdobyczne bronie. Sukces wykuwa JEDNĄ mocniejszą z unikalnym perkiem, porażka pochłania wszystkie. 2 = 50%, każda kolejna +15% (maks. 95%).';
+    wrap.appendChild(hint);
+    const items=mergeEligible();
+    for(const id of [...mergeSel]) if(!items.some(i=>i.id===id)) mergeSel.delete(id);
+    if(!items.length){
+      const empty=document.createElement('div'); empty.className='invEmpty';
+      empty.textContent='Brak zdobycznych broni w torbie — fuzja przetapia tylko łupy.';
+      wrap.appendChild(empty);
+    }
+    const listEl=document.createElement('div'); listEl.className='invMergeList';
+    for(const it of sortItems(items)){
+      const row=document.createElement('button'); row.type='button';
+      row.className='invMergeRow'+(mergeSel.has(it.id)?' sel':'');
+      if(it.tier && TIER_COLORS[it.tier]) row.style.setProperty('--tier',TIER_COLORS[it.tier]);
+      const check=document.createElement('span'); check.className='invMergeCheck'; check.textContent=mergeSel.has(it.id)?'☑':'☐';
+      const nm=document.createElement('span'); nm.className='invMergeName'; nm.textContent=displayName(it);
+      const sc=document.createElement('span'); sc.className='invMergeScore'; sc.textContent='Moc '+INV.itemScore(it);
+      row.appendChild(check); row.appendChild(nm); row.appendChild(sc);
+      row.addEventListener('click',()=>{ mergeSel.has(it.id)?mergeSel.delete(it.id):mergeSel.add(it.id); buildGrid(); });
+      listEl.appendChild(row);
+    }
+    wrap.appendChild(listEl);
+    const bar=document.createElement('div'); bar.className='invMergeBar';
+    const chance=INV.mergeChance?INV.mergeChance(mergeSel.size):0;
+    const info=document.createElement('span'); info.className='invMergeChance';
+    info.textContent=mergeSel.size<2?'Zaznaczone: '+mergeSel.size+'/2':'Szansa: '+Math.round(chance*100)+'% ('+mergeSel.size+' broni)';
+    bar.appendChild(info);
+    const go=document.createElement('button'); go.type='button'; go.className='invMergeGo';
+    go.textContent='⚗️ Scal'; go.disabled=mergeSel.size<2;
+    go.addEventListener('click',()=>{
+      const res=INV.mergeWeapons?INV.mergeWeapons([...mergeSel]):null;
+      mergeSel.clear();
+      if(res && res.ok && res.success && res.item){
+        if(window.msg) window.msg('⚗️ Fuzja udana: '+displayName(res.item)+' — perk: '+((INV.MERGE_PERK_LABELS||{})[res.item.mergePerk]||res.item.mergePerk));
+      } else if(res && res.ok){
+        if(window.msg) window.msg('⚗️ Fuzja nieudana — '+res.consumed+' broni przepadło w tyglu');
+      }
+      buildGrid();
+    });
+    bar.appendChild(go);
+    const cancel=document.createElement('button'); cancel.type='button'; cancel.className='invMergeCancel';
+    cancel.textContent='Zamknij'; cancel.addEventListener('click',()=>{ mergeMode=false; mergeSel.clear(); buildGrid(); });
+    bar.appendChild(cancel);
+    wrap.appendChild(bar);
+    grid.appendChild(wrap);
+  }
   // Weapons tab: one section per shortcut category (matching keys 2/3/4), each
   // sorted strongest-first; ▲/▼ compares only within the equipped weapon's own
   // category — a bow is never judged against the equipped sword.
   function buildWeaponSections(list,slot){
+    if(mergeMode){ buildMergePanel(); return; }
     const hint=document.createElement('div'); hint.className='invHint';
     hint.textContent='1 = kilof/budowanie. Klawisz kategorii przełącza jej bronie (najmocniejsze u góry); przycisk „Skrót" decyduje, które biorą udział w przełączaniu.';
     grid.appendChild(hint);
+    const mergeBtn=document.createElement('button'); mergeBtn.type='button'; mergeBtn.className='invMergeOpen';
+    mergeBtn.textContent='⚗️ Fuzja broni (2+ łupy → 1 lepsza albo nic)';
+    mergeBtn.addEventListener('click',()=>{ mergeMode=true; mergeSel.clear(); buildGrid(); });
+    grid.appendChild(mergeBtn);
     const eq=INV.equippedItem('weapon');
     const eqCat=eq? (INV.weaponCategory(eq)||{}).id : null;
     const groups=INV.WEAPON_CATEGORIES.map(c=>({cat:c, items:[]}));
@@ -968,8 +1032,27 @@ import './inventory.js';
       drawEyesMini(ctx, {outfitStyle:item.id, eyeStyle:c.eyeStyle}, 14, 20);
       ctx.restore();
     } else if(item.kind==='weapon'){ drawWeaponMini(ctx,item); }
+    else if(item.kind==='pickaxe'){ drawPickaxeMini(ctx,item); }
     else if(item.kind==='charm'){ drawCharmMini(ctx,item); }
     else if(item.kind==='antenna'){ drawAntennaMini(ctx,item); }
+  }
+  // Pickaxe head thumb: haft + steel head, perk-tinted glow dot.
+  function drawPickaxeMini(ctx,item){
+    ctx.save();
+    ctx.translate(40,42); ctx.rotate(-0.5);
+    ctx.fillStyle='#8b5a2b'; ctx.fillRect(-4,-6,8,44);
+    ctx.fillStyle='#9aa7b4';
+    ctx.beginPath();
+    ctx.moveTo(-26,-12); ctx.quadraticCurveTo(0,-30,26,-12);
+    ctx.quadraticCurveTo(0,-16,-26,-12);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.fillRect(-18,-19,12,3);
+    ctx.restore();
+    const perkColor=item.pickPerk==='lucky'?'#ffd96a':item.pickPerk==='double'?'#a8ffc2':item.pickPerk==='vein'?'#c9d6ff':null;
+    if(perkColor){
+      ctx.fillStyle=perkColor;
+      ctx.beginPath(); ctx.arc(62,16,6,0,Math.PI*2); ctx.fill();
+    }
   }
 
   // --- Animated character preview (cape sim + outfit + eyes + weapon) ---

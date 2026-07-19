@@ -508,19 +508,66 @@ window.MM = window.MM || {};
   // entity hovering instead of materializing a tile onto him (returned by
   // occupy/settleSand/settleRubble when force is falsy).
   const BODY_REST=-2;
+  // Hover-pile resolver: entities resting on a body used to all freeze in the
+  // SAME cell (drawn on top of each other — an avalanche read as one flickering
+  // block; the older stack-upward rule extruded an absurd 1-wide tower instead).
+  // Now each hover cell holds ONE entity: the next claimant is shed sideways
+  // with a nudge so it resumes falling BESIDE the body, and only when both
+  // sides are walled does the pile grow a row upward. Claims are rebuilt every
+  // frame from the entities that actually stay hovering.
+  const hoverClaims=new Set();
+  function restOnBody(e,x,y){
+    let cy=y, guard=0;
+    // Never park inside the body itself: ride up to the crown first — the
+    // load sits ON the head, not across the torso (the visual overlap bug).
+    while(guard++<8 && bodyBlocks(x,cy) && inWorldY(cy-1) && passable(getTile(x,cy-1))) cy-=1;
+    const crown=cy;
+    const k0=key(x,cy);
+    if(!hoverClaims.has(k0)){ hoverClaims.add(k0); e.vy=0; e.yFloat=cy; return true; }
+    // shed: a free passable side cell — the entity rolls off the mound and keeps falling
+    const dirs=((x+cy)&1)?[1,-1]:[-1,1];
+    for(const dir of dirs){
+      if(!inWorldY(cy) || !passable(getTile(x+dir,cy))) continue;
+      if(hoverClaims.has(key(x+dir,cy))) continue;
+      e.x=x+dir; e.yFloat=cy; e.vy=2.2;
+      return false; // airborne again — lands next to the body on its own
+    }
+    while(guard++<10){
+      cy-=1;
+      if(cy<=WORLD_TOP || !passable(getTile(x,cy))) break;
+      const k=key(x,cy);
+      if(!hoverClaims.has(k)){ hoverClaims.add(k); e.vy=0; e.yFloat=cy; return true; }
+    }
+    e.vy=0; e.yFloat=crown; // walled-in worst case: overlap beats losing the entity
+    return true;
+  }
+  // A docked entity rests on the crown above a body. Left to gravity it would
+  // drift off its cell every frame and release the hover claim, letting the
+  // whole pile play musical chairs on one cell and never spread. While the body
+  // is still underneath, keep it parked and hold its claim so later arrivals
+  // shed around it; when the body leaves, it resumes falling on its own.
+  function dockedOnBody(e){
+    if(e.vy!==0) return false;
+    const x=e.x, y=Math.floor(e.yFloat);
+    return bodyBlocks(x,y+1) || bodyBlocks(x,y+2);
+  }
   // Load currently resting on the hero (hovering entities). main.js uses this to
   // block jumping under a pile — jump-spam used to ratchet the hero up through
   // his own debris, extruding a 1-wide chimney — and to crush when it is too heavy.
+  // A resting entity now parks on the CROWN cell above the body (restOnBody
+  // climbs out of the torso), so "resting on the hero" means the hero is in
+  // the entity's cell OR directly beneath it.
+  function heroRests(x,yi){ return hostPlayerBlocks(x,yi) || hostPlayerBlocks(x,yi+1); }
   function heroRestingLoad(){
     let count=0, weight=0;
     for(const b of active){
       if(b.vy!==0) continue;
-      if(!hostPlayerBlocks(b.x,Math.floor(b.yFloat))) continue;
+      if(!heroRests(b.x,Math.floor(b.yFloat))) continue;
       count++; weight+=heroLoadWeight(b.type);
     }
     for(const s of sandActive){
       if(s.vy!==0) continue;
-      if(!hostPlayerBlocks(s.x,Math.floor(s.yFloat))) continue;
+      if(!heroRests(s.x,Math.floor(s.yFloat))) continue;
       count++; weight+=heroLoadWeight(T.SAND);
     }
     return {count,weight};
@@ -1907,6 +1954,12 @@ window.MM = window.MM || {};
     const frameMs=(typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
     processAuditJobs(frameMs>40 ? 1 : (frameMs>24 ? 2 : 5));
     processQueue();
+    hoverClaims.clear(); // hover-pile claims live one frame — rebuilt below
+    // Pre-reserve every already-docked crown cell BEFORE anything falls this
+    // frame, so a new arrival always sees the parked entity's claim (regardless
+    // of array order) and sheds around it instead of stacking into the same cell.
+    for(const b of active) if(dockedOnBody(b)) hoverClaims.add(key(b.x,Math.floor(b.yFloat)));
+    for(const s of sandActive) if(dockedOnBody(s)) hoverClaims.add(key(s.x,Math.floor(s.yFloat)));
     // Overload guard: a pathological cascade can't accumulate unbounded entities
     if(sandActive.length>3000){ const excess=sandActive.splice(0, sandActive.length-3000).sort((a,b)=>b.yFloat-a.yFloat); for(const s of excess) dropToRest(s.x, s.yFloat, T.SAND); }
     if(active.length>ACTIVE_RIGID_CAP){
@@ -1916,6 +1969,8 @@ window.MM = window.MM || {};
 
     for(let i=active.length-1;i>=0;i--){
       const b=active[i];
+      // parked on a body's crown: hold still (and hold the claim) until it leaves
+      if(dockedOnBody(b)){ hoverClaims.add(key(b.x,Math.floor(b.yFloat))); continue; }
       const inWater = getTile(b.x, Math.floor(b.yFloat))===T.WATER;
       if(inWater && !b.wet){ b.wet=true; splash(b.x,b.yFloat,b.vy); notifyWater(b.x,Math.floor(b.yFloat)); if(b.vy>VMAX_WATER*1.6) b.vy=VMAX_WATER*1.6; }
       else if(!inWater) b.wet=false;
@@ -1940,17 +1995,19 @@ window.MM = window.MM || {};
           b.yFloat=settledAt;
           continue;
         }
-        if(bodyBlocks(b.x,settledAt)){ b.vy=0; b.yFloat=settledAt; continue; } // rest on a body until it moves
+        if(bodyBlocks(b.x,settledAt)){ restOnBody(b,b.x,settledAt); continue; } // rest on a body until it moves (pile, not overlap)
         if(isFragileFalling(b.type)){ breakFragile(b.x,settledAt); active.splice(i,1); continue; }
         // roll/stack target may land on the hero even when settledAt did not — hover, never bury
         const rest=(b.rubble && isRubbleTrackedMaterial(b.type)) ? settleRubble(b.x,settledAt,b.type) : occupy(b.x,settledAt,b.type);
-        if(rest===BODY_REST){ b.vy=0; b.yFloat=settledAt; continue; }
+        if(rest===BODY_REST){ restOnBody(b,b.x,settledAt); continue; }
         active.splice(i,1);
       }
     }
 
     for(let i=sandActive.length-1;i>=0;i--){
       const s=sandActive[i];
+      // parked on a body's crown: hold still (and hold the claim) until it leaves
+      if(dockedOnBody(s)){ hoverClaims.add(key(s.x,Math.floor(s.yFloat))); continue; }
       const inWater = getTile(s.x, Math.floor(s.yFloat))===T.WATER;
       if(inWater && !s.wet){ s.wet=true; splash(s.x,s.yFloat,s.vy); if(s.vy>SAND_VMAX_WATER*1.6) s.vy=SAND_VMAX_WATER*1.6; }
       else if(!inWater) s.wet=false;
@@ -1987,8 +2044,8 @@ window.MM = window.MM || {};
           s.x+=dir; s.yFloat=yi+0.05; if(s.vy>8) s.vy=8; continue;
         }
       }
-      if(bodyBlocks(s.x,yi)){ s.vy=0; s.yFloat=yi; continue; }
-      if(settleSand(s.x,yi)===BODY_REST){ s.vy=0; s.yFloat=yi; continue; } // roll target landed on a body
+      if(bodyBlocks(s.x,yi)){ restOnBody(s,s.x,yi); continue; }
+      if(settleSand(s.x,yi)===BODY_REST){ restOnBody(s,s.x,yi); continue; } // roll target landed on a body
       sandActive.splice(i,1);
     }
   }

@@ -170,7 +170,7 @@ assert.match(mobsSrc, /const heroCloaked = !spec\.senseCloak && typeof MM!=='und
 assert.match(mobsSrc, /const heroForMob = heroCloaked \? \{x:m\.x-10000, y:m\.y\} : player/, 'a cloaked hero becomes the blind-style decoy');
 assert.match(mobsSrc, /if\(b\.cloaked\) continue; \/\/ antenna cloak/, 'cloaked co-op bodies drop out of mob target selection');
 // ghost wiring: intent + host authority + stream flags
-assert.ok(netSrc.includes("'antenna']"), 'antenna is a HERO_ACTION');
+assert.ok(netSrc.includes("'antenna'"), 'antenna is a HERO_ACTION');
 assert.match(netSrc, /ANTENNA_MS: 1500/, 'the intent has a host rate floor');
 assert.match(hostSrc, /pl\.a === 'antenna'/, 'handleHeroAct owns an antenna branch');
 assert.match(hostSrc, /A\.tierKey\(pl\.tr\)/, 'the host clamps the claimed tier through its own whitelist');

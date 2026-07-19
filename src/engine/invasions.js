@@ -34,8 +34,10 @@ const invasions = (function(){
   const MOLE_SHOT_CAP = 72;
   const MOLE_SHOT_GHOST_CAP = 24;
   const MOLE_SHOT_GRAVITY = 12.5;
-  const ALIEN_LASER_CHARGE_MIN = 1;
-  const ALIEN_LASER_CHARGE_MAX = 2;
+  // Aim telegraph: once an alien locks its aim, the shot follows fast — a long
+  // windup let the hero stroll out of every beam (owner ruling: 0.5-1 s).
+  const ALIEN_LASER_CHARGE_MIN = 0.5;
+  const ALIEN_LASER_CHARGE_MAX = 1;
   const TILE_DAMAGE_CAP = 220;
   const PLAYER_LEVEL_CAP = 99;
   const INVASION_MAX_TEAMS = 6;
@@ -1506,18 +1508,33 @@ const invasions = (function(){
       else if(ctx && typeof ctx.notifyStructureTileChanged === 'function') ctx.notifyStructureTileChanged(x,y,oldTile,newTile);
     }catch(e){}
   }
+  // Invader tile damage respects material HARDNESS (owner ruling): a stone
+  // shelter falls visibly faster than one raised from granite, basalt or
+  // obsidian. INFO.hp is the base ladder; the hard igneous rocks get an extra
+  // multiplier so each laser/rock is effectively a shrinking chance to finish
+  // the block, and the cap is high enough that the ladder never flattens.
+  function hardRockMult(t){
+    if(t === T.OBSIDIAN) return 3.0;
+    if(t === T.BASALT) return 2.6;
+    if(t === T.GRANITE) return 2.35;
+    if(t === T.STEEL) return 2.0;
+    if(t === T.STONE) return 1.75;
+    return 1;
+  }
   function tileBreakHpForTeam(team,t){
     const info = INFO[t] || INFO[T.STONE];
+    const hard = hardRockMult(t);
     if(!isMolekinTeam(team)){
-      return Math.max(2, Math.min(34, (Number(info.hp) || 4) * (isPlayerBuiltMaterial(t) ? 1.35 : 2.15)));
+      // hardness never SOFTENS what the old rule protected: natural terrain
+      // keeps its 2.15 floor, built materials climb the rock ladder above 1.35
+      const floor = isPlayerBuiltMaterial(t) ? 1.35 : 2.15;
+      const base = Math.max(floor, hard > 1 ? hard : 0);
+      return Math.max(2, Math.min(64, (Number(info.hp) || 4) * base));
     }
-    let mult = 1.35;
-    if(t === T.OBSIDIAN) mult = 3.0;
-    else if(t === T.GRANITE || t === T.BASALT) mult = 2.35;
-    else if(t === T.STONE) mult = 1.75;
-    else if(isPlayerBuiltMaterial(t) || isDoorTile(t) || isTrapdoorTile(t) || isRigidObjectTile(t)) mult = 1.55;
-    else mult = 0.95;
-    return Math.max(2, Math.min(42, (Number(info.hp) || 4) * mult));
+    let mult = hard > 1 ? hard : 1.35;
+    if(hard <= 1 && (isPlayerBuiltMaterial(t) || isDoorTile(t) || isTrapdoorTile(t) || isRigidObjectTile(t))) mult = 1.55;
+    else if(hard <= 1) mult = 0.95;
+    return Math.max(2, Math.min(64, (Number(info.hp) || 4) * mult));
   }
   function damageTeamTile(team,tx,ty,amount,getTile,setTile,ctx){
     const t = readTile(getTile,tx,ty);
@@ -1542,8 +1559,8 @@ const invasions = (function(){
   function damageStructureTile(tx,ty,amount,getTile,setTile,ctx){
     const t = readTile(getTile,tx,ty);
     if(!isAttackableStructureTile(t)) return false;
-    const info = INFO[t] || INFO[T.STONE];
-    const hp = Math.max(2, Math.min(34, (Number(info.hp) || 4) * (isPlayerBuiltMaterial(t) ? 1.35 : 2.15)));
+    // shares the hardness ladder with damageTeamTile — one truth per material
+    const hp = tileBreakHpForTeam(null,t);
     const key = tileKey(tx,ty);
     const next = (tileDamage.get(key) || 0) + Math.max(0.4, amount || 1);
     if(next < hp){
@@ -2508,13 +2525,18 @@ const invasions = (function(){
     if(len2<=0.0001) return null;
     let best=null,bestT=Infinity;
     for(const tgt of livePartyTargets(player)){
-      const cx=tgt.x,cy=tgt.y-0.40;
-      const rawAlong=((cx-sx)*dx+(cy-sy)*dy)/len2;
-      if(rawAlong<=0.015||rawAlong>1.015) continue;
-      const along=clamp(rawAlong,0,1);
-      const px=sx+dx*along,py=sy+dy*along;
-      const radius=Math.max(0.32,Math.min(0.52,Math.max((Number(tgt.w)||0.70)*0.48,(Number(tgt.h)||0.95)*0.32)));
-      if(Math.hypot(cx-px,cy-py)<=radius && along<bestT){ best=tgt; bestT=along; }
+      // The body is a vertical capsule, not a chest-point: a beam clipping the
+      // head or the legs counts too (the whole laser LINE is the weapon).
+      const hh=Math.max(0.6,Number(tgt.h)||0.95);
+      const radius=Math.max(0.32,Math.min(0.52,Math.max((Number(tgt.w)||0.70)*0.48,hh*0.32)));
+      for(const cy of [tgt.y-hh*0.72,tgt.y-0.40,tgt.y+hh*0.42]){
+        const cx=tgt.x;
+        const rawAlong=((cx-sx)*dx+(cy-sy)*dy)/len2;
+        if(rawAlong<=0.015||rawAlong>1.015) continue;
+        const along=clamp(rawAlong,0,1);
+        const px=sx+dx*along,py=sy+dy*along;
+        if(Math.hypot(cx-px,cy-py)<=radius && along<bestT){ best=tgt; bestT=along; break; }
+      }
     }
     return best;
   }
@@ -2530,7 +2552,10 @@ const invasions = (function(){
     const hit=traceLine(ox,oy,c.aimX,c.aimY,getTile,range);
     const weaponBoost=1+weaponTier*0.08;
     const dmgMult=(Number.isFinite(c.damageMult)?c.damageMult:1)*(Number(a.damageMult)||1)*weaponBoost;
-    const partyHit=!c.tileAim ? partyTargetOnLaser(ox,oy,hit.x,hit.y,player) : null;
+    // The BEAM is the weapon, not just its endpoint: anybody standing anywhere
+    // along the laser line takes the hit — including breach shots aimed at a
+    // wall. A body intercepting the beam absorbs it (the tile behind survives).
+    const partyHit=partyTargetOnLaser(ox,oy,hit.x,hit.y,player);
     pushLaser(ox,oy,hit.x,hit.y,!!partyHit,hit.blocked,dmgMult>=1.5||weaponTier>=2,'alien',weaponTier);
     a.lastShotAt=nowMs();
     play('laser',{x:a.x,y:a.y-0.5});
@@ -2769,12 +2794,24 @@ const invasions = (function(){
     const hh=Math.max(0.42,(Number(tgt.h)||0.95)*0.5)+(s.radius||0.17);
     return Math.abs(s.x-tgt.x)<=hw && Math.abs(s.y-(tgt.y-0.40))<=hh;
   }
+  // A molekin clod is a real rock: it sometimes survives the impact whole and
+  // lies on the ground as an ordinary throwing stone the hero can pick up and
+  // throw right back (heavy shots use denser rock — better odds).
+  function maybeDropMoleRock(s){
+    if(!s || s.ghost) return;
+    if(Math.random()>=(s.heavy?0.42:0.30)) return;
+    try{
+      const D=MM.drops;
+      if(D && D.spawnResource) D.spawnResource(s.x,s.y-0.2,'throwingStone',1,{source:'mole_rock',vy:-1.1});
+    }catch(e){}
+  }
   function impactMoleShot(s,target,tx,ty,getTile,setTile,ctx){
     if(!s) return;
     const team=s.team;
     if(target){
       hurtPartyTarget(target,s.damage,{srcX:s.x-(s.vx<0?-0.35:0.35),srcY:s.y,kb:s.heavy?4.6:3.3,kbY:-2.4,invulMs:470,cause:'molekin_invasion'});
       if(Math.random()<(s.heavy?0.30:0.10)) tryPlaceMoleHazard(team,floor(s.x),floor(s.y+0.60),target,getTile,setTile,ctx,s.heavy);
+      maybeDropMoleRock(s);
       burst(s.x,s.y,s.heavy?'rare':'common');
       play('thud',{x:s.x,y:s.y});
       return;
@@ -2787,6 +2824,7 @@ const invasions = (function(){
         triggerTeamSpeech(team,'breach',{speaker:s.owner,x:tx+0.5,y:ty+0.5,cooldown:1850,keyCooldown:6000,override:false});
       }
     }
+    maybeDropMoleRock(s);
     burst(s.x,s.y,s.heavy?'rare':'common');
     play('thud',{x:s.x,y:s.y});
   }

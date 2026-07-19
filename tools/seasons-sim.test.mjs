@@ -489,16 +489,16 @@ assert.equal(m.season, 'autumn', 'debug day setter lands in the expected calenda
 assert.ok(m.scan && typeof m.scan.ops === 'number', 'season metrics expose bounded scan telemetry');
 const snap = seasons.snapshot();
 seasons.reset();
-assert.equal(seasons.metrics().season, 'spring', 'reset returns to spring');
+assert.equal(seasons.metrics().season, 'summer', 'reset returns to the summer calendar start (worlds wake in summer)');
 assert.equal(seasons.restore(snap), true, 'season clock restores from save data');
 assert.equal(seasons.metrics().season, 'autumn', 'restored season clock keeps the calendar position');
 
 const events = [];
 const unsub = seasons.subscribe(e => events.push(e));
 seasons.reset();
-seasons.setDay(11);
+seasons.setDay(21); // summer calendar start -> autumn
 unsub();
-assert.ok(events.some(e => e.type === 'seasonChanged' && e.to === 'summer'), 'season clock emits season-change events for debug systems');
+assert.ok(events.some(e => e.type === 'seasonChanged' && e.to === 'autumn'), 'season clock emits season-change events for debug systems');
 
 seasons.reset();
 assert.equal(seasons.jumpToNextTransition(), true, 'debug can jump to the next smooth season transition');

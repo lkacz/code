@@ -563,7 +563,7 @@ const legacyHealer = legacyAliens.find(a=>a.role === 'healer');
 assert.ok(legacyTank && legacyTank.damageTakenMult < 0.85 && legacyTank.hitboxScale > 1, 'legacy saves re-roll tank traits with tank durability and body shape');
 assert.ok(legacyHealer && legacyHealer.healMult > 1 && legacyHealer.damageMult < 0.75, 'legacy saves re-roll healer traits with support behavior stats');
 
-// Alien Team lasers lock a visible point, charge for 1-2 seconds, and only then fire.
+// Alien Team lasers lock a visible point, charge briefly (0.5-1 s), and only then fire.
 invasions.reset();
 overrides.clear();
 player.x=6; player.y=49; player.vx=0; player.vy=0; player.hp=player.maxHp;
@@ -576,7 +576,7 @@ globalThis.damageHero=(amount)=>{ alienLaserDamage+=amount; player.hp-=amount; r
 try{
   const beforeLasers=invasions._debug.lasers.length;
   const charge=invasions._debug.fireAlienLaser(laserShooter,laserTeam,player,getTile,setTile,ctx,{aim:1});
-  assert.ok(charge&&charge.t>=1&&charge.t<=2,'Alien Team pistol charges for a randomized one-to-two-second warning');
+  assert.ok(charge&&charge.t>=0.5&&charge.t<=1,'Alien Team pistol charges for a randomized half-to-one-second warning');
   assert.equal(invasions._debug.lasers.length,beforeLasers,'starting the visible charge does not fire a laser immediately');
   const locked={x:charge.aimX,y:charge.aimY};
   const laserPose=invasions.ghostRoster().poses[0];
@@ -600,9 +600,43 @@ try{
   assert.ok(coverCharge&&invasions._debug.lasers.at(-1).blocked,'cover raised during charging catches the committed alien shot');
   assert.equal(alienLaserDamage,damageBeforeCover,'new cover prevents the charged alien laser from damaging the hero');
   setTile(3,48,T.AIR);
+
+  // The BEAM hurts along its whole line: a breach shot aimed at a wall still
+  // hits the hero standing in its path — and the intercepted wall tile survives.
+  player.x=4; player.y=49; player.hp=player.maxHp;
+  setTile(9,49,T.BRICK);
+  const damageBeforeLine=alienLaserDamage;
+  const lineCharge=invasions._debug.fireAlienLaser(laserShooter,laserTeam,player,getTile,setTile,ctx,{aimX:9.5,aimY:49.5,breach:true});
+  for(let i=0;i<110&&laserShooter.alienCharge;i++) invasions._debug.updateAlienLaserCharge(laserShooter,laserTeam,0.02,player,getTile,setTile,ctx);
+  assert.ok(lineCharge&&alienLaserDamage>damageBeforeLine,'a body standing on the laser line takes the breach shot');
+  assert.equal(getTile(9,49),T.BRICK,'the intercepted beam never reaches the wall behind the body');
+  setTile(9,49,T.AIR);
 } finally {
   globalThis.damageHero=damageHeroBeforeLaser;
   player.hp=player.maxHp;
+}
+
+// Invader tile damage respects material hardness: the same laser budget breaks a
+// stone shelter long before a granite one, and obsidian outlasts them all.
+{
+  const shotsToBreak=(tile)=>{
+    invasions._debug.tileDamage.clear();
+    setTile(30,49,tile);
+    let shots=0;
+    while(getTile(30,49)===tile && shots<200){
+      shots++;
+      invasions._debug.damageStructureTile(30,49,4,getTile,setTile,ctx);
+    }
+    setTile(30,49,T.AIR);
+    return shots;
+  };
+  const stoneShots=shotsToBreak(T.STONE);
+  const graniteShots=shotsToBreak(T.GRANITE);
+  const basaltShots=shotsToBreak(T.BASALT);
+  const obsidianShots=shotsToBreak(T.OBSIDIAN);
+  assert.ok(stoneShots<graniteShots&&graniteShots<basaltShots&&basaltShots<=obsidianShots,
+    `hardness ladder holds for alien lasers (stone ${stoneShots} < granite ${graniteShots} < basalt ${basaltShots} <= obsidian ${obsidianShots})`);
+  assert.ok(obsidianShots>=stoneShots*3,'an obsidian wall soaks several times the shots of a stone one');
 }
 
 // Molekin night teams are a second, distinct invasion system: they burrow up,

@@ -412,6 +412,12 @@ async function main(){
 		console.log('ghost mobs:', JSON.stringify(mobCheck));
 
 		// --- Scene 6: blessing through the ledger --------------------------------------------
+		// Security wave ruling: a joining viewer sits on the WATCH safe floor and
+		// the host raises it BY HAND — so the QA grants 'full' exactly like the
+		// panel would before asking for a mechanical blessing.
+		const gidB = await host.eval(`MM.ghostHost.metrics().viewers[0].gid`);
+		await host.eval(`MM.ghostHost.setViewerMode('${gidB}','full')`);
+		await ghost.poll(`MM.ghostClient.metrics().mode`, v => v === 'full', 'the watcher learns its full grant', 40, 250);
 		await host.eval(`(()=>{ window.player.hp = 40; })()`);
 		const sent = await ghost.eval(`MM.ghostClient.sendBuff('bless')`);
 		if(!sent) throw new Error('ghost could not send the blessing');
@@ -637,11 +643,15 @@ async function main(){
 		await host.front();
 		await host.eval(`(()=>{
 			const y0=Math.floor(player.y)-3, x0=Math.floor(player.x);
-			for(let x=x0; x<x0+200; x++) for(let y=y0-9; y<=y0+14; y++) MM.world.setTile(x,y,0);
+			// carve HIGH: overburden above a shallow lane collapses back into it and
+			// eats the volley two tiles from the muzzle (observed 1-in-4 runs). The
+			// arrows fly near the TOP of a deep lane — falling debris settles at the
+			// lane floor, far under the flight path, and never blocks the samples.
+			for(let x=x0; x<x0+200; x++) for(let y=y0-26; y<=y0+14; y++) MM.world.setTile(x,y,0);
 			MM.mobs.clearAll && MM.mobs.clearAll(); // a creature crossing the lane eats the whole volley between samples
 			const w=MM.weapons._debug;
 			w.arrows.length=0;
-			for(let i=0;i<4;i++) w.arrows.push({x:x0+0.5+i*0.2, y:y0-4, vx:14, vy:-6, dmg:1, life:5, travel:0, maxTravel:260});
+			for(let i=0;i<4;i++) w.arrows.push({x:x0+0.5+i*0.2, y:y0-18, vx:14, vy:-6, dmg:1, life:5, travel:0, maxTravel:260});
 			return w.arrows.length;
 		})()`);
 		await ghost.poll(`(()=>MM.weapons._debug.arrows.length)()`, v => v > 0, 'the volley reaches the watcher', 40, 60);
@@ -844,6 +854,10 @@ async function main(){
 		await ghost2.eval(BOOT_WAIT, 60000);
 		await ghost2.poll(`MM.ghostClient.metrics().state`, v => v === 'live', 'second ghost joins', 80, 250);
 		const gid2 = (await host.eval(`MM.ghostHost.metrics().viewers`)).find(v => v.name === 'Widmo2').gid;
+		// safe-floor default is WATCH — an assistant must be allowed to influence,
+		// so the host raises the second viewer to 'full' first (panel flow)
+		await host.eval(`MM.ghostHost.setViewerMode('${gid2}','full')`);
+		await ghost2.poll(`MM.ghostClient.metrics().mode`, v => v === 'full', 'second watcher learns its full grant', 40, 250);
 		await host.eval(`MM.ghostHost.setAssistant('${gid2}', true)`);
 		await ghost2.poll(`MM.ghostClient.metrics().assistant`, v => v === true, 'second assistant appointed', 30, 250);
 		const seats = (await host.eval(`MM.ghostHost.metrics().viewers`)).filter(v => v.assistant).length;
@@ -938,6 +952,13 @@ async function main(){
 		console.log('persistence: ok (reloaded the ghost tab — xp ' + progBefore.xp + ' → ' + progAfter.xp + ', trophies kept)');
 
 		// --- Scene 10g: voices & manners — host chat, pings, per-watcher mute, view toggles -------------
+		// The reload above rejoined the watcher as a NEW entry on the WATCH safe
+		// floor — the host raises it back to 'full' the way the panel would.
+		{
+			const gidR = (await host.eval(`MM.ghostHost.metrics().viewers`)).find(v => v.name === 'Widmo').gid;
+			await host.eval(`MM.ghostHost.setViewerMode('${gidR}','full')`);
+			await ghost.poll(`MM.ghostClient.metrics().mode`, v => v === 'full', 'reloaded watcher regains its grant', 40, 250);
+		}
 		// The host speaks: bubble over the hero on BOTH sides of the wire.
 		await host.front(); // the bubble rides the rAF draw loop — wake the host canvas
 		const said = await host.eval(`MM.ghostHost.say('Czesc duchy!')`);
@@ -1053,8 +1074,10 @@ async function main(){
 		const dig = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0]; return {bx:Math.round(b.x), by:Math.round(b.y), invStone0: window.inv.stone|0}; })()`);
 		// isolate one stone block beside the body with a TALL air column above it, so
 		// breaking it cannot be masked by loose material (sand/gravel) cascading down
-		// during the ~2 s mine window — random spawns have plenty overhead
-		const mineCell = { x: dig.bx + 2, y: dig.by };
+		// during the ~2 s mine window — random spawns have plenty overhead.
+		// +1, not +2: when the body rests exactly on a half-tile (x=*.5) the +2
+		// cell sits 3.16 tiles from the body center — just past the reach floor.
+		const mineCell = { x: dig.bx + 1, y: dig.by };
 		await host.eval(`(()=>{
 			const x=${mineCell.x}, y=${mineCell.y};
 			for(let dx=-1;dx<=1;dx++) for(let yy=y-8; yy<y; yy++) MM.world.setTile(x+dx, yy, MM.T.AIR);
@@ -1091,12 +1114,30 @@ async function main(){
 			throw new Error('the mined stone is still solid on the host: ' + JSON.stringify(d));
 		}
 		console.log('play mine: ok (guest pouch stone=' + mined + ', host inv untouched, tile broken)');
-		// --- building: spends from the guest pouch, writes a tile, host inv still untouched
-		const placeCell = { x: dig.bx + 3, y: dig.by };
+		// --- building: spends from the guest pouch, writes a tile, host inv still untouched.
+		// The guest rebuilds INTO the hole it just mined: adjacent, line-of-sight
+		// clear (ghostTargetClear refuses placing through un-mined walls) and
+		// already footed by the scene's isolation column.
+		const placeCell = { x: mineCell.x, y: mineCell.y };
 		await host.eval(`(()=>{ MM.world.setTile(${placeCell.x}, ${placeCell.y}, MM.T.AIR); MM.world.setTile(${placeCell.x}, ${placeCell.y+1}, MM.T.STONE); return 1; })()`);
 		await ghost.eval(`(()=>{ MM.ghostClient._playSelect && MM.ghostClient._playSelect('stone'); return 1; })()`);
-		await ghost.eval(`(()=>{ MM.ghostClient._playAct && MM.ghostClient._playAct('place', ${placeCell.x}, ${placeCell.y}, 'stone'); return 1; })()`);
-		const built = await host.poll(`MM.world.getTile(${placeCell.x},${placeCell.y}) === MM.T.STONE`, v => v === true, 'the guest built a tile', 40, 250);
+		// input vouching (security wave): un-vouched acts are dropped — re-vouch
+		// and repeat like the mine loop does, the host applies exactly one
+		for(let i = 0; i < 6; i++){
+			await ghost.eval(`(()=>{ MM.ghostClient.noteInput(); MM.ghostClient._playAct && MM.ghostClient._playAct('place', ${placeCell.x}, ${placeCell.y}, 'stone'); return 1; })()`);
+			await sleep(250);
+			if(await host.eval(`MM.world.getTile(${placeCell.x},${placeCell.y}) === MM.T.STONE`)) break;
+		}
+		let built=false;
+		try{
+			built = await host.poll(`MM.world.getTile(${placeCell.x},${placeCell.y}) === MM.T.STONE`, v => v === true, 'the guest built a tile', 40, 250);
+		}catch(e){
+			const d = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies[0];
+				return {cell:MM.world.getTile(${placeCell.x},${placeCell.y}), below:MM.world.getTile(${placeCell.x},${placeCell.y+1}),
+					bodyX:b?+b.x.toFixed(2):null, bodyY:b?+b.y.toFixed(2):null, pouch:b?b.pouch:null, stats:MM.ghostHost.metrics().stats}; })()`);
+			const g = await ghost.eval(`(()=>({play:MM.ghostClient.metrics().play, acks:(MM.ghostClient.metrics().stats||{})}))()`);
+			throw new Error('the guest placement never landed: host=' + JSON.stringify(d) + ' ghost=' + JSON.stringify(g).slice(0,600));
+		}
 		if(!built) throw new Error('the guest placement never landed');
 		if((await host.eval(`window.inv.stone|0`)) !== dig.invStone0) throw new Error('guest building drew from the HOST inventory');
 		console.log('play build: ok (tile placed from the guest pouch, host inv untouched)');
@@ -1108,7 +1149,14 @@ async function main(){
 			for(const id of MM.mobs.species){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+1, y:b.y}, MM.world.getTile)){ hit=id; break; } }catch(e){} }
 			return {hit, count: MM.mobs.serialize().list.length};
 		})()`);
-		const strikeHits = await host.eval(`MM.ghostBridge.ghostPlayStrike(${dig.bx}+1, ${dig.by}, 3, 30)`);
+		// direct seam call mirroring handlePlayAct 'attack': the sword spec from
+		// the shared protocol table, aimed at the spawned creature's cell
+		const strikeHits = await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies[0];
+			const spec=MM.ghostNet ? MM.ghostNet.PLAY_WEAPONS.sword : {melee:true,reach:2,dmg:6,cdMs:400};
+			const res=MM.ghostBridge.ghostPlayAttack({x:b.x,y:b.y,facing:1,gid:'qa',duelWith:null}, spec, b.x+1, b.y);
+			return res ? (res.hits|0) : 0;
+		})()`);
 		void spawnedForStrike; void strikeHits;
 		const postTiles = await host.eval(`(()=>{ let n=0; for(let x=${dig.bx}-2;x<=${dig.bx}+2;x++) for(let y=${dig.by}-2;y<=${dig.by}+3;y++) if(MM.world.getTile(x,y)!==MM.T.AIR) n++; return n; })()`);
 		if(postTiles !== preTiles) throw new Error('a guest strike edited a tile — combat must be creatures-only');
@@ -1346,7 +1394,12 @@ async function main(){
 		// starter quiver), crafts arrows and a spear from it, fights with the spear, and
 		// the earned arsenal survives another demote/promote round-trip.
 		const gidStable = await ghost.eval(`localStorage.getItem('mm_ghost_gid_v1')`);
-		if(gidStable !== gidPlay) throw new Error('the guest gid is not the persisted one: ' + gidStable + ' vs ' + gidPlay);
+		// The tab reload in scene 10g left a stale host entry under the persisted
+		// gid — the anti-takeover ruling (security wave) makes a rejoining client
+		// mint a FRESH gid instead of seizing a live entry. The career store banks
+		// under the CURRENT connection's gid, so assert persistence exists rather
+		// than equality with a gid the security model deliberately rotated.
+		if(!gidStable) throw new Error('the guest never persisted a gid');
 		await host.eval(`MM.ghostHost.setViewerMode('${gidPlay}', 'full')`);
 		await host.poll(`MM.ghostHost.metrics().players`, v => v === 0, 'body despawns before the store injection', 40, 250);
 		await host.eval(`(()=>{
@@ -1388,21 +1441,37 @@ async function main(){
 			const calm=Object.keys(SP).filter(id=>{ const s=SP[id]; return s && s.ground && !s.aquatic && !s.flying && !s.alwaysAggro && !(s.dmg>0) && (s.hp||0)>=8 && (s.hp||0)<=1000; })
 				.sort((a,b)=>SP[b].hp-SP[a].hp);
 			// quiet grazers first: a provoked SHAMAN casts tile-writing spells and a
-			// charger tramples the body — either poisons the zero-tiles/routing asserts
-			const prefer=['JESIENNY_LOS','WIOSENNY_JELEN','DEER','GOAT','JASZCZUR','RABBIT','SQUIRREL','ZABA'].filter(id=>calm.includes(id));
+			// charger tramples the body — either poisons the zero-tiles/routing asserts.
+			// Seasonal grazers gate on the CALENDAR (worlds open in summer now), so
+			// every season's flagship is listed — whichever is in season spawns.
+			const prefer=['LETNI_ZUBR','JESIENNY_LOS','WIOSENNY_JELEN','DEER','GOAT','JASZCZUR','RABBIT','SQUIRREL','ZABA'].filter(id=>calm.includes(id));
 			const order=[...prefer, ...calm.filter(id=>!prefer.includes(id))];
 			let prey=null;
-			for(const id of order){ try{ if(MM.mobs.forceSpawn(id, {x:b.x+2.5, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){} }
+			for(const id of order){
+				for(const dx of [2.5,-2.5,3.2,-3.2,2.0]){
+					try{ if(MM.mobs.forceSpawn(id, {x:b.x+dx, y:floorRow-1}, MM.world.getTile)){ prey=id; break; } }catch(e){}
+				}
+				if(prey) break;
+			}
 			const m=prey ? MM.mobs.serialize().list.find(v=>v.id===prey) : null;
+			// hold the prey still: at dawn the nature drives (waterhole walks) march
+			// grazers straight out of the spear's 3-tile reach mid-scene
+			if(m){ try{ MM.mobs.statusAt(Math.floor(m.x), Math.floor(m.y), 'stun', {dur:12, source:'qa', cause:'qa_hold'}); }catch(e){} }
 			return {prey, hp0:m?m.hp:0};
 		})()`);
 		if(!sp.prey) throw new Error('setup: could not spawn a spear target');
 		let spearHp = sp.hp0;
-		for(let i = 0; i < 6 && !(spearHp < sp.hp0); i++){
+		for(let i = 0; i < 10 && !(spearHp < sp.hp0); i++){
 			const m = await readPrey(sp.prey);
 			if(!m) break;
 			spearHp = m.hp;
 			if(spearHp < sp.hp0) break;
+			// re-pin the target every swing: shamans shrug the first stun off and
+			// dawn nature-drives keep walking grazers out of the 3-tile reach
+			await host.eval(`(()=>{ try{
+				MM.mobs.statusAt(Math.floor(${m.x}), Math.floor(${m.y}), 'stun', {dur:6, source:'qa', cause:'qa_hold'});
+				MM.mobs.statusAt(Math.round(${m.x}), Math.round(${m.y}), 'stun', {dur:6, source:'qa', cause:'qa_hold'});
+			}catch(e){} return 1; })()`);
 			await ghost.eval(`MM.ghostClient._playAct('attack', (${m.x}), (${m.y}), 'spear')`);
 			await sleep(800);
 		}
@@ -2177,17 +2246,44 @@ async function main(){
 			return {bx, wy};
 		})()`);
 		if(raft.err) throw new Error('raft staging failed: ' + JSON.stringify(raft));
-		// park the GUEST hero on the raft deck (guest-authoritative move; the body follows)
-		await ghost.eval(`(()=>{ const p=window.player; p.x=${raft.bx}+0.5; p.y=${raft.wy}-0.7; p.vx=0; p.vy=0; return 1; })()`);
+		// park the GUEST hero on the raft deck in movement-budget hops — a single
+		// long blink strands the swept host body mid-terrain and the row intent
+		// then resolves 'no-boat' (the body, not the claim, must stand on deck)
+		for(let hop=0; hop<16; hop++){
+			const done = await ghost.eval(`(()=>{ const p=window.player; const tx=${raft.bx}+0.5;
+				const dx=tx-p.x;
+				if(Math.abs(dx)<0.4){ p.x=tx; p.y=${raft.wy}-0.7; p.vx=0; p.vy=0; return 1; }
+				p.x+=Math.sign(dx)*Math.min(2.5,Math.abs(dx)); p.vx=0; return 0; })()`);
+			await sleep(650);
+			if(done) break;
+		}
 		await sleep(900); // the claimed pose reaches the host body
-		const boat0 = await host.eval(`(()=>{ const s=MM.boats.snapshot(); const b=s && s.boats && s.boats.find(r=>Math.abs(r.x-${raft.bx})<8); return b ? +b.x.toFixed(2) : null; })()`);
-		if(boat0 == null) throw new Error('the staged raft vanished before the stroke');
-		for(let i=0;i<4;i++){ await ghost.eval(`MM.ghostClient._heroRow(1, true)`); await sleep(350); }
+		const boat0i = await host.eval(`(()=>{ const s=MM.boats.snapshot(); const b=s && s.boats && s.boats.find(r=>Math.abs(r.x-${raft.bx})<8); return b ? {x:+b.x.toFixed(2), y:+b.y.toFixed(2)} : null; })()`);
+		if(boat0i == null) throw new Error('the staged raft vanished before the stroke');
+		// park on the raft's REAL deck: the pond solver may settle the hull a couple
+		// of tiles below the staged waterline, and a body hovering at the staged
+		// height overlaps no hull cell — row() then reports 'no-boat'
+		await ghost.eval(`(()=>{ const p=window.player; p.x=${boat0i.x}+0.5; p.y=${boat0i.y}-0.45; p.vx=0; p.vy=0; return 1; })()`);
+		await sleep(900);
+		const boat0 = boat0i.x;
+		for(let i=0;i<4;i++){
+			// re-glue to the CURRENT hull each stroke: the raft drifts as it rows and
+			// a body hovering half a tile off the deck resolves 'no-boat'
+			const bNow = await host.eval(`(()=>{ const s=MM.boats.snapshot(); const b=s && s.boats && s.boats.find(r=>Math.abs(r.x-${raft.bx})<10); return b ? {x:+b.x.toFixed(2), y:+b.y.toFixed(2)} : null; })()`);
+			if(bNow) await ghost.eval(`(()=>{ const p=window.player; p.x=${bNow.x}+0.5; p.y=${bNow.y}-0.45; p.vx=0; p.vy=0; return 1; })()`);
+			await sleep(450);
+			await ghost.eval(`MM.ghostClient._heroRow(1, true)`);
+			await sleep(350);
+		}
 		const boat1 = await host.eval(`(()=>{ const s=MM.boats.snapshot(); const b=s && s.boats && s.boats.find(r=>Math.abs(r.x-${raft.bx})<9); return b ? +b.x.toFixed(2) : null; })()`);
 		if(!(boat1 != null && boat1 - boat0 > 0.3)){
 			const rd = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
-				return MM.boats.row(1,{player:{x:b.x,y:b.y,w:0.62,h:0.92,vy:0}, godMode:true}); })()`);
-			throw new Error('the raft never moved on row intents: ' + JSON.stringify({ boat0, boat1, rd }));
+				const s=MM.boats.snapshot();
+				return {row:MM.boats.row(1,{player:{x:b.x,y:b.y,w:0.62,h:0.92,vy:0}, godMode:true}),
+					bodyX:+b.x.toFixed(2), bodyY:+b.y.toFixed(2), raftBx:${raft.bx}, raftWy:${raft.wy},
+					boats:(s&&s.boats||[]).map(r=>({x:+r.x.toFixed(1),y:+r.y.toFixed(1)}))}; })()`);
+			const gp = await ghost.eval(`(()=>({x:+window.player.x.toFixed(2), y:+window.player.y.toFixed(2)}))()`);
+			throw new Error('the raft never moved on row intents: ' + JSON.stringify({ boat0, boat1, rd, gp }));
 		}
 		console.log('sailing: ok (guest strokes moved the host raft ' + (boat1 - boat0).toFixed(2) + ' tiles)');
 
@@ -2205,7 +2301,29 @@ async function main(){
 			return {tx:Math.floor(b.x)+30, surf};
 		})()`);
 		if(!anchor.surf) throw new Error('no surface to anchor the teleporter scene');
-		await ghost.eval(`(()=>{ const p=window.player; p.x=${anchor.tx}+0.5; p.y=${anchor.surf}-0.6; p.vx=0; p.vy=0; return 1; })()`);
+		// hop, don't blink: the anti-teleport movement budget (security wave) sweeps
+		// the host body through terrain toward each claimed pose — a single 30-tile
+		// jump strands the sweep on whatever lies between (the sailing pond, hulls).
+		// A carved BRIDGE gives both the sweep and the guest's own physics a flat,
+		// solid corridor the whole way; short hops keep each claim in the budget.
+		await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}');
+			const x0=Math.min(Math.floor(b.x), ${anchor.tx})-2, x1=Math.max(Math.floor(b.x), ${anchor.tx})+2;
+			for(let x=x0; x<=x1; x++){
+				for(let y=${anchor.surf}-4; y<${anchor.surf}; y++) MM.world.setTile(x,y,MM.T.AIR);
+				MM.world.setTile(x,${anchor.surf},MM.T.STONE);
+				MM.world.setTile(x,${anchor.surf}+1,MM.T.STONE);
+			}
+			return 1;
+		})()`);
+		for(let hop=0; hop<20; hop++){
+			const done = await ghost.eval(`(()=>{ const p=window.player; const tx=${anchor.tx}+0.5, ty=${anchor.surf}-0.6;
+				const dx=tx-p.x;
+				if(Math.abs(dx)<0.4){ p.x=tx; p.y=ty; p.vx=0; p.vy=0; return 1; }
+				p.x+=Math.sign(dx)*Math.min(2.5,Math.abs(dx)); p.y=ty; p.vx=0; p.vy=0; return 0; })()`);
+			await sleep(700);
+			if(done) break;
+		}
 		await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}'); return b && Math.abs(b.x-(${anchor.tx}+0.5))<1 ? 1 : 0; })()`,
 			v => v === 1, 'the guest body settles at the pad anchor', 60, 300);
 		// Stage exactly like the proven isolated seam probe: pads 6 apart on a flat
@@ -2294,7 +2412,29 @@ async function main(){
 		// race under load (g4's hero frame is rAF-driven; front it so it steps)
 		await ghost5.front();
 		const meet = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gidHero}'); return {x:+b.x.toFixed(2), y:+b.y.toFixed(2)}; })()`);
-		await ghost5.eval(`(()=>{ const p=window.player; p.x=${meet.x}+1.0; p.y=${meet.y}; p.vx=0; p.vy=0; return 1; })()`);
+		// hop, don't blink: the movement budget sweeps the host body toward each
+		// claim — a spawn-point-to-meeting-point jump strands it in terrain. The
+		// carved BRIDGE gives the sweep flat footing the whole way (same recipe as
+		// the teleporter scene; the meeting may lie across the sailing pond).
+		await host.eval(`(()=>{
+			const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gid5}');
+			if(!b) return 0;
+			const rowY=Math.floor(${meet.y})+1;
+			const x0=Math.min(Math.floor(b.x), Math.floor(${meet.x}))-2, x1=Math.max(Math.floor(b.x), Math.floor(${meet.x}))+3;
+			for(let x=x0; x<=x1; x++){
+				for(let y=rowY-4; y<rowY; y++) MM.world.setTile(x,y,MM.T.AIR);
+				MM.world.setTile(x,rowY,MM.T.STONE);
+			}
+			return 1;
+		})()`);
+		for(let hop=0; hop<22; hop++){
+			const done = await ghost5.eval(`(()=>{ const p=window.player; const tx=${meet.x}+1.0;
+				const dx=tx-p.x;
+				if(Math.abs(dx)<0.4){ p.x=tx; p.y=${meet.y}; p.vx=0; p.vy=0; return 1; }
+				p.x+=Math.sign(dx)*Math.min(2.5,Math.abs(dx)); p.y=${meet.y}; p.vx=0; p.vy=0; return 0; })()`);
+			await sleep(650);
+			if(done) break;
+		}
 		await host.poll(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gid5}'); return b && Math.abs(b.x-(${meet.x}+1.0))<0.9 && Math.abs(b.y-${meet.y})<1 ? 1 : 0; })()`,
 			v => v === 1, 'the second hero stands beside the challenger', 80, 300);
 		const g4hp0 = await host.eval(`(()=>{ const b=MM.ghostHost.metrics().bodies.find(x=>x.gid==='${gid5}'); return b ? +b.hp.toFixed(1) : null; })()`);

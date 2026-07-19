@@ -551,6 +551,9 @@
     // A forced season is a debug/testing state, so present its characteristic
     // solstice/equinox lighting rather than inheriting an unrelated calendar day.
     if(!Number.isFinite(yearDay) && m && m.forced===true) yearDay=seasonCenterDay(m.season);
+    // Prefer the season-calendar position (worlds open in summer): daylight
+    // length must match the season the profile reports, not raw elapsed days.
+    if(!Number.isFinite(yearDay) && m && Number.isFinite(+m.calendarDayFloat)) yearDay=(((+m.calendarDayFloat-1)%DAYS_PER_YEAR)+DAYS_PER_YEAR)%DAYS_PER_YEAR;
     if(!Number.isFinite(yearDay) && m && Number.isFinite(+m.dayFloat)) yearDay=(((+m.dayFloat-1)%DAYS_PER_YEAR)+DAYS_PER_YEAR)%DAYS_PER_YEAR;
     if(!Number.isFinite(yearDay)) yearDay=EQUINOX_DAY;
     const annualAngle=((yearDay-EQUINOX_DAY)/DAYS_PER_YEAR)*Math.PI*2;

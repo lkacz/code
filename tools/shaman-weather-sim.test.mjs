@@ -34,6 +34,7 @@ MM.worldGen = worldGen;
 const { wind } = await import('../src/engine/wind.js');
 const { clouds } = await import('../src/engine/clouds.js');
 const { sandstorm } = await import('../src/engine/sandstorm.js');
+const { softDrifts } = await import('../src/engine/soft_drifts.js');
 const { mobs } = await import('../src/engine/mobs.js');
 
 globalThis.inv = {snow:0, ice:0, diamond:0, coal:0, basalt:0, obsidian:0};
@@ -68,6 +69,7 @@ function resetAll(){
   wind.reset();
   clouds.reset();
   sandstorm.reset();
+  softDrifts.reset();
   mobs.clearAll();
   globalThis.player.hp = 100;
   globalThis.player.x = 0;
@@ -137,6 +139,26 @@ assert.ok(sm.storm.intensity>=0.99, 'the ritual sandstorm blows at full intensit
 let fire = findSerialized('FIRE_SHAMAN');
 assert.equal(mobs.damageAt(Math.floor(fire.x),Math.floor(fire.y),999,{source:'hero'}), true, 'hero can kill the fire shaman');
 assert.equal(sandstorm.metrics().storm.active, false, 'killing the fire shaman stops its sandstorm');
+
+// The soot caller: a coal-pressed figure whose ritual raises a DRY black smog
+// (the soft-drift soot gale) — no rain cloud, same owner-scoped teardown.
+resetAll();
+assert.ok(mobs.species.includes('SOOT_SHAMAN'), 'soot shaman is exposed in debug mob species');
+assert.equal(mobs._debugSpecies().SOOT_SHAMAN.neverAggro, true, 'soot shaman is explicitly non-hostile');
+ctx = spawnShaman('SOOT_SHAMAN', 1300);
+advance(9,ctx.player);
+wm = wind.metrics();
+assert.equal(wm.ritualGale.active, true, 'soot shaman ritual starts a ritual gale');
+assert.ok(!clouds.metrics().storm.active || clouds.metrics().storm.source !== 'weather_shaman',
+  'the soot ritual is a dry smog — it raises no shaman-owned rain storm');
+assert.equal(sandstorm.metrics().storm.active, false, 'the soot ritual calls no sandstorm either');
+let dmMetrics = softDrifts.metrics();
+assert.equal(dmMetrics.storm.forced, true, 'soot shaman ritual forces the smog drift gale');
+let sootRow = findSerialized('SOOT_SHAMAN');
+assert.ok(sootRow && sootRow.shamanWeatherActive===1, 'active smog ritual is serialized');
+assert.equal(mobs.damageAt(Math.floor(sootRow.x),Math.floor(sootRow.y),999,{source:'hero'}), true, 'hero can kill the soot shaman');
+assert.equal(softDrifts.metrics().storm.forced, false, 'killing the soot shaman stops its smog gale');
+assert.equal(wind.metrics().ritualGale.active, false, 'killing the soot shaman stops its ritual gale');
 
 resetAll();
 ctx = spawnShaman('ICE_SHAMAN', -1300);

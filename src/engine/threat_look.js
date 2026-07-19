@@ -188,6 +188,7 @@ export const SPECIES_LOOK={
   GOLD_DWARF_GUARD:{family:'humanoid', eye:[2,-23], withers:[0,-20], gear:'hammer', handX:13, handY:-14},
   ICE_SHAMAN:{family:'humanoid', eye:[2,-26], withers:[0,-22], gear:'staff', handX:-12, handY:-33},
   FIRE_SHAMAN:{family:'humanoid', eye:[2,-26], withers:[0,-22], gear:'staff', handX:-12, handY:-33},
+  SOOT_SHAMAN:{family:'humanoid', eye:[2,-26], withers:[0,-22], gear:'staff', handX:-12, handY:-33},
   STRAZNIK:{family:'construct'}, ATOMIC_BOMB:{family:'construct'},
   RADIATION_COCKROACH:{family:'arthropod'},
   GOLD_DRAGON:{family:'dragon', pred:true, eye:[40,-42], hornX:33, hornY:-51, withers:[6,-31], jaw:[46,-34], paw:[18,-1]},

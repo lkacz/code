@@ -44,6 +44,15 @@ import { particles as PARTICLES } from './engine/particles.js';
 import { clouds as CLOUDS } from './engine/clouds.js';
 import { wind as WIND } from './engine/wind.js';
 import { sandstorm as SANDSTORM } from './engine/sandstorm.js';
+import { softDrifts as SOFT_DRIFTS } from './engine/soft_drifts.js';
+import { smr as SMR } from './engine/smr.js';
+import { avalanche as AVALANCHE } from './engine/avalanche.js';
+import { icicles as ICICLES } from './engine/icicles.js';
+import { thinIce as THIN_ICE_SIM } from './engine/thin_ice.js';
+import { geothermal as GEOTHERMAL } from './engine/geothermal.js';
+import { skyMoods as SKY_MOODS } from './engine/sky_moods.js';
+import { weatherInstruments as WEATHER_INSTRUMENTS } from './engine/weather_instruments.js';
+import { graffiti as GRAFFITI } from './engine/graffiti.js';
 import { heroStatus as HERO_STATUS } from './engine/hero_status.js';
 import { bosses as BOSSES } from './engine/bosses.js';
 import { guardianLairs as GUARDIANS } from './engine/guardian_lairs.js';
@@ -1785,6 +1794,8 @@ function setHeroLampEnabled(value,opts){
 function toggleHeroLamp(){ return setHeroLampEnabled(!(HERO_LAMP && HERO_LAMP.isOn())); }
 function updateHeroLamp(dt){
 	if(!HERO_LAMP) return;
+	// halogen bulb ownership upgrades the eye lamp's beam (tier is derived, not saved)
+	if(HERO_LAMP.setTier) HERO_LAMP.setTier((inv.halogen|0)>0?1:0);
 	if(HERO_LAMP.isOn() && !(LIGHTING && LIGHTING.config && LIGHTING.config.enabled)){
 		HERO_LAMP.setEnabled(false,MM.heroEnergy,{unlimited:true});
 		heroLampButtonKey='';
@@ -1956,6 +1967,15 @@ function companionControlState(){
 }
 const tools={basic:1,stone:2,meteor:3.3,diamond:4,bedrock:2.6};
 const BEDROCK_PICK_MAX_DURABILITY=10;
+// Pickaxe-HEAD gear perks (inventory kind 'pickaxe'; the item carries only the
+// pickPerk identity — these are the numbers): lucky = ~1 in 10 blocks shatters
+// at the first bite, double = extra yield chance, vein = a matching neighbour
+// sometimes cracks along (depth-1 chain through the same break chokepoint).
+const PICK_PERKS={lucky:{chance:0.10}, double:{chance:0.25}, vein:{chance:0.25}};
+function equippedPickaxeItem(){
+	try{ return MM.inventory && MM.inventory.equippedItem ? MM.inventory.equippedItem('pickaxe') : null; }catch(e){ return null; }
+}
+function equippedPickPerk(){ const it=equippedPickaxeItem(); return (it && it.pickPerk)||null; }
 const BEDROCK_MINE_NEED=1.35;
 // --- Resource registry: SINGLE source for collectable/placeable resources,
 // derived from MM.inventory.RESOURCES ({key,label,color,tile}). Adding a new
@@ -3658,6 +3678,7 @@ function buildSaveObject(opts){
 	invasions: timedSavePart('invasions',()=>((INVASIONS && INVASIONS.snapshot) ? INVASIONS.snapshot() : null),perf),
 	progress: timedSavePart('progress',()=>((PROGRESS && PROGRESS.snapshot) ? PROGRESS.snapshot() : null),perf),
 	plants: timedSavePart('plants',()=>((PLANTS && PLANTS.snapshot) ? PLANTS.snapshot() : null),perf),
+	graffiti: timedSavePart('graffiti',()=>((GRAFFITI && GRAFFITI.snapshot) ? GRAFFITI.snapshot() : null),perf),
 	inv: timedSavePart('inventory',()=>snapshotInventory(),perf),
 	crafting: timedSavePart('crafting',()=>snapshotCrafting(),perf),
 	hotbar: timedSavePart('hotbar',()=>snapshotHotbar(),perf),
@@ -3767,6 +3788,15 @@ function applyGameData(data,opts){
 	try{ if(TREES && TREES.reset) TREES.reset(); }catch(e){}
 	try{ if(GRASS && GRASS.reset) GRASS.reset(); }catch(e){}
 	try{ if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); }catch(e){}
+	try{ if(SOFT_DRIFTS && SOFT_DRIFTS.reset) SOFT_DRIFTS.reset(); }catch(e){}
+	try{ if(SMR && SMR.reset) SMR.reset(); }catch(e){}
+	try{ if(AVALANCHE && AVALANCHE.reset) AVALANCHE.reset(); }catch(e){}
+	try{ if(ICICLES && ICICLES.reset) ICICLES.reset(); }catch(e){}
+	try{ if(THIN_ICE_SIM && THIN_ICE_SIM.reset) THIN_ICE_SIM.reset(); }catch(e){}
+	try{ if(GEOTHERMAL && GEOTHERMAL.reset) GEOTHERMAL.reset(); }catch(e){}
+	try{ if(SKY_MOODS && SKY_MOODS.reset) SKY_MOODS.reset(); }catch(e){}
+	try{ if(WEATHER_INSTRUMENTS && WEATHER_INSTRUMENTS.reset) WEATHER_INSTRUMENTS.reset(); }catch(e){}
+	try{ if(GRAFFITI && GRAFFITI.reset) GRAFFITI.reset(); }catch(e){}
 	try{ if(FIRE && FIRE.reset) FIRE.reset(); }catch(e){}
 	try{ if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); }catch(e){}
 	try{ if(MEAT && MEAT.reset) MEAT.reset(); }catch(e){}
@@ -3858,6 +3888,7 @@ function applyGameData(data,opts){
 	try{ if(INVASIONS && INVASIONS.restore && data.invasions) INVASIONS.restore(data.invasions,getTile,setTile); }catch(e){}
 	try{ if(PROGRESS && PROGRESS.restore && data.progress) PROGRESS.restore(data.progress); }catch(e){}
 	try{ if(PLANTS && PLANTS.restore && data.plants) PLANTS.restore(data.plants); }catch(e){}
+	try{ if(GRAFFITI && GRAFFITI.restore) GRAFFITI.restore(data.graffiti); }catch(e){}
 	restoreInventory(data.inv);
 	restoreCraftingAvailability(data.crafting);
 	restoreHotbar(data.hotbar || (data.player && {tool:data.player.tool}));
@@ -4236,6 +4267,13 @@ const RECIPES=[
 	{id:'toxic_snowballs', name:'Toksyczne snieżki x8', cost:{toxicSnow:2}, make(){ inv.toxicSnowball+=8; msg('Toksyczne snieżki +8 - amunicja do luku; spowalnia i zatruwa cel'); }},
 	{id:'snowballs', name:'Snieżki x8', cost:{snow:2}, make(){ inv.snowball+=8; msg('Snieżki +8 - rzut z reki (klawisz 3); chwilowo spowalniaja cel'); }},
 	{id:'throwing_stones', name:'Kamienie do rzucania x6', cost:{stone:2}, make(){ inv.throwingStone+=6; msg('Kamienie do rzucania +6 - ciezki rzut z reki (klawisz 3)'); }},
+	// Every stone type knaps into throwing rocks: harder rock hits harder and
+	// survives the impact more often (weapons.js STONE_TIERS is the ladder).
+	{id:'throwing_stones_granite', name:'Kamienie granitowe x6', cost:{granite:2}, make(){ inv.throwingStoneGranite+=6; msg('Kamienie granitowe +6 - mocniejszy rzut, czesciej przezywa upadek'); }},
+	{id:'throwing_stones_basalt', name:'Kamienie bazaltowe x6', cost:{basalt:2}, make(){ inv.throwingStoneBasalt+=6; msg('Kamienie bazaltowe +6 - ciezki, twardy pocisk'); }},
+	{id:'throwing_stones_obsidian', name:'Kamienie obsydianowe x6', cost:{obsidian:2}, make(){ inv.throwingStoneObsidian+=6; msg('Kamienie obsydianowe +6 - ostre szklo wulkaniczne'); }},
+	{id:'throwing_stones_diamond', name:'Kamienie diamentowe x3', cost:{diamond:1}, make(){ inv.throwingStoneDiamond+=3; msg('Kamienie diamentowe +3 - niemal niezniszczalne pociski'); }},
+	{id:'halogen_bulb', name:'Żarówka halogenowa', cost:{steel:2, silverWire:2, glass:2}, make(){ inv.halogen+=1; msg('Halogen wkręcony - latarka w oczach świeci szerzej i dalej'); }},
 	{id:'water_balloons', name:'Balony wodne x4', cost:{water:2}, make(){ inv.waterBalloon+=4; msg('Balony wodne +4 - mocza wrogow (kombo: prad, mroz), gasza ogien'); }},
 	{id:'gas_grenades', name:'Granaty gazowe x3', cost:{rottenMeat:2, clay:1}, make(){ inv.gasGrenade+=3; msg('Granaty gazowe +3 - trujacy oblok; ogien go detonuje'); }},
 	{id:'sticky_bombs', name:'Lepkie bomby x2', cost:{clay:1, coal:1}, make(){ inv.stickyBomb+=2; msg('Lepkie bomby +2 - przyklejaja sie i wybuchaja po chwili'); }},
@@ -4287,6 +4325,11 @@ const RECIPES=[
 	{id:'silver_wire', name:'Przewod srebrny x4', cost:{silver:2, plastic:1}, make(){ inv.silverWire+=4; msg('Przewod srebrny +4 - dwukrotnie wydajniejsze zasilanie bez strat cieplnych'); }},
 	{id:'solar_panel', name:'Panel sloneczny x2', cost:{glass:3, wire:3, copperWire:1}, make(){ inv.solarPanel+=2; msg('Panel sloneczny +2 - pracuje caly dzien, najwydajniej w poludnie; lokalne chmury oslabiaja moc'); }},
 	{id:'solar_battery', name:'Panel sloneczny z bateria', cost:{solarPanel:2, transistor:1, copperWire:2}, make(){ inv.solarBattery+=1; msg('Panel sloneczny z bateria +1 - zachowuje dzienny uzysk, ale najlepiej dziala w miksie z dynamem'); }},
+	{id:'smr_cell', name:'Ogniwo nuklearne SMR', cost:{graphite:4, radioactiveOre:2, transistor:3, meteoricIron:2, silverWire:4}, make(){ inv.smrCell+=1; msg('Ogniwo SMR +1 - najmniejsza, ale wieczna produkcja energii; wymaga obecnosci i okresowej kontroli (E)'); }},
+	{id:'soot_pigment', name:'Sadza (pigment)', cost:{coal:1}, make(){ inv.soot=(inv.soot|0)+4; msg('Sadza +4 - pigment do znakow na scianach (G maluje, Shift+G zmienia szablon)'); }},
+	{id:'weathervane', name:'Wiatrowskaz', cost:{steel:1, wood:2}, make(){ inv.weathervane=(inv.weathervane|0)+1; msg('Wiatrowskaz +1 - postaw na dachu i czytaj zywy wiatr'); }},
+	{id:'lightning_rod', name:'Piorunochron', cost:{steel:3, silverWire:2}, make(){ inv.lightningRod=(inv.lightningRod|0)+1; msg('Piorunochron +1 - sciaga pioruny, bankuje ladunek i oslania stojacych obok'); }},
+	{id:'graphene_exoplate', name:'Grafenowy egzoszkielet', cost:{graphene:3, steel:2}, make(){ grantCraftedItem({kind:'outfit',name:'Grafenowy egzoszkielet',crushResistBonus:3,tier:'rare',desc:'Najtwardszy material swiata w formie pancerza — przygniecenia bola o wiele mniej'}); }},
 	{id:'spring_platform', name:'Platforma sprezynowa', cost:{steel:2, copperWire:2, transistor:1}, make(){ inv.springPlatform+=1; msg('Platforma sprezynowa +1 - zasil ja dla pelnego wybicia'); }},
 	{id:'tracks', name:'Gasienice x3', cost:{steel:2, coal:1}, make(){ inv.track+=3; msg('Gasienice +3 - modul napedu dla ciezkich konstrukcji'); }},
 	{id:'chair_wood', name:'Fotel drewniany', cost:{wood:3}, make(){ inv.chairWood+=1; msg('Fotel drewniany +1 - mebel: w domu przyspiesza leczenie, na maszynie z gasienicami sterujesz nia jak mechem'); }},
@@ -4415,6 +4458,16 @@ const CRAFT_RECIPE_META={
 	copper_wire:{group:'machines',icon:'🔌',out:'copperWire',amount:4,desc:'Laczy zasilanie z maszynami.'},
 	silver_wire:{group:'machines',icon:'⚡',out:'silverWire',amount:4,desc:'Przewodzi bez strat; z tego samego źródła dostarcza urządzeniom dwa razy więcej energii niż miedź.'},
 	solar_panel:{group:'machines',icon:'🔆',out:'solarPanel',amount:2,desc:'Uzupelniajace zrodlo: malo o swicie, maksimum w poludnie; cien lokalnych chmur plynnie obniza moc.'},
+	smr_cell:{group:'machines',icon:'☢',out:'smrCell',amount:1,desc:'Najmniejsza, ale wieczna produkcja energii. Pracuje tylko przy obecnosci druzyny i prosi o okresowa kontrole; w wodzie gotuje pare do zamknietego obiegu.'},
+	soot_pigment:{group:'survival',icon:'🖌',out:'soot',amount:4,desc:'Rozkruszony wegiel na czarny pigment. G maluje znak na scianie (strzalka/X/serce/kropka), Shift+G zmienia szablon — drogowskazy dla druzyny.'},
+	throwing_stones_granite:{group:'weapons',icon:'🪨',out:'throwingStoneGranite',amount:6,desc:'Granit dobrany do dloni: mocniejsze trafienie i wieksza szansa, ze kamien przetrwa i da sie go podniesc.'},
+	throwing_stones_basalt:{group:'weapons',icon:'🪨',out:'throwingStoneBasalt',amount:6,desc:'Bazaltowy pocisk: ciezki, twardy, rzadko sie kruszy.'},
+	throwing_stones_obsidian:{group:'weapons',icon:'🪨',out:'throwingStoneObsidian',amount:6,desc:'Obsydianowe ostrze w locie — tnie mocno i niemal zawsze wraca w calosci.'},
+	throwing_stones_diamond:{group:'weapons',icon:'💎',out:'throwingStoneDiamond',amount:3,desc:'Diamentowy grot rzutny: najtwardszy pocisk w grze, praktycznie niezniszczalny.'},
+	halogen_bulb:{group:'survival',icon:'🔦',out:'halogen',amount:1,desc:'Halogenowa zarowka do lampy w oczach: szerszy stozek i dluzszy zasieg swiatla za wyzszy pobor energii.'},
+	weathervane:{group:'machines',icon:'🧭',out:'weathervane',amount:1,desc:'Kogucik na dach: strzalka pokazuje NA ZYWO kierunek i sile wiatru. Planuj zamiecie, zagle i burze piaskowe.'},
+	lightning_rod:{group:'machines',icon:'⚡',out:'lightningRod',amount:1,desc:'Maszt burzowy: pioruny biegna w niego zamiast w ciebie, a ladunek trafia do sieci elektrycznej. Burza = zniwa.'},
+	graphene_exoplate:{group:'relics',icon:'🛡',desc:'Prasowany wegiel po drodze przez grafit i grafen: pancerz, ktory lamie sie ostatni.'},
 	solar_battery:{group:'machines',icon:'🔋',out:'solarBattery',amount:1,desc:'Zachowuje dzienny uzysk na noc; sam nie zastapi stabilnego dynama ani elektrowni wodnej.'},
 	spring_platform:{group:'machines',icon:'⏫',out:'springPlatform',amount:1,desc:'Wybija bardzo wysoko po zasileniu; bez energii daje tylko jedna trzecia wysokosci.'},
 	tracks:{group:'machines',icon:'=',out:'track',amount:3,desc:'Trzyblokowy modul napedu gasienicowego.'},
@@ -5581,7 +5634,7 @@ function smoothTerrainNoise(wx,y,scale){
 	return lerp(a,b,ty);
 }
 function isContinuousTerrainTile(t){
-	return t===T.GRASS || t===T.GRASS_SNOW || t===T.UNSTABLE_GRASS || t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.CHIMNEY || t===T.DIRT || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.SNOW || t===T.TOXIC_SNOW || t===T.ICE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.TRACK || t===T.UFO_CONCRETE || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.GLASS || isLeaf(t) || t===T.LAVA;
+	return t===T.GRASS || t===T.GRASS_SNOW || t===T.UNSTABLE_GRASS || t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.CHIMNEY || t===T.DIRT || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.SNOW || t===T.TOXIC_SNOW || t===T.ICE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.TRACK || t===T.UFO_CONCRETE || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.GRAPHITE || t===T.GRAPHENE || t===T.GLASS || isLeaf(t) || t===T.LAVA;
 }
 function tileShadeAmp(t){
 	if(t===T.DIRT) return 5;
@@ -5618,6 +5671,9 @@ function tileShadeAmp(t){
 	if(t===T.ICE) return 4;
 	if(t===T.MOTHER_ICE) return 3;
 	if(t===T.MOTHER_LAVA) return 8;
+	if(t===T.GRAPHITE) return 4;
+	if(t===T.GRAPHENE) return 3;
+	if(t===T.SMR_CELL) return 3;
 	if(t===T.OBSIDIAN) return 5;
 	if(t===T.GLASS) return 3;
 	if(t===T.ELECTRONICS || t===T.TRANSISTOR) return 7;
@@ -5697,14 +5753,15 @@ function tileEdgeFamily(t){
 		case T.DIRT: case T.GRASS: case T.GRASS_SNOW: case T.UNSTABLE_GRASS: case T.MUD: case T.CLAY: case T.WET_CLAY:
 		case T.FROZEN_DIRT: case T.FROZEN_SAND: case T.FROZEN_CLAY: return EDGE_EARTH;
 		case T.SAND: case T.UNSTABLE_SAND: case T.QUICKSAND: return EDGE_SAND;
-		case T.SNOW: case T.TOXIC_SNOW: case T.ICE: return EDGE_FROST;
+		case T.SNOW: case T.TOXIC_SNOW: case T.ICE: case T.MOTHER_ICE: return EDGE_FROST;
 		case T.WOOD: return EDGE_WOOD;
 		case T.LEAF: case T.AUTUMN_LEAF_ORANGE: case T.AUTUMN_LEAF_RED: return EDGE_LEAF;
-		case T.STEEL: case T.TRACK: case T.BRICK: case T.CHIMNEY: return EDGE_BUILT;
+		case T.STEEL: case T.TRACK: case T.BRICK: case T.CHIMNEY: case T.GRAPHENE: return EDGE_BUILT;
 		case T.UFO_CONCRETE: return EDGE_METEOR;
 		case T.IRIDIUM: case T.METEORIC_IRON: case T.RADIOACTIVE_ORE: case T.ALIEN_BIOMASS:
 		case T.METEOR_DUST: case T.ANTIMATTER_CRYSTAL: return EDGE_METEOR;
-		case T.LAVA: return EDGE_LAVA;
+		case T.GRAPHITE: return EDGE_ROCK;
+		case T.LAVA: case T.MOTHER_LAVA: return EDGE_LAVA;
 		default: return 0;
 	}
 }
@@ -6131,6 +6188,250 @@ function drawLavaCrustArt(g,px,py,h){
 	g.fillStyle='rgba(255,180,70,0.30)';
 	g.fillRect(px+4+((h>>>11)&8),py+6,2,2);
 }
+// High-value and story materials need an identity at a glance. These details
+// are shared by chunk baking and every inventory/build preview, so a rare block
+// never falls back to INFO.color's anonymous square in one of the UI surfaces.
+function drawMotherIceArt(g,px,py,h){
+	g.save();
+	// ancient blue ice around a pale, faceted "heart"
+	g.fillStyle='rgba(7,67,100,0.22)';
+	g.beginPath(); g.moveTo(px+1,py+15); g.lineTo(px+6,py+3); g.lineTo(px+11,py+7); g.lineTo(px+17,py+1); g.lineTo(px+19,py+12); g.lineTo(px+13,py+19); g.closePath(); g.fill();
+	g.strokeStyle='rgba(91,205,241,0.46)'; g.lineWidth=1;
+	g.beginPath();
+	g.moveTo(px+2,py+15); g.lineTo(px+7,py+10); g.lineTo(px+5,py+4);
+	g.moveTo(px+7,py+10); g.lineTo(px+11,py+6); g.lineTo(px+16,py+3);
+	g.moveTo(px+7,py+10); g.lineTo(px+12,py+13); g.lineTo(px+15,py+18);
+	g.moveTo(px+12,py+13); g.lineTo(px+18,py+10);
+	g.stroke();
+	const ox=((h>>>7)&1), oy=((h>>>10)&1);
+	g.fillStyle='rgba(221,253,255,0.88)';
+	g.beginPath(); g.moveTo(px+10+ox,py+4+oy); g.lineTo(px+15+ox,py+9+oy); g.lineTo(px+10+ox,py+16+oy); g.lineTo(px+6+ox,py+10+oy); g.closePath(); g.fill();
+	g.fillStyle='rgba(103,211,242,0.62)';
+	g.beginPath(); g.moveTo(px+10+ox,py+4+oy); g.lineTo(px+10+ox,py+16+oy); g.lineTo(px+6+ox,py+10+oy); g.closePath(); g.fill();
+	g.fillStyle='rgba(255,255,255,0.96)'; g.fillRect(px+9+ox,py+6+oy,2,4);
+	g.fillStyle='rgba(255,255,255,0.70)';
+	g.fillRect(px+3+((h>>>4)&2),py+5,1,1); g.fillRect(px+16,py+13+((h>>>12)&2),1,1);
+	drawBlockBevel(g,px,py,'rgba(255,255,255,0.40)','rgba(21,87,130,0.36)');
+	g.restore();
+}
+function drawMotherLavaArt(g,px,py,h){
+	g.save();
+	// a solid relic: black volcanic plates split by a living magma heart
+	g.fillStyle='rgba(29,8,4,0.58)';
+	g.beginPath(); g.moveTo(px,py+1); g.lineTo(px+8,py+1); g.lineTo(px+6,py+7); g.lineTo(px+1,py+10); g.closePath(); g.fill();
+	g.beginPath(); g.moveTo(px+13,py); g.lineTo(px+20,py); g.lineTo(px+20,py+9); g.lineTo(px+16,py+7); g.closePath(); g.fill();
+	g.beginPath(); g.moveTo(px,py+14); g.lineTo(px+7,py+11); g.lineTo(px+10,py+20); g.lineTo(px,py+20); g.closePath(); g.fill();
+	g.beginPath(); g.moveTo(px+13,py+12); g.lineTo(px+20,py+10); g.lineTo(px+20,py+20); g.lineTo(px+11,py+20); g.closePath(); g.fill();
+	g.strokeStyle='rgba(255,245,150,0.92)'; g.lineWidth=1.4; g.lineJoin='round';
+	g.beginPath();
+	g.moveTo(px+9,py); g.lineTo(px+8,py+6); g.lineTo(px+11,py+9); g.lineTo(px+8,py+13); g.lineTo(px+10,py+20);
+	g.moveTo(px,py+12); g.lineTo(px+6,py+10); g.lineTo(px+11,py+9); g.lineTo(px+16,py+10); g.lineTo(px+20,py+8);
+	g.stroke();
+	g.strokeStyle='rgba(255,81,16,0.78)'; g.lineWidth=3;
+	g.beginPath(); g.moveTo(px+9,py+1); g.lineTo(px+9,py+6); g.lineTo(px+11,py+9); g.lineTo(px+9,py+13); g.lineTo(px+10,py+19); g.stroke();
+	const ox=((h>>>6)&1), oy=((h>>>9)&1);
+	g.fillStyle='rgba(255,74,13,0.95)';
+	g.beginPath(); g.moveTo(px+10+ox,py+5+oy); g.lineTo(px+15+ox,py+10+oy); g.lineTo(px+10+ox,py+15+oy); g.lineTo(px+6+ox,py+10+oy); g.closePath(); g.fill();
+	g.fillStyle='rgba(255,235,112,0.94)'; g.fillRect(px+9+ox,py+8+oy,3,4);
+	g.fillStyle='rgba(255,255,218,0.94)'; g.fillRect(px+10+ox,py+8+oy,1,2);
+	g.fillStyle='rgba(136,44,18,0.45)'; g.fillRect(px+2,py+3,4,2); g.fillRect(px+14,py+15,4,2);
+	drawBlockBevel(g,px,py,'rgba(255,189,58,0.35)','rgba(41,5,2,0.55)');
+	g.restore();
+}
+function drawGraphiteArt(g,px,py,h){
+	g.save();
+	// flaky graphite cleaves into stacked, offset crystal planes
+	g.fillStyle='rgba(8,10,14,0.34)'; g.fillRect(px+1,py+1,TILE-2,TILE-2);
+	for(let i=0;i<5;i++){
+		const yy=py+3+i*3+((h>>>(i+4))&1);
+		const off=(i&1)?3:1;
+		g.fillStyle=i&1?'rgba(20,22,28,0.62)':'rgba(89,94,105,0.34)';
+		g.beginPath(); g.moveTo(px+off,yy); g.lineTo(px+15+((h>>>(i+9))&3),yy-1); g.lineTo(px+TILE-off,yy+1); g.lineTo(px+4,yy+3); g.closePath(); g.fill();
+		g.strokeStyle=i===1?'rgba(214,222,231,0.36)':'rgba(132,142,154,0.22)'; g.lineWidth=1;
+		g.beginPath(); g.moveTo(px+off+1,yy); g.lineTo(px+TILE-off-2,yy+1); g.stroke();
+	}
+	g.fillStyle='rgba(235,242,248,0.54)'; g.fillRect(px+4+((h>>>14)&7),py+4+((h>>>18)&7),4,1);
+	g.fillStyle='rgba(0,0,0,0.42)'; g.fillRect(px+2,py+TILE-3,TILE-4,2);
+	drawBlockBevel(g,px,py,'rgba(201,210,220,0.16)','rgba(0,0,0,0.48)');
+	g.restore();
+}
+function drawGrapheneArt(g,px,py,h){
+	g.save();
+	// engineered carbon sheet: layered edges plus a crisp hexagonal lattice
+	g.fillStyle='rgba(8,13,19,0.62)'; g.fillRect(px+1,py+1,TILE-2,TILE-2);
+	g.fillStyle='rgba(117,137,154,0.24)'; g.fillRect(px+2,py+3,TILE-4,2); g.fillRect(px+4,py+16,TILE-6,1);
+	g.strokeStyle='rgba(124,181,205,0.68)'; g.lineWidth=1;
+	const hex=(cx0,cy0)=>{
+		g.beginPath(); g.moveTo(cx0-3,cy0); g.lineTo(cx0-1.5,cy0-3); g.lineTo(cx0+1.5,cy0-3); g.lineTo(cx0+3,cy0); g.lineTo(cx0+1.5,cy0+3); g.lineTo(cx0-1.5,cy0+3); g.closePath(); g.stroke();
+	};
+	const shift=(h>>>8)&1;
+	hex(px+5+shift,py+7); hex(px+11+shift,py+7); hex(px+8+shift,py+12); hex(px+14+shift,py+12);
+	g.fillStyle='rgba(203,239,250,0.82)';
+	for(const p of [[5,4],[8,9],[11,4],[14,9],[8,15]]) g.fillRect(px+p[0]+shift,py+p[1],1,1);
+	g.fillStyle='rgba(87,235,255,0.70)'; g.fillRect(px+3+((h>>>12)&9),py+3,4,1);
+	g.strokeStyle='rgba(220,245,255,0.26)'; g.strokeRect(px+1.5,py+1.5,TILE-3,TILE-3);
+	drawBlockBevel(g,px,py,'rgba(226,248,255,0.34)','rgba(3,8,14,0.54)');
+	g.restore();
+}
+function drawSmrCellArt(g,px,py,h){
+	g.save();
+	// compact reactor cassette: armored shell, hazard bands and a hot core window
+	drawBlockBevel(g,px,py,'rgba(190,230,209,0.27)','rgba(5,14,12,0.52)');
+	g.fillStyle='rgba(12,27,24,0.78)'; g.fillRect(px+2,py+2,TILE-4,TILE-4);
+	g.fillStyle='rgba(78,111,91,0.72)'; g.fillRect(px+3,py+3,TILE-6,3); g.fillRect(px+3,py+14,TILE-6,3);
+	g.fillStyle='rgba(229,190,55,0.84)';
+	for(let i=0;i<4;i++){
+		const x=px+3+i*4;
+		g.beginPath(); g.moveTo(x,py+4); g.lineTo(x+2,py+2); g.lineTo(x+4,py+2); g.lineTo(x+2,py+5); g.closePath(); g.fill();
+	}
+	g.fillStyle='rgba(2,8,9,0.92)'; g.fillRect(px+5,py+6,10,8);
+	g.strokeStyle='rgba(107,255,188,0.68)'; g.lineWidth=1; g.strokeRect(px+5.5,py+6.5,9,7);
+	const ox=((h>>>9)&1);
+	g.fillStyle='rgba(195,255,119,0.88)';
+	g.beginPath(); g.arc(px+10+ox,py+10,3.1,0,Math.PI*2); g.fill();
+	g.fillStyle='rgba(16,40,28,0.88)';
+	for(let i=0;i<3;i++){
+		const a=i*Math.PI*2/3-0.35;
+		g.beginPath(); g.moveTo(px+10+ox,py+10); g.arc(px+10+ox,py+10,2.6,a,a+0.72); g.closePath(); g.fill();
+	}
+	g.fillStyle='rgba(232,255,196,0.98)'; g.fillRect(px+9+ox,py+9,2,2);
+	g.fillStyle='rgba(126,255,211,0.78)'; g.fillRect(px+4,py+16,3,1);
+	g.fillStyle='rgba(255,214,70,0.74)'; g.fillRect(px+13,py+16,3,1);
+	g.restore();
+}
+function drawAltarTileArt(g,px,py,h){
+	g.save();
+	g.fillStyle='rgba(24,7,37,0.56)'; g.fillRect(px+2,py+3,TILE-4,TILE-5);
+	g.fillStyle='rgba(70,28,91,0.82)'; g.fillRect(px+1,py+15,TILE-2,4); g.fillRect(px+3,py+12,TILE-6,4);
+	g.strokeStyle='rgba(235,145,255,0.80)'; g.lineWidth=1.2;
+	g.beginPath(); g.moveTo(px+4,py+12); g.lineTo(px+10,py+3); g.lineTo(px+16,py+12); g.lineTo(px+10,py+9); g.closePath(); g.stroke();
+	g.fillStyle='rgba(255,211,105,0.92)'; g.fillRect(px+9,py+7,2,2);
+	g.fillStyle='rgba(205,106,255,0.56)'; g.fillRect(px+5+((h>>>8)&6),py+4,2,1);
+	drawBlockBevel(g,px,py,'rgba(241,185,255,0.22)','rgba(16,3,25,0.46)');
+	g.restore();
+}
+function drawGlowshroomTileArt(g,px,py,h){
+	g.save();
+	g.fillStyle='rgba(18,8,25,0.38)'; g.fillRect(px+6,py+17,9,2);
+	g.fillStyle='#6b806f'; g.fillRect(px+9,py+9,3,8); g.fillRect(px+8,py+15,5,2);
+	g.fillStyle='#38a982';
+	g.beginPath(); g.moveTo(px+3,py+10); g.quadraticCurveTo(px+5,py+3,px+10,py+3); g.quadraticCurveTo(px+16,py+3,px+18,py+10); g.closePath(); g.fill();
+	g.fillStyle='rgba(145,255,211,0.82)'; g.fillRect(px+5,py+7,11,2); g.fillRect(px+7,py+5,6,1);
+	g.fillStyle='rgba(226,255,238,0.94)'; g.fillRect(px+7+((h>>>6)&5),py+5,2,2); g.fillRect(px+13,py+8,1,1);
+	g.fillStyle='rgba(91,239,188,0.25)'; g.fillRect(px+2,py+2,TILE-4,TILE-5);
+	g.restore();
+}
+function drawLeafPileTileArt(g,px,py,h){
+	g.save();
+	g.fillStyle='rgba(45,24,9,0.34)'; g.fillRect(px+2,py+17,TILE-4,2);
+	const colors=['#7f3d20','#ad6427','#d68b2e','#efb94c','#8c7027'];
+	for(let i=0;i<13;i++){
+		const r=hash32(h+i*97,i*311);
+		const x=px+2+((r>>>4)%16), yy=py+10+((r>>>9)%8);
+		g.fillStyle=colors[(r>>>14)%colors.length];
+		g.fillRect(x,yy,2+((r>>>18)&1),1+((r>>>20)&1));
+		if((r&3)===0){ g.fillStyle='rgba(255,218,114,0.62)'; g.fillRect(x,yy,1,1); }
+	}
+	g.fillStyle='rgba(255,202,78,0.40)'; g.fillRect(px+5+((h>>>7)&5),py+11,5,1);
+	g.restore();
+}
+function drawMeteorDustTileArt(g,px,py,wx,wy,h,conn){
+	g.save();
+	conn=conn||{};
+	wx=Number.isFinite(wx)?wx:0; wy=Number.isFinite(wy)?wy:0;
+	// Ethereal sky matter: neighboring cells share row/column edge anchors, so
+	// floating deposits merge into one branching nebula instead of tiled piles.
+	const cx0=px+8+((h>>>5)&4), cy0=py+8+((h>>>9)&4);
+	const rowY=py+6+(hash32(173,wy)%9);
+	const colX=px+6+(hash32(wx,911)%9);
+	g.lineCap='round'; g.lineJoin='round';
+	const tendrils=()=>{
+		g.beginPath();
+		if(conn.left){ g.moveTo(cx0,cy0); g.quadraticCurveTo(px+5,cy0,px,rowY); }
+		if(conn.right){ g.moveTo(cx0,cy0); g.quadraticCurveTo(px+15,cy0,px+TILE,rowY); }
+		if(conn.up){ g.moveTo(cx0,cy0); g.quadraticCurveTo(cx0,py+5,colX,py); }
+		if(conn.down){ g.moveTo(cx0,cy0); g.quadraticCurveTo(cx0,py+15,colX,py+TILE); }
+		g.stroke();
+	};
+	g.strokeStyle='rgba(95,63,177,0.24)'; g.lineWidth=7; tendrils();
+	g.strokeStyle='rgba(174,125,239,0.34)'; g.lineWidth=4; tendrils();
+	g.strokeStyle='rgba(115,225,255,0.46)'; g.lineWidth=1.2; tendrils();
+	// Soft overlapping vapor lobes keep isolated cells readable while leaving
+	// plenty of sky visible through a large suspended field.
+	g.globalCompositeOperation='lighter';
+	g.fillStyle='rgba(96,58,168,0.22)';
+	g.beginPath(); g.ellipse(cx0,cy0,7,5.2,-0.28,0,Math.PI*2); g.fill();
+	g.fillStyle='rgba(188,118,240,0.20)';
+	g.beginPath(); g.ellipse(cx0-3,cy0+2,5.4,3.5,0.42,0,Math.PI*2); g.fill();
+	g.fillStyle='rgba(83,209,243,0.16)';
+	g.beginPath(); g.ellipse(cx0+3,cy0-2,4.8,3.2,-0.56,0,Math.PI*2); g.fill();
+	g.strokeStyle='rgba(215,174,255,0.58)'; g.lineWidth=1;
+	g.beginPath(); g.ellipse(cx0,cy0,6.2,3.4,0.55,0,Math.PI*2); g.stroke();
+	// A tiny prismatic nucleus and sparse stars break up repeated large fields.
+	const flip=(h>>>14)&1;
+	g.fillStyle='rgba(205,143,255,0.84)';
+	g.beginPath(); g.moveTo(cx0,cy0-3); g.lineTo(cx0+3,cy0); g.lineTo(cx0,cy0+4); g.lineTo(cx0-2,cy0); g.closePath(); g.fill();
+	g.fillStyle='rgba(135,235,255,0.88)';
+	g.beginPath(); g.moveTo(cx0,cy0-3); g.lineTo(cx0+3,cy0); g.lineTo(cx0,cy0); g.closePath(); g.fill();
+	g.fillStyle='rgba(255,255,255,0.94)'; g.fillRect(cx0,cy0-1,1,2);
+	g.fillStyle='rgba(211,169,255,0.82)'; g.fillRect(px+3+flip*11,py+4+((h>>>17)&5),1,1);
+	g.fillStyle='rgba(118,231,255,0.78)'; g.fillRect(px+15-flip*10,py+13-((h>>>20)&4),1,1);
+	g.restore();
+}
+function drawAntimatterCrystalArt(g,px,py,h){
+	g.save();
+	// A dark containment field frames several sharp crystal shards. The cyan
+	// interference edge separates antimatter from ordinary purple materials.
+	g.fillStyle='rgba(5,2,15,0.82)'; g.fillRect(px+1,py+1,TILE-2,TILE-2);
+	g.fillStyle='rgba(55,17,81,0.78)'; g.fillRect(px+3,py+3,TILE-6,TILE-6);
+	const shard=(x0,y0,w0,h0,fill,edge)=>{
+		g.fillStyle=fill;
+		g.beginPath(); g.moveTo(x0,y0); g.lineTo(x0+w0,y0+h0*0.42); g.lineTo(x0+w0*0.58,y0+h0); g.lineTo(x0-w0*0.24,y0+h0*0.58); g.closePath(); g.fill();
+		g.strokeStyle=edge; g.lineWidth=1; g.stroke();
+	};
+	const shift=(h>>>7)&1;
+	shard(px+9+shift,py+2,5,15,'rgba(210,91,255,0.92)','rgba(122,239,255,0.92)');
+	shard(px+4,py+7,4,10,'rgba(139,55,211,0.88)','rgba(235,181,255,0.72)');
+	shard(px+14,py+9,3,8,'rgba(103,37,171,0.88)','rgba(107,222,255,0.72)');
+	g.fillStyle='rgba(14,3,30,0.94)';
+	g.beginPath(); g.moveTo(px+10+shift,py+6); g.lineTo(px+13+shift,py+10); g.lineTo(px+10+shift,py+14); g.lineTo(px+8+shift,py+10); g.closePath(); g.fill();
+	g.fillStyle='rgba(255,245,255,0.96)'; g.fillRect(px+10+shift,py+4,1,3); g.fillRect(px+6,py+9,1,2);
+	g.strokeStyle='rgba(102,231,255,0.42)'; g.lineWidth=1;
+	g.beginPath(); g.moveTo(px+2,py+4); g.lineTo(px+5,py+2); g.moveTo(px+15,py+4); g.lineTo(px+18,py+7); g.moveTo(px+3,py+17); g.lineTo(px+7,py+18); g.stroke();
+	drawBlockBevel(g,px,py,'rgba(231,187,255,0.38)','rgba(0,0,8,0.66)');
+	g.restore();
+}
+function drawTorchPreviewArt(g,px,py,h){
+	g.save();
+	g.fillStyle='rgba(22,10,3,0.32)'; g.fillRect(px+7,py+17,7,2);
+	g.fillStyle='#6e3d1f'; g.fillRect(px+9,py+8,3,9);
+	g.fillStyle='#d09a50'; g.fillRect(px+10,py+8,1,8);
+	g.fillStyle='rgba(255,95,22,0.92)';
+	g.beginPath(); g.moveTo(px+10,py+10); g.quadraticCurveTo(px+5,py+6,px+9,py+1); g.quadraticCurveTo(px+15,py+5,px+12,py+10); g.closePath(); g.fill();
+	g.fillStyle='rgba(255,228,103,0.96)';
+	g.beginPath(); g.moveTo(px+10,py+8); g.quadraticCurveTo(px+8,py+5,px+10+((h>>>7)&1),py+3); g.quadraticCurveTo(px+13,py+6,px+11,py+9); g.closePath(); g.fill();
+	g.restore();
+}
+function drawWaterPreviewArt(g,px,py,h){
+	g.fillStyle='rgba(8,38,112,0.24)'; g.fillRect(px,py+13,TILE,7);
+	g.strokeStyle='rgba(178,231,255,0.74)'; g.lineWidth=1.2;
+	g.beginPath();
+	const wobble=(h>>>6)&1;
+	g.moveTo(px,py+5+wobble); g.quadraticCurveTo(px+5,py+2,px+10,py+5+wobble); g.quadraticCurveTo(px+15,py+8,px+20,py+4+wobble); g.stroke();
+	g.strokeStyle='rgba(86,177,255,0.58)';
+	g.beginPath(); g.moveTo(px+2,py+11); g.quadraticCurveTo(px+7,py+8,px+12,py+11); g.quadraticCurveTo(px+16,py+13,px+19,py+10); g.stroke();
+	g.fillStyle='rgba(222,248,255,0.72)'; g.fillRect(px+5+((h>>>9)&6),py+14,1,1); g.fillRect(px+15,py+8,1,1);
+}
+function drawMaterialIdentityArt(g,t,px,py,h){
+	if(t===T.MOTHER_ICE) drawMotherIceArt(g,px,py,h);
+	else if(t===T.MOTHER_LAVA) drawMotherLavaArt(g,px,py,h);
+	else if(t===T.GRAPHITE) drawGraphiteArt(g,px,py,h);
+	else if(t===T.GRAPHENE) drawGrapheneArt(g,px,py,h);
+	else if(t===T.SMR_CELL) drawSmrCellArt(g,px,py,h);
+	else if(t===T.ALTAR) drawAltarTileArt(g,px,py,h);
+	else if(t===T.ANTIMATTER_CRYSTAL) drawAntimatterCrystalArt(g,px,py,h);
+	else if(t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) _drawMaterialTile(g,t,px,py,h);
+}
 function drawGrassBodyGradient(g,px,py,col){
 	// turf block: fresh green up top fading into root-zone soil at the base
 	// (band overlays, not createLinearGradient — gradients per tile bake slowly)
@@ -6194,6 +6495,36 @@ function drawRespawnTotemTile(g,px,py){
 	g.strokeStyle='rgba(45,18,22,0.55)';
 	g.lineWidth=1;
 	g.strokeRect(px+7.5,py+TILE-7.5,6,4);
+}
+// Weather-instrument hotbar/preview art: an OBJECT silhouette (mast + head),
+// never a filled block — so the icon reads like the rooftop fixture it places.
+// The live in-world arrow/charge overlay is drawn by WEATHER_INSTRUMENTS.
+function drawWeatherInstrumentPreview(g,px,py,t){
+	const cx=px+TILE*0.5, base=py+TILE-3;
+	if(t===T.WEATHERVANE){
+		g.strokeStyle='#7c8894';
+		g.lineWidth=Math.max(1.4,TILE*0.09);
+		g.beginPath(); g.moveTo(cx,base); g.lineTo(cx,py+4); g.stroke();
+		// N/S cross + an arrow riding the top
+		g.strokeStyle='#5f6a74';
+		g.lineWidth=Math.max(1,TILE*0.05);
+		g.beginPath(); g.moveTo(cx-4,py+9); g.lineTo(cx+4,py+9); g.stroke();
+		g.fillStyle='#e0b45c';
+		g.beginPath();
+		g.moveTo(px+4,py+6); g.lineTo(cx+2,py+3); g.lineTo(cx+2,py+9); g.closePath(); g.fill();
+		g.fillStyle='rgba(224,180,92,0.7)';
+		g.fillRect(cx+2,py+4.5,TILE*0.28,2);
+	} else {
+		// lightning rod: a metal mast with a bright tip and a spark
+		g.strokeStyle='#9fb2c4';
+		g.lineWidth=Math.max(1.5,TILE*0.1);
+		g.beginPath(); g.moveTo(cx,base); g.lineTo(cx,py+4); g.stroke();
+		g.fillStyle='#cfe0ee';
+		g.beginPath(); g.arc(cx,py+4,Math.max(1.5,TILE*0.1),0,Math.PI*2); g.fill();
+		g.strokeStyle='rgba(255,244,180,0.9)';
+		g.lineWidth=Math.max(1,TILE*0.05);
+		g.beginPath(); g.moveTo(cx+1,py+6); g.lineTo(cx+5,py+11); g.lineTo(cx-1,py+14); g.stroke();
+	}
 }
 // Mech pilot chair: passable seat fixture drawn as a side-view armchair glyph.
 // Material (wood/stone/steel) only recolors the same silhouette.
@@ -7498,6 +7829,54 @@ function drawEntityTile(g,t,px,py,wx,wy,opts){
 		g.restore();
 		return true;
 	}
+	// Passable fixtures keep transparent corners in previews. Filling these from
+	// INFO.color was the most obvious source of placeholder-looking hotbar icons.
+	if(t===T.TORCH){
+		drawTorchPreviewArt(g,px,py,h);
+		g.restore();
+		return true;
+	}
+	if(t===T.RESPAWN_TOTEM){
+		drawRespawnTotemTile(g,px,py);
+		g.restore();
+		return true;
+	}
+	if(t===T.WEATHERVANE || t===T.LIGHTNING_ROD){
+		drawWeatherInstrumentPreview(g,px,py,t);
+		g.restore();
+		return true;
+	}
+	if(t===T.GLOWSHROOM){
+		drawGlowshroomTileArt(g,px,py,h);
+		g.restore();
+		return true;
+	}
+	if(t===T.LEAF_PILE){
+		drawLeafPileTileArt(g,px,py,h);
+		g.restore();
+		return true;
+	}
+	if(t===T.METEOR_DUST){
+		drawMeteorDustTileArt(g,px,py,wx,wy,h,{left:true,right:true,up:true,down:true});
+		g.restore();
+		return true;
+	}
+	if(t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT){
+		drawMeatTile(g,px,py,t===T.ROTTEN_MEAT?'rotten':(t===T.BAKED_MEAT?'baked':'fresh'),h);
+		g.restore();
+		return true;
+	}
+	if(isLadderTileId(t)){
+		drawLadderOverlay(g,px,py,h,{up:true,down:true},t);
+		g.restore();
+		return true;
+	}
+	if(t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE){
+		if(t===T.WATER_PIPE) _drawMaterialTile(g,t,px,py,h);
+		else drawEntityTileDetails(g,t,px,py,h,opts||null);
+		g.restore();
+		return true;
+	}
 	if(t===T.GOLD_ORE || t===T.SILVER_ORE){
 		const host=(h&2)?T.GRANITE:T.STONE;
 		const rockCol=shadeColor(INFO[host].color, terrainShadeDelta(host,wx,wy,h));
@@ -7518,9 +7897,23 @@ function drawEntityTile(g,t,px,py,wx,wy,opts){
 		g.fillRect(px,py,TILE,TILE);
 		drawTerrainPattern(g,t,px,py,wx,wy,h);
 	}
+	// The broad material renderer already contains bespoke rock, metal, machine
+	// and relic silhouettes. Reuse it in UI previews for types that previously
+	// stopped after the base fill, while avoiding the ore/detail passes above.
+	if(t!==T.GOLD_ORE && t!==T.SILVER_ORE && t!==T.DIAMOND &&
+		t!==T.GLASS && !isDoorTile(t) && !isTrapdoorTile(t) &&
+		t!==T.ELECTRONICS && t!==T.TRANSISTOR && t!==T.SOLAR_PANEL && t!==T.SOLAR_BATTERY &&
+		t!==T.SPRING_PLATFORM && t!==T.DYNAMO && t!==T.DYNAMO_SLOT && t!==T.COAL && t!==T.STEEL && t!==T.TRACK && t!==T.ANTIMATTER_CRYSTAL){
+		_drawMaterialTile(g,t,px,py,h);
+	}
 	if(isLeaf(t)) drawLeafClumpArt(g,t,px,py,wx,wy,h);
 	if(t===T.MUD) drawMudDetail(g,px,py,h);
 	if(t===T.LAVA) drawLavaCrustArt(g,px,py,h);
+	if(t===T.WATER) drawWaterPreviewArt(g,px,py,h);
+	drawMaterialIdentityArt(g,t,px,py,h);
+	if(INFO[t] && INFO[t].chestTier) drawChestTile(g,px,py,t,h);
+	if(t===T.INVASION_CACHE) drawInvasionCacheTile(g,px,py,h);
+	if(t===T.VENDING_MACHINE) drawVendingMachineTile(g,px,py,h,0);
 	drawEntityTileDetails(g,t,px,py,h,opts||null);
 	g.restore();
 	return true;
@@ -7594,15 +7987,16 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				// TORCH renders as a sprite in the fire.js pass; GRAVE gets a headstone shape
 				// below — both bake only their backdrop here
 				const gasTile = isGasTileId(t);
+				const openArtTile=t===T.GLOWSHROOM || t===T.LEAF_PILE || t===T.METEOR_DUST || t===T.WEATHERVANE || t===T.LIGHTNING_ROD;
 				const bgT=(WORLD && WORLD.getConstructionBackground) ? WORLD.getConstructionBackground(wx,y) : T.AIR;
 				const hasBg=bgT!==T.AIR && INFO[bgT] && INFO[bgT].color;
 				if(hasBg){
-					if((t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.RESPAWN_TOTEM || isFurnishingTileId(t) || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || gasTile) && y>surf && !(gasTile && gasSkyExposedTile(wx,y))){
+					if((t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.RESPAWN_TOTEM || openArtTile || isFurnishingTileId(t) || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || gasTile) && y>surf && !(gasTile && gasSkyExposedTile(wx,y))){
 						drawUndergroundBackdrop(cctx,lx*TILE,y*TILE,wx,y,surf);
 					}
 					drawBackgroundBuildTile(cctx,bgT,lx*TILE,y*TILE,wx,y,hash32(wx,y));
 				}
-				if(t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.RESPAWN_TOTEM || isFurnishingTileId(t) || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || gasTile){
+				if(t===T.AIR || t===T.WATER || t===T.TORCH || t===T.GRAVE || t===T.RESPAWN_TOTEM || openArtTile || isFurnishingTileId(t) || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || gasTile){
 					// Water is rendered by the dynamic fluid layer (springs/waves/caustics), not
 					// baked here — only its backdrop is. Underground air or water = carved cave /
 					// aquifer: paint a dark rock backdrop so the sky parallax never shows through
@@ -7619,6 +8013,17 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					}
 					if(t===T.GRAVE) drawGraveTile(cctx, lx*TILE, y*TILE);
 					if(t===T.RESPAWN_TOTEM) drawRespawnTotemTile(cctx, lx*TILE, y*TILE);
+					if(t===T.GLOWSHROOM) drawGlowshroomTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
+					if(t===T.LEAF_PILE) drawLeafPileTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
+					if(t===T.METEOR_DUST){
+						const dustConn={
+							left:chunkTileAt(arr,cx,lx-1,y,originY,sectionH)===T.METEOR_DUST,
+							right:chunkTileAt(arr,cx,lx+1,y,originY,sectionH)===T.METEOR_DUST,
+							up:chunkTileAt(arr,cx,lx,y-1,originY,sectionH)===T.METEOR_DUST,
+							down:chunkTileAt(arr,cx,lx,y+1,originY,sectionH)===T.METEOR_DUST
+						};
+						drawMeteorDustTileArt(cctx,lx*TILE,y*TILE,wx,y,hash32(wx,y),dustConn);
+					}
 					if(isChairTileId(t)) drawChairTile(cctx, lx*TILE, y*TILE, t);
 					else if(isFurnishingTileId(t)) FURNISHINGS.drawTile(cctx,t,lx*TILE,y*TILE,wx,y,null);
 					if(t===T.WIRE){
@@ -7700,6 +8105,9 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				if(isLeaf(t)) drawLeafClumpArt(cctx,t,lx*TILE,y*TILE,wx,y,h);
 				if(t===T.MUD) drawMudDetail(cctx,lx*TILE,y*TILE,h);
 				if(t===T.LAVA) drawLavaCrustArt(cctx,lx*TILE,y*TILE,h);
+				if(t===T.MOTHER_ICE || t===T.MOTHER_LAVA || t===T.GRAPHITE || t===T.GRAPHENE || t===T.SMR_CELL || t===T.ALTAR || t===T.ANTIMATTER_CRYSTAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE){
+					drawMaterialIdentityArt(cctx,t,lx*TILE,y*TILE,h);
+				}
 				// Keep chunk-cache rebuilds cheap; special tiles below carry the high-detail pass.
 				if(t===T.GLASS){
 					const px=lx*TILE, py=y*TILE;
@@ -8366,11 +8774,20 @@ function currentDaylight(){
 		const ti=(BACKGROUND && BACKGROUND.timeInfo) ? BACKGROUND.timeInfo() : null;
 		if(ti){
 			const tDay=Math.max(0,Math.min(1,ti.tDay));
-			// Day follows the solar arc. Night light follows the Moon's continuously
-			// changing altitude and phase, exposed by the background clock.
-			if(ti.isDay) return Math.max(0,Math.sin(tDay*Math.PI));
-			if(Number.isFinite(Number(ti.moonlight))) return Math.max(0,Math.min(0.22,Number(ti.moonlight)));
-			return 0.018*Math.sin(tDay*Math.PI);
+			// Night light follows the Moon's continuously changing altitude/phase.
+			const night=Number.isFinite(Number(ti.moonlight))
+				? Math.max(0,Math.min(0.22,Number(ti.moonlight)))
+				: 0.018*Math.sin(tDay*Math.PI);
+			if(!ti.isDay) return night;
+			// Day follows the solar arc — but at the boundaries the arc used to hit
+			// exactly 0 while the night side sat at the moonlight level, so sunset
+			// SNAPPED brighter and dawn started pitch black under a lit sky. The
+			// twilight shoulder now eases the arc into the night level instead.
+			const arc=Math.max(0,Math.sin(tDay*Math.PI));
+			const band=Math.max(0.02,Number(ti.twilightBand)||0.12);
+			const edge=Math.min(1,Math.min(tDay,1-tDay)/band);
+			const k=edge*edge*(3-2*edge); // smoothstep into full daylight
+			return night+(Math.max(arc,night)-night)*k;
 		}
 	}catch(e){}
 	return 1;
@@ -9289,6 +9706,7 @@ const wepBarSlotCache={};
 document.querySelectorAll('#weaponBar .wepSlot').forEach(el=>{
 	wepBarSlotCache[el.getAttribute('data-wkey')]={
 		el,
+		icon:el.querySelector('.wicon'),
 		name:el.querySelector('.wname'),
 		sub:el.querySelector('.wsub'),
 		pips:el.querySelector('.wpips'),
@@ -9297,6 +9715,9 @@ document.querySelectorAll('#weaponBar .wepSlot').forEach(el=>{
 		fill:el.querySelector('.wgauge i')
 	};
 });
+// Slot 4 shows WHAT it will emit, not a fixed flame: water hose 💧, gas ☠️,
+// electric beam ⚡ — the icon follows the selected stream weapon.
+const STREAM_SLOT_ICONS={flame:'🔥',hose:'💧',gas:'☠️',electric:'⚡'};
 // Status line = optional color swatch + short text (rebuilt per update; ~2 nodes)
 function setWepSub(slot,parts){
 	if(!slot.sub) return;
@@ -9381,6 +9802,7 @@ function updateWeaponBar(){
 			if(!preview){
 				setWepSub(slot,[]);
 				if(slot.pips) updateArrowPips(slot,null);
+				if(k==='4' && slot.icon) slot.icon.textContent='🔥';
 			}else if(c.id==='melee'){
 				setWepSub(slot, typeof preview.attackDamage==='number' ? ['+'+preview.attackDamage+' obr.'] : []);
 			}else if(c.id==='bow'){
@@ -9404,6 +9826,7 @@ function updateWeaponBar(){
 			}else{ // throwers: fuel resource, or hero energy for the electric beam
 				const kind=preview.weaponType;
 				slot.el.dataset.streamKind=kind||'';
+				if(slot.icon) slot.icon.textContent=STREAM_SLOT_ICONS[kind]||'🔥';
 				if(kind==='electric'){
 					const en=(MM.heroEnergy && MM.heroEnergy.info)? MM.heroEnergy.info():null;
 					const cost=Math.max(1,Number(preview.energyCost)||10);
@@ -9635,6 +10058,46 @@ document.querySelectorAll('#hotbarWrap .hotSlot').forEach((el,i)=>{
 	bindHudTip(el,()=>buildHotbarTip(i));
 });
 window.addEventListener('mm-resources-change',()=>{ if(hudTipAnchor) refreshHudTip(); });
+// Soot graffiti (G): paint the selected stencil at the cursor cell; Shift+G
+// cycles the stencil. Costs 1 sadza per mark. In hero mode the paint goes out
+// as a 'gfx' intent (host validates), the soot is spent from OUR pouch truth
+// and the local mark is a prediction the gfx plane confirms.
+let graffitiStencil=0;
+const GRAFFITI_STENCIL_NAMES={arrow:'strzałka',x:'X',heart:'serce',dot:'kropka'};
+function paintGraffitiAtCursor(cycle){
+	if(!GRAFFITI) return false;
+	if(MM.ghostMode && !MM.ghostHeroIntents) return false; // a watcher has no hands
+	const glyphs=GRAFFITI.GLYPHS||['arrow','x','heart','dot'];
+	if(cycle){
+		graffitiStencil=(graffitiStencil+1)%glyphs.length;
+		msg('Szablon sadzy: '+(GRAFFITI_STENCIL_NAMES[glyphs[graffitiStencil]]||glyphs[graffitiStencil]));
+		return true;
+	}
+	if((inv.soot|0)<1){ msg('Brak sadzy — przebiegnij gęsty czarny nalot albo rozkrusz węgiel (recepta).'); return false; }
+	let tx,ty;
+	if(lastPointer.has){
+		const w=screenToWorld(lastPointer.x,lastPointer.y);
+		tx=Math.floor(w.x); ty=Math.floor(w.y);
+	} else { tx=Math.floor(player.x)+(player.facing<0?-1:1); ty=Math.floor(player.y); }
+	if(Math.abs(tx+0.5-player.x)>6 || Math.abs(ty+0.5-player.y)>6){ msg('Za daleko na malowanie.'); return false; }
+	const glyph=glyphs[graffitiStencil]||'arrow';
+	const dir=lastPointer.has ? (tx+0.5>=player.x?1:-1) : (player.facing<0?-1:1);
+	if(!GRAFFITI.canPaintAt(tx,ty,getTile)){ msg('Tu nie ma podłoża na znak.'); return false; }
+	if(MM.ghostHeroIntents){
+		if(!MM.ghostHeroIntents.gfx || !MM.ghostHeroIntents.gfx(tx,ty,glyph,dir)) return false;
+		inv.soot=(inv.soot|0)-1;
+		GRAFFITI.paintAt(tx,ty,glyph,dir,getTile);
+		updateInventory();
+		return true;
+	}
+	if(!GRAFFITI.paintAt(tx,ty,glyph,dir,getTile)) return false;
+	inv.soot=(inv.soot|0)-1;
+	updateInventory();
+	noteSaveActivity();
+	return true;
+}
+// Ploughing a THICK soot film shakes loose pigment (soft_drifts calls this).
+MM.collectSoot=(n)=>{ inv.soot=(inv.soot|0)+Math.max(1,n|0); updateInventory(); };
 window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=KEYBINDS.translate(e.key.toLowerCase()); const code=(e.code||'').toLowerCase(); keys[k]=true; if(code) keys[code]=true; if(!e.repeat) queueJumpInput(k); if(k==='s' || k==='arrowdown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(k==='escape'){ closeHotSelect(); }
  if(!e.repeat && NPCS && NPCS.handleKey && NPCS.handleKey(e.key,player,tutorialNpcCtx)){ e.preventDefault(); return; }
  // Weapon shortcuts: 1 = pickaxe/build mode (cycles owned tiers), 2/3/4 cycle weapon categories
@@ -9679,7 +10142,11 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 			}
 			if(MECHS && MECHS.nearestBoardable && MECHS.nearestBoardable(player)){ MM.ghostHeroIntents.board(); return; }
 		}
-		if(!mechWants && !MM.ghostHeroIntents && DROPS && DROPS.pickupNearest && DROPS.pickupNearest(player)){
+		// SMR inspection outranks loot: answering the reactor's alarm is why you
+		// walked up to it (host-only — a guest's world writes go through intents)
+		if(!mechWants && !MM.ghostHeroIntents && SMR && SMR.wantsInteractKey && SMR.wantsInteractKey(player) && SMR.inspectNear(player)){
+			noteSaveActivity();
+		} else if(!mechWants && !MM.ghostHeroIntents && DROPS && DROPS.pickupNearest && DROPS.pickupNearest(player)){
 			noteSaveActivity();
 		} else if(!MM.ghostHeroIntents && MECHS && MECHS.toggleBoard && MECHS.toggleBoard(player,getTile)){
 			noteSaveActivity();
@@ -9699,6 +10166,9 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='b'&&!keysOnce.has('b')){ setPaused(!paused); keysOnce.add('b'); }
 	if(k==='n'&&!keysOnce.has('n')){ showMinimap=!showMinimap; msg('Minimapa '+(showMinimap?'ON':'OFF')); keysOnce.add('n'); }
 	if(k==='u'&&!keysOnce.has('u')){ toggleFullscreen(); keysOnce.add('u'); }
+	// G paints soot graffiti (Shift+G cycles the stencil) — but only while the
+	// developer toolbox is off: with debug shortcuts armed G stays the god toggle
+	if(!debugKeysEnabled && k==='g'&&!keysOnce.has('g')){ paintGraffitiAtCursor(e.shiftKey); keysOnce.add('g'); }
 	if(['arrowup','arrowdown','w',' '].includes(k)) e.preventDefault(); });
 window.addEventListener('keyup',e=>{ if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=KEYBINDS.translate(e.key.toLowerCase()); const code=(e.code||'').toLowerCase(); keys[k]=false; if(code) keys[code]=false; keysOnce.delete(k); if(!turboKeyHeld()) endTurboEnergyHold(); });
 // Losing focus while keys are held would leave the player running forever — release everything
@@ -10431,7 +10901,10 @@ function physics(dt){
 	// Swim chill: treading open water (feet off the bottom) saps health after a
 	// grace period — a lake dip is safe, an ocean crossing needs a wooden boat.
 	if(SURVIVAL && SURVIVAL.updateSwimChill){
-		const swimming = inWater && !player.onGround && !ridingFloatingBoat && !godMode;
+		// a geothermal spring is the one warm bath in the game — soaking in
+		// warm water never chills (geothermal.updateHero also heals slowly)
+		const warmBath = !!(GEOTHERMAL && GEOTHERMAL.heroInWarmWater && GEOTHERMAL.heroInWarmWater());
+		const swimming = inWater && !player.onGround && !ridingFloatingBoat && !godMode && !warmBath;
 		const chill = SURVIVAL.updateSwimChill(swimChillState, dt, swimming);
 		if(chill.warn) msg('🥶 Woda wychładza — zbuduj łódź z drewna!');
 		if(chill.damage>0 && (!player.hpInvul || performance.now()>=player.hpInvul)){
@@ -11592,6 +12065,14 @@ function breakMinedTile(){
 	if(tId===T.INVASION_CACHE) return tryOpenInvasionCacheAt(mineTx,mineTy);
 	if(isGasTileId(tId)) return false;
 	if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT) return dismantleDynamoAt(mineTx,mineTy);
+	if(tId===T.THIN_ICE){
+		// mining the glaze opens the lake back up — the sheet IS frozen water,
+		// so breaking it returns the water tile it froze from (volume-true)
+		if(!setForegroundConfirmed(mineTx,mineTy,T.WATER)) return false;
+		if(WATER && WATER.onTileChanged) WATER.onTileChanged(mineTx,mineTy,getTile);
+		pushUndo(mineTx,mineTy,tId,T.WATER,'break',null);
+		return true;
+	}
 	const dropCtx=dropContextForTile(tId,mineTx,mineTy);
 	const templeKind=templeDisturbanceKindForTile(tId);
 	if(!setForegroundConfirmed(mineTx,mineTy,T.AIR)) return false;
@@ -11600,15 +12081,46 @@ function breakMinedTile(){
 	applyMaterialBreakPersonality(tId,mineTx,mineTy);
 	if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(mineTx,mineTy,getTile,{radius:22});
 	const drops=awardTileDrops(info,dropCtx);
+	// double-yield pickaxe head: the block sheds a second helping (bonus only —
+	// the undo record refunds the ORIGINAL yield, generosity is not dupe fuel)
+	if(equippedPickPerk()==='double' && tId!==T.BEDROCK && Math.random()<PICK_PERKS.double.chance){
+		awardTileDrops(info,dropCtx);
+		spawnBurst((mineTx+0.5)*TILE,(mineTy+0.5)*TILE,0,{color:'#a8ffc2'});
+	}
 	if(tId===T.WOOD && getTile(mineTx,mineTy-1)===T.WOOD) startTreeFall(mineTx,mineTy-1);
 	if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(mineTx,mineTy);
 	if(WATER && WATER.onTileChanged) WATER.onTileChanged(mineTx,mineTy,getTile);
+	// a pick biting into (or right under) a deep snow slope can set it off
+	if(AVALANCHE && AVALANCHE.disturb && (tId===T.SNOW || tId===T.TOXIC_SNOW || getTile(mineTx,mineTy-1)===T.SNOW)) AVALANCHE.disturb(mineTx,mineTy,1.2,getTile);
 	pushUndo(mineTx,mineTy,tId,T.AIR,'break',drops);
 	if(tId===T.BEDROCK) consumeBedrockPickUse();
 	updateInventory();
 	notifyTempleDisturbance(templeKind,mineTx,mineTy,tId,T.AIR);
 	notifyInvasionMining(tId,mineTx,mineTy);
+	maybeChainVeinBreak(tId);
 	return true;
+}
+// vein pickaxe head: after a real break, one MATCHING neighbour sometimes
+// cracks along — routed through breakMinedTile itself (depth-1 recursion), so
+// undo, drops, falling wakes and multiplayer streaming all stay intact.
+let veinChainDepth=0;
+function maybeChainVeinBreak(tId){
+	if(veinChainDepth>0 || tId===T.BEDROCK) return;
+	if(equippedPickPerk()!=='vein') return;
+	if(Math.random()>=PICK_PERKS.vein.chance) return;
+	const info=INFO[tId];
+	if(info && (info.chestTier || info.cache || info.unmineable)) return;
+	for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+		const nx=mineTx+dx, ny=mineTy+dy;
+		if(mineTileIdAt(nx,ny)!==tId) continue;
+		if(!canMineTileWithCurrentTool(tId,nx,ny) || !canPhysicallyTargetTile(nx,ny)) continue;
+		const ox=mineTx, oy=mineTy;
+		mineTx=nx; mineTy=ny; veinChainDepth=1;
+		try{
+			if(breakMinedTile()) spawnBurst((nx+0.5)*TILE,(ny+0.5)*TILE,0,{color:'#c9d6ff'});
+		} finally { veinChainDepth=0; mineTx=ox; mineTy=oy; }
+		break;
+	}
 }
 function instantBreak(){
 	const bossPoint=resolveBossMinePoint();
@@ -11633,6 +12145,7 @@ function resumeHeldMining(){
 	if(mineBtnHeld){ startMine({quiet:true}); return; }
 	if(minePointerId!=null && lastPointer.has){ const p=screenToWorldTile(lastPointer.x,lastPointer.y); startMineAt(p.tx,p.ty,{quiet:true}); }
 }
+let mineLuckyKey='', mineLuckyArmed=false;
 function updateMining(dt){
 	if(!isToolMode()){ if(mining) stopMining(); return; }
 	if(!mining){ resumeHeldMining(); if(!mining) return; }
@@ -11656,6 +12169,18 @@ function updateMining(dt){
 	updateMeteorPickMiningFx(dt,curId);
 	mineTimer += dt * tools[player.tool] * mineMult;
 	const need=curId===T.BEDROCK ? BEDROCK_MINE_NEED : Math.max(0.1, info.hp/6);
+	// lucky pickaxe head: rolled ONCE per targeted block — on success the first
+	// bite finishes it (bedrock keeps its own durability contract, no shortcuts)
+	const luckKey=mineTx+','+mineTy;
+	if(mineLuckyKey!==luckKey){
+		mineLuckyKey=luckKey;
+		mineLuckyArmed=curId!==T.BEDROCK && equippedPickPerk()==='lucky' && Math.random()<PICK_PERKS.lucky.chance;
+	}
+	if(mineLuckyArmed && mineTimer<need){
+		mineLuckyArmed=false;
+		mineTimer=need;
+		spawnBurst((mineTx+0.5)*TILE,(mineTy+0.5)*TILE,0,{color:'#ffd96a'});
+	}
 	if(mineTimer>=need && breakMinedTile()){ stopMining(); try{ if(MM.audio && MM.audio.play) MM.audio.play('break',{x:mineTx+0.5,y:mineTy+0.5}); }catch(e){} resumeHeldMining(); } }
 
 // --- Placement ---
@@ -11664,18 +12189,21 @@ let lastChestOpen={t:0,x:0,y:0};
 const CHEST_PLACE_SUPPRESS_MS=250; // extended to reduce accidental placements
 const PLACE_REACH=5; // build reach in tiles (Chebyshev); god mode is unlimited
 let lastRightPlaceT=0; // right-button pointerdown already placed for this gesture (contextmenu dedupe)
-let buildStroke=null; // mouse LMB placement gesture; touch keeps mining/long-press controls
+let buildStroke=null; // mouse RMB placement gesture; touch keeps mining/long-press controls
+try{ window.__mmBuildStroke=()=>buildStroke; }catch(e){} // QA seam: gesture state visibility
 function clearBuildStroke(pointerId){
 	if(!buildStroke || (pointerId!=null && buildStroke.pointerId!==pointerId)) return false;
 	buildStroke=null;
 	return true;
 }
+// Placement lives on the RIGHT button — owner contract: LMB mines/attacks,
+// RMB places (a drag paints the whole line). An earlier build wired the
+// stroke to LMB and stole mining clicks on every free cell.
 function beginBuildStroke(e,tx,ty){
-	if(!e || e.pointerType!=='mouse' || e.button!==0 || modalInputOpen()) return false;
+	if(!e || e.pointerType!=='mouse' || e.button!==2 || modalInputOpen()) return false;
 	const placement=canPlaceAt(tx,ty);
 	if(!placement.ok || !tryPlace(tx,ty)) return false;
-	// pointerdown provisionally registered this pointer for mining; successful
-	// placement owns the rest of the gesture exclusively.
+	// a held LMB mining gesture yields: placing owns the pointer exclusively
 	minePointerId=null;
 	stopMining();
 	buildStroke={
@@ -11691,7 +12219,7 @@ function beginBuildStroke(e,tx,ty){
 function continueBuildStroke(e){
 	const stroke=buildStroke;
 	if(!stroke || !e || stroke.pointerId!==e.pointerId) return false;
-	if((((Number(e.buttons)||0)&1)===0) || HOTBAR_ORDER[hotbarIndex]!==stroke.selection){
+	if((((Number(e.buttons)||0)&2)===0) || HOTBAR_ORDER[hotbarIndex]!==stroke.selection){
 		clearBuildStroke(e.pointerId);
 		return false;
 	}
@@ -12594,11 +13122,11 @@ function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptio
 	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='block'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
 const HOT_SELECT_GROUPS=[
 	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','CLAY','DIRT','STONE','WOOD','LEAF','SNOW','TOXIC_SNOW','WATER']},
-	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','GOLD_ORE','SILVER_ORE','SILVER_INGOT','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL','MOTHER_ICE','MOTHER_LAVA']},
+	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','GOLD_ORE','SILVER_ORE','SILVER_INGOT','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL','MOTHER_ICE','MOTHER_LAVA','GRAPHITE','GRAPHENE']},
 	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
 	{id:'home',label:'Dom i wyposażenie',tiles:['CHAIR_WOOD','CHAIR_STONE','CHAIR_STEEL','RUSTIC_STOOL','PINE_TABLE','WALL_SHELF','OAK_CABINET','COZY_BED','BOOKCASE','PATCHWORK_SOFA','HAMMOCK','WOVEN_RUG','POTTED_FERN','WALL_CLOCK','MIRROR','AQUARIUM','TERRARIUM','CHANDELIER','INDOOR_FOUNTAIN','HOLOGRAM_ART','DESK_LAMP','RADIO','TELEVISION','GAME_CONSOLE','REFRIGERATOR','COFFEE_MACHINE','AIR_PURIFIER','MEDICAL_STATION','HEALING_POD','ZERO_G_LOUNGER','MEMORY_PROJECTOR','CHRONO_CLOCK','BIOLUM_GARDEN','MINIATURE_SUN','DREAM_SYNTH','COSMIC_ORRERY']},
-		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET']},
-	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER','BEDROCK_LADDER','WATER_PUMP','TRANSISTOR','TORCH','RESPAWN_TOTEM']},
+		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET','SMR_CELL']},
+	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER','BEDROCK_LADDER','WATER_PUMP','TRANSISTOR','TORCH','WEATHERVANE','LIGHTNING_ROD','RESPAWN_TOTEM']},
 	{id:'food',label:'Jedzenie',tiles:['MEAT','ROTTEN_MEAT','BAKED_MEAT','GLOWSHROOM']},
 	{id:'chest',label:'Skrzynie',tiles:['CHEST_COMMON','CHEST_UNCOMMON','CHEST_RARE','CHEST_EPIC','CHEST_LEGENDARY']},
 	{id:'other',label:'Inne',tiles:[]}
@@ -12717,9 +13245,6 @@ canvas.addEventListener('pointerdown',e=>{
 		if(dxRange<=3 && dyRange<=3 && tryOpenGraveAt(tx,ty)) return;
 		// plants: harvest ripe berries / clear vegetation before digging the tile behind it
 		if(dxRange<=3 && dyRange<=3 && PLANTS && PLANTS.harvestAt && PLANTS.harvestAt(tx,ty)){ try{ if(MM.audio && MM.audio.play) MM.audio.play('harvest',{x:tx+0.5,y:ty+0.5}); }catch(e){} return; }
-		// A valid free build cell starts an LMB placement stroke. Occupied or
-		// otherwise invalid cells retain the established click-and-drag mining path.
-		if(beginBuildStroke(e,tx,ty)) return;
 		startMineAt(tx,ty,{quiet:true});
 		if(e.pointerType==='touch') armTouchHold(e); // hold in place → block placement (iOS-safe)
 	} else if(e.button===2){
@@ -12740,6 +13265,9 @@ canvas.addEventListener('pointerdown',e=>{
 			tryWeaponUltOrDefend(player, aim.x, aim.y, it, e.pointerId, 'mouse');
 			return;
 		}
+		// A valid free build cell starts the RMB placement stroke (drag paints a
+		// line). Occupied/invalid cells keep the classic single secondary action.
+		if(beginBuildStroke(e,tx,ty)) return;
 		useToolSecondaryAt(tx,ty);
 	}
 });
@@ -12782,6 +13310,8 @@ function draw(){ // Background first
  // alive even though the furniture body itself is baked into chunk caches.
  if(FURNISHINGS && FURNISHINGS.drawEffects) FURNISHINGS.drawEffects(ctx,TILE,sx,sy,viewX,viewY,getTile,worldFxVisible,HOME_FURNISHING_POWER);
  // weather layer: clouds, rain/snow, lightning, evaporation mist (world-space, sky)
+ // aurora curtains: upper-sky bands behind the clouds (cold clear nights)
+ if(SKY_MOODS && SKY_MOODS.drawAurora) SKY_MOODS.drawAurora(ctx,TILE,sx,sy,viewX,viewY,camRenderX,camRenderY);
  if(CLOUDS && CLOUDS.draw) CLOUDS.draw(ctx,TILE,getTile,sx,sy,viewX,viewY);
  drawFallingBlocks();
  // Standing in the same foreground cell as a wall mirror turns the hero into
@@ -12808,6 +13338,12 @@ function draw(){ // Background first
  // equipped weapon in hand (melee blades sweep during a swing)
  if(!deathTravelFx && heroCloakA>=0.98 && WEAPONS && WEAPONS.drawHeld) WEAPONS.drawHeld(ctx,TILE,player);
  if(NPCS && NPCS.draw) NPCS.draw(ctx,TILE,worldFxVisible);
+ // soot graffiti marks on walls/faces (world truth, fog-gated)
+ if(GRAFFITI && GRAFFITI.draw) GRAFFITI.draw(ctx,TILE,worldFxVisible);
+ // soft drifts: sub-tile snow fluff / leaf litter / soot mounds on the surface
+ if(SOFT_DRIFTS && SOFT_DRIFTS.draw) SOFT_DRIFTS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
+ // icicles under cold overhangs (and their falling shards)
+ if(ICICLES && ICICLES.draw) ICICLES.draw(ctx,TILE,worldFxVisible);
  // living plants (rooted vegetation over terrain, under fire/creatures)
  if(PLANTS && PLANTS.draw) PLANTS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
  // burning tiles + lava glow (flames over terrain, under mobs so creatures stay readable)
@@ -12820,6 +13356,12 @@ function draw(){ // Background first
  if(WIND && WIND.draw) WIND.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
  // sandstorm haze: the yellow visibility wall of a desert blow (screen-space bands)
  if(SANDSTORM && SANDSTORM.draw) SANDSTORM.draw(ctx,TILE,sx,sy,viewX,viewY);
+ // drift gales: autumn leaf storms / snow blizzards — haze + streamed flakes.
+ // The spawn gate mirrors the loop's sim hold: while pause/ceremony freezes
+ // updateParticles, streaming more flakes would pile a frozen wall to the cap.
+ if(SOFT_DRIFTS && SOFT_DRIFTS.drawStorm) SOFT_DRIFTS.drawStorm(ctx,TILE,sx,sy,viewX,viewY,!paused && !uiOverlayHold());
+ // morning fog: milk-white dawn haze in the valleys, burns off with the sun
+ if(SKY_MOODS && SKY_MOODS.drawFog) SKY_MOODS.drawFog(ctx,TILE,sx,sy,viewX,viewY,camRenderX,camRenderY);
  // ruin surface markers dressed as worked masonry (mortar, moss, etched rune)
  if(RUINS && RUINS.drawHints) RUINS.drawHints(ctx,TILE,worldFxVisible);
  if(ALIEN_RUINS && ALIEN_RUINS.drawHints) ALIEN_RUINS.drawHints(ctx,TILE,worldFxVisible);
@@ -12837,6 +13379,10 @@ function draw(){ // Background first
  else if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.drawSpirits(ctx,TILE,'text');
  if(INVASIONS && INVASIONS.draw) INVASIONS.draw(ctx,TILE,worldFxVisible);
  if(MECHS && MECHS.draw) MECHS.draw(ctx,TILE,worldFxVisible);
+ // SMR status glyphs: running / inspection alarm / SCRAMmed (over the tile)
+ if(SMR && SMR.draw) SMR.draw(ctx,TILE,worldFxVisible);
+ // weather instruments: live wind arrow on vanes + charge/flash on rods
+ if(WEATHER_INSTRUMENTS && WEATHER_INSTRUMENTS.draw) WEATHER_INSTRUMENTS.draw(ctx,TILE,worldFxVisible);
  if(COMPANIONS && COMPANIONS.draw) COMPANIONS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible);
  if(GUARDIANS && GUARDIANS.draw) GUARDIANS.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
  if(UNDERGROUND && UNDERGROUND.draw) UNDERGROUND.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
@@ -12857,6 +13403,9 @@ function draw(){ // Background first
  if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'front', sx,sy,viewX,viewY,TILE,worldMaxY(),getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible,worldMinY()); }
  // Water overlay shimmer (after vegetation front to avoid overdraw? place before falling solids for clarity)
  if(WATER){ WATER.drawOverlay(ctx,TILE,getTile,sx,sy,viewX,viewY,worldFxVisible); }
+ // thin-ice crack webs + hot-spring steam wisps ride the finished water surface
+ if(THIN_ICE_SIM && THIN_ICE_SIM.draw) THIN_ICE_SIM.draw(ctx,TILE,worldFxVisible);
+ if(GEOTHERMAL && GEOTHERMAL.draw) GEOTHERMAL.draw(ctx,TILE,worldFxVisible);
  // fishing line + bobber float on the finished water surface
  if(FISHING && FISHING.draw) FISHING.draw(ctx,TILE,player,worldFxVisible);
  // wooden rafts ride the finished water surface (above the shimmer, below the hero)
@@ -13233,34 +13782,33 @@ function minimapWorldYToPixel(row,mh,minY,maxY){
 	const span=Math.max(1,maxY-minY-1);
 	return Math.max(1, Math.min(mh-2, Math.round((row-minY)*(mh-1)/span)));
 }
+// The compass card stays OFF-SCREEN while the pendant is merely tuning or has
+// nothing — it appears (fading in, at the LEFT EDGE where nothing else lives)
+// only when a treasure is actually sensed, or briefly after the radar button
+// asks for a readout. No signal = no UI noise (owner ruling).
+let compassShowK=0, compassShowAt=0;
 function drawTreasureCompassHUD(){
 	const level=treasureCompassLevel();
-	if(level<=0) return false;
-	const target=TREASURE_SCANNER.target();
+	const target=level>0 ? TREASURE_SCANNER.target() : null;
+	const now=performance.now();
+	const wanted=level>0 && (!!target || now<radarFlash);
+	const dtK=Math.min(0.1,Math.max(0,(now-compassShowAt)/1000)); compassShowAt=now;
+	compassShowK+=( (wanted?1:0) - compassShowK )*Math.min(1,dtK*6);
+	if(compassShowK<0.02){ compassShowK=Math.max(0,compassShowK); return false; }
 	const metrics=TREASURE_SCANNER.metrics();
 	const compact=W<=760;
 	const narrow=W<=480;
-	const width=Math.min(compact?268:320,Math.max(narrow?196:238,W-(narrow?16:24)));
-	const height=narrow?38:(compact?48:58);
-	const left=Math.round((W-width)*0.5);
-	let top=compact?92:50;
-	// Status rows and touch hotbars are DOM overlays above the canvas. Shift the
-	// compass below only visible blockers intersecting its actual horizontal band.
-	for(let pass=0;pass<2;pass++){
-		for(const id of ['hud','weaponBar','hotbarWrap','craftTracker']){
-			const el=document.getElementById(id);
-			if(!el || el.hidden) continue;
-			const style=getComputedStyle(el);
-			if(style.display==='none' || style.visibility==='hidden') continue;
-			const r=el.getBoundingClientRect();
-			if(r.width<=0 || r.height<=0 || r.right<=left || r.left>=left+width) continue;
-			if(r.bottom>top && r.top<top+height) top=Math.ceil(r.bottom+6);
-		}
-	}
-	top=Math.max(8,Math.min(H-height-8,top));
-	const radius=narrow?13:(compact?15:18);
-	const cx=left+(narrow?24:32),cy=top+height*0.5;
+	const width=Math.min(compact?236:268,Math.max(narrow?188:216,Math.round(W*0.34)));
+	const height=narrow?40:(compact?48:56);
+	// Left edge, above the vertical midline: the top band belongs to status
+	// rows and the craft tracker, the bottom to vitals — the flank is free.
+	const slide=(1-compassShowK)*24;
+	const left=Math.round(8-slide);
+	const top=Math.round(Math.max(8,Math.min(H-height-8,H*0.30)));
+	const radius=narrow?13:(compact?15:17);
+	const cx=left+(narrow?24:30),cy=top+height*0.5;
 	ctx.save();
+	ctx.globalAlpha=Math.min(1,compassShowK);
 	ctx.fillStyle='rgba(6,13,23,0.84)';
 	ctx.strokeStyle=target?(TREASURE_COMPASS.CATEGORY_COLORS[target.category]||'#8de8ff'):'rgba(150,173,199,0.55)';
 	ctx.lineWidth=1;
@@ -13268,25 +13816,21 @@ function drawTreasureCompassHUD(){
 	if(ctx.roundRect) ctx.roundRect(left+0.5,top+0.5,width-1,height-1,13);
 	else ctx.rect(left+0.5,top+0.5,width-1,height-1);
 	ctx.fill(); ctx.stroke();
-	TREASURE_COMPASS.draw(ctx,target,{x:cx,y:cy,radius,time:performance.now()*0.001,alpha:1});
+	TREASURE_COMPASS.draw(ctx,target,{x:cx,y:cy,radius,time:now*0.001,alpha:1});
 	ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.font='700 7px system-ui'; ctx.fillStyle='rgba(226,241,255,0.82)';
 	const tick=radius*0.67;
 	ctx.fillText('N',cx,cy-tick); ctx.fillText('S',cx,cy+tick); ctx.fillText('W',cx-tick,cy); ctx.fillText('E',cx+tick,cy);
 	ctx.textAlign='left';
-	const textLeft=left+(narrow?46:60);
-	if(!narrow){
-		ctx.font='700 11px system-ui'; ctx.fillStyle='#a9bdd2';
-		ctx.fillText('KOMPAS SKARBÓW · '+level,textLeft,top+(compact?13:16));
-	}
-	ctx.font=narrow?'700 12px system-ui':'700 14px system-ui'; ctx.fillStyle='#f3f8ff';
-	const main=target ? target.label : (metrics.progress<1?'Strojenie z otoczeniem…':'Brak sygnału');
-	const maxChars=narrow?18:(width<270?22:30);
-	ctx.fillText(main.length>maxChars?main.slice(0,maxChars-1)+'…':main,textLeft,top+(narrow?13:(compact?29:34)));
+	const textLeft=left+(narrow?44:56);
+	ctx.font=narrow?'700 12px system-ui':'700 13px system-ui'; ctx.fillStyle='#f3f8ff';
+	const main=target ? target.label : (metrics.progress<1?'Strojenie…':'Brak sygnału');
+	const maxChars=narrow?16:20;
+	ctx.fillText(main.length>maxChars?main.slice(0,maxChars-1)+'…':main,textLeft,top+(narrow?14:(compact?18:20)));
 	ctx.font=narrow?'10px system-ui':'11px system-ui'; ctx.fillStyle=target?'#b9ccda':'#8395a8';
 	const sub=target
 		? Math.max(1,Math.round(target.distance))+' bloków · '+treasureDirectionLabel(target)
-		: 'zasięg '+metrics.range+' · tylko odkryte miejsca';
-	ctx.fillText(sub,textLeft,top+(narrow?29:(compact?43:49)));
+		: 'zasięg '+metrics.range;
+	ctx.fillText(sub,textLeft,top+(narrow?29:(compact?34:38)));
 	ctx.restore();
 	return true;
 }
@@ -15209,6 +15753,90 @@ if(MM.ui && MM.ui.injectSeasonDebugPanel) MM.ui.injectSeasonDebugPanel({
 	advance:(days)=>{ if(!SEASONS || !SEASONS.advanceDays) return false; const ok=!!SEASONS.advanceDays(days); if(ok){ updateBiomeLabel(); noteSaveActivity(); saveState(); } return ok; },
 	metrics:()=> seasonMetricsForCalendar()
 }, menuPanel);
+if(MM.ui && MM.ui.injectSmrDebugPanel) MM.ui.injectSmrDebugPanel({
+	kit:()=>{ inv.graphite=(inv.graphite|0)+8; inv.graphene=(inv.graphene|0)+4; inv.smrCell=(inv.smrCell|0)+1; inv.radioactiveOre=(inv.radioactiveOre|0)+4; inv.transistor=(inv.transistor|0)+6; inv.meteoricIron=(inv.meteoricIron|0)+4; inv.silverWire=(inv.silverWire|0)+8; updateInventory(); checkCraftingAvailability({silent:true}); return true; },
+	place:()=>{
+		if(!SMR) return false;
+		const px=Math.floor(player.x)+ (player.facing<0?-2:2), py=Math.floor(player.y);
+		for(const [dx,dy] of [[0,0],[0,-1],[1,0],[-1,0],[0,1]]){
+			const x=px+dx, y=py+dy;
+			if(getTile(x,y)!==T.AIR) continue;
+			setTile(x,y,T.SMR_CELL);
+			if(getTile(x,y)===T.SMR_CELL){ notifyStructureTileChanged(x,y); noteSaveActivity(); saveState(); return true; }
+		}
+		return false;
+	},
+	alarm:()=>{ if(!SMR || !SMR._debug || !SMR._debug.cellNear) return false; const c=SMR._debug.cellNear(player.x,player.y,20); return c ? SMR._debug.forceAlarm(c.x,c.y) : false; },
+	inspect:()=>{ if(!SMR || !SMR.inspectNear) return false; const c=SMR._debug && SMR._debug.cellNear ? SMR._debug.cellNear(player.x,player.y,20) : null; return c ? SMR.inspectAt(c.x,c.y) : false; },
+	metrics:()=> (SMR && SMR.metrics) ? SMR.metrics() : null
+}, menuPanel);
+if(MM.ui && MM.ui.injectDriftDebugPanel) MM.ui.injectDriftDebugPanel({
+	gale:(mat)=>{ if(!SOFT_DRIFTS || !SOFT_DRIFTS.startStorm) return null; return SOFT_DRIFTS.startStorm(mat, 60, 0.95, {source:'debug'}); },
+	stopGale:()=>{ if(!SOFT_DRIFTS || !SOFT_DRIFTS.stopStorm) return false; return SOFT_DRIFTS.stopStorm(); },
+	seed:(mat)=>{ if(!SOFT_DRIFTS || !SOFT_DRIFTS.seedAround) return 0; return SOFT_DRIFTS.seedAround(Math.floor(player.x), 9, mat, 6, getTile, setTile); },
+	clear:()=>{ if(!SOFT_DRIFTS || !SOFT_DRIFTS.clearAll) return 0; return SOFT_DRIFTS.clearAll(); },
+	metrics:()=> (SOFT_DRIFTS && SOFT_DRIFTS.metrics) ? SOFT_DRIFTS.metrics() : null
+}, menuPanel);
+if(MM.ui && MM.ui.injectNatureDebugPanel) MM.ui.injectNatureDebugPanel({
+	// a deep snow shelf on a step next to the hero — instant avalanche fodder
+	slope:()=>{
+		const dir=player.facing<0?-1:1;
+		const bx=Math.floor(player.x)+dir*4, by=Math.floor(player.y);
+		let placed=0;
+		for(let i=0;i<8;i++){
+			const x=bx+dir*i;
+			const base=by-Math.floor(i/2);
+			for(let d=0;d<4;d++){
+				const y=base-d;
+				if(getTile(x,y)!==T.AIR) continue;
+				setTile(x,y,T.SNOW);
+				if(getTile(x,y)===T.SNOW){ placed++; if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(x,y); }
+			}
+		}
+		if(placed){ noteSaveActivity(); }
+		return placed;
+	},
+	avalanche:()=>{ if(!AVALANCHE || !AVALANCHE.disturb) return 0; return AVALANCHE.disturb(Math.floor(player.x)+(player.facing<0?-5:5), player.y, 2, getTile); },
+	icicles:()=>{ if(!ICICLES || !ICICLES.seedAround) return 0; return ICICLES.seedAround(player.x, player.y, getTile); },
+	dropIcicles:()=>{ if(!ICICLES || !ICICLES.dropAll) return 0; return ICICLES.dropAll(); },
+	freeze:()=>{ if(!THIN_ICE_SIM || !THIN_ICE_SIM.freezeAround) return 0; const n=THIN_ICE_SIM.freezeAround(player.x, 40, getTile, setTile); if(n) noteSaveActivity(); return n; },
+	spring:()=>{ if(!GEOTHERMAL || !GEOTHERMAL.buildSpring) return false; const ok=GEOTHERMAL.buildSpring(player.x, player.y, getTile, setTile); if(ok) noteSaveActivity(); return ok; },
+	fog:()=>{ if(!SKY_MOODS || !SKY_MOODS.startMood) return false; SKY_MOODS.startMood('fog'); msg('Mgla nadciaga — i sama sie rozejdzie'); return true; },
+	aurora:()=>{ if(!SKY_MOODS || !SKY_MOODS.startMood) return false; SKY_MOODS.startMood('aurora'); msg('Zorza rozblyska — i sama przygasnie'); return true; },
+	instruments:()=>{ inv.weathervane=(inv.weathervane|0)+2; inv.lightningRod=(inv.lightningRod|0)+2; inv.soot=(inv.soot|0)+10; inv.steel=(inv.steel|0)+6; inv.silverWire=(inv.silverWire|0)+4; updateInventory(); checkCraftingAvailability({silent:true}); return true; },
+	strikeRod:()=>{
+		if(!WEATHER_INSTRUMENTS || !CLOUDS || !CLOUDS.strike) return false;
+		const m=WEATHER_INSTRUMENTS._debug && WEATHER_INSTRUMENTS._debug.rods;
+		let best=null, bd=Infinity;
+		if(m) for(const c of m.values()){ const d=Math.abs(c.x-player.x); if(d<bd){ bd=d; best=c; } }
+		if(!best || bd>40) return false;
+		return !!CLOUDS.strike(best.x+0.5,getTile,setTile);
+	},
+	nature:()=>{ if(!MOBS || !MOBS._debugNature) return false; MOBS._debugNature.forcePass(); return true; },
+	paint:()=>{
+		if(!GRAFFITI || !GRAFFITI.paintAt) return false;
+		inv.soot=(inv.soot|0)+1;
+		const glyphs=GRAFFITI.GLYPHS||['arrow'];
+		const g=glyphs[Math.floor(Math.random()*glyphs.length)];
+		for(const [dx,dy] of [[2,0],[-2,0],[2,-1],[-2,-1],[0,1]]){
+			const x=Math.floor(player.x)+dx, y=Math.floor(player.y)+dy;
+			if(GRAFFITI.paintAt(x,y,g,player.facing<0?-1:1,getTile)){ inv.soot--; updateInventory(); noteSaveActivity(); return true; }
+		}
+		return false;
+	},
+	metrics:()=>{
+		const av=(AVALANCHE && AVALANCHE.metrics)?AVALANCHE.metrics():{triggered:0};
+		const ic=(ICICLES && ICICLES.metrics)?ICICLES.metrics():{hanging:0};
+		const ti=(THIN_ICE_SIM && THIN_ICE_SIM.metrics)?THIN_ICE_SIM.metrics():{panes:0};
+		const ge=(GEOTHERMAL && GEOTHERMAL.metrics)?GEOTHERMAL.metrics():{pools:0};
+		const sm=(SKY_MOODS && SKY_MOODS.metrics)?SKY_MOODS.metrics():{fog:0,aurora:0};
+		const wi=(WEATHER_INSTRUMENTS && WEATHER_INSTRUMENTS.metrics)?WEATHER_INSTRUMENTS.metrics():{rods:0,energy:0};
+		const gr=(GRAFFITI && GRAFFITI.metrics)?GRAFFITI.metrics():{marks:0};
+		const na=(MOBS && MOBS.natureMetrics)?MOBS.natureMetrics():{drinks:0,lurks:0,flees:0,baths:0};
+		return {avalanche:av.triggered, icicles:ic.hanging, panes:ti.panes, pools:ge.pools,
+			fog:sm.fog, aurora:sm.aurora, rods:wi.rods, rodEnergy:wi.energy, marks:gr.marks, nature:na};
+	}
+}, menuPanel);
 if(MM.ui && MM.ui.injectMeteorDebugPanel) MM.ui.injectMeteorDebugPanel({
 	setEnabled:(enabled)=>{ if(!METEORITES || !METEORITES.setEnabled) return false; const ok=!!METEORITES.setEnabled(enabled); if(ok){ noteSaveActivity(); saveState(); } return ok; },
 	spawn:()=>{ if(!METEORITES || !METEORITES.forceSpawn) return false; const ok=!!METEORITES.forceSpawn({nearHero:true,intensity:1.65},player,getTile); if(ok){ noteSaveActivity(); saveState(); } return ok; },
@@ -16179,6 +16807,17 @@ window.teleportHeroToNextNpc = function(dir){ return jumpDebugNpc(dir); };
 window.teleportHeroToNearestNpc = function(){ return jumpDebugNearestNpc(); };
 const loaded=MM.ghostMode ? false : loadGame(); // watchers boot blank and stream the host's world instead
 if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
+// Fresh-world starter kit (owner ruling): the hero wakes armed with the stick
+// and enough improvised ammo to actually USE the always-known techniques —
+// sand for the blinding throw, water for spit. Watchers/hero guests never get
+// it (their inventory is streamed or guest-local).
+if(!loaded && !MM.ghostMode){
+	try{
+		if(MM.inventory && MM.inventory.equip && !(MM.inventory.equippedId && MM.inventory.equippedId('weapon'))) MM.inventory.equip('stick');
+		inv.sand=Math.max(inv.sand|0,20);
+		inv.water=Math.max(inv.water|0,10);
+	}catch(e){}
+}
 updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); normalizeLegacyHelpDebugCopy(); if(MM.ghostMode){ /* the ghost veil owns the first paint */ } else if(!loaded) msg('Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. E=Ekwipunek, '+visionShortcutLabel()+'=optyka, C=Centrum, H=Pomoc. Debug: panel 🛠.'); else msg('Wczytano zapis – miłej gry!');
 // Ghost spectator bridge: the one sanctioned window into main.js internals for
 // ghost_host.js / ghost_client.js — snapshot codec, world access, camera and
@@ -16758,6 +17397,16 @@ MM.ghostBridge={
 		const W=MM.weapons;
 		if(!W || !W.coopMeleeAt) return 0;
 		return W.coopMeleeAt({x, y, facing:1}, x, y, {bonus:Math.max(0,Math.min(43,amt-2)), reach:1.2}) ? 1 : 0;
+	},
+	// hero-mode soot graffiti: the host handler already checked reach, rate and
+	// the glyph whitelist — this seam re-validates the BACKING against world
+	// truth (graffiti.canPaintAt) exactly like the solo paint path does.
+	ghostHeroGraffiti:(tx,ty,glyph,dir)=>{
+		if(!GRAFFITI || !GRAFFITI.paintAt) return false;
+		if(!worldCellInBounds(tx,ty)) return false;
+		const ok=GRAFFITI.paintAt(tx,ty,glyph,dir,getTile);
+		if(ok) noteSaveActivity();
+		return ok;
 	}
 };
 if(MM.ghostMode){ try{ GHOST_CLIENT.boot(MM.ghostBridge); }catch(e){ console.warn('ghost client boot failed',e); } }
@@ -16859,6 +17508,14 @@ function runGameStep(dt,ts){
 	if(VOLCANO && VOLCANO.update) VOLCANO.update(dt, player, getTile, setTile);
 	if(WIND && WIND.update) WIND.update(dt, player, getTile, {clouds:CLOUDS, worldGen:WORLDGEN, background:BACKGROUND});
 	if(SANDSTORM && SANDSTORM.update) SANDSTORM.update(getTile, setTile, dt);
+	if(SOFT_DRIFTS && SOFT_DRIFTS.update) SOFT_DRIFTS.update(dt, player, getTile, setTile);
+	if(AVALANCHE && AVALANCHE.update) AVALANCHE.update(dt, player, getTile, setTile);
+	if(ICICLES && ICICLES.update) ICICLES.update(dt, player, getTile, setTile);
+	if(THIN_ICE_SIM && THIN_ICE_SIM.update) THIN_ICE_SIM.update(dt, player, getTile, setTile);
+	if(GEOTHERMAL && GEOTHERMAL.update) GEOTHERMAL.update(dt, player, getTile, setTile);
+	if(SKY_MOODS && SKY_MOODS.update) SKY_MOODS.update(dt, player);
+	if(WEATHER_INSTRUMENTS && WEATHER_INSTRUMENTS.update) WEATHER_INSTRUMENTS.update(dt, player, getTile);
+	if(GRAFFITI && GRAFFITI.update) GRAFFITI.update(dt, player, getTile);
 	if(BOATS && BOATS.update) BOATS.update(dt, player, getTile, {wind:WIND, water:WATER, heroEnergy:MM.heroEnergy, mobs:MOBS});
 	if(MECHS && MECHS.update) MECHS.update(dt, player, getTile, setTile, {controls:companionControlState(), godMode, heroEnergy:MM.heroEnergy});
 	if(GASES && GASES.update) GASES.update(dt, getTile, setTile, player);
@@ -16866,7 +17523,7 @@ function runGameStep(dt,ts){
 	if(SMOKE && SMOKE.updateSoot) SMOKE.updateSoot(player,dt,{height:player.h});
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(SMR && SMR.update) SMR.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
 }
 // Hero-mode guest frame (driven from the loop's ghost branch): ONLY the hero-side
 // systems step here — the world (water, fire, creatures, machines, seasons) is
@@ -16910,6 +17567,11 @@ function runHeroStep(dt,ts){
 	// fishing is a HERO system: reads replica water, never writes a tile, and the
 	// catch lands in the guest's own inventory (its local truth) — full parity free
 	if(FISHING && FISHING.update) FISHING.update(dt, player, getTile);
+	// hero comfort systems (no world writes): a warm spring computed from the
+	// REPLICA tiles heals the guest hero exactly like solo; sky moods (fog /
+	// aurora + its energy trickle) are deterministic from the shared clock
+	if(GEOTHERMAL && GEOTHERMAL.updateHero) GEOTHERMAL.updateHero(dt, player, getTile);
+	if(SKY_MOODS && SKY_MOODS.update) SKY_MOODS.update(dt, player);
 	updateMining(dt);
 	updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt);
 	updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);

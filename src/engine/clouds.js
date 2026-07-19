@@ -745,12 +745,24 @@ window.MM = window.MM || {};
     if(bolts.length>=6) bolts.shift();
     bolts.push({pts,branches,t:0.34,max:0.34,ix,iy});
   }
+  // A LIGHTNING_ROD standing in an open column near the strike x catches the
+  // bolt: the rod is the instrument's whole promise (weather_instruments.js
+  // banks the charge and the strike is otherwise inert — no fire, no chest,
+  // no electrocuted hero next to his own mast).
+  function findRodLightningTarget(x,fromRow,getTile){
+    const W=MM.weatherInstruments;
+    if(!W || typeof W.rodTargetNear!=='function') return null;
+    try{
+      const rod=W.rodTargetNear(x,fromRow,getTile);
+      return rod ? {x:rod.x,y:rod.y,t:getTile(rod.x,rod.y),rod:true} : null;
+    }catch(e){ return null; }
+  }
   // A strike hits the first blocking tile under x: water conducts into nearby
   // aquatic creatures, flammables catch fire, and only a tiny leftover chance
   // creates a loot chest. A hero standing too close is electrocuted.
   function strikeAt(x,fromRow,getTile,setTile){
     let xi=Math.round(x);
-    let hit=findDynamoLightningTarget(xi,fromRow,getTile) || firstBlockingTile(xi,fromRow,getTile);
+    let hit=findDynamoLightningTarget(xi,fromRow,getTile) || findRodLightningTarget(xi,fromRow,getTile) || firstBlockingTile(xi,fromRow,getTile);
     if(!hit) return null;
     let ty=hit.y, tile=hit.t;
     strikes++;
@@ -758,7 +770,7 @@ window.MM = window.MM || {};
     let shelteredHit=false;
     let shelterHit=false;
     const res={x:xi, y:ty, chest:false, tier:null, dmg:0, energy:0, teleport:null, dynamo:null, ignited:false, aquaticHit:0, aquaticKilled:0, sheltered:false, shelterDamaged:false};
-    if(hit.slot){
+    if(hit.slot || hit.rod){
       xi=hit.x; ty=hit.y; tile=hit.t;
       res.x=xi; res.y=ty;
     }
@@ -768,6 +780,19 @@ window.MM = window.MM || {};
     }
     const TILE=MM.TILE||20;
     const isChest=(tile===T.CHEST_COMMON||tile===T.CHEST_UNCOMMON||tile===T.CHEST_RARE||tile===T.CHEST_EPIC||tile===T.CHEST_LEGENDARY);
+    if(hit.rod){
+      // the mast takes the whole bolt: bank it, spark, and alter nothing else
+      let banked=null;
+      try{ banked=MM.weatherInstruments && MM.weatherInstruments.strikeRod ? MM.weatherInstruments.strikeRod(xi,ty) : null; }catch(e){ banked=null; }
+      res.rod=banked||{banked:0};
+      try{
+        if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks((xi+0.5)*TILE,(ty+0.5)*TILE,'epic',26);
+        if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:xi+0.5,y:ty+0.5});
+      }catch(e){}
+      res.sheltered=true; // the rod IS the shelter — nobody near it fries
+      playThunder(p && isFinite(p.x) ? Math.abs(xi+0.5-p.x) : 0, 0);
+      return res;
+    }
     const dynamoHit=strikeVerticalDynamo(xi,ty,getTile,setTile);
     if(dynamoHit){
       res.dynamo=dynamoHit;
