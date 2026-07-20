@@ -51,7 +51,7 @@ window.MM = window.MM || {};
   // evicts far-away UNMODIFIED chunks (they regenerate deterministically — edited
   // chunks are exactly what the save system keeps, so they are never dropped).
   const MAX_COORD = 30e6;        // |x| beyond this is treated as void (no storage)
-  const CHUNK_CAP = 1536;        // ~98k columns of live chunks before eviction
+  let CHUNK_CAP = 1536;          // ~98k columns of live chunks before eviction (let: test seam below)
   const HEIGHT_CACHE_CAP = 200000;
   const INFRASTRUCTURE_SAVE_CAP = 20000;
   const CONSTRUCTION_BACKGROUND_SAVE_CAP = 40000;
@@ -89,24 +89,117 @@ window.MM = window.MM || {};
     }
     return null;
   }
+  // --- Chunk parking (cold store) ---------------------------------------------
+  // Modified chunks used to be exempt from eviction (`if(versions.get(k)) continue`),
+  // so a long session ratcheted the live map past CHUNK_CAP permanently: every
+  // subsequent generation then ran a full-map evict scan + total sectionViews wipe,
+  // and ambient systems re-reading the few evicted chunks regenerated them
+  // mid-frame — recursively, up to stack overflow (the "240→30 fps" decay).
+  // Now far modified chunks are PARKED: RLE-compressed into `parked` and removed
+  // from the live map. Any read rehydrates them losslessly, so eviction always
+  // reaches its hysteresis target and the thrash regime cannot form. Eviction is
+  // DEFERRED while any generation is in flight (genDepth) so a chunk can never be
+  // dropped out from under the audits that are still reading it.
+  const parked=new Map();        // key -> {rle:string|null, raw:Uint8Array|null, len}
+  const peekParkCache=new Map(); // key -> decoded array; tiny LRU for peek/save reads
+  const PEEK_PARK_CACHE_MAX=8;
+  const PROTECT_RADIUS_CX=4;     // never evict/park the player's active neighborhood
+  const chunkCacheStats={parked:0,rehydrated:0,evictRuns:0,dropped:0,lastEvictMs:0};
+  let genDepth=0, evictPending=false, evicting=false, lastRevivedKey=null;
+  function packChunkArray(arr){
+    let s=''; let i=0; const n=arr.length;
+    while(i<n){
+      const v=arr[i]; let run=1;
+      while(i+run<n && arr[i+run]===v && run<65535) run++;
+      s+=String.fromCharCode(v,run); i+=run;
+    }
+    // UTF-16 units are 2 bytes: an incompressible chunk is cheaper as a raw copy
+    if(s.length*2>=n) return {rle:null, raw:arr.slice(), len:n};
+    return {rle:s, raw:null, len:n};
+  }
+  function unpackChunkArray(p){
+    if(p.raw) return p.raw.slice();
+    const out=new Uint8Array(p.len); let o=0;
+    for(let i=0;i<p.rle.length;i+=2){ const v=p.rle.charCodeAt(i), run=p.rle.charCodeAt(i+1); out.fill(v,o,o+run); o+=run; }
+    return out;
+  }
+  function invalidateViewsFor(parsed){
+    if(!parsed) return;
+    if(parsed.base){
+      for(let sy=WORLD_MIN_SECTION; sy<=WORLD_MAX_SECTION; sy++){ if(isBaseSection(sy)) sectionViews.delete(viewKey(parsed.cx,sy)); }
+    } else sectionViews.delete(viewKey(parsed.cx,parsed.sy));
+  }
+  // teleporters.js discovers its network by scanning the LIVE map for tiles —
+  // chunks carrying one must stay resident or far teleporters would drop off it
+  function chunkContainsNeverParkTile(arr){
+    for(let i=0;i<arr.length;i++){ if(arr[i]===T.TELEPORTER) return true; }
+    return false;
+  }
+  function parkedPeekArray(k){
+    const hit=peekParkCache.get(k);
+    if(hit){ peekParkCache.delete(k); peekParkCache.set(k,hit); return hit; }
+    const p=parked.get(k);
+    if(!p) return null;
+    const arr=unpackChunkArray(p);
+    peekParkCache.set(k,arr);
+    if(peekParkCache.size>PEEK_PARK_CACHE_MAX){ peekParkCache.delete(peekParkCache.keys().next().value); }
+    return arr;
+  }
+  function rehydrateChunk(k){
+    const p=parked.get(k);
+    if(!p) return null;
+    const arr=unpackChunkArray(p);
+    parked.delete(k); peekParkCache.delete(k);
+    world.set(k,arr);
+    chunkCacheStats.rehydrated++;
+    lastRevivedKey=k; // the eviction below must not instantly re-park what was just demanded
+    if(world.size>CHUNK_CAP) requestEvict();
+    return arr;
+  }
+  function requestEvict(){ if(genDepth>0 || evicting){ evictPending=true; return; } evictFarChunks(); }
+  function genExit(){ genDepth--; if(genDepth===0 && evictPending){ evictPending=false; evictFarChunks(); } }
   function evictFarChunks(){
-    const p=(typeof window!=='undefined' && window.player) || null;
-    const pcx=(p && isFinite(p.x))? Math.floor(p.x/CHUNK_W) : 0;
-    const cand=[];
-    for(const k of world.keys()){
-      if(versions.get(k)) continue;               // modified chunk: player edits live here
-      const parsed=parseChunkKey(k);
-      if(!parsed) continue;
-      cand.push([Math.abs(parsed.cx-pcx) + Math.abs((parsed.sy==null?0:parsed.sy) - sectionYFor(p && isFinite(p.y) ? p.y : 0))*0.35, k]);
+    if(evicting) return;
+    if(genDepth>0){ evictPending=true; return; }
+    evicting=true;
+    const t0=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    try{
+      const p=(typeof window!=='undefined' && window.player) || null;
+      const pcx=(p && isFinite(p.x))? Math.floor(p.x/CHUNK_W) : 0;
+      const psy=sectionYFor(p && isFinite(p.y) ? p.y : 0);
+      const cand=[];
+      for(const k of world.keys()){
+        if(k===lastRevivedKey) continue;           // just rehydrated on demand this very call
+        const parsed=parseChunkKey(k);
+        if(!parsed) continue;
+        if(Math.abs(parsed.cx-pcx)<=PROTECT_RADIUS_CX) continue; // active working set stays
+        cand.push([Math.abs(parsed.cx-pcx) + Math.abs((parsed.sy==null?0:parsed.sy) - psy)*0.35, k, parsed]);
+      }
+      cand.sort((a,b)=>b[0]-a[0]);                  // farthest first
+      const target=(CHUNK_CAP*0.75)|0;
+      for(let i=0;i<cand.length && world.size>target;i++){
+        const k=cand[i][1], parsed=cand[i][2];
+        const arr=world.get(k);
+        if(!arr) continue;
+        if(versions.get(k)){
+          if(chunkContainsNeverParkTile(arr)) continue;
+          parked.set(k,packChunkArray(arr));        // modified: park compressed, version survives
+          peekParkCache.delete(k);
+          chunkCacheStats.parked++;
+        }else{
+          try{ if(parsed.base && MM.trees && MM.trees.clearChunk) MM.trees.clearChunk(parsed.cx); }catch(e){}
+          versions.delete(k);
+        }
+        world.delete(k);
+        invalidateViewsFor(parsed);                 // surgical: only views aliasing this array
+        chunkCacheStats.dropped++;
+      }
+      chunkCacheStats.evictRuns++;
+    } finally {
+      lastRevivedKey=null;
+      evicting=false;
+      chunkCacheStats.lastEvictMs=+((((typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now())-t0).toFixed(2));
     }
-    cand.sort((a,b)=>b[0]-a[0]);                  // farthest first
-    const drop=Math.min(cand.length, world.size-((CHUNK_CAP*0.75)|0));
-    for(let i=0;i<drop;i++){
-      const parsed=parseChunkKey(cand[i][1]);
-      try{ if(parsed && parsed.base && MM.trees && MM.trees.clearChunk) MM.trees.clearChunk(parsed.cx); }catch(e){}
-      world.delete(cand[i][1]); versions.delete(cand[i][1]);
-    }
-    sectionViews.clear(); // cached views may alias deleted chunk arrays
   }
   function ck(x){ return 'c'+x; }
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
@@ -1510,7 +1603,12 @@ window.MM = window.MM || {};
       for(let y=Math.max(0,sealTop); y<WORLD_H; y++) arr[tileIndex(lx,y)]=T.BEDROCK;
     }
   }
-  function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k); const arr=new Uint8Array(CHUNK_W*WORLD_H);
+  function ensureChunk(cx){ const k=ck(cx); if(world.has(k)) return world.get(k);
+    const revived=rehydrateChunk(k);
+    if(revived) return revived;
+    genDepth++;                                    // audits below may generate neighbors;
+    try{                                           // eviction defers until the outermost gen exits
+    const arr=new Uint8Array(CHUNK_W*WORLD_H);
     const S=WG.settings||{};
     const SEA=(S.seaLevel===undefined)?62:S.seaLevel;
     for(let lx=0; lx<CHUNK_W; lx++){
@@ -1638,13 +1736,14 @@ window.MM = window.MM || {};
     // scrub also covers third-party/story structure passes applied above.
     stripChestTiles(arr);
     world.set(k,arr); markModifiedChunk(cx,0);
-    if(world.size>CHUNK_CAP) evictFarChunks();
+    if(world.size>CHUNK_CAP) requestEvict();
     auditCityStructuralStability(arr,cx);
     // A new chunk may carve caves right beside existing dormant water (or bring its own
     // water beside existing caves) — queue a boundary wake so the fluid sim reacts.
     try{ if(MM.water && MM.water.noteChunkGenerated) MM.water.noteChunkGenerated(cx*CHUNK_W, cx*CHUNK_W+CHUNK_W-1); }catch(e){}
     registerGeneratedLava(arr,cx);
-    return arr; }
+    return arr;
+    } finally { genExit(); } }
 
   function skyTile(wx,y,sy){ return WORLD_LAYERS.skyTile(WG,wx,y,sy); }
   function deepTile(wx,y){ return WORLD_LAYERS.deepTile(WG,wx,y); }
@@ -1684,11 +1783,15 @@ window.MM = window.MM || {};
     }else{
       const k=ckSection(cx,sy);
       arr=world.get(k);
+      if(!arr) arr=rehydrateChunk(k);
       if(!arr){
-        arr=generateVerticalSection(cx,sy);
-        world.set(k,arr);
-        markModifiedChunk(cx,0,sy);
-        if(world.size>CHUNK_CAP) evictFarChunks();
+        genDepth++;
+        try{
+          arr=generateVerticalSection(cx,sy);
+          world.set(k,arr);
+          markModifiedChunk(cx,0,sy);
+          if(world.size>CHUNK_CAP) requestEvict();
+        } finally { genExit(); }
       }
     }
     if(arr) sectionViews.set(vk,arr);
@@ -2094,7 +2197,8 @@ window.MM = window.MM || {};
     const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
     const view=sectionViews.get(viewKey(cx,sy));
     if(view) return view[ly*CHUNK_W+lx];
-    const arr=world.get(isBaseSection(sy) ? ck(cx) : ckSection(cx,sy));
+    const kk=isBaseSection(sy) ? ck(cx) : ckSection(cx,sy);
+    const arr=world.get(kk) || parkedPeekArray(kk); // parked modified chunks stay peek-visible
     if(!arr) return fallback===undefined ? T.AIR : fallback;
     return getTileRaw(arr,lx,isBaseSection(sy)?y:ly);
   }
@@ -2280,7 +2384,7 @@ window.MM = window.MM || {};
       markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
     }
   }
-  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); parked.clear(); peekParkCache.clear(); evictPending=false; versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
   // Save loading replaces whole chunk arrays: any cached section view over the
   // old array must be dropped or reads would silently hit the orphaned buffer.
   function setChunkArray(key,arr){
@@ -2298,7 +2402,9 @@ window.MM = window.MM || {};
     if(!(arr instanceof Uint8Array) || arr.length!==expected) return false;
     // Old saves may contain chest blocks. They are intentionally removed, not
     // converted: only fresh mob/reward drops populate physical chests now.
-    world.set(ref.key,stripChestTiles(arr)); sectionViews.clear();
+    parked.delete(ref.key); peekParkCache.delete(ref.key); // restored data supersedes any parked copy
+    world.set(ref.key,stripChestTiles(arr)); invalidateViewsFor(ref);
+    if(world.size>CHUNK_CAP) requestEvict();
     // Save-loaded base chunks skip ensureChunk, so replay the deterministic
     // city pass in background-only mode to rebuild interior backdrops.
     if(ref.base){
@@ -2367,11 +2473,18 @@ window.MM = window.MM || {};
     const norm=normalizeChunkRef(ref);
     if(!norm) return null;
     if(Number.isFinite(norm.sy) && isBaseSection(norm.sy)){
-      const base=world.get(ck(norm.cx));
+      const base=world.get(ck(norm.cx)) || parkedPeekArray(ck(norm.cx));
       return base ? base.subarray(norm.sy*SECTION_SIZE, Math.min(base.length,(norm.sy+1)*SECTION_SIZE)) : null;
     }
-    return world.get(norm.key)||null;
+    return world.get(norm.key) || parkedPeekArray(norm.key) || null;
   };
+  worldAPI.chunkCacheStats = function(){
+    let pinned=0; for(const v of versions.values()){ if(v) pinned++; }
+    return Object.assign({live:world.size, parkedNow:parked.size, pinned, cap:CHUNK_CAP}, chunkCacheStats);
+  };
+  worldAPI._parked = parked;
+  worldAPI._evictFarChunks = evictFarChunks;
+  worldAPI._setChunkCapForTest = function(n){ CHUNK_CAP = (Number.isInteger(n) && n>8) ? n : 1536; };
   worldAPI.metrics = function(){
     return {chunks:world.size, modified:modifiedChunks.size, infrastructure:infrastructure.size, constructionBackground:constructionBackground.size, heightCache:heightCache.size, lakeCache:lakeLevels.size};
   };

@@ -196,7 +196,11 @@ player.xp = 12000;
 invasions.forceNightInvasion(player,getTile,setTile,{day:3,teams:1});
 for(let i=0;i<120;i++) invasions.update(0.1, player, getTile, setTile, ctx);
 const upgradedSquad = invasions.state().teams[0];
-assert.ok(upgradedSquad.aliens.every(a=>a.grade === upgradedSquad.grade && a.weaponTier === upgradedSquad.weaponTier), 'spawned high-level aliens inherit visible grade and weapon tier');
+assert.ok(upgradedSquad.aliens.every(a=>{
+  const bump = a.elite ? 1 : 0;
+  return a.grade === Math.min(3, upgradedSquad.grade + bump) && a.weaponTier === Math.min(3, upgradedSquad.weaponTier + bump);
+}), 'spawned high-level aliens inherit visible grade and weapon tier (elites exactly one step above)');
+assert.equal(upgradedSquad.aliens.filter(a=>a.elite).length, upgradedSquad.eliteCount, 'elite head-count matches the team plan');
 assert.ok(upgradedSquad.aliens.some(a=>a.maxHp > lowTeam.day * 3 + 18), 'spawned high-level aliens have scaled durability');
 invasions.reset();
 overrides.clear();
@@ -1077,6 +1081,87 @@ assert.match(weaponsSrc, /damageBlastCreatures\(MM,wx,wy,R\+1\.5,14/, 'gas explo
   }
   assert.ok(sawTransit, 'left to itself, a unit sealed in a shaft is eventually pulled out (no more forever-stuck squads)');
   void D;
+}
+
+{ // --- dawn retreat + natural spawn gate: night raids END, swarms cannot form.
+  // Pre-fix, 'retreat' was filtered everywhere but never set, and the night
+  // scheduler never counted standing teams — squads camped around the base
+  // (always half-seen, so the offscreen despawn never tripped) piled up night
+  // after night into an ever-growing all-simulating swarm.
+  invasions.reset();
+  overrides.clear();
+  MM.background = {timeInfo:()=>({phase:'night', isDay:false, hour:23})};
+  simDayFloat = 40;
+  player.x = 0; player.y = 49; player.hp = 100;
+  const board = invasions.forceNightInvasion(player,getTile,setTile,{day:40,teams:4,alienCount:2,forceVisible:true,immediate:true});
+  assert.equal(board.length, 4, 'gate probe stages four live night teams');
+  invasions.update(0.05, player, getTile, setTile, ctx);
+  assert.equal(invasions.metrics().activeTeams, 4, 'staged teams stay active through the night');
+  simDayFloat = 41; // a NEW night with the board still full
+  invasions.update(0.05, player, getTile, setTile, ctx);
+  assert.equal(invasions.metrics().teams, 4, 'a full board blocks natural night reinforcements (no swarm accumulation)');
+  assert.equal(invasions.metrics().lastNightDay, 41, 'the blocked night is consumed instead of retried every frame');
+
+  MM.background = {timeInfo:()=>({phase:'day', isDay:true, hour:9})};
+  invasions.update(0.05, player, getTile, setTile, ctx);
+  assert.equal(invasions.metrics().activeTeams, 0, 'dawn stands every non-story team down (retreat state finally has a setter)');
+  const realNow = Date.now;
+  try{
+    const base = realNow();
+    Date.now = () => base + 4000;
+    invasions.update(0.05, player, getTile, setTile, ctx);
+  } finally { Date.now = realNow; }
+  assert.equal(invasions.metrics().teams, 0, 'retreated teams are swept shortly after dawn');
+  MM.background = {timeInfo:()=>({phase:'night', isDay:false, hour:23})};
+}
+
+{ // --- squad size scales by QUALITY, not headcount: regular teams cap at 8,
+  // the old curve's surplus units come back as elites (+1 grade/tier, tougher,
+  // shinier), and an occasional HORDE trades quality for a 14-20 mass of the
+  // weakest units. Bounded populations are also the fps guarantee that dawn
+  // retreat + the spawn gate rest on.
+  invasions.reset();
+  overrides.clear();
+  MM.background = {timeInfo:()=>({phase:'night', isDay:false, hour:23})};
+  player.x = 0; player.y = 49; player.hp = 100; player.xp = 200000; // deep late-game level
+  simDayFloat = 60;
+  const late = invasions.forceNightInvasion(player,getTile,setTile,{day:60,teams:2,forceVisible:true,immediate:true});
+  assert.equal(late.length, 2, 'late-game probe stages two teams');
+  for(const t of late){
+    assert.ok(t.aliens.length >= 3 && t.aliens.length <= 8, 'late-game regular team fields 3-8 units, never the old 18 ('+t.aliens.length+')');
+    assert.ok(t.eliteCount >= 1 && t.eliteCount <= 3, 'late-game team converts lost headcount into 1-3 elites — an accent, never the bulk ('+t.eliteCount+')');
+    const elites = t.aliens.filter(a=>a.elite);
+    assert.equal(elites.length, t.eliteCount, 'planned elites all deploy');
+    assert.ok(elites.every(a=>a.role !== 'commander'), 'the commander keeps their own crown, elites are line units');
+  }
+
+  invasions.reset();
+  overrides.clear();
+  const hordeSpawn = invasions.forceNightInvasion(player,getTile,setTile,{day:60,teams:1,horde:true,forceVisible:true,immediate:true});
+  assert.equal(hordeSpawn.length, 1, 'horde probe stages one team');
+  const horde = hordeSpawn[0];
+  assert.ok(horde.horde === true, 'horde flag survives team creation');
+  assert.ok(horde.aliens.length >= 14 && horde.aliens.length <= 20, 'a horde is a genuine mass: 14-20 units ('+horde.aliens.length+')');
+  assert.ok(horde.aliens.every(a=>a.grade === 0 && a.weaponTier === 0 && !a.elite), 'horde bodies are the weakest possible: grade 0, tier 0, no elites');
+  assert.ok(horde.aliens.every(a=>a.role !== 'commander'), 'hordes have no commander');
+  const regularPeer = invasions.forceNightInvasion(player,getTile,setTile,{day:60,teams:1,forceVisible:true,immediate:true})[0];
+  const avgHp = list=>list.reduce((s,a)=>s+a.maxHp,0)/Math.max(1,list.length);
+  assert.ok(avgHp(horde.aliens) < avgHp(regularPeer.aliens) * 0.6, 'horde units are dramatically weaker per body than a regular late squad');
+
+  // save/load: elite crowns and horde chaff survive normalizeTeam re-stamping
+  const snap = invasions.snapshot();
+  invasions.restore(snap,getTile,setTile);
+  const back = invasions.state().teams;
+  const backHorde = back.find(t=>t.horde);
+  const backRegular = back.find(t=>!t.horde && t.eliteCount >= 1);
+  assert.ok(backHorde && backHorde.aliens.every(a=>a.grade === 0 && a.weaponTier === 0), 'reloaded horde stays chaff');
+  assert.ok(backRegular && backRegular.aliens.filter(a=>a.elite).length === backRegular.eliteCount, 'reloaded elites keep their crown');
+  assert.ok(backRegular.aliens.every(a=>{
+    const bump = a.elite ? 1 : 0;
+    return a.grade === Math.min(3, backRegular.grade + bump);
+  }), 'reload re-stamps team baseline but preserves the elite +1 step');
+  invasions.reset();
+  MM.background = {timeInfo:()=>({phase:'night', isDay:false, hour:23})};
 }
 
 console.log('invasions-sim: all assertions passed');

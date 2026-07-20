@@ -198,6 +198,18 @@ assert.match(mainSrc, /function selectToolMode\(opts\)\{[\s\S]*INV\.unequip\('we
 assert.match(mainSrc, /function cycleHotbar\(idx,opts\)\{[\s\S]*selectToolMode\(\{quiet:true\}\)[\s\S]*updateHotbarSel\(\)/, 'choosing a hotbar resource immediately returns to pickaxe/build mode');
 assert.match(mainSrc, /const preview=\(c && INV\.selectedWeaponForCategory\)\? INV\.selectedWeaponForCategory\(c\.id\)/, 'inactive weapon HUD slots display their remembered selection');
 assert.match(mainSrc, /assign\(slot,key\)\{[\s\S]*HOTBAR_ORDER\[slot\]=key; cycleHotbar\(slot\);/, 'inventory resource assignment goes through the hotbar selector');
+
+// --- crafting-panel drag&drop onto hotbar slots (engine/craft_drag.js) ------
+const craftDragSrc = readFileSync(new URL('../src/engine/craft_drag.js', import.meta.url), 'utf8');
+assert.match(craftDragSrc, /elementFromPoint\(x,y\)[\s\S]{0,120}closest\('\.hotSlot'\)/, 'drop targeting hit-tests the real hotbar slot under the pointer');
+assert.match(craftDragSrc, /#craftDragGhost\{[^}]*pointer-events:none/, 'drag ghost never blocks drop hit-testing');
+assert.match(craftDragSrc, /\.craftDragHandle\{[^}]*touch-action:none/, 'drag handles opt out of native panning so touch can drag');
+assert.ok(!/\.innerHTML\s*=/.test(craftDragSrc), 'drag layer renders text via textContent only');
+assert.match(mainSrc, /assign\(slot,item\)\{ if\(!\(MM\.hotbar && MM\.hotbar\.assign\(slot,item\.k\)\)\) return false;/, 'craft drag drops flow through the validated MM.hotbar.assign bridge');
+assert.match(mainSrc, /function craftPlaceableDef\(k\)\{[\s\S]{0,80}RESOURCE_DEFS\.find\(res=>res\.key===k && res\.tile\)/, 'craft panel resolves placeable resources through the resource registry');
+assert.match(mainSrc, /const placeable=craftPlaceableDef\(k\);/, 'ingredient rows expose placeable resources as tile drag handles');
+assert.match(mainSrc, /className='craftHotDrop'/, 'craft detail shows a drag-to-hotbar card for placeable outputs');
+assert.match(indexHtml, /#craft \.craftHotDrop\{[^}]*border:1px dashed/, 'output drag card advertises its drop affordance');
 assert.match(mainSrc, /function collectLooseItemAt\(tx,ty,opts\)\{[\s\S]*isLooseItemTile\(t\)[\s\S]*const dropCtx=dropContextForTile\(t,tx,ty\);[\s\S]*setForegroundConfirmed\(tx,ty,T\.AIR\)[\s\S]*const drops=awardTileDrops\(info,dropCtx\);[\s\S]*pushUndo\(tx,ty,t,T\.AIR,'break',drops\);[\s\S]*updateInventory\(\);/, 'loose item collection confirms removal before drops, undo, and inventory refresh');
 assert.match(mainSrc, /function tryEatWorldFoodAt\(tx,ty\)[\s\S]*Consuming world food is not a reversible tile edit[\s\S]*setForegroundConfirmed\(tx,ty,T\.AIR\)/,
   'consumed world food is not restorable without rolling back its already-applied health and status effects');

@@ -144,6 +144,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((b.x+0.5)*TILE_PX,(b.y+0.5)*TILE_PX,'common'); }catch(e){}
   }
   const torchHeat=new Map();
+  const torchBatchScratch=[]; // reused per-tick key/value snapshot for the rotating budget slice
   let torchHeatAcc=0;
   let torchRuntime=0;
   function noteTorch(x,y){
@@ -165,8 +166,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     torchHeatAcc+=dt;
     if(torchHeatAcc<TORCH_HEAT_INTERVAL) return;
     torchHeatAcc=0;
-    const batch=[...torchHeat.entries()].slice(0,TORCH_HEAT_BUDGET);
-    for(const [k,h] of batch){
+    // first-N slice without spreading the whole Map (it retains every torch the
+    // player has ever seen, up to its 1000 cap; only 24 are processed per tick)
+    torchBatchScratch.length=0;
+    for(const k of torchHeat.keys()){
+      if(torchBatchScratch.length>=TORCH_HEAT_BUDGET*2) break;
+      torchBatchScratch.push(k,torchHeat.get(k));
+    }
+    for(let si=0; si<torchBatchScratch.length; si+=2){
+      const k=torchBatchScratch[si], h=torchBatchScratch[si+1];
       if(getTile(h.x,h.y)!==T.TORCH){ torchHeat.delete(k); continue; }
       heatAround(h.x,h.y,getTile,setTile,{includeCenter:false});
       const elapsed=Math.max(0,Math.min(5,torchRuntime-(Number.isFinite(h.smokeAt)?h.smokeAt:torchRuntime)));
@@ -530,6 +538,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   // instead of smearing one tile thin). Settled lava exposed to open air slowly
   // crusts into obsidian.
   const lavaSet=new Map(); // key -> {x,y,coolT,moveT,pressure,source}
+  const lavaScratch=[];    // reused per-tick [k,L,k,L,...] snapshot (no per-frame pair allocs)
   const MAX_LAVA=560;
   const LAVA_MOVE_BUDGET=64;
   const LAVA_MOVE_BUDGET_LOW_FPS=28;
@@ -728,8 +737,14 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   function updateLava(getTile,setTile,dt){
     let moveBudget=lavaMoveBudget();
     let hotAirBudget=lavaHotAirBudget();
-    const entries=[...lavaSet.entries()];
-    for(const [k,L] of entries){
+    // flat [k,L,k,L,...] snapshot in a reused scratch: identical semantics to
+    // the old `[...lavaSet.entries()]` (moved/replaced lava is skipped via the
+    // object-identity guard) without allocating ~560 pair arrays per frame for
+    // the lifetime of every volcano the player ever visited
+    lavaScratch.length=0;
+    lavaSet.forEach((L,k)=>{ lavaScratch.push(k,L); });
+    for(let si=0; si<lavaScratch.length; si+=2){
+      const k=lavaScratch[si], L=lavaScratch[si+1];
       if(lavaSet.get(k)!==L) continue;
       L.waterT=(L.waterT==null?Math.random()*0.12:L.waterT)-dt;
       if(L.waterT<=0){

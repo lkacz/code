@@ -9,6 +9,7 @@ MM.ui = (function(){
   const DEBUG_SETTINGS_KEY='mm_debug_menu_settings_v1';
   const DEBUG_DEFAULTS={
     time:{active:false,value:0},
+    simulation:{speed:1},
     background:{blur:1},
     gas:{power:2},
     wind:{speed:0,mode:'natural',profile:null},
@@ -238,11 +239,28 @@ MM.ui = (function(){
     chk.checked=timeSaved.active===true;
     const chkLab=document.createElement('label'); chkLab.htmlFor='timeOverrideChk'; chkLab.textContent='Steruj ręcznie';
     chkWrap.appendChild(chk); chkWrap.appendChild(chkLab);
-    wrap.appendChild(label); wrap.appendChild(range); wrap.appendChild(chkWrap);
+    const simLabel=document.createElement('label'); simLabel.style.cssText='font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center; margin-top:7px; padding-top:7px; border-top:1px solid rgba(255,255,255,.06);'; simLabel.textContent='Tempo symulacji';
+    const simValue=document.createElement('span'); simValue.style.fontSize='11px'; simValue.style.opacity='0.8'; simLabel.appendChild(simValue);
+    const simSelect=document.createElement('select'); simSelect.id='simulationSpeedDropdown'; simSelect.style.cssText='width:100%; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px;';
+    const simSpeeds=[0.1,0.25,0.5,0.75,1,1.5,2,3,4];
+    const savedSpeed=debugNumber('simulation','speed',1,0.1,4);
+    const initialSpeed=simSpeeds.reduce((best,value)=>Math.abs(value-savedSpeed)<Math.abs(best-savedSpeed)?value:best,1);
+    for(const speed of simSpeeds){
+      const option=document.createElement('option'); option.value=String(speed); option.textContent='×'+speed.toFixed(speed<1?2:(Number.isInteger(speed)?0:1)); simSelect.appendChild(option);
+    }
+    simSelect.value=String(initialSpeed);
+    const simHint=document.createElement('div'); simHint.className='hint'; simHint.textContent='Wspólny zegar dla fizyki, pogody, stworzeń, maszyn i pozostałych symulacji.';
+    wrap.appendChild(label); wrap.appendChild(range); wrap.appendChild(chkWrap); wrap.appendChild(simLabel); wrap.appendChild(simSelect); wrap.appendChild(simHint);
     panel.appendChild(wrap);
     window.__timeSliderEl = range;
     function readTimeValue(){ const n=parseFloat(range.value); return Number.isFinite(n) ? Math.max(0,Math.min(1,n)) : 0; }
     function upd(){ span.textContent=(readTimeValue()*100).toFixed(2)+'%'; }
+    function applySimulationSpeed(){
+      const speed=Math.max(0.1,Math.min(4,Number(simSelect.value)||1));
+      window.__simulationTimeScale=speed;
+      simValue.textContent='×'+speed.toFixed(speed<1?2:(Number.isInteger(speed)?0:1));
+      debugSet('simulation','speed',speed);
+    }
     function applyTimeOverride(){
       const val=readTimeValue();
       // a challenge night lock (permanight) owns the override while the manual
@@ -262,7 +280,9 @@ MM.ui = (function(){
       debugSet('time','active',chk.checked);
       debugSet('time','value',readTimeValue());
     });
+    simSelect.addEventListener('change',applySimulationSpeed);
     applyTimeOverride();
+    applySimulationSpeed();
     upd();
   }
   function injectBackgroundDebugPanel(menuPanel){

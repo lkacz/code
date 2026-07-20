@@ -29,7 +29,16 @@ import { rollChestFurnishing } from './furnishings.js';
       }
     }
   }catch(e){}
-  function saveDynamicLoot(){ try{ if(MM.dynamicLoot) localStorage.setItem(DYN_KEY, JSON.stringify({version:DYN_VERSION, ...MM.dynamicLoot})); }catch(e){} }
+  // The pool grows for the whole session and every pickup/craft used to
+  // stringify ALL of it synchronously — debounce the write (trailing 400ms,
+  // flushed on tab hide/close) so loot bursts cost one serialization, not N.
+  let dynSaveT=null;
+  function writeDynamicLootNow(){ dynSaveT=null; try{ if(MM.dynamicLoot) localStorage.setItem(DYN_KEY, JSON.stringify({version:DYN_VERSION, ...MM.dynamicLoot})); }catch(e){} }
+  function saveDynamicLoot(){ try{ if(dynSaveT!=null) return; dynSaveT=setTimeout(writeDynamicLootNow,400); }catch(e){ writeDynamicLootNow(); } }
+  try{
+    window.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden' && dynSaveT!=null){ clearTimeout(dynSaveT); writeDynamicLootNow(); } });
+    window.addEventListener('beforeunload',()=>{ if(dynSaveT!=null){ clearTimeout(dynSaveT); writeDynamicLootNow(); } });
+  }catch(e){}
 
   // Function-pure loot (contract shared with inventory.js KIND_STAT_PRIORITY):
   // an item rolls ONLY its kind's job stats — capes jump, eyes see, outfits carry

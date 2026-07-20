@@ -79,7 +79,7 @@ assert.ok(discovery.HINTS.jewel_drop && /przedmiot/i.test(discovery.HINTS.jewel_
 
   const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(mainSrc, /function noteCurrentBiomeDiscovery\(\)/, 'main exposes one biome-transition check');
-  assert.match(mainSrc, /runGameStep\(frameDt,ts\);\s*noteCurrentBiomeDiscovery\(\);/, 'active simulation checks the current biome after movement');
+  assert.match(mainSrc, /runGameFrame\(simulationDt,ts\);\s*noteCurrentBiomeDiscovery\(\);/, 'active scaled simulation checks the current biome after movement');
 }
 
 // --- unknown ids never crash and never count --------------------------------

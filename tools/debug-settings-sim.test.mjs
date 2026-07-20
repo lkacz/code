@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+const backgroundSrc = await readFile(new URL('../src/engine/background.js', import.meta.url), 'utf8');
 const meteoritesSrc = await readFile(new URL('../src/engine/meteorites.js', import.meta.url), 'utf8');
 const htmlSrc = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 
@@ -36,6 +37,11 @@ assert.match(htmlSrc, /Debug \(tylko przy otwartym panelu\):/, 'the toolbox expl
 assert.match(mainSrc, /F3\/M\/G\/I i pozostałe skróty testowe działają wyłącznie przy otwartym panelu deweloperskim/, 'legacy help no longer advertises active cheats outside the toolbox');
 
 assert.match(uiSrc, /const DEBUG_SETTINGS_KEY='mm_debug_menu_settings_v1'/, 'debug menu settings use one stable localStorage key');
+assert.match(uiSrc, /simulation:\{speed:1\}/, 'global simulation pace has a stable real-time default');
+assert.match(uiSrc, /window\.__simulationTimeScale=speed/, 'simulation pace control publishes one shared scale for the game loop');
+assert.match(uiSrc, /Wspólny zegar dla fizyki, pogody, stworzeń, maszyn/, 'simulation pace control explains its global scope');
+assert.match(mainSrc, /function advanceSimulationClock\(dt\)[\s\S]*window\.__mmSimulationTimeMs=simulationClockMs/, 'scaled simulation time is published as the shared world clock');
+assert.match(backgroundSrc, /function simulationClockNow\(\)[\s\S]*window\.__mmSimulationTimeMs/, 'the day and night cycle follows the shared scaled world clock');
 assert.match(uiSrc, /function debugSet\(section,key,value\)/, 'debug UI has a shared setting writer');
 assert.match(uiSrc, /debugSettings:\{load:readDebugSettings,set:debugSet,section:debugSection\}/, 'debug setting helpers are exposed for future debug panels');
 

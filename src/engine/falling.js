@@ -76,6 +76,7 @@ window.MM = window.MM || {};
   const playerBuilt = new Set(); // user placed build materials; natural terrain is intentionally excluded
   const buildStress = new Map(); // key -> 0..1 warning intensity for supported-but-near-limit blocks
   const buildStressFlow = new Map(); // key -> normalized direction where load is flowing
+  let buildStressSweepAt = 0;        // off-screen stale-entry purge runs at 0.5 Hz, not per frame
   const buildBreaks = []; // short-lived visual flashes where player-built structure snapped
   const buildBearingLoads = new WeakMap(); // supported-built Map -> external footing load map
   const buildFlowDirections = new WeakMap(); // supported-built Map -> cell force-flow directions
@@ -2104,11 +2105,18 @@ window.MM = window.MM || {};
     const now=(typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     const pulse=0.80+0.20*Math.sin(now*0.010);
     ctx.save();
+    // The registry spans EVERY stressed built cell in the world; the per-entry
+    // getTile validation must stay O(viewport), so off-screen entries only get
+    // the (stale-tile) purge during the low-cadence sweep.
+    const sweepPurge=now-buildStressSweepAt>2000; // NOT named `sweep` — the loop body declares its own sweep-line const
+    if(sweepPurge) buildStressSweepAt=now;
     for(const [raw,ratio] of buildStress){
       const c=parseCellKey(raw);
       if(!c){ buildStress.delete(raw); buildStressFlow.delete(raw); continue; }
+      const visible=tileVisible(c.x,c.y);
+      if(!visible && !sweepPurge) continue;
       if(!isTrackedPlayerBuild(c.x,c.y)){ buildStress.delete(raw); buildStressFlow.delete(raw); continue; }
-      if(!tileVisible(c.x,c.y)) continue;
+      if(!visible) continue;
       const x=c.x*TILE, y=c.y*TILE;
       const danger=Math.max(0,Math.min(1,(ratio-BUILD_STRESS_WARN)/(1-BUILD_STRESS_WARN)));
       const a=Math.max(0,Math.min(1,0.42+danger*0.54))*pulse;

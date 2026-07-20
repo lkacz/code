@@ -23,6 +23,13 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   const CATCHUP_MAX_SECONDS = 900;
   const VISIBLE_SCAN_INTERVAL_MS = 250;
   let visibleScanKey = '';
+  // Far machines tick at interval cadence (same pattern as solar): every dynamo
+  // ever built used to pay ~12-15 tile reads of validation + wind sampling EVERY
+  // frame, a per-frame cost that scaled with lifetime construction.
+  const ACTIVE_RX = 68;
+  const ACTIVE_RY = 42;
+  const REMOTE_UPDATE_INTERVAL = 1.0;
+  let remoteT = 0;
   let visibleScanAt = 0;
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
@@ -331,19 +338,30 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   }
   function update(dt,getTile){
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return;
+    remoteT+=dt;
+    const remoteDt=remoteT>=REMOTE_UPDATE_INTERVAL ? remoteT : 0;
+    if(remoteDt>0) remoteT=0;
+    const p=(typeof window!=='undefined' && window.player) || null;
+    const hasPlayer=!!(p && Number.isFinite(p.x) && Number.isFinite(p.y));
+    const px=hasPlayer ? p.x : 0;
+    const py=hasPlayer ? p.y : 0;
     for(const [k,m] of machines){
-      if(!m || !finiteTile(m.x,m.y) || !isValidSlot(m.x,m.y,getTile)){
+      if(!m || !finiteTile(m.x,m.y)){ machines.delete(k); continue; }
+      const nearby=!hasPlayer || (Math.abs(m.x-px)<=ACTIVE_RX && Math.abs(m.y-py)<=ACTIVE_RY);
+      const step=nearby ? dt : remoteDt;
+      if(!(step>0)) continue;
+      if(!isValidSlot(m.x,m.y,getTile)){
         machines.delete(k);
         continue;
       }
       normalizeMachine(m);
-      recordWindPower(m,dt,getTile);
+      recordWindPower(m,step,getTile);
       const work=Math.max(0,Math.min(1,(m.power||0)/MAX_POWER));
       const targetSpeed=work>0.001 ? 5+work*26 : 0;
-      m.rotorSpeed+=(targetSpeed-(m.rotorSpeed||0))*Math.min(1,dt*(targetSpeed>0 ? 6.5 : 2.3));
-      m.rotorAngle=((m.rotorAngle||0)+(m.rotorSpeed||0)*dt)%(Math.PI*2);
-      m.power=Math.max(0, (m.power||0)-POWER_DECAY*dt);
-      m.pulse=Math.max(0, (m.pulse||0)-PULSE_DECAY*dt);
+      m.rotorSpeed+=(targetSpeed-(m.rotorSpeed||0))*Math.min(1,step*(targetSpeed>0 ? 6.5 : 2.3));
+      m.rotorAngle=((m.rotorAngle||0)+(m.rotorSpeed||0)*step)%(Math.PI*2);
+      m.power=Math.max(0, (m.power||0)-POWER_DECAY*step);
+      m.pulse=Math.max(0, (m.pulse||0)-PULSE_DECAY*step);
     }
     if(machines.size>MACHINE_CAP){
       const idle=[...machines.entries()]

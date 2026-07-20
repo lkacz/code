@@ -672,12 +672,28 @@ export function createAssembler(){
 export function createCooldownLedger(rules){
 	const R = rules || BUFF_RULES;
 	const used = new Map(); // peerId -> {kind -> lastMs}
+	// Entries deliberately survive disconnects (forgetting on drop would let a
+	// guest reset cooldowns by reconnecting), so a gid-cycling attacker could
+	// grow the map without bound: cap it by evicting the least-recently-active
+	// peer — recent reconnectors keep their cooldowns, ancient ghosts age out.
+	const LEDGER_CAP = 256;
 	return {
 		tryUse(peerId, kind, now){
 			if(!R[kind]) return { ok: false, waitMs: 0, reason: 'unknown' };
 			const t = Number.isFinite(now) ? now : Date.now();
 			let mine = used.get(peerId);
-			if(!mine){ mine = {}; used.set(peerId, mine); }
+			if(!mine){
+				if(used.size >= LEDGER_CAP){
+					let oldestId = null, oldestAt = Infinity;
+					for(const [id, kinds] of used){
+						let latest = 0;
+						for(const k in kinds){ if(kinds[k] > latest) latest = kinds[k]; }
+						if(latest < oldestAt){ oldestAt = latest; oldestId = id; }
+					}
+					if(oldestId != null) used.delete(oldestId);
+				}
+				mine = {}; used.set(peerId, mine);
+			}
 			const last = mine[kind];
 			if(last != null){
 				const wait = last + R[kind].cd - t;

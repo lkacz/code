@@ -12,6 +12,13 @@ const indexSource = readFileSync(new URL('../index.html', import.meta.url), 'utf
 const constantsSource = readFileSync(new URL('../src/constants.js', import.meta.url), 'utf8');
 
 assert.match(mainSource, /let deathTravelFx=null;/, 'death respawn transit has a single active state object');
+assert.match(mainSource, /const HERO_DEATH_SLOW_MOTION_HOLD_MS=3000;/, 'hero death holds slow motion for three real seconds');
+assert.match(mainSource, /const HERO_DEATH_SLOW_MOTION_RECOVERY_MS=3000;/, 'hero death recovers over the following three real seconds');
+assert.match(mainSource, /const HERO_DEATH_SLOW_MOTION_SCALE=0\.25;/, 'hero death uses quarter-speed simulation');
+assert.match(mainSource, /function simulationTimeScaleAt\(now\)[\s\S]*recoveryStart[\s\S]*raw\*raw\*\(3-2\*raw\)[\s\S]*slowScale\+\(configured-slowScale\)\*eased/, 'death time eases smoothly from quarter speed back to the configured pace');
+assert.match(mainSource, /window\.heroDied=function\(cause\)\{[\s\S]*beginHeroDeathSlowMotion\(\);/, 'every centralized hero death starts the slow-motion beat');
+assert.match(mainSource, /const simulationDt=frameDt\*timeScale;[\s\S]*runGameFrame\(simulationDt,ts\)/, 'the shared time scale drives the complete game simulation');
+assert.match(mainSource, /function runGameFrame\(totalDt,ts\)[\s\S]*Math\.ceil\([\s\S]*MAX_FRAME_DT[\s\S]*runGameStep\(stepDt,ts\)/, 'fast debug pacing is safely divided into bounded simulation steps');
 assert.match(mainSource, /function startDeathTravelFx\(cause\)[\s\S]*lockDeathRespawnTarget\(deathRespawnTarget\(\)\)[\s\S]*surfaceRoute:usesSurfaceRespawnRoute[\s\S]*releaseGameplayInput\(\)[\s\S]*spawnEnergyAbsorb/, 'starting death transit freezes one section-aware target, locks input and emits energy toward it');
 assert.match(mainSource, /function lockDeathRespawnTarget\(target\)[\s\S]*Object\.freeze/, 'the selected respawn target cannot drift after departure');
 assert.match(mainSource, /function finishDeathTravelRespawn\(\)[\s\S]*player\.hp=player\.maxHp[\s\S]*placePlayerAtRespawnSpot\(fx\.to\)[\s\S]*centerOnPlayer\(\)[\s\S]*updateInventory\(\)/, 'respawn completion lands at the frozen target and synchronizes the camera in the same tick');

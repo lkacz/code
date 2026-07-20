@@ -41,10 +41,27 @@ const invasions = (function(){
   const TILE_DAMAGE_CAP = 220;
   const PLAYER_LEVEL_CAP = 99;
   const INVASION_MAX_TEAMS = 6;
-  const INVASION_MAX_ALIENS = 18;
+  const INVASION_MAX_ALIENS = 20;      // hard sanity bound (only hordes reach it)
+  // Squads scale by QUALITY, not headcount: a regular team never exceeds 8 —
+  // the unit pressure the old day/threat curve put above 8 converts into ELITE
+  // units (grade+tier bumped, stronger, shinier). For fun, an occasional HORDE
+  // spawns instead: a mass of the weakest possible units.
+  const TEAM_SIZE_REGULAR_MAX = 8;
+  const HORDE_SIZE_MIN = 14;
+  const HORDE_CHANCE = 0.12;
+  const HORDE_MIN_DAY = 5;
+  const ELITE_HP_MULT = 1.4;
+  const ELITE_DAMAGE_MULT = 1.15;
+  const ELITE_MAX_PER_TEAM = 3; // elites are the accent of a squad, never its bulk
   const OFFSCREEN_DESPAWN_DAYS = 1;
   const OFFSCREEN_VIEW_PAD = 6;
   const OFFSCREEN_FALLBACK_RADIUS = 88;
+  // Dawn ends the raid: without this, teams the player kept half-seeing around
+  // the base (offscreen despawn needs a FULL unseen day) piled up night after
+  // night into an ever-growing swarm of units all simulating every frame.
+  const RETREAT_SWEEP_MS = 2600;
+  const NATURAL_SPAWN_TEAM_GATE = 4;
+  const REMOTE_BRAIN_INTERVAL = 0.35; // off-view squads re-plan ~3x/s instead of every frame
   const THREAT_GRADE_NAMES = ['scout','veteran','elite','ascendant'];
   const teams = [];
   const caches = [];
@@ -476,14 +493,26 @@ const invasions = (function(){
     const cap = opts && opts.natural ? 2 : INVASION_MAX_TEAMS;
     return Math.max(1, Math.min(cap, Math.floor(Number(requested) || 1)));
   }
-  function alienCountForDay(day,index,playerLevel,threatLevel){
+  function rawUnitPressure(day,index,playerLevel,threatLevel){
     const d = Math.max(1, Math.floor(Number(day) || 1));
     const threat = Math.max(d, Math.floor(Number(threatLevel) || d));
     const idx = Math.max(0, Math.floor(Number(index) || 0));
     const byDay = 3 + Math.floor(d / 2) + Math.floor(idx / 2);
     const byThreat = 3 + Math.floor(Math.max(0,threat - 1) / 3) + Math.floor(idx / 2);
     const levelNudge = Math.floor(Math.max(0,(Number(playerLevel) || 1) - 1) / 12);
-    return Math.max(3, Math.min(INVASION_MAX_ALIENS, Math.max(byDay,byThreat) + levelNudge));
+    return Math.max(3, Math.max(byDay,byThreat) + levelNudge);
+  }
+  function alienCountForDay(day,index,playerLevel,threatLevel){
+    return Math.min(TEAM_SIZE_REGULAR_MAX, rawUnitPressure(day,index,playerLevel,threatLevel));
+  }
+  // The head-count the old curve wanted ABOVE the 8-unit cap comes back as
+  // elites: half the overflow, plus one freebie once the team grade hits
+  // "weteran" territory — late-game squads stay small but get golden.
+  function eliteCountForDay(day,index,playerLevel,threatLevel,count){
+    const overflow = Math.max(0, rawUnitPressure(day,index,playerLevel,threatLevel) - TEAM_SIZE_REGULAR_MAX);
+    const threat = Math.max(Math.floor(Number(threatLevel) || 1), Math.floor(Number(day) || 1));
+    const gradeBonus = gradeForThreat(threat) >= 2 ? 1 : 0;
+    return Math.max(0, Math.min(ELITE_MAX_PER_TEAM, Math.max(0,(count|0) - 1), Math.ceil(overflow / 2) + gradeBonus));
   }
   function xpRewardForTeam(day,count,playerLevel,threatLevel){
     const d = Math.max(1, Math.floor(Number(day) || 1));
@@ -642,8 +671,19 @@ const invasions = (function(){
       0.46
     );
   }
+  // The back of the column promotes first (later indices already roll higher
+  // baseHp), the commander keeps their own crown.
+  function pickEliteIndices(team,commanderIdx){
+    const want = Math.max(0, Number(team && team.eliteCount) || 0);
+    const picked = new Set();
+    for(let i=(team.alienCount|0)-1; i>=0 && picked.size<want; i--){
+      if(i === commanderIdx) continue;
+      picked.add(i);
+    }
+    return picked;
+  }
   function applyCommanderRoll(team,roles){
-    if(!team || !Array.isArray(roles) || roles.length < 4) return -1;
+    if(!team || team.horde || !Array.isArray(roles) || roles.length < 4) return -1;
     let commanderIdx = roles.indexOf('commander');
     if(commanderIdx >= 0){
       for(let i=commanderIdx+1; i<roles.length; i++) if(roles[i] === 'commander') roles[i] = 'rusher';
@@ -673,20 +713,26 @@ const invasions = (function(){
       commander.hp = commander.dead ? 0 : maxHp;
     }
   }
-  function makeAlien(team, x, y, i, role){
+  function makeAlien(team, x, y, i, role, elite){
     const day = Math.max(1, team.day|0);
     const kind = isMolekinTeam(team) ? 'molekin' : 'aliens';
     const r = role || 'rusher';
     const stats = unitRoleStats(kind,r);
     const threat = teamThreatLevel(team);
-    const grade = teamGrade(team);
-    const weaponTier = teamWeaponTier(team);
+    const horde = !!team.horde;
+    // hordes field the cheapest possible bodies; elites carry the head-count
+    // the 8-unit cap took away — one grade+tier up, tougher and shinier
+    let grade = horde ? 0 : teamGrade(team);
+    let weaponTier = horde ? 0 : teamWeaponTier(team);
+    if(elite){ grade = Math.min(3, grade + 1); weaponTier = Math.min(3, weaponTier + 1); }
     const variant = makeUnitVariant(kind,r);
     variant.body = +clamp(variant.body * (1 + grade * 0.035),0.72,1.64).toFixed(3);
     variant.height = +clamp(variant.height * (1 + grade * 0.025),kind === 'molekin' ? 0.62 : 0.78,kind === 'molekin' ? 1.26 : 1.46).toFixed(3);
     variant.glow = +clamp(variant.glow * (1 + weaponTier * 0.10),0.55,1.70).toFixed(3);
     const baseHp = (kind === 'molekin' ? 20 : 18) + day * 3 + Math.floor(i * 1.5) + grade * 2;
-    const hp = Math.max(6, Math.round(baseHp * threatHpScale(threat) * (stats.hp || 1) * randRange(0.92,1.12)));
+    let hp = Math.max(6, Math.round(baseHp * threatHpScale(threat) * (stats.hp || 1) * randRange(0.92,1.12)));
+    if(horde) hp = Math.max(6, Math.round(hp * 0.55));
+    if(elite) hp = Math.round(hp * ELITE_HP_MULT);
     const speedScale = threatSpeedScale(threat,grade);
     const damageScale = threatDamageScale(threat,weaponTier);
     const healScale = threatHealScale(threat);
@@ -719,10 +765,11 @@ const invasions = (function(){
       grade,
       gradeName:THREAT_GRADE_NAMES[grade] || THREAT_GRADE_NAMES[0],
       weaponTier,
+      elite:!!elite,
       threatLevel:threat,
       speedMult:+statJitter((stats.speed || 1) * speedScale,0.08).toFixed(3),
       jumpMult:+statJitter(stats.jump || 1,0.06).toFixed(3),
-      damageMult:+statJitter((stats.damage || 1) * damageScale,0.10).toFixed(3),
+      damageMult:+statJitter((stats.damage || 1) * damageScale * (elite ? ELITE_DAMAGE_MULT : 1),0.10).toFixed(3),
       damageTakenMult:+statJitter(stats.taken || 1,0.06).toFixed(3),
       healMult:+statJitter((stats.heal || 1) * healScale,0.12).toFixed(3),
       hitboxScale:+clamp(((variant.body + variant.height) * 0.5),0.78,1.36).toFixed(3),
@@ -740,7 +787,11 @@ const invasions = (function(){
     const weaponTier = weaponTierForThreat(threatLevel,grade);
     const side = opts.side || (index % 2 === 0 ? -1 : 1);
     const spot = opts.spot || findLandingSpot(player, side, index, getTile);
-    const alienCount = Math.max(1, Math.min(INVASION_MAX_ALIENS, opts.alienCount || alienCountForDay(day,index,playerLevel,threatLevel)));
+    const horde = !!opts.horde;
+    const alienCount = horde
+      ? Math.max(HORDE_SIZE_MIN, Math.min(INVASION_MAX_ALIENS, opts.alienCount || (HORDE_SIZE_MIN + Math.floor(Math.random() * (INVASION_MAX_ALIENS - HORDE_SIZE_MIN + 1)))))
+      : Math.max(1, Math.min(INVASION_MAX_ALIENS, opts.alienCount || alienCountForDay(day,index,playerLevel,threatLevel)));
+    const eliteCount = horde ? 0 : (Number.isFinite(opts.eliteCount) ? Math.max(0, Math.min(alienCount - 1, opts.eliteCount|0)) : eliteCountForDay(day,index,playerLevel,threatLevel,alienCount));
     const id = 'inv_'+(seq++);
     // hull center sits 1.35 tiles up so the landing legs (1.25 tiles) plant
     // their pads on the surface instead of dangling mid-air
@@ -763,7 +814,10 @@ const invasions = (function(){
       forceCommander:!!opts.forceCommander,
       forceRewardTier:typeof opts.forceRewardTier === 'string' ? opts.forceRewardTier : '',
       forceRewardChance:Number.isFinite(opts.forceRewardChance) ? clamp(Number(opts.forceRewardChance),0,1) : undefined,
-      xpReward:xpRewardForTeam(day,alienCount,playerLevel,threatLevel),
+      horde,
+      eliteCount,
+      // elites earn like an extra body each; a horde of chaff pays out thin
+      xpReward:Math.round(xpRewardForTeam(day,alienCount + eliteCount,playerLevel,threatLevel) * (horde ? 0.6 : 1)),
       startedAt:Date.now(),
       lastSeenDay:Number.isFinite(opts.currentDayFloat) ? opts.currentDayFloat : currentDayInfo().dayFloat,
       defeatedAt:0,
@@ -788,7 +842,7 @@ const invasions = (function(){
     const base = alienCountForDay(day,index,playerLevel,threatLevel);
     const threat = Math.max(Math.floor(Number(threatLevel) || 1), Math.floor(Number(day) || 1));
     const burrowBonus = threat >= 14 ? 1 : 0;
-    return Math.max(3, Math.min(INVASION_MAX_ALIENS, base - 1 + burrowBonus));
+    return Math.max(3, Math.min(TEAM_SIZE_REGULAR_MAX, base - 1 + burrowBonus));
   }
   function findBurrowSpot(player, side, index, getTile){
     const px = floor(player && Number.isFinite(player.x) ? player.x : 0);
@@ -830,7 +884,11 @@ const invasions = (function(){
     const weaponTier = weaponTierForThreat(threatLevel,grade);
     const side = opts.side || (index % 2 === 0 ? 1 : -1);
     const spot = opts.spot || findBurrowSpot(player, side, index, getTile);
-    const alienCount = Math.max(1, Math.min(INVASION_MAX_ALIENS, opts.alienCount || molekinCountForDay(day,index,playerLevel,threatLevel)));
+    const horde = !!opts.horde;
+    const alienCount = horde
+      ? Math.max(HORDE_SIZE_MIN, Math.min(INVASION_MAX_ALIENS, opts.alienCount || (HORDE_SIZE_MIN + Math.floor(Math.random() * (INVASION_MAX_ALIENS - HORDE_SIZE_MIN + 1)))))
+      : Math.max(1, Math.min(INVASION_MAX_ALIENS, opts.alienCount || molekinCountForDay(day,index,playerLevel,threatLevel)));
+    const eliteCount = horde ? 0 : (Number.isFinite(opts.eliteCount) ? Math.max(0, Math.min(alienCount - 1, opts.eliteCount|0)) : eliteCountForDay(day,index,playerLevel,threatLevel,alienCount));
     const id = 'burrow_'+(seq++);
     const targetY = Number.isFinite(spot.y) ? spot.y : surfaceY(spot.x,60) - 1;
     const burrowY = Number.isFinite(spot.burrowY) ? spot.burrowY : targetY + 12;
@@ -852,7 +910,9 @@ const invasions = (function(){
       forceCommander:false,
       forceRewardTier:typeof opts.forceRewardTier === 'string' ? opts.forceRewardTier : '',
       forceRewardChance:Number.isFinite(opts.forceRewardChance) ? clamp(Number(opts.forceRewardChance),0,1) : undefined,
-      xpReward:Math.round(xpRewardForTeam(day,alienCount,playerLevel,threatLevel) * 1.04),
+      horde,
+      eliteCount,
+      xpReward:Math.round(xpRewardForTeam(day,alienCount + eliteCount,playerLevel,threatLevel) * 1.04 * (horde ? 0.6 : 1)),
       startedAt:Date.now(),
       lastSeenDay:Number.isFinite(opts.currentDayFloat) ? opts.currentDayFloat : currentDayInfo().dayFloat,
       defeatedAt:0,
@@ -940,18 +1000,25 @@ const invasions = (function(){
       return list.length > 1 ? list : null;
     })();
     const spawned = [];
+    let hordeUsed = false;
     for(let i=0; i<count; i++){
       const kind = chooseNightTeamKind(i,count,Object.assign({},opts,{day}));
       if(!kind) continue;
       const anchor = partyPool ? partyPool[i % partyPool.length] : player;
       const side = i%2===0 ? (kind === 'molekin' ? 1 : -1) : (kind === 'molekin' ? -1 : 1);
       const makeTeam = kind === 'molekin' ? makeMolekinTeam : makeAlienTeam;
+      // fun-factor roll: at most one natural team a night trades quality for
+      // sheer mass — a 14-20 strong horde of the weakest possible units
+      const horde = !!opts.horde || (!!opts.natural && !hordeUsed && day >= HORDE_MIN_DAY && Math.random() < HORDE_CHANCE);
+      if(horde) hordeUsed = true;
       const team = makeTeam(anchor, getTile, {
         day,
         index:i,
         side,
         spot:opts.spot || (forceVisible ? forcedVisibleSpot(anchor, side, i, kind, getTile) : undefined),
         alienCount:opts.alienCount,
+        eliteCount:opts.eliteCount,
+        horde,
         playerLevel,
         threatLevel,
         commanderChance:opts.commanderChance,
@@ -972,7 +1039,8 @@ const invasions = (function(){
         if(alienN && moleN) say('Wymuszona inwazja: obcy i kretoludzie sa juz obok bohatera.');
         else if(moleN) say(moleN > 1 ? 'Wymuszona inwazja: '+moleN+' oddzialy kretoludzi wyszly obok bohatera.' : 'Wymuszona inwazja: kretoludzie wyszli obok bohatera.');
         else say(alienN > 1 ? 'Wymuszona inwazja: '+alienN+' oddzialy obcych sa juz obok bohatera.' : 'Wymuszona inwazja: alien team jest juz obok bohatera.');
-      } else if(alienN && moleN) say('Nocna inwazja: obcy laduja, a kretoludzie przebijaja sie spod ziemi.');
+      } else if(spawned.some(t=>t && t.horde)) say('Ogromna horda nadciaga: mnostwo najslabszych jednostek!');
+      else if(alienN && moleN) say('Nocna inwazja: obcy laduja, a kretoludzie przebijaja sie spod ziemi.');
       else if(moleN) say(moleN > 1 ? 'Nocny atak: '+moleN+' tunele kretoludzi otwieraja sie w okolicy.' : 'Nocny atak: kretoludzie przebijaja sie spod ziemi.');
       else say(alienN > 1 ? 'Nocna inwazja: '+alienN+' oddzialy obcych laduja w okolicy.' : 'Nocna inwazja: obcy laduja w okolicy.');
       play('warning',spawned[0]);
@@ -994,6 +1062,13 @@ const invasions = (function(){
     const info = currentDayInfo();
     if(!info.isNight || !player || player.hp <= 0) return false;
     if(lastNightDay >= info.dayIndex) return false;
+    // a full board means the night is already loud: no reinforcements while
+    // this many earlier teams are still standing (sieges the player keeps
+    // line-of-sight on never hit the offscreen despawn)
+    if(activeInvasionTeams().length >= NATURAL_SPAWN_TEAM_GATE){
+      lastNightDay = info.dayIndex;
+      return false;
+    }
     if(!canNightSpawnKind('aliens',{natural:true}) && !canNightSpawnKind('molekin',{natural:true})){
       lastNightDay = info.dayIndex;
       return false;
@@ -1010,13 +1085,14 @@ const invasions = (function(){
     const baseY = team.y;
     const roles = assignRoles(team.alienCount, profileFor(team));
     const commanderIdx = applyCommanderRoll(team,roles);
+    const eliteIdx = pickEliteIndices(team,commanderIdx);
     const now = nowMs();
     team.speechStartAt = now;
     team.nextReactionAt = 0;
     team.reactionCooldowns = {};
     team.heroHealthBand = '';
     for(let i=0; i<team.alienCount; i++){
-      const a = makeAlien(team, team.x, baseY, i, roles[i] || 'rusher');
+      const a = makeAlien(team, team.x, baseY, i, roles[i] || 'rusher', eliteIdx.has(i));
       team.aliens.push(a);
     }
     tuneCommanderHealth(team);
@@ -1068,6 +1144,7 @@ const invasions = (function(){
     const b = team.burrow || {x:team.x,y:team.y+10,targetY:team.y};
     clearMolekinTunnel(team,getTile,setTile,ctx);
     const roles = assignRoles(team.alienCount, profileFor(team));
+    const eliteIdx = pickEliteIndices(team,-1);
     const now = nowMs();
     team.speechStartAt = now;
     team.nextReactionAt = 0;
@@ -1076,7 +1153,7 @@ const invasions = (function(){
     const baseY = Number.isFinite(b.targetY) ? b.targetY : team.y;
     for(let i=0; i<team.alienCount; i++){
       const offset = (i - (team.alienCount-1)/2) * 0.44;
-      const a = makeAlien(team, b.x + offset, baseY + 0.08, i, roles[i] || 'rusher');
+      const a = makeAlien(team, b.x + offset, baseY + 0.08, i, roles[i] || 'rusher', eliteIdx.has(i));
       a.vy = -1.2 - Math.random() * 1.6;
       a.vx += (i % 2 === 0 ? -1 : 1) * randRange(0.15,0.45);
       team.aliens.push(a);
@@ -3222,10 +3299,42 @@ const invasions = (function(){
     markHostSave(ctx);
     return true;
   }
+  // --- dawn retreat: the 'retreat' state was filtered everywhere but nothing
+  // ever SET it. Non-story teams now stand down on the night->day edge (units
+  // burst out beam/burrow-style, the sweep below collects the team). The first
+  // update after load counts as a dawn when it lands in daylight, so a save
+  // carrying an accumulated swarm cleans itself up immediately.
+  let lastIsNight = null;
+  function beginTeamRetreat(team,ctx){
+    if(!team || team.state === 'defeated' || team.state === 'retreat' || team.ruinCommanderKey) return false;
+    team.state = 'retreat';
+    team.retreatAt = Date.now();
+    const beam = isAlienTeam(team) && team.lander && !team.lander.destroyed;
+    for(const a of (team.aliens||[])){
+      if(!a || a.dead || a.hp <= 0) continue;
+      burst(a.x, a.y - 0.4, beam ? 'epic' : 'rare');
+    }
+    play(beam ? 'beam' : 'dig', {x:team.x, y:team.y});
+    brains.delete(team.id);
+    markHostSave(ctx);
+    return true;
+  }
+  function maybeDawnRetreat(dayInfo,ctx){
+    const night = !!(dayInfo && dayInfo.isNight);
+    const dawnEdge = lastIsNight === null ? !night : (lastIsNight && !night);
+    lastIsNight = night;
+    if(!dawnEdge) return;
+    let changed = false;
+    for(const team of teams){
+      changed = beginTeamRetreat(team,ctx) || changed;
+    }
+    if(changed) say('Swit przegania najezdzcow: oddzialy wycofuja sie.');
+  }
   function updateTeams(dt,player,getTile,setTile,ctx){
     navWorld.getTileFn = getTile;
     const dayInfo = currentDayInfo();
     cleanupOffscreenTeams(player,getTile,setTile,ctx,dayInfo.dayFloat);
+    maybeDawnRetreat(dayInfo,ctx);
     let liveForNav = 0;
     for(const team of teams){
       if(!team || team.state === 'defeated' || team.state === 'retreat') continue;
@@ -3247,16 +3356,31 @@ const invasions = (function(){
       // the shaft mid-beam. Everything else about it (hp, speech, being shot)
       // keeps working.
       const steerable = team.aliens.filter(a => a && !a.dead && a.hp > 0 && !a.extract);
+      // Off-view squads keep FULL physics (they march, climb and besiege exactly
+      // the same) but re-plan at interval cadence: the brain's nav scans + tile
+      // probes were the measured ~4ms/frame cost of an unseen night team, paid
+      // 240x a second for pathing nobody watches. Accumulated dt keeps every
+      // brain timer honest.
+      const nearView = teamInActiveView(team,player,ctx);
       if(steerable.length && player){
         const brain = ensureBrain(team);
-        brain.update(team, steerable, dt, squadPartyTarget(steerable,player), teamHooks(team,player,getTile,setTile,ctx), {now});
+        if(nearView){
+          team._remoteBrainT = 0;
+          brain.update(team, steerable, dt, squadPartyTarget(steerable,player), teamHooks(team,player,getTile,setTile,ctx), {now});
+        } else {
+          team._remoteBrainT = (team._remoteBrainT || 0) + dt;
+          if(team._remoteBrainT >= REMOTE_BRAIN_INTERVAL){
+            brain.update(team, steerable, team._remoteBrainT, squadPartyTarget(steerable,player), teamHooks(team,player,getTile,setTile,ctx), {now});
+            team._remoteBrainT = 0;
+          }
+        }
       }
       let alive = 0;
       for(const a of team.aliens){
         if(!a || a.dead || a.hp <= 0) continue;
         if(a.extract) updateExtraction(a,team,dt,getTile,ctx);
         else updateAlien(a,team,dt,player,getTile,setTile,ctx);
-        updateAlienSpeech(a,team,now);
+        if(nearView) updateAlienSpeech(a,team,now); // bubbles nobody can see cost real time
         if(a.hp > 0 && !a.dead){
           alive++;
           if(!a.extract) allUnits.push(a);
@@ -3275,6 +3399,10 @@ const invasions = (function(){
     for(let i=teams.length-1;i>=0;i--){
       const t = teams[i];
       if(t && t.state === 'defeated' && t.defeatedAt && Date.now() - t.defeatedAt > 5000){
+        brains.delete(t.id);
+        teams.splice(i,1);
+      } else if(t && t.state === 'retreat' && t.retreatAt && Date.now() - t.retreatAt > RETREAT_SWEEP_MS){
+        cleanupBuiltTiles(t,getTile,setTile,ctx); // departing raiders take their scaffolding down
         brains.delete(t.id);
         teams.splice(i,1);
       }
@@ -4595,6 +4723,18 @@ const invasions = (function(){
       seed:getWorldSeed(),
       createdAt:Date.now()
     };
+    // runtime cap mirrors the save-restore cap (slice(0,24)): unrecovered caches
+    // from endless deaths must not grow the 3s snapshot/deep-copy cycle forever
+    while(caches.length>=24){
+      const old=caches.shift();
+      try{
+        completeCacheTask(old);
+        if(old && Number.isFinite(old.x) && Number.isFinite(old.y) && ctx.getTile(old.x,old.y)===T.INVASION_CACHE){
+          writeTile(ctx.setTile,old.x,old.y,T.AIR);
+          wakeTileChanged(ctx,old.x,old.y,T.INVASION_CACHE,T.AIR);
+        }
+      }catch(e){}
+    }
     caches.push(cache);
     writeTile(ctx.setTile,spot.x,spot.y,T.INVASION_CACHE);
     wakeTileChanged(ctx,spot.x,spot.y,T.AIR,T.INVASION_CACHE);
@@ -4666,6 +4806,7 @@ const invasions = (function(){
       attackCd:a.attackCd, breakCd:a.breakCd,
       onGround:a.onGround, facing:a.facing,
       dead:a.dead, role:a.role || '',
+      elite:!!a.elite,
       grade:Number.isFinite(Number(a.grade)) ? Math.max(0,Math.min(3,Math.floor(Number(a.grade)))) : 0,
       gradeName:a.gradeName || THREAT_GRADE_NAMES[Math.max(0,Math.min(3,Math.floor(Number(a.grade)||0)))] || THREAT_GRADE_NAMES[0],
       weaponTier:Number.isFinite(Number(a.weaponTier)) ? Math.max(0,Math.min(3,Math.floor(Number(a.weaponTier)))) : 0,
@@ -4691,7 +4832,7 @@ const invasions = (function(){
       forceRewardChance:Number.isFinite(Number(t.forceRewardChance)) ? clamp(Number(t.forceRewardChance),0,1) : undefined,
       rewardDropped:!!t.rewardDropped,
       ruinCommanderKey:t.ruinCommanderKey || '',
-      startedAt:t.startedAt, lastSeenDay:t.lastSeenDay, lostContactDay:t.lostContactDay, defeatedAt:t.defeatedAt, announced:t.announced,
+      startedAt:t.startedAt, lastSeenDay:t.lastSeenDay, lostContactDay:t.lostContactDay, defeatedAt:t.defeatedAt, retreatAt:t.retreatAt||0, announced:t.announced, horde:!!t.horde, eliteCount:t.eliteCount|0,
       builtTiles:Array.isArray(t.builtTiles) ? t.builtTiles.map(b=>({x:b.x,y:b.y})) : [],
       burrow:t.burrow ? Object.assign({}, t.burrow) : null,
       lander:t.lander ? Object.assign({}, t.lander) : null,
@@ -4739,6 +4880,7 @@ const invasions = (function(){
       speechCueUntil:0,
       dead:!!a.dead || (Number(a.hp)||0) <= 0,
       role,
+      elite:!!a.elite,
       grade:Number.isFinite(Number(a.grade)) ? Math.max(0,Math.min(3,Math.floor(Number(a.grade)))) : 0,
       gradeName:a.gradeName || THREAT_GRADE_NAMES[Math.max(0,Math.min(3,Math.floor(Number(a.grade)||0)))] || THREAT_GRADE_NAMES[0],
       weaponTier:Number.isFinite(Number(a.weaponTier)) ? Math.max(0,Math.min(3,Math.floor(Number(a.weaponTier)))) : 0,
@@ -4775,9 +4917,14 @@ const invasions = (function(){
     const burrow = t.burrow && typeof t.burrow === 'object' ? t.burrow : {};
     const normalizedAliens = Array.isArray(t.aliens) ? t.aliens.map(a=>normalizeAlien(a,kind)).filter(Boolean).slice(0,INVASION_MAX_ALIENS) : [];
     for(const a of normalizedAliens){
-      a.grade = grade;
-      a.gradeName = THREAT_GRADE_NAMES[grade] || THREAT_GRADE_NAMES[0];
-      a.weaponTier = weaponTier;
+      // team baseline re-stamped, but per-unit standing survives: hordes stay
+      // chaff (grade 0) and elites keep their +1 grade/tier crown across saves
+      const bump = a.elite ? 1 : 0;
+      const base = t.horde ? 0 : grade;
+      const baseTier = t.horde ? 0 : weaponTier;
+      a.grade = Math.min(3, base + bump);
+      a.gradeName = THREAT_GRADE_NAMES[a.grade] || THREAT_GRADE_NAMES[0];
+      a.weaponTier = Math.min(3, baseTier + bump);
       a.threatLevel = threatLevel;
     }
     return {
@@ -4799,12 +4946,16 @@ const invasions = (function(){
       forceRewardTier:typeof t.forceRewardTier === 'string' ? t.forceRewardTier : '',
       forceRewardChance:finiteNum(t.forceRewardChance) ? clamp(Number(t.forceRewardChance),0,1) : undefined,
       rewardDropped:!!t.rewardDropped,
+      horde:!!t.horde,
+      eliteCount:Math.max(0, Math.min(INVASION_MAX_ALIENS, Number(t.eliteCount)||0)),
       ruinCommanderKey:typeof t.ruinCommanderKey === 'string' ? t.ruinCommanderKey : '',
       xpReward:Math.max(1, Number(t.xpReward)||xpRewardForTeam(day,alienCount||3,playerLevel,threatLevel)),
       startedAt:Number(t.startedAt)||Date.now(),
       lastSeenDay:Number.isFinite(Number(t.lastSeenDay)) ? Number(t.lastSeenDay) : currentDayInfo().dayFloat,
       lostContactDay:Number.isFinite(Number(t.lostContactDay)) ? Math.max(0, Number(t.lostContactDay)) : 0,
       defeatedAt:Number(t.defeatedAt)||0,
+      // a save written mid-retreat must still sweep after load (retreatAt 0 would never trip the timer)
+      retreatAt:Number(t.retreatAt) || (t.state === 'retreat' ? Date.now() : 0),
       announced:!!t.announced,
       builtTiles:normalizeBuiltTiles(t.builtTiles),
       burrow:kind === 'molekin' ? {
@@ -4860,6 +5011,7 @@ const invasions = (function(){
     moleShots.length = 0;
     tileDamage.clear();
     brains.clear();
+    lastIsNight = null; // a load that wakes up in daylight counts as a dawn: stale swarms stand down
     if(!data || typeof data !== 'object') return false;
     lastNightDay = Math.max(0, Number(data.lastNightDay)||0);
     seq = Math.max(1, Number(data.seq)||1);
@@ -4889,6 +5041,7 @@ const invasions = (function(){
     moleShots.length = 0;
     tileDamage.clear();
     brains.clear();
+    lastIsNight = null;
     lastNightDay = 0;
     seq = 1;
     moleShotSeq = 1;

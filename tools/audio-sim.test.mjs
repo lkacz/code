@@ -581,6 +581,6 @@ assert.match(mainSrc, /AUDIO\.setHeroWater\(inWater,\s*subFrac,\s*player\.vy\)/,
 assert.match(mainSrc, /AUDIO\.playLanding\(getTile\(landingTile\.x,landingTile\.y\),landingImpact/,
   'tile collision publishes the exact landing material and pre-zeroed impact speed');
 assert.match(mainSrc, /dataset\.bus=bus/, 'pause panel builds per-bus volume sliders');
-assert.match(mainSrc, /AUDIO\.update\(frameDt\)/, 'the game loop drives audio.update every frame');
+assert.match(mainSrc, /AUDIO\.update\(simulationDt\)/, 'the game loop drives audio.update from the shared simulation pace every frame');
 
 console.log('audio-sim: all tests passed');

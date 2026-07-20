@@ -44,6 +44,7 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   const LOCAL_SKY_CLEARANCE = 48;
   let scanT = 0;
   let remoteUpdateT = 0;
+  let pruneT = 0; // pruning does one getTile per registered cell — interval work, not per-frame
   let visibleScanAt = 0;
   let visibleScanKey = '';
   let lastGetTile = null;
@@ -371,7 +372,8 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
       scanT=SCAN_INTERVAL;
       scanAround(player,getTile);
     }
-    pruneCells(player,getTile);
+    pruneT-=dt;
+    if(pruneT<=0 || cells.size>CELL_CAP){ pruneT=0.35; pruneCells(player,getTile); }
     remoteUpdateT+=dt;
     const remoteDt=remoteUpdateT>=REMOTE_UPDATE_INTERVAL ? remoteUpdateT : 0;
     if(remoteDt>0) remoteUpdateT=0;
@@ -380,7 +382,7 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
     const py=hasPlayer ? player.y : 0;
     const baseSun=daylight();
     const weatherByColumn=new Map();
-    for(const m of [...cells.values()]){
+    for(const m of cells.values()){ // Map iteration is delete-safe; the spread was per-frame garbage
       const nearby=!hasPlayer || (Math.abs(m.x-px)<=ACTIVE_RX && Math.abs(m.y-py)<=ACTIVE_RY);
       const step=nearby ? dt : remoteDt;
       if(!(step>0)) continue;

@@ -501,3 +501,72 @@ assert.match(mainSource, /function placePlayerAtRespawnSpot\(spot\)[\s\S]*ensure
 assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const dest=nearestRespawnDestination\(\);[\s\S]*const spot=dest\.spot;[\s\S]*placePlayerAtRespawnSpot\(spot\)/, 'normal respawn routes its chosen totem or shelter through the section-aware placement helper');
 assert.match(mainSource, /function debugGasOrigin\(\)[\s\S]*ensureChunkAtY\(Math\.floor\(tx\/CHUNK_W\),ty\)/, 'debug gas placement probes the correct vertical section');
 assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*ensureChunkAtY\(Math\.floor\(cell\.x\/CHUNK_W\),cell\.y\)/, 'debug rig placement validates cells in the correct vertical section');
+
+{ // --- Chunk parking: far modified chunks compress into cold storage instead of
+  // pinning the live map open (the 240->30 fps long-session decay fix).
+  world.clear();
+  WG.worldSeed = 20260701;
+  WG.clearCaches();
+  world._setChunkCapForTest(24);
+  globalThis.player = { x: 2, y: 20 }; // anchors evict distance + protect radius
+  world.ensureChunk(40);
+  const mx = 40*CHUNK_W+5;
+  let my = 60;
+  for(let y=0; y<WORLD_H; y++){ if(world.getTile(mx,y)!==T.AIR){ my=y; break; } }
+  world.setTile(mx,my,T.BRICK);
+  assert.ok(world.chunkVersion(40)>0, 'mutating a chunk pins a version');
+  const pristine = world.chunkArray('c40').slice();
+  for(let cx=1; cx<=30; cx++) world.ensureChunk(cx);
+  const stats1 = world.chunkCacheStats();
+  assert.ok(stats1.live<=24, 'live map returns under the cap even with modified chunks present (was impossible pre-fix)');
+  assert.ok(world._parked.has('c40'), 'far modified chunk is parked, not held live forever');
+  assert.ok(stats1.parked>=1 && stats1.evictRuns>=1, 'parking and evictions are counted in chunkCacheStats');
+  assert.ok(world.chunkVersion(40)>0, 'parked chunk keeps its modified version');
+  assert.ok(world.modifiedChunkIds().some(id=>id===40), 'parked chunk still reports as modified for saves');
+  const liveBefore = world._world.size;
+  assert.equal(world.peekTile(mx,my,255), T.BRICK, 'peekTile reads parked chunks (they were always peekable pre-fix)');
+  const viaSave = world.chunkArray('c40');
+  assert.ok(viaSave && viaSave[my*CHUNK_W+5]===T.BRICK, 'chunkArray decodes parked chunks for the save path');
+  assert.equal(world._world.size, liveBefore, 'peek/save reads do not rehydrate parked chunks');
+  assert.equal(world.getTile(mx,my), T.BRICK, 'getTile rehydrates a parked chunk on real access');
+  assert.equal(world._parked.has('c40'), false, 'rehydrated chunk leaves the cold store');
+  assert.ok(world.chunkCacheStats().rehydrated>=1, 'rehydration is counted');
+  assert.deepStrictEqual(Array.from(world.chunkArray('c40')), Array.from(pristine), 'park->rehydrate roundtrip is byte-for-byte lossless');
+
+  // incompressible payloads fall back to a raw copy instead of a bloated RLE string
+  const noise = new Uint8Array(CHUNK_W*WORLD_H);
+  let seed = 1234567;
+  for(let i=0;i<noise.length;i++){ seed=(seed*1103515245+12345)>>>0; let b=seed%251; if(b===T.TELEPORTER) b=(b+1)%251; noise[i]=b; }
+  assert.equal(world.setChunkArray('c80',noise), true, 'noise chunk installs');
+  world.markModifiedChunk(80);
+  const noisePristine = world.chunkArray('c80').slice();
+  for(let cx=31; cx<=45; cx++) world.ensureChunk(cx);
+  assert.ok(world._parked.has('c80'), 'incompressible modified chunk still parks (raw-copy fallback)');
+  assert.deepStrictEqual(Array.from(world.chunkArray('c80')), Array.from(noisePristine), 'raw-fallback parking is lossless too');
+
+  // teleporter network discovery scans the LIVE map — those chunks must never park
+  world.ensureChunk(60);
+  let ty = 60;
+  for(let y=0; y<WORLD_H; y++){ if(world.getTile(60*CHUNK_W+2,y)!==T.AIR){ ty=y; break; } }
+  world.setTile(60*CHUNK_W+2,ty,T.TELEPORTER);
+  for(let cx=46; cx<=70; cx++) world.ensureChunk(cx);
+  world._evictFarChunks();
+  assert.equal(world._parked.has('c60'), false, 'chunks holding a teleporter never park');
+  assert.ok(world._world.has('c60'), 'teleporter chunk stays live for network scans');
+
+  world._setChunkCapForTest(1536);
+  delete globalThis.player;
+  world.clear();
+}
+
+// Source pins: the eviction/parking contract.
+assert.match(worldSource, /const revived=rehydrateChunk\(k\);/, 'chunk generation revives parked cold-store copies before regenerating');
+assert.match(worldSource, /finally \{ genExit\(\); \}/, 'generation exits through the deferred-eviction gate');
+assert.match(worldSource, /if\(genDepth>0\)\{ evictPending=true; return; \}/, 'eviction defers while any generation is in flight (no mid-frame chunk drops)');
+assert.match(worldSource, /invalidateViewsFor\(parsed\);\s+\/\/ surgical/, 'eviction invalidates only the dropped chunk section views');
+assert.doesNotMatch(worldSource, /sectionViews\.clear\(\); \/\/ cached views may alias deleted chunk arrays/, 'eviction no longer wipes the whole section-view cache');
+assert.doesNotMatch(worldSource, /if\(versions\.get\(k\)\) continue;\s+\/\/ modified chunk/, 'modified chunks are no longer exempt from eviction (they park instead)');
+assert.match(mainSource, /const arr=live \? worldMap\.get\(ref\.key\) : worldChunkArrayFor\(ref,false\);/, 'incremental autosave reads parked chunks through the parked-aware accessor');
+assert.match(mainSource, /if\(ref\.base && live\)\{/, 'autosave audits only touch live chunks (no rehydration churn during saves)');
+
+console.log('world-sections-sim: OK');

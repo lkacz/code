@@ -220,6 +220,12 @@ async function main(){
 	const proc = spawn(edge, [
 		'--headless=new', '--disable-gpu', '--no-first-run', '--hide-scrollbars',
 		'--force-device-scale-factor=1',
+		// Newer headless Edge suspends rAF for pages it deems occluded/backgrounded
+		// partway through long CDP sessions — the sim freezes silently mid-QA
+		// (walks stop, jumps read 0.00, fps reads 0, yet zero loop errors). These
+		// flags plus the bringToFront pump below keep frames flowing for the whole run.
+		'--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
+		'--disable-background-timer-throttling',
 		'--remote-debugging-port=0',
 		`--user-data-dir=${profile}`,
 		'--window-size=1600,900',
@@ -273,6 +279,10 @@ async function main(){
 		await send(ws, 'Page.navigate', { url });
 		for (let i = 0; i < 80 && !events.includes('Page.loadEventFired'); i++) await sleep(250);
 		await sleep(1500);
+		// keep-front pump: re-front the page every 2s for the whole session so the
+		// occlusion heuristic never suspends rAF mid-run (fire-and-forget sends)
+		const pump = setInterval(() => { try { send(ws, 'Page.bringToFront').catch(() => {}); } catch (e) { /* closing */ } }, 2000);
+		try {
 		const evalRes = await send(ws, 'Runtime.evaluate', { expression: PLAY_SCRIPT, awaitPromise: true, returnByValue: true, timeout: 300000 });
 		let payload = null;
 		try { payload = JSON.parse(evalRes && evalRes.result ? String(evalRes.result.value) : 'null'); } catch (e) { /* fall through */ }
@@ -302,6 +312,7 @@ async function main(){
 			console.log('pageErrors:', pageErrors.slice(0, 6).join('\n---\n'));
 			failures += pageErrors.length;
 		}
+		} finally { clearInterval(pump); }
 	} finally {
 		try { if (ws) ws.close(); } catch (e) { /* closing */ }
 		await new Promise(res => {

@@ -30,6 +30,7 @@ import { chests as CHESTS } from './engine/chests.js';
 import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engine/crafting.js';
 import { furnishings as FURNISHINGS } from './engine/furnishings.js';
 import { createHotPickerModel, createHotPicker } from './engine/hot_picker.js';
+import { createCraftDrag } from './engine/craft_drag.js';
 import './inventory.js';
 import { mobs as MOBS } from './engine/mobs.js';
 import { tutorialNpc as TUTORIAL_NPC } from './engine/tutorial_npc.js';
@@ -2515,7 +2516,40 @@ const DEATH_TRAVEL_MIN_DUR=0.95;
 const DEATH_TRAVEL_SPEED_TILES_PER_SEC=38;
 const DEATH_TRAVEL_FAILSAFE_MAX_DUR=60;
 const DEATH_TRAVEL_GROUND_CLEARANCE=10;
+const SIMULATION_TIME_SCALE_MIN=0.1;
+const SIMULATION_TIME_SCALE_MAX=4;
+const HERO_DEATH_SLOW_MOTION_HOLD_MS=3000;
+const HERO_DEATH_SLOW_MOTION_RECOVERY_MS=3000;
+const HERO_DEATH_SLOW_MOTION_SCALE=0.25;
 let deathTravelFx=null;
+let heroDeathSlowMotionStart=0;
+let heroDeathSlowMotionUntil=0;
+let simulationClockMs=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+window.__mmSimulationTimeMs=simulationClockMs;
+function configuredSimulationTimeScale(){
+	const scale=Number(window.__simulationTimeScale);
+	return Number.isFinite(scale) ? Math.max(SIMULATION_TIME_SCALE_MIN,Math.min(SIMULATION_TIME_SCALE_MAX,scale)) : 1;
+}
+function simulationTimeScaleAt(now){
+	const configured=configuredSimulationTimeScale();
+	const stamp=Number(now);
+	if(!Number.isFinite(stamp) || stamp>=heroDeathSlowMotionUntil) return configured;
+	const slowScale=Math.min(configured,HERO_DEATH_SLOW_MOTION_SCALE);
+	const recoveryStart=heroDeathSlowMotionStart+HERO_DEATH_SLOW_MOTION_HOLD_MS;
+	if(stamp<=recoveryStart) return slowScale;
+	const raw=Math.max(0,Math.min(1,(stamp-recoveryStart)/HERO_DEATH_SLOW_MOTION_RECOVERY_MS));
+	const eased=raw*raw*(3-2*raw);
+	return slowScale+(configured-slowScale)*eased;
+}
+function beginHeroDeathSlowMotion(){
+	const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+	heroDeathSlowMotionStart=now;
+	heroDeathSlowMotionUntil=now+HERO_DEATH_SLOW_MOTION_HOLD_MS+HERO_DEATH_SLOW_MOTION_RECOVERY_MS;
+}
+function advanceSimulationClock(dt){
+	simulationClockMs+=Math.max(0,Number(dt)||0)*1000;
+	window.__mmSimulationTimeMs=simulationClockMs;
+}
 function deathClamp01(v){ return Math.max(0, Math.min(1, Number(v)||0)); }
 function deathLerp(a,b,t){ return a+(b-a)*deathClamp01(t); }
 function deathTravelProgressAt(raw){
@@ -3034,6 +3068,7 @@ function notifyInvasionMining(tId,tx,ty){
 window.heroDied=function(cause){
 	if(deathTravelFx) return;
 	if(immunityMode){ player.hp=player.maxHp; return; }
+	beginHeroDeathSlowMotion();
 	// finale.js keeps the lifetime deaths tally off this event
 	try{ window.dispatchEvent(new CustomEvent('mm-hero-died',{detail:{cause:String(cause||'damage')}})); }catch(e){}
 	if(HERO_STATUS && HERO_STATUS.clearAll) HERO_STATUS.clearAll(); // death sheds every elemental status
@@ -4094,11 +4129,16 @@ function runAutoSaveWork(){
 			const ref=normalizeWorldChunkRef(rawRef);
 			if(!ref) continue;
 			const cx=ref.cx;
-			const arr=worldMap && worldMap.get(ref.key);
+			// parked (cold-stored) modified chunks are not in the live map — read them
+			// through the parked-aware accessor or they would silently drop from saves
+			const live=!!(worldMap && worldMap.has(ref.key));
+			const arr=live ? worldMap.get(ref.key) : worldChunkArrayFor(ref,false);
 			const ver=worldChunkVersion(ref);
 			if(!arr || ver===0) continue;
 			const auditT=savePerfNow();
-			if(ref.base){
+			// audits touch tiles via getTile and would rehydrate every parked chunk;
+			// a parked chunk has been untouched since it was audited and parked
+			if(ref.base && live){
 				try{ if(FALLING && FALLING.auditChunks) FALLING.auditChunks([cx],{force:true,immediate:true}); }catch(e){}
 				try{ if(MEAT && MEAT.auditChunks) MEAT.auditChunks([cx],getTile); }catch(e){}
 				try{ if(GASES && GASES.auditChunks) GASES.auditChunks([cx],getTile); }catch(e){}
@@ -4719,14 +4759,44 @@ function appendCraftCosts(parent,r,compact){
 	}
 	entries.forEach(([k,v])=>parent.appendChild(makeCraftChip(k,v,compact)));
 }
-// Detail-pane ingredient row: swatch + label + have/need + fill bar; short
+// Resolve a craft-panel resource key to its placeable hotbar tile (null when
+// the resource has no block form — ammo, components, trophies).
+function craftPlaceableDef(k){
+	return RESOURCE_DEFS.find(res=>res.key===k && res.tile) || null;
+}
+// Draggable tile chip: real tile art the player can drag onto a hotbar slot
+// (5–9, 0) to remap it. Pure UI sugar — the drop lands in MM.hotbar.assign.
+function makeCraftDragTile(rdef,opts){
+	const size=(opts&&opts.small)?18:30;
+	const wrap=document.createElement('span'); wrap.className='craftDragTile'+((opts&&opts.small)?' small':'');
+	wrap.title=rdef.label+' — przeciągnij na slot paska (5–9, 0)';
+	const c=document.createElement('canvas'); c.width=20; c.height=20;
+	c.style.cssText='width:'+size+'px; height:'+size+'px; image-rendering:pixelated; border-radius:4px; display:block;';
+	const g=c.getContext('2d');
+	let ok=false;
+	const id=T[rdef.tile];
+	if(id!=null && MM.drawEntityTile){ try{ ok=!!MM.drawEntityTile(g,id,0,0,7,11); }catch(e){ ok=false; } }
+	if(!ok){ g.fillStyle=rdef.color||'#9ca3af'; g.fillRect(0,0,20,20); }
+	wrap.appendChild(c);
+	if(MM.craftDrag) MM.craftDrag.makeDraggable(wrap,()=>({k:rdef.tile,label:rdef.label,col:rdef.color}));
+	return wrap;
+}
+// Detail-pane ingredient row: tile/swatch + label + have/need + fill bar; short
 // recipes also say WHERE to find the missing resource (SOURCE_HINTS).
+// Placeable ingredients render their REAL tile art as a drag handle.
 function makeIngredientRow(k,need){
 	const have=inv[k]||0;
 	const ok=have>=need;
 	const row=document.createElement('div'); row.className='craftIng'+(ok?' ok':' short');
 	const top=document.createElement('div'); top.className='craftIngTop';
-	const sw=document.createElement('i'); sw.className='craftIngSwatch'; sw.style.background=RES_COLOR[k]||'#9ca3af';
+	const placeable=craftPlaceableDef(k);
+	let sw;
+	if(placeable && MM.craftDrag){
+		top.classList.add('hasTile');
+		sw=makeCraftDragTile(placeable,{small:true});
+	} else {
+		sw=document.createElement('i'); sw.className='craftIngSwatch'; sw.style.background=RES_COLOR[k]||'#9ca3af';
+	}
 	const lab=document.createElement('span'); lab.className='craftIngLabel'; lab.textContent=RES_LABEL[k]||k;
 	const val=document.createElement('b'); val.className='craftIngVal'; val.textContent=Math.min(have,9999)+' / '+need;
 	top.appendChild(sw); top.appendChild(lab); top.appendChild(val); row.appendChild(top);
@@ -4873,6 +4943,23 @@ function renderCraftDetail(r){
 	else if(miss.length) status.textContent='Brakuje: '+miss.map(x=>x.missing+' × '+(RES_LABEL[x.key]||x.key)).join(', ');
 	else { status.classList.add('ok'); status.textContent='Mozesz wytworzyc teraz'+(max>1?' (zapas na ×'+Math.min(99,max)+')':'')+'.'; }
 	detail.appendChild(status);
+	// Placeable output: a draggable tile card with the live owned count — drag
+	// it onto a hotbar slot (5–9, 0) or click to fill the ACTIVE slot.
+	const outDef=r.out ? craftPlaceableDef(r.out) : null;
+	if(outDef && MM.craftDrag){
+		const dropRow=document.createElement('div'); dropRow.className='craftHotDrop';
+		dropRow.appendChild(makeCraftDragTile(outDef));
+		const info=document.createElement('div'); info.className='craftHotDropInfo';
+		const lab=document.createElement('b'); lab.textContent=outDef.label+' · masz ×'+Math.min(9999,inv[r.out]|0);
+		const hint=document.createElement('span'); hint.textContent='Przeciągnij kafelek na pasek (5–9, 0) albo kliknij, aby przypisać do aktywnego slotu.';
+		info.appendChild(lab); info.appendChild(hint);
+		dropRow.appendChild(info);
+		dropRow.addEventListener('click',()=>{
+			const idx=MM.hotbar.index();
+			if(MM.hotbar.assign(idx,outDef.tile)) msg('Slot '+hotbarKeyLabel(idx)+' → '+outDef.label);
+		});
+		detail.appendChild(dropRow);
+	}
 	const crafted=CRAFT_MODEL.countOf(r.id);
 	if(crafted>0){
 		const st=document.createElement('div'); st.className='craftCrafted'; st.textContent='Wytworzono dotąd: ×'+crafted;
@@ -5541,6 +5628,10 @@ function markChunkRenderDirty(cx,y,pad,baseVersion,nextVersion){
 	const p=Math.max(0, Math.min(6, Number.isFinite(pad)?pad:1));
 	let d=chunkRenderDirty.get(key);
 	if(!d){
+		// no cached canvas => the next visible bake is FULL regardless, so a dirty
+		// band is useless — skipping it keeps this map bounded by the canvas cache
+		// instead of growing with every off-screen mutation for the whole session
+		if(typeof chunkCanvases!=='undefined' && !chunkCanvases.has(key)) return;
 		const ver=(WORLD && WORLD.chunkVersion)?WORLD.chunkVersion(cx,sy):0;
 		d={min:worldSectionHeight(),max:-1,baseVersion:Number.isFinite(baseVersion)?baseVersion:ver,version:Number.isFinite(nextVersion)?nextVersion:ver,full:false};
 		chunkRenderDirty.set(key,d);
@@ -5560,6 +5651,7 @@ function markChunkRenderDirtyFullSection(cx,sy,baseVersion,nextVersion){
 	const h=worldSectionHeight();
 	let d=chunkRenderDirty.get(key);
 	if(!d){
+		if(typeof chunkCanvases!=='undefined' && !chunkCanvases.has(key)) return; // same bound as markChunkRenderDirty
 		const ver=(WORLD && WORLD.chunkVersion)?WORLD.chunkVersion(cx,sy):0;
 		d={min:0,max:h-1,baseVersion:Number.isFinite(baseVersion)?baseVersion:ver,version:Number.isFinite(nextVersion)?nextVersion:ver,full:true};
 		chunkRenderDirty.set(key,d);
@@ -5603,6 +5695,7 @@ function trimChunkCanvasCache(centerCx, keep, centerSy){
 	for(const key of keys){
 		if(chunkCanvases.size<=keep) break;
 		chunkCanvases.delete(key);
+		chunkRenderDirty.delete(key); // record is only meaningful while its canvas lives
 	}
 }
 function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
@@ -10345,6 +10438,8 @@ function resetHouseHealingRuntimeState(){
 }
 function resetWorldTransitionRuntime(){
 	deathTravelFx=null;
+	heroDeathSlowMotionStart=0;
+	heroDeathSlowMotionUntil=0;
 	resetHouseHealingRuntimeState();
 	if(FURNISHINGS && FURNISHINGS.resetRuntimeCaches) FURNISHINGS.resetRuntimeCaches();
 	if(AUDIO && AUDIO.clearRadioSource) AUDIO.clearRadioSource();
@@ -13175,6 +13270,20 @@ const HOTPICKER=createHotPicker({
 	isTouch:()=>document.documentElement.dataset.inputMode==='touch'
 });
 if(HOTPICKER) MM.groupedHotSelect=HOTPICKER.open;
+// Drag&drop from the crafting panel: resource tiles land on hotbar slots
+// (keys 5–9, 0). Assignment flows through MM.hotbar.assign — the SAME
+// validated chokepoint the inventory resources tab uses; the drag layer in
+// engine/craft_drag.js never touches HOTBAR_ORDER itself.
+const CRAFTDRAG=createCraftDrag({
+	slots:()=>[...document.querySelectorAll('#hotbarWrap .hotSlot')],
+	assign(slot,item){ if(!(MM.hotbar && MM.hotbar.assign(slot,item.k))) return false; msg('Slot '+hotbarKeyLabel(slot)+' → '+item.label); return true; },
+	drawTile(g,item){
+		const id=T[item.k];
+		if(id==null) return false;
+		return !!(MM.drawEntityTile && MM.drawEntityTile(g,id,0,0,7,11));
+	}
+});
+if(CRAFTDRAG) MM.craftDrag=CRAFTDRAG;
 // Dismiss on POINTERDOWN, not click: chip/card clicks re-render the picker mid
 // bubble, so by the time a 'click' reaches the document its target is detached
 // and contains() lies — the popup vanished on every category chip press.
@@ -14171,6 +14280,26 @@ function clearDebugGases(){
 				const originY=ref.base ? 0 : worldSectionOriginY(ref.sy);
 				const h=ref.h || (ref.base ? WORLD_H : worldSectionHeight());
 				const x0=cx*CHUNK_W;
+				for(let ly=0; ly<h; ly++){
+					const row=ly*CHUNK_W;
+					for(let lx=0; lx<CHUNK_W; lx++){
+						if(isGasTileId(arr[row+lx])) clearAt(x0+lx,originY+ly);
+					}
+				}
+			});
+		}
+		// parked (cold-stored) chunks can hold gas tiles too — scan their decoded
+		// copies; clearAt's setTile rehydrates a chunk only when it has a hit
+		const parkedMap=WORLD && WORLD._parked;
+		if(parkedMap && typeof parkedMap.forEach==='function' && typeof WORLD.chunkArray==='function'){
+			parkedMap.forEach((_p,k)=>{
+				const ref=normalizeWorldChunkRef(k);
+				if(!ref) return;
+				const arr=WORLD.chunkArray(ref);
+				if(!arr) return;
+				const originY=ref.base ? 0 : worldSectionOriginY(ref.sy);
+				const h=ref.h || (ref.base ? WORLD_H : worldSectionHeight());
+				const x0=ref.cx*CHUNK_W;
 				for(let ly=0; ly<h; ly++){
 					const row=ly*CHUNK_W;
 					for(let lx=0; lx<CHUNK_W; lx++){
@@ -17429,6 +17558,16 @@ if (document.readyState === 'loading') {
 let volcanoLeakWakeT=0;
 const MAX_FRAME_DT=0.05;
 let lastPowerCatchupSaveAt=0;
+function runGameFrame(totalDt,ts){
+	const steps=Math.max(1,Math.ceil(Math.max(0,totalDt)/MAX_FRAME_DT));
+	const stepDt=Math.max(0,totalDt)/steps;
+	for(let i=0;i<steps;i++) runGameStep(stepDt,ts);
+}
+function runHeroFrame(totalDt,ts){
+	const steps=Math.max(1,Math.ceil(Math.max(0,totalDt)/MAX_FRAME_DT));
+	const stepDt=Math.max(0,totalDt)/steps;
+	for(let i=0;i<steps;i++) runHeroStep(stepDt,ts);
+}
 function catchUpPowerSystems(dt){
 	const simDt=Math.max(0,Math.min(1800,Number(dt)||0));
 	if(simDt<=0.001) return false;
@@ -17582,9 +17721,12 @@ let lastLoopErrAt=0; function loop(ts){
 	if(frameClock.resetFrames>0){ frameClock.last=ts; frameClock.resetFrames--; }
 	const rawDt=Math.max(0,(ts-frameClock.last)/1000);
 	const frameDt=Math.min(MAX_FRAME_DT,rawDt);
+	const timeScale=simulationTimeScaleAt(ts);
+	const simulationDt=frameDt*timeScale;
 	frameClock.last=ts;
 	lastFrameMs=rawDt*1000;
 	window.__mmFrameMs=lastFrameMs; // smooth zoom interpolation
+	window.__mmActiveTimeScale=timeScale;
 	// the whole frame is guarded: one bad subsystem tick must skip a frame, not kill
 	// the rAF chain with an uncaught error (e.g. a cache blowing its size limit)
 	try{
@@ -17593,31 +17735,32 @@ let lastLoopErrAt=0; function loop(ts){
 		const overlayHold=uiOverlayHold();
 		// ghost watchers never run the sim: their frame applies the host's stream instead
 		const ghostHold=!!MM.ghostMode;
-		if(!paused && !overlayHold && !ghostHold && rawDt-frameDt>0.25) catchUpPowerSystems(rawDt-frameDt);
+		if(!paused && !overlayHold) advanceSimulationClock(simulationDt);
+		if(!paused && !overlayHold && !ghostHold && rawDt-frameDt>0.25) catchUpPowerSystems((rawDt-frameDt)*timeScale);
 		if(Math.abs(zoomTarget-zoom)>0.0001){ zoom += (zoomTarget-zoom)*Math.min(1, frameDt*8); applyCameraFromCenter(); }
 		if(!paused && !overlayHold && !ghostHold){
 			const simT=framePerfNow();
-			runGameStep(frameDt,ts);
+			runGameFrame(simulationDt,ts);
 			noteCurrentBiomeDiscovery();
 			updateCameraFollow(frameDt);
 			revealAround();
-			scanCraftablesInView(frameDt);
-			if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.frame(frameDt,ts);
+			scanCraftablesInView(simulationDt);
+			if(GHOST_HOST && GHOST_HOST.active()) GHOST_HOST.frame(simulationDt,ts);
 			simMs=framePerfNow()-simT;
 		} else if(ghostHold && GHOST_CLIENT && GHOST_CLIENT.frame){
 			const simT=framePerfNow();
-			GHOST_CLIENT.frame(frameDt,ts);
+			GHOST_CLIENT.frame(simulationDt,ts);
 			// hero-mode guest: the REAL hero systems run locally on the replicated
 			// world — camera, fog and craft-scan follow exactly like solo play
 			if(MM.ghostHeroIntents && !paused && !overlayHold){
-				runHeroStep(frameDt,ts);
+				runHeroFrame(simulationDt,ts);
 				updateCameraFollow(frameDt);
 				revealAround();
-				scanCraftablesInView(frameDt);
+				scanCraftablesInView(simulationDt);
 			}
 			simMs=framePerfNow()-simT;
 		}
-		if(AUDIO && AUDIO.update) AUDIO.update(frameDt);
+		if(AUDIO && AUDIO.update) AUDIO.update(simulationDt);
 		const drawT=framePerfNow();
 		draw();
 		drawMs=framePerfNow()-drawT;

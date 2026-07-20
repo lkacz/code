@@ -58,9 +58,10 @@ assert.match(mainSource, /const camRenderX = renderCam\.x;\s+const camRenderY = 
 assert.match(mainSource, /function drawBackground\(\)\{[\s\S]*const focus=deathTravelFx \? deathTravelCurrentPoint\(deathTravelFx\) : player;[\s\S]*BACKGROUND\.draw\(ctx, W, H, focus\.x, TILE, WORLDGEN, zoom\);/, 'background parallax follows the player normally and the traveling death point during respawn transit');
 assert.ok(!mainSource.includes('backgroundCameraX('), 'background parallax does not use the snapped render camera');
 assert.match(mainSource, /const CAMERA_MAX_DT=0\.05;/, 'camera follow delta matches the capped per-frame simulation delta');
-assert.match(mainSource, /function runGameStep\(dt,ts\)/, 'game simulation is extracted into one rendered-frame step');
-assert.match(mainSource, /const MAX_FRAME_DT=0\.05;/, 'long frames are capped to the stable single-step budget');
-assert.match(mainSource, /runGameStep\(frameDt,ts\);/, 'game simulation advances once per rendered frame');
+assert.match(mainSource, /function runGameStep\(dt,ts\)/, 'game simulation is extracted into one bounded simulation step');
+assert.match(mainSource, /const MAX_FRAME_DT=0\.05;/, 'every simulation substep stays within the stable physics budget');
+assert.match(mainSource, /function runGameFrame\(totalDt,ts\)[\s\S]*runGameStep\(stepDt,ts\)/, 'the scaled frame advances through the bounded game-step wrapper');
+assert.match(mainSource, /runGameFrame\(simulationDt,ts\);/, 'the shared simulation pace drives the complete game frame');
 assert.ok(!mainSource.includes('MAX_SIM_STEPS'), 'frame loop does not run multiple catch-up simulation steps before one render');
 assert.ok(!mainSource.includes('while(remaining>'), 'frame loop avoids catch-up substep bursts that can make the camera appear to jump');
 assert.match(mainSource, /updateCameraFollow\(frameDt\)/, 'camera follow is applied once per rendered frame, not once per physics substep');

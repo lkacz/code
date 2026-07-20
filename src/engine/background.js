@@ -23,7 +23,11 @@
   const BACKDROP_BLUR_MIN=1.25;
   const BACKDROP_BLUR_MAX=2.80;
   const RED_DWARF_PERIOD_CYCLES=4.75;
-  let cycleStart=performance.now();
+  function simulationClockNow(){
+    const shared=typeof window!=='undefined' ? Number(window.__mmSimulationTimeMs) : NaN;
+    return Number.isFinite(shared) ? shared : performance.now();
+  }
+  let cycleStart=simulationClockNow();
   function normalizeCycle(value,fallback=0){
     const raw=Number.isFinite(+value) ? +value : fallback;
     if(raw>=0 && raw<1) return raw;
@@ -686,7 +690,7 @@
   }
   function moonLightForInfo(info,metrics,WORLDGEN,now){
     const c=info || cycleInfo(0,metrics);
-    const stamp=Number.isFinite(+now) ? +now : performance.now();
+    const stamp=Number.isFinite(+now) ? +now : simulationClockNow();
     const cycleIndex=Math.floor((stamp-cycleStart)/CYCLE_DURATION);
     const phaseIndex=moonPhaseFromCalendar(metrics,WORLDGEN,cycleIndex);
     const illumination=moonIlluminationForPhase(phaseIndex);
@@ -1601,7 +1605,7 @@
 
   function drawBackgroundScene(ctx,W,H,playerX,TILE,WORLDGEN){
     initStars();
-    const now=performance.now();
+    const now=simulationClockNow();
     const debugEnabled = window.__timeOverrideActive===true;
     const manualT = debugEnabled? (window.__timeOverrideValue||0): null;
     const rawCycleT = (((now-cycleStart)%CYCLE_DURATION)+CYCLE_DURATION)%CYCLE_DURATION/CYCLE_DURATION;
@@ -1815,14 +1819,14 @@
 
   // Save/load support for time-of-day and moon phase
   background.exportState = function(){
-    const now=performance.now();
+    const now=simulationClockNow();
     const cycleT=(((now-cycleStart)%CYCLE_DURATION)+CYCLE_DURATION)%CYCLE_DURATION/CYCLE_DURATION;
     return { cycleT, moonPhaseIndex, lastPhaseCycle };
   };
   background.importState = function(s){
     if(!s) return;
     if(typeof s.cycleT==='number'){
-      const now=performance.now();
+      const now=simulationClockNow();
       const cycleT=normalizeCycle(s.cycleT);
       cycleStart = now - cycleT*CYCLE_DURATION;
       const metrics=currentSeasonMetrics();
@@ -1839,7 +1843,7 @@
   // time is mapped through those sections so noon stays 12:00 while sunrise
   // and sunset move naturally over the year.
   background.timeInfo = function(){
-    const now=performance.now();
+    const now=simulationClockNow();
     const raw=(((now-cycleStart)%CYCLE_DURATION)+CYCLE_DURATION)%CYCLE_DURATION/CYCLE_DURATION;
     const cycleT = window.__timeOverrideActive===true
       ? normalizeCycle(window.__timeOverrideValue)

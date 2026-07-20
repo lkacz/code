@@ -2,9 +2,11 @@
 // Headless-Edge live QA for the crafting panel + HUD ingredient tracker.
 // Boots the real game over CDP (real rAF — virtual time freezes it), grants a
 // spread of resources, exercises the new UX (favorites, tracked recipe, NEW
-// badges, craft flash) through real DOM clicks and captures screenshots:
+// badges, craft flash, drag&drop onto hotbar slots) through real DOM clicks
+// and raw mouse input, and captures screenshots:
 //   tools/craft-panel-qa.png    staged panel: favorites, NEW badges, tracker
 //   tools/craft-panel-qa-b.png  right after crafting (flash + updated counts)
+//   tools/craft-panel-qa-c.png  mid-drag: tile ghost + highlighted hotbar slot
 // Usage: node tools/craft-panel-qa.mjs [--url=http://127.0.0.1:8123/index.html] [--size=1600x900]
 import { spawn, execFile } from 'node:child_process';
 import { writeFile, mkdtemp, rm, readFile } from 'node:fs/promises';
@@ -20,6 +22,7 @@ const url = opt('url', 'http://127.0.0.1:8123/index.html');
 const [winW, winH] = opt('size', '1600x900').split('x').map(Number);
 const outA = opt('out', 'tools/craft-panel-qa.png');
 const outB = outA.replace(/\.png$/, '-b.png');
+const outC = outA.replace(/\.png$/, '-c.png');
 
 const EDGE_CANDIDATES = [
 	'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -78,6 +81,27 @@ const CRAFT_ONE = `(async()=>{
 	return 'ok:crafted counted='+(counts?counts.textContent:'(none)')
 		+' flash='+!!document.querySelector('#craftDetail.flash');
 })()`;
+
+// Drag scene: select a recipe with a PLACEABLE output (torches), read the
+// screen centers of its detail drag tile and hotbar slot #7 (index 2), and
+// report the slot's current assignment so the drop can prove a change.
+const PREP_DRAG = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const row=document.getElementById('craft_torches');
+	if(!row) return 'no-torches-row';
+	row.click();
+	await sleep(150);
+	const chip=document.querySelector('#craftDetail .craftHotDrop .craftDragTile');
+	const slot=document.querySelectorAll('#hotbarWrap .hotSlot')[2];
+	if(!chip||!slot) return 'no-drag-chip';
+	const a=chip.getBoundingClientRect(), b=slot.getBoundingClientRect();
+	return JSON.stringify({fx:a.left+a.width/2, fy:a.top+a.height/2,
+		tx:b.left+b.width/2, ty:b.top+b.height/2, before:MM.hotbar.order()[2]});
+})()`;
+const POST_DRAG = `JSON.stringify({slot:MM.hotbar.order()[2],
+	dragging:!!(MM.craftDrag&&MM.craftDrag.dragging()),
+	ghost:!!document.getElementById('craftDragGhost'),
+	dropCss:!!document.querySelector('#hotbarWrap.hotDropActive')})`;
 
 async function main(){
 	const { existsSync } = await import('node:fs');
@@ -145,6 +169,34 @@ async function main(){
 		shot = await send(ws, 'Page.captureScreenshot', { format: 'png' });
 		await writeFile(outB, Buffer.from(shot.data, 'base64'));
 		console.log('wrote', outB);
+
+		// drag&drop: press on the detail drag tile, glide to hotbar slot #7,
+		// screenshot mid-drag (ghost + slot highlight), release, verify remap
+		const prep = await send(ws, 'Runtime.evaluate', { expression: PREP_DRAG, awaitPromise: true, returnByValue: true, timeout: 30000 });
+		const prepVal = prep && prep.result ? prep.result.value : null;
+		if (typeof prepVal === 'string' && prepVal.startsWith('{')){
+			const p = JSON.parse(prepVal);
+			const mouse = (type, x, y, extra) => send(ws, 'Input.dispatchMouseEvent',
+				Object.assign({ type, x: Math.round(x), y: Math.round(y), button: 'left', buttons: 1 }, extra || {}));
+			await mouse('mousePressed', p.fx, p.fy, { clickCount: 1 });
+			const STEPS = 10;
+			for (let i = 1; i <= STEPS; i++){
+				await mouse('mouseMoved', p.fx + (p.tx - p.fx) * i / STEPS, p.fy + (p.ty - p.fy) * i / STEPS);
+				await sleep(25);
+			}
+			await sleep(150);
+			shot = await send(ws, 'Page.captureScreenshot', { format: 'png' });
+			await writeFile(outC, Buffer.from(shot.data, 'base64'));
+			console.log('wrote', outC, '(mid-drag)');
+			const mid = await send(ws, 'Runtime.evaluate', { expression: POST_DRAG, returnByValue: true });
+			console.log('dragMid:', mid && mid.result ? mid.result.value : '(no result)');
+			await mouse('mouseReleased', p.tx, p.ty, { buttons: 0, clickCount: 1 });
+			await sleep(250);
+			const post = await send(ws, 'Runtime.evaluate', { expression: POST_DRAG, returnByValue: true });
+			console.log('dragDrop:', post && post.result ? post.result.value : '(no result)', 'before=' + p.before);
+		} else {
+			console.log('dragPrep failed:', prepVal);
+		}
 
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 5).join('\n---\n'));
 	} finally {
