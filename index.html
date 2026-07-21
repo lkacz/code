@@ -434,6 +434,22 @@
     #craft .craftHotDropInfo{ display:flex; flex-direction:column; gap:2px; min-width:0; }
     #craft .craftHotDropInfo b{ font-size:11px; color:#e8f1fb; }
     #craft .craftHotDropInfo span{ font-size:10px; color:#9fb4c9; line-height:1.25; }
+    /* Drag-to-hotbar plumbing shared by the picker, the inventory and crafting.
+       #ui is a fixed-position stacking context and #invOverlay is a SIBLING above
+       it, so no z-index can lift the hotbar over the inventory modal — instead,
+       while any tile is being dragged we make the overlay pointer-transparent so
+       elementFromPoint falls through to the real hotbar (which re-enables its own
+       pointer-events even though #ui is pointer-events:none). The hotbar is also
+       raised above the picker popover (z-index:1000) within #ui. */
+    body.mmTileDrag #hotbarWrap{ z-index:1100; }
+    body.mmTileDrag #invOverlay{ pointer-events:none; background:transparent !important; -webkit-backdrop-filter:none !important; backdrop-filter:none !important; }
+    body.mmTileDrag #invOverlay #invDialog{ box-shadow:0 24px 64px -12px rgba(0,0,0,.7), 0 0 0 2px rgba(124,196,255,.35); }
+    /* '+' quick-craft chip reused by the picker cards and inventory resource cards */
+    .mmQuickCraft{ display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box;
+      border:1px solid rgba(124,196,255,.55); background:rgba(44,126,248,.22); color:#dcefff; font-weight:800;
+      border-radius:7px; cursor:pointer; font:inherit; line-height:1; }
+    .mmQuickCraft:hover{ background:rgba(44,126,248,.4); border-color:#7cc4ff; }
+    .mmQuickCraft:disabled, .mmQuickCraft[aria-disabled="true"]{ opacity:.35; cursor:default; }
     #craft .craftActions{ display:flex; gap:6px; margin-top:auto; flex-wrap:wrap; }
     #craft .craftPrimary, #craft .craftSecondary, #craft .craftTrackBtn{ border:none; border-radius:8px; padding:7px 10px; color:#fff; font-weight:800; cursor:pointer; }
     #craft .craftPrimary{ flex:1; min-width:88px; background:#2c7ef8; box-shadow:0 2px 8px rgba(44,126,248,.35); }
@@ -1270,6 +1286,15 @@
     .invResBtns button.danger{ background:rgba(248,113,113,.10); border-color:rgba(248,113,113,.35); color:#ff9f9f; }
     .invResBtns button.danger:hover:not(:disabled){ background:rgba(196,50,50,.55); color:#fff; }
     .invResBtns button:disabled{ opacity:.35; cursor:default; }
+    .invResBar{ display:flex; align-items:center; gap:8px; justify-content:space-between; margin-bottom:2px; }
+    .invResBar .invHint{ margin:0; flex:1; min-width:0; }
+    .invResOwnedToggle{ flex:none; border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.07); color:#dfe8f5; border-radius:999px; padding:4px 10px; font-size:11px; font-weight:700; cursor:pointer; white-space:nowrap; }
+    .invResOwnedToggle:hover{ background:rgba(255,255,255,.14); }
+    .invResOwnedToggle.on{ border-color:#2c7ef8; background:rgba(44,126,248,.28); color:#dcefff; }
+    .invResDot.invResDrag{ cursor:grab; touch-action:none; box-shadow:0 0 0 1px rgba(124,196,255,.55); transition:box-shadow .12s, transform .06s; }
+    .invResDot.invResDrag:hover{ box-shadow:0 0 0 2px rgba(124,196,255,.95); transform:scale(1.12); }
+    .invResBtns .invResCraft{ flex:none; width:28px; padding:3px 0; border:1px solid rgba(124,196,255,.55); background:rgba(44,126,248,.22); color:#dcefff; }
+    .invResBtns .invResCraft:hover:not(:disabled){ background:rgba(44,126,248,.4); border-color:#7cc4ff; }
     /* Permanent jewel upgrading: rare stones should read like treasure even in a menu. */
     .invJewelCards{ grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
     .invJewelCard{ --jewel:#7df9ff; position:relative; overflow:hidden; border-color:color-mix(in srgb,var(--jewel) 42%,transparent); background:radial-gradient(120% 120% at 12% 0%,color-mix(in srgb,var(--jewel) 20%,transparent),rgba(255,255,255,.045) 58%); }

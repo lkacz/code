@@ -210,6 +210,38 @@ assert.match(mainSrc, /function craftPlaceableDef\(k\)\{[\s\S]{0,80}RESOURCE_DEF
 assert.match(mainSrc, /const placeable=craftPlaceableDef\(k\);/, 'ingredient rows expose placeable resources as tile drag handles');
 assert.match(mainSrc, /className='craftHotDrop'/, 'craft detail shows a drag-to-hotbar card for placeable outputs');
 assert.match(indexHtml, /#craft \.craftHotDrop\{[^}]*border:1px dashed/, 'output drag card advertises its drop affordance');
+
+// --- unified drag + quick-craft across picker & inventory -------------------
+const hotPickerSrc = readFileSync(new URL('../src/engine/hot_picker.js', import.meta.url), 'utf8');
+const invUiSrc = readFileSync(new URL('../src/inventory_ui.js', import.meta.url), 'utf8');
+// quick-craft bridge: reuses the discovery map AND re-applies the panel's own
+// unlock+ban predicate — a "+" never crafts a recipe the player hasn't earned.
+assert.match(mainSrc, /MM\.craftInfoForResource=function/, 'main exposes the quick-craft info bridge');
+assert.match(mainSrc, /MM\.quickCraftResource=function/, 'main exposes the quick-craft action bridge');
+assert.match(mainSrc, /MM\.craftInfoForTile=function[\s\S]*RESOURCE_DEFS\.find\(r=>r\.tile===tileName\)/, 'tile-name quick-craft resolves through the resource registry');
+assert.match(mainSrc, /function bestCraftRecipeForResource\(resKey\)\{[\s\S]*CRAFT_RESULT_KEY_RECIPES\.get\(String\(resKey/, 'quick-craft reuses the resource→recipe discovery map');
+assert.match(mainSrc, /function bestCraftRecipeForResource[\s\S]*const known=list\.filter\(craftRecipeVisible\)/, 'quick-craft only offers discovered, non-banned recipes (same gate as the panel)');
+// picker wiring: shared drag layer, per-card "+", persisted owned-only toggle
+assert.ok(mainSrc.indexOf('const CRAFTDRAG=createCraftDrag') < mainSrc.indexOf('const HOTPICKER=createHotPicker'), 'drag layer is created before the picker so cards can reuse it');
+assert.match(mainSrc, /makeDraggable:\(el,itemFn\)=> CRAFTDRAG && CRAFTDRAG\.makeDraggable\(el,itemFn\)/, 'picker cards reuse the shared hotbar drag layer');
+assert.match(mainSrc, /quickCraft:item=>\{ const ok=MM\.quickCraftTile\(item\.k\); if\(ok\) updateHotbarCounts\(\); return ok; \}/, 'picker "+" crafts and refreshes the HUD counts');
+assert.match(mainSrc, /ownedOnlyKey:'mm_hotbar_owned_only_v1'/, 'picker exposes a persisted owned-only toggle');
+assert.match(mainSrc, /assign\(slot,item\)\{ HOTBAR_ORDER\[slot\]=item\.k; cycleHotbar\(slot\);/, 'picker click-assign still routes through HOTBAR_ORDER + cycleHotbar');
+// hot_picker module: icon is the drag handle (small target keeps grid scroll)
+assert.match(hotPickerSrc, /const makeDraggable=typeof deps\.makeDraggable==='function'/, 'picker accepts an optional drag layer');
+assert.match(hotPickerSrc, /makeDraggable\(icon,\(\)=>\(\{k:item\.k,label:item\.label,col:item\.col\}\)\)/, 'the tile ICON (not the whole card) is the drag handle');
+assert.match(hotPickerSrc, /className='mmQuickCraft hpQuickCraft'/, 'picker cards carry the shared quick-craft chip');
+assert.match(hotPickerSrc, /function ownedVisible\(items\)\{[\s\S]*info\.n>0 \|\| info\.text==='∞'/, 'owned-only filter keeps infinities (god) and held stacks');
+// inventory resources tab: drag handle, "+", persisted owned-only toggle
+assert.match(invUiSrc, /MM\.craftDrag\.makeDraggable\(dot,\(\)=>\(\{k:r\.tile/, 'inventory resource swatch is a hotbar drag handle');
+assert.match(invUiSrc, /MM\.quickCraftResource\(r\.key\)/, 'inventory "+" crafts through the shared quick-craft bridge');
+assert.match(invUiSrc, /const INV_OWNED_ONLY_KEY='mm_inv_owned_only_v1'/, 'inventory owned-only toggle persists');
+assert.match(invUiSrc, /if\(ownedOnly\) list=list\.filter\(r=>r\.count>0\)/, 'owned-only keeps only stacks above zero');
+// CSS: overlay pass-through (inventory modal sits ABOVE #ui and cannot be
+// out-z-indexed) + hotbar raised above the picker during any tile drag.
+assert.match(indexHtml, /body\.mmTileDrag #invOverlay\{[^}]*pointer-events:none/, 'inventory overlay turns pointer-transparent mid-drag so drops fall through to the hotbar');
+assert.match(indexHtml, /body\.mmTileDrag #hotbarWrap\{[^}]*z-index:1100/, 'hotbar rises above the picker popover during a drag');
+assert.match(indexHtml, /\.mmQuickCraft\{/, 'shared quick-craft chip has base styling');
 assert.match(mainSrc, /function collectLooseItemAt\(tx,ty,opts\)\{[\s\S]*isLooseItemTile\(t\)[\s\S]*const dropCtx=dropContextForTile\(t,tx,ty\);[\s\S]*setForegroundConfirmed\(tx,ty,T\.AIR\)[\s\S]*const drops=awardTileDrops\(info,dropCtx\);[\s\S]*pushUndo\(tx,ty,t,T\.AIR,'break',drops\);[\s\S]*updateInventory\(\);/, 'loose item collection confirms removal before drops, undo, and inventory refresh');
 assert.match(mainSrc, /function tryEatWorldFoodAt\(tx,ty\)[\s\S]*Consuming world food is not a reversible tile edit[\s\S]*setForegroundConfirmed\(tx,ty,T\.AIR\)/,
   'consumed world food is not restorable without rolling back its already-applied health and status effects');

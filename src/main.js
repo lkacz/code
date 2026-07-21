@@ -11509,6 +11509,52 @@ const CRAFT_SEEN_TILE_RECIPES=(()=>{ // numeric tile id -> [recipe,...]
 	});
 	return map;
 })();
+// --- Quick-craft bridge -----------------------------------------------------
+// One-tap "+" crafting, shared by the hotbar picker, the inventory resources
+// tab and the crafting panel: map a placeable resource (by key or by tile name)
+// to its best KNOWN recipe and craft a single batch. Reuses the same
+// discovery/ban predicates as the panel — a "+" never appears for a recipe the
+// player hasn't unlocked, and never bypasses a challenge craft ban.
+function craftCostText(r){
+	const e=recipeCostEntries(r);
+	return e.length ? e.map(([k,v])=>v+'× '+(RES_LABEL[k]||k)).join(', ') : 'bez kosztu';
+}
+function bestCraftRecipeForResource(resKey){
+	const list=CRAFT_RESULT_KEY_RECIPES.get(String(resKey||''));
+	if(!list || !list.length) return null;
+	const known=list.filter(craftRecipeVisible);
+	if(!known.length) return null;
+	// prefer a recipe we can craft now; among ties pick the cheapest total cost
+	const ready=known.filter(r=>canCraft(r) && !recipeDone(r));
+	const pool=ready.length ? ready : known;
+	return pool.slice().sort((a,b)=>{
+		const ca=recipeCostEntries(a).reduce((s,[,v])=>s+v,0);
+		const cb=recipeCostEntries(b).reduce((s,[,v])=>s+v,0);
+		return ca-cb;
+	})[0] || null;
+}
+MM.craftInfoForResource=function(resKey){
+	const r=bestCraftRecipeForResource(resKey);
+	if(!r) return {hasRecipe:false};
+	const ready=canCraft(r) && !recipeDone(r);
+	return {hasRecipe:true, recipeId:r.id, canCraft:ready, done:recipeDone(r),
+		amount:r.amount||1, outKey:r.out, name:r.name||recipeOutputName(r), costText:craftCostText(r)};
+};
+MM.craftInfoForTile=function(tileName){
+	const d=RESOURCE_DEFS.find(r=>r.tile===tileName);
+	return d ? MM.craftInfoForResource(d.key) : {hasRecipe:false};
+};
+MM.quickCraftResource=function(resKey){
+	const r=bestCraftRecipeForResource(resKey);
+	if(!r || !canCraft(r) || recipeDone(r)) return false;
+	const before=inv[r.out]|0;
+	doCraft(r,1);
+	return (inv[r.out]|0)>before;
+};
+MM.quickCraftTile=function(tileName){
+	const d=RESOURCE_DEFS.find(r=>r.tile===tileName);
+	return d ? MM.quickCraftResource(d.key) : false;
+};
 function noteCraftResultSeen(resourceKey,opts){
 	const recipes=CRAFT_RESULT_KEY_RECIPES.get(String(resourceKey||''));
 	if(!recipes || !recipes.length) return [];
@@ -13245,6 +13291,22 @@ function hotSelectCatalog(){
 	}
 	return types;
 }
+// Drag&drop tile layer, shared by the crafting panel, the hotbar picker and the
+// inventory resources tab: a resource tile dragged onto any hotbar slot (keys
+// 5–9, 0) remaps it. Assignment flows through MM.hotbar.assign — the SAME
+// validated chokepoint the inventory "Do paska" button uses; the drag layer in
+// engine/craft_drag.js never touches HOTBAR_ORDER itself. Created BEFORE the
+// picker so the picker cards can reuse this instance as their drag handle.
+const CRAFTDRAG=createCraftDrag({
+	slots:()=>[...document.querySelectorAll('#hotbarWrap .hotSlot')],
+	assign(slot,item){ if(!(MM.hotbar && MM.hotbar.assign(slot,item.k))) return false; msg('Slot '+hotbarKeyLabel(slot)+' → '+item.label); return true; },
+	drawTile(g,item){
+		const id=T[item.k];
+		if(id==null) return false;
+		return !!(MM.drawEntityTile && MM.drawEntityTile(g,id,0,0,7,11));
+	}
+});
+if(CRAFTDRAG) MM.craftDrag=CRAFTDRAG;
 const HOTPICKER=createHotPicker({
 	menu:hotSelectMenu,
 	options:hotSelectOptions,
@@ -13265,25 +13327,17 @@ const HOTPICKER=createHotPicker({
 	},
 	current:slot=>HOTBAR_ORDER[slot],
 	assign(slot,item){ HOTBAR_ORDER[slot]=item.k; cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' → '+item.label); },
+	// drag a card onto ANY slot (reuses the shared drag layer); the "+" crafts
+	// the block on the spot when its recipe is known and affordable.
+	makeDraggable:(el,itemFn)=> CRAFTDRAG && CRAFTDRAG.makeDraggable(el,itemFn),
+	craftInfo:item=> MM.craftInfoForTile(item.k),
+	quickCraft:item=>{ const ok=MM.quickCraftTile(item.k); if(ok) updateHotbarCounts(); return ok; },
+	ownedOnlyKey:'mm_hotbar_owned_only_v1',
 	keyLabel:hotbarKeyLabel,
 	isGod:()=>godMode,
 	isTouch:()=>document.documentElement.dataset.inputMode==='touch'
 });
 if(HOTPICKER) MM.groupedHotSelect=HOTPICKER.open;
-// Drag&drop from the crafting panel: resource tiles land on hotbar slots
-// (keys 5–9, 0). Assignment flows through MM.hotbar.assign — the SAME
-// validated chokepoint the inventory resources tab uses; the drag layer in
-// engine/craft_drag.js never touches HOTBAR_ORDER itself.
-const CRAFTDRAG=createCraftDrag({
-	slots:()=>[...document.querySelectorAll('#hotbarWrap .hotSlot')],
-	assign(slot,item){ if(!(MM.hotbar && MM.hotbar.assign(slot,item.k))) return false; msg('Slot '+hotbarKeyLabel(slot)+' → '+item.label); return true; },
-	drawTile(g,item){
-		const id=T[item.k];
-		if(id==null) return false;
-		return !!(MM.drawEntityTile && MM.drawEntityTile(g,id,0,0,7,11));
-	}
-});
-if(CRAFTDRAG) MM.craftDrag=CRAFTDRAG;
 // Dismiss on POINTERDOWN, not click: chip/card clicks re-render the picker mid
 // bubble, so by the time a 'click' reaches the document its target is detached
 // and contains() lies — the popup vanished on every category chip press.

@@ -153,14 +153,28 @@ export function createHotPicker(deps){
   const drawTile=typeof deps.drawTile==='function'?deps.drawTile:null;
   const isTouch=typeof deps.isTouch==='function'?deps.isTouch:()=>false;
   const isGod=typeof deps.isGod==='function'?deps.isGod:()=>false;
+  // Optional extras: drag a card onto ANY hotbar slot, and a per-card "+" that
+  // crafts the block on the spot when its recipe is known and affordable.
+  const makeDraggable=typeof deps.makeDraggable==='function'?deps.makeDraggable:null;
+  const craftInfoFn=typeof deps.craftInfo==='function'?deps.craftInfo:null;
+  const quickCraftFn=typeof deps.quickCraft==='function'?deps.quickCraft:null;
+  const ownedOnlyKey=typeof deps.ownedOnlyKey==='string'?deps.ownedOnlyKey:null;
   if(!menu||!optionsEl||!model) return null;
   ensurePickerCss();
 
-  const state={open:false, slot:0, anchor:null, query:'', group:'all'};
+  function loadOwnedOnly(){
+    try{ return !!(ownedOnlyKey && typeof localStorage!=='undefined' && localStorage.getItem(ownedOnlyKey)==='1'); }
+    catch(e){ return false; }
+  }
+  function saveOwnedOnly(v){
+    try{ if(ownedOnlyKey && typeof localStorage!=='undefined') localStorage.setItem(ownedOnlyKey, v?'1':'0'); }catch(e){ /* private mode */ }
+  }
+
+  const state={open:false, slot:0, anchor:null, query:'', group:'all', ownedOnly:loadOwnedOnly()};
   const iconCache=new Map(); // tile key -> canvas (art is deterministic per key)
   // Search + chips live in a controls host pinned BETWEEN the title and the
   // scrolling #hotSelectOptions: they must never scroll out of reach.
-  let controlsHost=null, searchInput=null, chipHost=null, gridHost=null;
+  let controlsHost=null, searchInput=null, chipHost=null, gridHost=null, ownedToggle=null;
 
   function tileIcon(item){
     const cached=iconCache.get(item.k);
@@ -190,6 +204,11 @@ export function createHotPicker(deps){
   function countInfo(item){
     if(typeof deps.count==='function'){ const v=deps.count(item); if(v&&typeof v==='object') return v; }
     return {text:'',n:0};
+  }
+  // Owned-only filter: keep infinities (god mode) and anything actually held.
+  function ownedVisible(items){
+    if(!state.ownedOnly) return items;
+    return items.filter(it=>{ const info=countInfo(it); return info.n>0 || info.text==='∞'; });
   }
 
   function assignItem(item){
@@ -270,6 +289,12 @@ export function createHotPicker(deps){
     if(info.n===0&&info.text!=='∞') b.classList.add('hpDim'); // owned nothing: visible but dimmed
     const icon=tileIcon(item);
     icon.style.cssText='width:'+(touch?34:30)+'px; height:'+(touch?34:30)+'px; image-rendering:pixelated; border-radius:4px; flex:none;';
+    // The ICON (not the whole card) is the drag handle: touch-action:none on a
+    // small target lets the player still scroll the grid by dragging elsewhere.
+    if(makeDraggable){
+      icon.title=item.label+' — przeciągnij na dowolny slot (5–9, 0)';
+      makeDraggable(icon,()=>({k:item.k,label:item.label,col:item.col}));
+    }
     b.appendChild(icon);
     b.appendChild(labelNode(item));
     if(info.text){
@@ -277,6 +302,26 @@ export function createHotPicker(deps){
       qty.textContent=info.text;
       qty.style.cssText='position:absolute; top:2px; right:4px; font-size:9px; opacity:.8; background:rgba(0,0,0,.45); border-radius:6px; padding:0 4px;';
       b.appendChild(qty);
+    }
+    if(craftInfoFn){
+      const ci=craftInfoFn(item)||{};
+      if(ci.hasRecipe){
+        const plus=document.createElement('span');
+        plus.className='mmQuickCraft hpQuickCraft';
+        plus.textContent='+';
+        plus.setAttribute('role','button');
+        plus.tabIndex=-1; // keep arrow-key card walking clean
+        plus.setAttribute('aria-disabled', String(!ci.canCraft));
+        plus.title=(ci.canCraft?'Wytwórz teraz: ':'Brak surowców na: ')+(ci.name||item.label)+(ci.costText?(' ('+ci.costText+')'):'');
+        plus.style.cssText='position:absolute; top:2px; left:3px; width:17px; height:17px; font-size:12px;';
+        plus.addEventListener('pointerdown',e=>{ e.stopPropagation(); });
+        plus.addEventListener('click',e=>{
+          e.stopPropagation(); e.preventDefault();
+          const now=craftInfoFn(item)||{};
+          if(now.canCraft && quickCraftFn && quickCraftFn(item)) refreshViews();
+        });
+        b.appendChild(plus);
+      }
     }
     b.addEventListener('click',()=>assignItem(item));
     b.addEventListener('keydown',onCardKey);
@@ -312,33 +357,41 @@ export function createHotPicker(deps){
   function renderGrid(){
     gridHost.textContent='';
     const secs=model.sections(state.query,state.group);
-    if(!secs.length){
-      const empty=document.createElement('div');
-      empty.className='hpEmpty';
-      if(state.query.trim()){
-        empty.textContent='Brak wyników dla „'+state.query+'” — kliknij, aby wyczyścić';
-        empty.addEventListener('click',()=>{
-          state.query='';
-          if(searchInput){ searchInput.value=''; searchInput.focus(); }
-          refreshViews();
-        });
-      } else {
-        // fresh save: nothing discovered yet — the empty grid explains itself
-        empty.textContent='Nie odkryłeś jeszcze żadnych bloków — wykop pierwszy surowiec!';
-      }
-      gridHost.appendChild(empty);
-      return;
-    }
+    let rendered=0;
     secs.forEach(sec=>{
+      const items=ownedVisible(sec.items);
+      if(!items.length) return;
       const head=document.createElement('div');
       head.className='hpSecHead';
       head.textContent=sec.label;
       gridHost.appendChild(head);
       const grid=document.createElement('div');
       grid.style.cssText='display:grid; grid-template-columns:repeat(auto-fill,minmax('+(isTouch()?'72px':'64px')+',1fr)); gap:4px; padding-bottom:4px;';
-      sec.items.forEach(item=>grid.appendChild(makeCard(item)));
+      items.forEach(item=>grid.appendChild(makeCard(item)));
       gridHost.appendChild(grid);
+      rendered+=items.length;
     });
+    if(rendered) return;
+    const empty=document.createElement('div');
+    empty.className='hpEmpty';
+    if(state.query.trim()){
+      empty.textContent='Brak wyników dla „'+state.query+'” — kliknij, aby wyczyścić';
+      empty.addEventListener('click',()=>{
+        state.query='';
+        if(searchInput){ searchInput.value=''; searchInput.focus(); }
+        refreshViews();
+      });
+    } else if(state.ownedOnly){
+      empty.textContent='Nie masz teraz żadnego z tych bloków — kliknij, aby pokazać wszystkie odkryte';
+      empty.addEventListener('click',()=>{
+        state.ownedOnly=false; saveOwnedOnly(false);
+        refreshViews();
+      });
+    } else {
+      // fresh save: nothing discovered yet — the empty grid explains itself
+      empty.textContent='Nie odkryłeś jeszcze żadnych bloków — wykop pierwszy surowiec!';
+    }
+    gridHost.appendChild(empty);
   }
 
   function refreshViews(){
@@ -376,6 +429,24 @@ export function createHotPicker(deps){
     chipHost=document.createElement('div');
     chipHost.style.cssText='display:flex; gap:4px; overflow-x:auto; scrollbar-width:none; padding-bottom:2px; touch-action:pan-x;';
     controlsHost.appendChild(chipHost);
+    if(ownedOnlyKey){
+      // persisted "only what I hold" filter — hides zero-stock discovered blocks
+      ownedToggle=document.createElement('button');
+      ownedToggle.type='button';
+      ownedToggle.className='hpChip hpOwnedToggle'+(state.ownedOnly?' on':'');
+      ownedToggle.style.cssText='align-self:flex-start;';
+      ownedToggle.textContent='📦 Tylko posiadane';
+      ownedToggle.title='Pokazuj tylko bloki, których masz teraz więcej niż zero';
+      ownedToggle.setAttribute('aria-pressed', String(state.ownedOnly));
+      ownedToggle.addEventListener('click',()=>{
+        state.ownedOnly=!state.ownedOnly;
+        saveOwnedOnly(state.ownedOnly);
+        ownedToggle.classList.toggle('on', state.ownedOnly);
+        ownedToggle.setAttribute('aria-pressed', String(state.ownedOnly));
+        refreshViews();
+      });
+      controlsHost.appendChild(ownedToggle);
+    }
     // grid area — the shell (#hotSelectOptions) owns vertical scrolling
     optionsEl.textContent='';
     gridHost=document.createElement('div');

@@ -702,30 +702,63 @@ import './inventory.js';
     wrap.appendChild(forge); grid.appendChild(wrap);
   }
 
-  // --- Resources tab: card grid, owned first, searchable; empty stacks dimmed ---
+  // --- Resources tab: card grid, owned first, searchable; empty stacks dimmed.
+  // Placeable resources are drag handles (drop onto a hotbar slot 5–9/0) and
+  // carry a "+" that crafts them on the spot when the recipe is known+affordable;
+  // a persisted "only owned" toggle hides zero-stock stacks. ---
+  const INV_OWNED_ONLY_KEY='mm_inv_owned_only_v1';
+  function loadInvOwnedOnly(){ try{ return localStorage.getItem(INV_OWNED_ONLY_KEY)==='1'; }catch(e){ return false; } }
+  function saveInvOwnedOnly(v){ try{ localStorage.setItem(INV_OWNED_ONLY_KEY, v?'1':'0'); }catch(e){ /* private mode */ } }
   function buildResourcesGrid(){
     const wrap=document.createElement('div'); wrap.className='invResources';
+    const ownedOnly=loadInvOwnedOnly();
+    const bar=document.createElement('div'); bar.className='invResBar';
     const hint=document.createElement('div'); hint.className='invHint';
-    hint.textContent='Zebrane surowce — posiadane na górze. „Do paska” przypisuje surowiec do aktywnego slotu paska (5–9, 0).';
-    wrap.appendChild(hint);
+    hint.textContent='Przeciągnij surowiec na slot paska (5–9, 0) albo „Do paska” na aktywny; „+” tworzy blok od razu.';
+    bar.appendChild(hint);
+    const toggle=document.createElement('button'); toggle.type='button';
+    toggle.className='invResOwnedToggle'+(ownedOnly?' on':'');
+    toggle.textContent='📦 Tylko posiadane';
+    toggle.title='Pokazuj tylko surowce, których masz więcej niż zero';
+    toggle.setAttribute('aria-pressed', String(ownedOnly));
+    toggle.addEventListener('click',()=>{ saveInvOwnedOnly(!ownedOnly); buildGrid(); });
+    bar.appendChild(toggle);
+    wrap.appendChild(bar);
     const cards=document.createElement('div'); cards.className='invResGrid';
     let list=INV.resources().filter(r=>!r.jewel);
     if(searchText) list=list.filter(r=>String(r.label+' '+r.key).toLowerCase().includes(searchText));
+    if(ownedOnly) list=list.filter(r=>r.count>0);
     list=list.slice().sort((a,b)=>((b.count>0)-(a.count>0)) || String(a.label).localeCompare(String(b.label),'pl'));
     if(!list.length){
       const empty=document.createElement('div'); empty.className='invEmpty';
-      empty.textContent='Brak surowców pasujących do wyszukiwania';
+      empty.textContent= ownedOnly ? 'Nie masz teraz żadnych surowców — wyłącz „Tylko posiadane”' : 'Brak surowców pasujących do wyszukiwania';
       cards.appendChild(empty);
     }
     list.forEach(r=>{
       const card=document.createElement('div'); card.className='invResCard'+(r.count>0?'':' zero');
       const top=document.createElement('div'); top.className='invResTop';
       const dot=document.createElement('span'); dot.className='invResDot'; dot.style.background=r.color;
+      if(r.tile && MM.craftDrag && MM.craftDrag.makeDraggable){
+        dot.classList.add('invResDrag');
+        dot.title=r.label+' — przeciągnij na slot paska (5–9, 0)';
+        MM.craftDrag.makeDraggable(dot,()=>({k:r.tile,label:r.label,col:r.color}));
+      }
       const lab=document.createElement('span'); lab.className='invResLabel'; lab.textContent=r.label; lab.title=r.label;
       const cnt=document.createElement('b'); cnt.className='invResCount'; cnt.textContent=(r.count|0).toLocaleString('pl-PL');
       top.appendChild(dot); top.appendChild(lab); top.appendChild(cnt);
       card.appendChild(top);
       const btns=document.createElement('span'); btns.className='invResBtns';
+      const ci=(MM.craftInfoForResource && r.key) ? MM.craftInfoForResource(r.key) : null;
+      if(ci && ci.hasRecipe && MM.quickCraftResource){
+        const plus=document.createElement('button'); plus.type='button';
+        plus.className='mmQuickCraft invResCraft'; plus.textContent='+';
+        plus.disabled=!ci.canCraft;
+        plus.title=(ci.canCraft?'Wytwórz teraz: ':'Brak surowców na: ')+(ci.name||r.label)+(ci.costText?(' ('+ci.costText+')'):'');
+        plus.addEventListener('click',()=>{
+          if(MM.quickCraftResource(r.key)){ if(window.updateInventoryHud) window.updateInventoryHud(); buildGrid(); }
+        });
+        btns.appendChild(plus);
+      }
       if(r.tile && MM.hotbar && MM.hotbar.assign){
         const hb=document.createElement('button'); hb.textContent='Do paska'; hb.title='Przypisz do aktywnego slotu paska';
         hb.addEventListener('click',()=>{ if(MM.hotbar.assign(MM.hotbar.index(), r.tile) && window.msg) window.msg(r.label+' przypisano do paska'); });

@@ -7,6 +7,12 @@
 // "Ostatnie" leads the list. Also drives a category chip and Escape-close.
 //   tools/hot-picker-qa.png    open picker: chips + sectioned icon grid
 //   tools/hot-picker-qa-b.png  search narrowed to ranked results
+//   tools/hot-picker-qa-c.png  after a card was dragged onto a DIFFERENT slot
+//   tools/hot-picker-qa-d.png  inventory resources tab: drag handles + "+" craft
+// Also exercises (real CDP mouse input where a drag is involved): dragging a
+// card icon onto any hotbar slot, the per-card "+" quick-craft, the persisted
+// "owned only" filter, and dragging an inventory swatch onto the hotbar THROUGH
+// the modal overlay (pointer-events pass-through) + inventory "+".
 // Usage: node tools/hot-picker-qa.mjs [--url=http://127.0.0.1:8123/index.html]
 import { spawn, execFile } from 'node:child_process';
 import { writeFile, mkdtemp, rm, readFile } from 'node:fs/promises';
@@ -42,7 +48,7 @@ const STAGE = `(async()=>{
 	for(let i=0;i<400 && !(window.MM && window.inv && MM.hotbar && MM.groupedHotSelect && document.getElementById('hotSelectMenu'));i++) await sleep(100);
 	if(!MM.groupedHotSelect) return 'boot-timeout';
 	try{ MM.background.importState({cycleT:0.25}); }catch(e){}
-	Object.assign(window.inv,{sand:72,snow:9,toxicSnow:3,water:45,grass:5,wood:14});
+	Object.assign(window.inv,{sand:72,snow:9,toxicSnow:3,water:45,grass:5,wood:14,granite:8});
 	window.updateInventoryHud && window.updateInventoryHud();
 	// open the picker on slot index 1 (key 6) via the real slot element
 	const slotEl=document.querySelectorAll('#hotbarWrap .hotSlot')[1];
@@ -137,6 +143,106 @@ const ASSIGN = `(async()=>{
 	return 'ok: slotLabel='+lbl+' recentLeads='+recentLeads+' escCloses='+closed;
 })()`;
 
+// --- NEW: drag a card onto ANY slot, "+" quick-craft, owned-only filter ------
+// Re-opens the picker on slot 2 (key 7), grants stock, and reports the screen
+// centers of the WOOD card icon (drag handle) and slot 0 (key 5) so a real
+// mouse drag can remap a DIFFERENT slot than the one the picker was opened for.
+const PICKER_DRAG_PREP = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	Object.assign(window.inv,{wood:20,stone:14,sand:10,torch:1});
+	window.updateInventoryHud && window.updateInventoryHud();
+	const menu=document.getElementById('hotSelectMenu');
+	const slot=document.querySelectorAll('#hotbarWrap .hotSlot')[2];
+	slot.click(); slot.click();
+	await sleep(250);
+	if(getComputedStyle(menu).display==='none') return 'menu-not-open';
+	const card=menu.querySelector('button[data-hot-card="WOOD"]');
+	if(!card) return 'no-wood-card';
+	const icon=card.querySelector('canvas');
+	const dst=document.querySelectorAll('#hotbarWrap .hotSlot')[0];
+	const a=icon.getBoundingClientRect(), b=dst.getBoundingClientRect();
+	return JSON.stringify({fx:a.left+a.width/2, fy:a.top+a.height/2, tx:b.left+b.width/2, ty:b.top+b.height/2, before:MM.hotbar.order()[0]});
+})()`;
+const PICKER_DRAG_MID = `JSON.stringify({dragging:!!(MM.craftDrag&&MM.craftDrag.dragging()), hotbarZ:getComputedStyle(document.getElementById('hotbarWrap')).zIndex, ghost:!!document.getElementById('craftDragGhost')})`;
+const PICKER_DRAG_CHECK = `JSON.stringify({slot0:MM.hotbar.order()[0], menuOpen:getComputedStyle(document.getElementById('hotSelectMenu')).display!=='none'})`;
+
+const PICKER_PLUS = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const menu=document.getElementById('hotSelectMenu');
+	if(getComputedStyle(menu).display==='none'){ const s=document.querySelectorAll('#hotbarWrap .hotSlot')[2]; s.click(); s.click(); await sleep(200); }
+	const card=menu.querySelector('button[data-hot-card="TORCH"]');
+	if(!card) return 'no-torch-card (torch not discovered?)';
+	const plus=card.querySelector('.hpQuickCraft');
+	if(!plus) return 'no-plus-chip (recipe locked?)';
+	const before=window.inv.torch|0;
+	plus.click();
+	await sleep(200);
+	const after=window.inv.torch|0;
+	if(getComputedStyle(menu).display==='none') return 'plus-closed-menu (should stay open)';
+	return (after>before?'ok':'FAIL')+': torch '+before+'->'+after+' menuStaysOpen=true';
+})()`;
+
+const PICKER_OWNED = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const menu=document.getElementById('hotSelectMenu');
+	// empty two already-DISCOVERED blocks so owned-only has something to hide
+	window.inv.grass=0; window.inv.water=0;
+	window.updateInventoryHud && window.updateInventoryHud();
+	// reopen fresh so the grid reflects the zeroed counts (owned-only starts off)
+	if(getComputedStyle(menu).display!=='none'){ document.body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})); await sleep(140); }
+	const s=document.querySelectorAll('#hotbarWrap .hotSlot')[2]; s.click(); s.click(); await sleep(220);
+	const before=menu.querySelectorAll('button[data-hot-card]').length;
+	const toggle=menu.querySelector('.hpOwnedToggle');
+	if(!toggle) return 'no-owned-toggle';
+	toggle.click();
+	await sleep(200);
+	const after=menu.querySelectorAll('button[data-hot-card]').length;
+	const persisted=localStorage.getItem('mm_hotbar_owned_only_v1');
+	// every remaining card must be a non-empty stack
+	const allOwned=[...menu.querySelectorAll('button[data-hot-card]')].every(c=>!c.classList.contains('hpDim'));
+	toggle.click(); // restore off
+	await sleep(120);
+	return (after<before && allOwned && persisted==='1'?'ok':'FAIL')+': cards '+before+'->'+after+' allOwned='+allOwned+' persisted='+persisted;
+})()`;
+
+// Inventory (Ekwipunek) resources tab: drag a resource swatch onto the hotbar
+// through the modal overlay (pointer-events pass-through), and craft via "+".
+const INV_OPEN = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const menu=document.getElementById('hotSelectMenu'); if(getComputedStyle(menu).display!=='none') MM.groupedHotSelect && document.body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+	Object.assign(window.inv,{wood:20,stone:14,sand:10,clay:6});
+	window.updateInventoryHud && window.updateInventoryHud();
+	const btn=document.getElementById('openInv'); if(!btn) return 'no-openInv';
+	btn.click();
+	await sleep(250);
+	const ov=document.getElementById('invOverlay');
+	if(getComputedStyle(ov).display==='none') return 'inv-did-not-open';
+	const tab=document.querySelector('#invTabs [data-key="resources"]'); if(!tab) return 'no-resources-tab';
+	tab.click();
+	await sleep(200);
+	const card=[...document.querySelectorAll('.invResCard')].find(c=>c.querySelector('.invResDrag'));
+	if(!card) return 'no-draggable-resource';
+	const dot=card.querySelector('.invResDrag');
+	const dst=document.querySelectorAll('#hotbarWrap .hotSlot')[4]; // slot key 9
+	const a=dot.getBoundingClientRect(), b=dst.getBoundingClientRect();
+	return JSON.stringify({fx:a.left+a.width/2, fy:a.top+a.height/2, tx:b.left+b.width/2, ty:b.top+b.height/2, before:MM.hotbar.order()[4]});
+})()`;
+const INV_DRAG_MID = `JSON.stringify({dragging:!!(MM.craftDrag&&MM.craftDrag.dragging()), overlayPE:getComputedStyle(document.getElementById('invOverlay')).pointerEvents, dropThrough:(function(){var b=document.querySelectorAll('#hotbarWrap .hotSlot')[4].getBoundingClientRect();var el=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return !!(el&&el.closest&&el.closest('#hotbarWrap'));})()})`;
+const INV_DRAG_CHECK = `JSON.stringify({slot4:MM.hotbar.order()[4]})`;
+const INV_PLUS = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const btn=[...document.querySelectorAll('.invResCraft')].find(b=>!b.disabled);
+	if(!btn) return 'no-enabled-plus';
+	// find the card's resource label for reporting
+	const card=btn.closest('.invResCard');
+	const label=card? card.querySelector('.invResLabel').textContent : '?';
+	btn.click();
+	await sleep(200);
+	const closeBtn=document.getElementById('invClose'); if(closeBtn) closeBtn.click();
+	await sleep(150);
+	return 'ok: crafted from inventory "+" ('+label+')';
+})()`;
+
 async function main(){
 	const { existsSync } = await import('node:fs');
 	const edge = EDGE_CANDIDATES.find(p => existsSync(p)) || EDGE_CANDIDATES[0];
@@ -190,11 +296,11 @@ async function main(){
 		await sleep(1500);
 
 		let failed = false;
-		const run = async (label, expr) => {
+		const run = async (label, expr, okCheck = true) => {
 			const res = await send(ws, 'Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, timeout: 90000 });
 			const verdict = res && res.result ? res.result.value : '(no result)';
 			console.log(label + ':', verdict);
-			if (!String(verdict).startsWith('ok')) failed = true;
+			if (okCheck && !String(verdict).startsWith('ok')) failed = true;
 			return verdict;
 		};
 
@@ -210,6 +316,54 @@ async function main(){
 		console.log('wrote', outB);
 
 		await run('assign', ASSIGN);
+
+		// --- real mouse-drag helper (craft_drag uses pointer events synthesized
+		// from CDP mouse input; proven by craft-panel-qa) ---
+		const mouse = (type, x, y, extra) => send(ws, 'Input.dispatchMouseEvent',
+			Object.assign({ type, x: Math.round(x), y: Math.round(y), button: 'left', buttons: 1 }, extra || {}));
+		const dragTo = async (p, midExpr, midLabel) => {
+			await mouse('mousePressed', p.fx, p.fy, { clickCount: 1 });
+			const STEPS = 10;
+			for (let i = 1; i <= STEPS; i++){ await mouse('mouseMoved', p.fx + (p.tx - p.fx) * i / STEPS, p.fy + (p.ty - p.fy) * i / STEPS); await sleep(22); }
+			await sleep(140);
+			if (midExpr){ const mid = await send(ws, 'Runtime.evaluate', { expression: midExpr, returnByValue: true }); console.log(midLabel + ':', mid && mid.result ? mid.result.value : '(no result)'); }
+			await mouse('mouseReleased', p.tx, p.ty, { buttons: 0, clickCount: 1 });
+			await sleep(220);
+		};
+
+		// picker: drag WOOD card icon onto slot 5 (opened on slot 7)
+		const pdp = await run('pickerDragPrep', PICKER_DRAG_PREP, false);
+		if (typeof pdp === 'string' && pdp.startsWith('{')){
+			const p = JSON.parse(pdp);
+			await dragTo(p, PICKER_DRAG_MID, 'pickerDragMid');
+			const chk = await send(ws, 'Runtime.evaluate', { expression: PICKER_DRAG_CHECK, returnByValue: true });
+			const v = chk && chk.result ? JSON.parse(chk.result.value) : {};
+			const ok = v.slot0 === 'WOOD' && v.menuOpen === true;
+			console.log('pickerDrag:', (ok ? 'ok' : 'FAIL') + ': slot0=' + v.slot0 + ' menuOpen=' + v.menuOpen + ' before=' + p.before);
+			if (!ok) failed = true;
+			shot = await send(ws, 'Page.captureScreenshot', { format: 'png' });
+			await writeFile(outA.replace(/\.png$/, '-c.png'), Buffer.from(shot.data, 'base64'));
+			console.log('wrote', outA.replace(/\.png$/, '-c.png'));
+		} else failed = true;
+
+		await run('pickerPlus', PICKER_PLUS);
+		await run('pickerOwned', PICKER_OWNED);
+
+		// inventory: drag a resource swatch through the modal onto slot 9
+		const ip = await run('invOpen', INV_OPEN, false);
+		if (typeof ip === 'string' && ip.startsWith('{')){
+			const p = JSON.parse(ip);
+			await dragTo(p, INV_DRAG_MID, 'invDragMid');
+			const chk = await send(ws, 'Runtime.evaluate', { expression: INV_DRAG_CHECK, returnByValue: true });
+			const v = chk && chk.result ? JSON.parse(chk.result.value) : {};
+			const ok = v.slot4 && v.slot4 !== 'LEAF'; // slot 9 default is LEAF; a successful drop changed it
+			console.log('invDrag:', (ok ? 'ok' : 'FAIL') + ': slot9=' + v.slot4 + ' before=' + p.before);
+			if (!ok) failed = true;
+			shot = await send(ws, 'Page.captureScreenshot', { format: 'png' });
+			await writeFile(outA.replace(/\.png$/, '-d.png'), Buffer.from(shot.data, 'base64'));
+			console.log('wrote', outA.replace(/\.png$/, '-d.png'));
+			await run('invPlus', INV_PLUS);
+		} else failed = true;
 
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 5).join('\n---\n'));
 		if (failed || pageErrors.length) process.exitCode = 1;
