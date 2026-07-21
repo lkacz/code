@@ -1,0 +1,1800 @@
+import { CHUNK_W, T, WORLD_H, isAutumnLeaf, frozenEarthVariant, thawedEarthVariant, isFrozenEarth } from '../constants.js';
+import { isSkyOpenTile } from './material_physics.js';
+import { worldHostility as HOSTILITY } from './world_hostility.js';
+
+const root = typeof window !== 'undefined' ? window : globalThis;
+root.MM = root.MM || {};
+
+const DAY_SECONDS = 600;
+const DAYS_PER_SEASON = 10;
+const TRANSITION_DAYS = 2;
+const HALF_TRANSITION_DAYS = TRANSITION_DAYS / 2;
+// The season CALENDAR is shifted so every world wakes up in early summer (past
+// the spring->summer blend): ~20 warm days before the first winter instead of
+// cold spring nights from minute one. Day counters stay elapsed-based — only
+// the calendar (profiles, daylight model, terrain epochs) carries the offset.
+const CALENDAR_START_OFFSET_DAYS = DAYS_PER_SEASON + HALF_TRANSITION_DAYS;
+// User-facing calibration for the simulation's open-ended temperature scale.
+// The weather model's snow cutoff (0.30) maps to 0°C; 0.5 is mild weather
+// (12°C), and 1.0 is extreme heat (42°C). Seasonal/day-night extremes may
+// exceed that range in either direction.
+const TEMPERATURE_C_MIN = -18;
+const TEMPERATURE_C_SPAN = 60;
+
+const SEASON_ORDER = ['spring', 'summer', 'autumn', 'winter'];
+const SEASON_ALIASES = {
+  spring: 'spring',
+  wiosna: 'spring',
+  summer: 'summer',
+  lato: 'summer',
+  autumn: 'autumn',
+  jesien: 'autumn',
+  fall: 'autumn',
+  winter: 'winter',
+  zima: 'winter',
+};
+const BASE_PROFILES = {
+  spring: {
+    id: 'spring', label: 'Wiosna',
+    temperatureDelta: 0.04,
+    animalSpawnMult: 1.45,
+    windMult: 0.85,
+    squallChanceMult: 0.75,
+    stormChanceMult: 0.85,
+    stormFeedMult: 0.90,
+    rainRateMult: 1.05,
+    borderMoistureMult: 1.10,
+    freezeStrength: 0,
+    thawStrength: 1,
+    snowStrength: 0,
+    snowMeltStrength: 0.75,
+    leafGrowStrength: 1,
+    leafDropStrength: 0,
+  },
+  summer: {
+    id: 'summer', label: 'Lato',
+    temperatureDelta: 0.14,
+    animalSpawnMult: 1.05,
+    windMult: 0.16,
+    squallChanceMult: 0.10,
+    stormChanceMult: 2.40,
+    stormFeedMult: 1.70,
+    rainRateMult: 1.65,
+    borderMoistureMult: 1.55,
+    freezeStrength: 0,
+    thawStrength: 1,
+    snowStrength: 0,
+    snowMeltStrength: 1,
+    leafGrowStrength: 1,
+    leafDropStrength: 0,
+  },
+  autumn: {
+    id: 'autumn', label: 'Jesien',
+    temperatureDelta: -0.03,
+    animalSpawnMult: 0.58,
+    windMult: 1.80,
+    squallChanceMult: 2.40,
+    stormChanceMult: 0.90,
+    stormFeedMult: 0.85,
+    rainRateMult: 0.95,
+    borderMoistureMult: 0.95,
+    // Autumn is windy and grey, not frozen: early flurries/frost were common
+    // enough that the world read as sub-zero most of the year (owner report) —
+    // winter owns the freeze, autumn only hints at it.
+    freezeStrength: 0.02,
+    thawStrength: 0.25,
+    snowStrength: 0.08,
+    snowMeltStrength: 0.18,
+    leafGrowStrength: 0,
+    leafDropStrength: 1,
+  },
+  winter: {
+    id: 'winter', label: 'Zima',
+    temperatureDelta: -0.35,
+    animalSpawnMult: 0.34,
+    windMult: 1.10,
+    squallChanceMult: 1.25,
+    stormChanceMult: 0.35,
+    stormFeedMult: 0.55,
+    rainRateMult: 0.65,
+    borderMoistureMult: 0.70,
+    freezeStrength: 1,
+    thawStrength: 0,
+    snowStrength: 1,
+    snowMeltStrength: 0,
+    leafGrowStrength: 0,
+    leafDropStrength: 1,
+  },
+};
+
+const NUMERIC_KEYS = [
+  'temperatureDelta',
+  'animalSpawnMult',
+  'windMult',
+  'squallChanceMult',
+  'stormChanceMult',
+  'stormFeedMult',
+  'rainRateMult',
+  'borderMoistureMult',
+  'freezeStrength',
+  'thawStrength',
+  'snowStrength',
+  'snowMeltStrength',
+  'leafGrowStrength',
+  'leafDropStrength',
+];
+const DISABLED_PROFILE = Object.freeze({
+  id: 'off',
+  label: 'Sezony OFF',
+  temperatureDelta: 0,
+  animalSpawnMult: 1,
+  windMult: 1,
+  squallChanceMult: 1,
+  stormChanceMult: 1,
+  stormFeedMult: 1,
+  rainRateMult: 1,
+  borderMoistureMult: 1,
+  freezeStrength: 0,
+  thawStrength: 0,
+  snowStrength: 0,
+  snowMeltStrength: 0,
+  leafGrowStrength: 0,
+  leafDropStrength: 0,
+});
+
+const PROFILE_RANGES = {
+  temperatureDelta: [-0.65, 0.35],
+  animalSpawnMult: [0.05, 3],
+  windMult: [0, 3],
+  squallChanceMult: [0, 4],
+  stormChanceMult: [0, 4],
+  stormFeedMult: [0, 3],
+  rainRateMult: [0, 3],
+  borderMoistureMult: [0, 3],
+  freezeStrength: [0, 1],
+  thawStrength: [0, 1],
+  snowStrength: [0, 1],
+  snowMeltStrength: [0, 1],
+  leafGrowStrength: [0, 1],
+  leafDropStrength: [0, 1],
+};
+
+for(const key of Object.keys(BASE_PROFILES)) Object.freeze(BASE_PROFILES[key]);
+Object.freeze(BASE_PROFILES);
+Object.freeze(SEASON_ORDER);
+
+const CFG = {
+  autoTerrainEffects: true,
+  scanRadius: 96,
+  scanCols: 20,
+  scanInterval: 0.22,
+  relocationBurstDistance: 32,
+  relocationBurstScans: 8,
+  relocationBurstCols: 48,
+  relocationBurstPassesPerTick: 1,
+  relocationMaxOpsPerTick: 8,
+  surfaceAbove: 24,
+  surfaceBelow: 42,
+  freezeTemp: 0.28,
+  freezeTempBoost: 0.12,
+  thawTemp: 0.43,
+  snowTemp: 0.30,
+  snowMeltTemp: 0.46,
+  // Ground frost binds exposed soil into permafrost only in genuinely deep cold
+  // (far-west winters); it thaws back well before water ice does, so the digging
+  // tax reads as frost, not as a second ice system.
+  groundFrostTemp: 0.10,
+  groundThawTemp: 0.34,
+  maxOpsPerTick: 6,
+  maxLeafOpsPerTick: 2,
+  relocationMaxLeafOpsPerTick: 3,
+  slowFrameSkipMs: 34,
+  effectEpochSeconds: 5,
+  prepareAheadDays: 3,
+  terrainPlanRadius: 144,
+  terrainPlanColsPerTick: 10,
+  terrainPlanRelocationCols: 28,
+  terrainPlanMaxCandidatesPerTick: 8,
+  terrainPlanQueueCap: 1800,
+  terrainPlanSeenCap: 2600,
+  terrainApplyInterval: 0.14,
+  terrainApplyOpsPerTick: 1,
+  terrainApplyVisibleInterval: 0.75,
+  terrainAllowVisibleCommits: false,
+  terrainApplySlowFrameMs: 24,
+  terrainApplySearchLimit: 256,
+  terrainVisibleMarginTiles: CHUNK_W + 3,
+  terrainPlayerMarginTiles: 1.25,
+  terrainMovingSpeed: 0.18,
+};
+
+let elapsedSeconds = 0;
+let scanAcc = 0;
+let scanCursor = 0;
+let forcedSeason = null;
+let enabled = true;
+let cachedState = null;
+let cachedAt = -1;
+let lastScan = emptyScanMetrics();
+let lastScanCenterX = null;
+let relocationBurstRemaining = 0;
+let terrainApplyAcc = 0;
+let terrainVisibleApplyAcc = 0;
+let terrainPlan = emptyTerrainPlan();
+const recentEvents = [];
+const listeners = new Set();
+
+function clamp(v, a, b){ return v < a ? a : (v > b ? b : v); }
+function mod(n, m){ return ((n % m) + m) % m; }
+function smoothstep(a, b, x){
+  const t = clamp((x - a) / Math.max(1e-9, b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+function seasonByIndex(index){ return BASE_PROFILES[SEASON_ORDER[mod(index, SEASON_ORDER.length)]]; }
+function finiteNumber(v, fallback){ return typeof v === 'number' && Number.isFinite(v) ? v : fallback; }
+function cleanProfileNumber(key, value, fallback){
+  const range = PROFILE_RANGES[key] || [-Infinity, Infinity];
+  return clamp(finiteNumber(value, fallback), range[0], range[1]);
+}
+function activeWorldX(fallback){
+  const p = root && root.player;
+  return p && Number.isFinite(p.x) ? p.x : fallback;
+}
+function safeInt(v, fallback, min, max){
+  const n = Math.floor(finiteNumber(v, fallback));
+  return clamp(n, min, max);
+}
+function emptyScanMetrics(){
+  return {
+    columns: 0,
+    ops: 0,
+    leafOps: 0,
+    surfaceLookups: 0,
+    tempLookups: 0,
+    cursor: 0,
+    ms: 0,
+    relocation: false,
+    deferred: false,
+    deferReason: '',
+    changed: {freeze: 0, thaw: 0, snow: 0, snowMelt: 0, dustMelt: 0, groundFreeze: 0, groundThaw: 0, leafGrow: 0, leafDrop: 0},
+  };
+}
+function scanConfig(){
+  const radius = safeInt(CFG.scanRadius, 96, 8, 512);
+  const span = radius * 2 + 1;
+  return {
+    radius,
+    span,
+    cols: safeInt(CFG.scanCols, 20, 1, Math.min(96, span)),
+    interval: clamp(finiteNumber(CFG.scanInterval, 0.22), 0.05, 2),
+    maxOps: safeInt(CFG.maxOpsPerTick, 6, 1, 24),
+    maxLeafOps: safeInt(CFG.maxLeafOpsPerTick, 2, 0, 8),
+    relocationDistance: safeInt(CFG.relocationBurstDistance, 32, 0, 512),
+    relocationScans: safeInt(CFG.relocationBurstScans, 8, 0, 16),
+    relocationCols: safeInt(CFG.relocationBurstCols, 48, 1, Math.min(160, span)),
+    relocationPassesPerTick: safeInt(CFG.relocationBurstPassesPerTick, 1, 1, 1),
+    relocationMaxOps: safeInt(CFG.relocationMaxOpsPerTick, 8, 1, 16),
+    relocationMaxLeafOps: safeInt(CFG.relocationMaxLeafOpsPerTick, 3, 0, 8),
+    slowFrameSkipMs: safeInt(CFG.slowFrameSkipMs, 34, 0, 250),
+    epochSeconds: clamp(finiteNumber(CFG.effectEpochSeconds, 5), 0.5, 60),
+    autoTerrainEffects: CFG.autoTerrainEffects === true,
+    prepareAheadDays: clamp(finiteNumber(CFG.prepareAheadDays, 3), 0, DAYS_PER_SEASON),
+    terrainRadius: safeInt(CFG.terrainPlanRadius, 144, 16, 512),
+    terrainPlanCols: safeInt(CFG.terrainPlanColsPerTick, 10, 1, 96),
+    terrainPlanRelocationCols: safeInt(CFG.terrainPlanRelocationCols, 28, 1, 160),
+    terrainPlanMaxCandidates: safeInt(CFG.terrainPlanMaxCandidatesPerTick, 8, 1, 64),
+    terrainQueueCap: safeInt(CFG.terrainPlanQueueCap, 1800, 64, 12000),
+    terrainSeenCap: safeInt(CFG.terrainPlanSeenCap, 2600, 64, 20000),
+    terrainApplyInterval: clamp(finiteNumber(CFG.terrainApplyInterval, 0.14), 0.02, 2),
+    terrainApplyOps: safeInt(CFG.terrainApplyOpsPerTick, 1, 0, 8),
+    terrainVisibleInterval: clamp(finiteNumber(CFG.terrainApplyVisibleInterval, 0.75), 0.05, 6),
+    terrainAllowVisible: CFG.terrainAllowVisibleCommits === true,
+    terrainApplySlowFrameMs: safeInt(CFG.terrainApplySlowFrameMs, 24, 0, 250),
+    terrainApplySearchLimit: safeInt(CFG.terrainApplySearchLimit, 256, 8, 4096),
+    terrainVisibleMargin: safeInt(CFG.terrainVisibleMarginTiles, CHUNK_W + 3, 0, CHUNK_W * 2),
+    terrainPlayerMargin: clamp(finiteNumber(CFG.terrainPlayerMarginTiles, 1.25), 0, 8),
+    terrainMovingSpeed: clamp(finiteNumber(CFG.terrainMovingSpeed, 0.18), 0, 20),
+  };
+}
+
+function cloneProfile(src){
+  const base = src || BASE_PROFILES.spring;
+  const out = {id: base.id || 'spring', label: base.label || 'Wiosna'};
+  if(base.from) out.from = base.from;
+  if(base.to) out.to = base.to;
+  if(Number.isFinite(base.blend)) out.blend = clamp(base.blend, 0, 1);
+  for(const key of NUMERIC_KEYS){
+    out[key] = cleanProfileNumber(key, base[key], key.endsWith('Mult') ? 1 : 0);
+  }
+  return Object.freeze(out);
+}
+
+function mixProfiles(from, to, blend){
+  if(!from || !to) return cloneProfile(BASE_PROFILES.spring);
+  if(from.id === to.id) return cloneProfile(from);
+  const out = {id: to.id, label: to.label, from: from.id, to: to.id, blend};
+  for(const key of NUMERIC_KEYS){
+    const a = cleanProfileNumber(key, from[key], 0);
+    const b = cleanProfileNumber(key, to[key], a);
+    out[key] = a + (b - a) * blend;
+  }
+  return Object.freeze(out);
+}
+
+function stateAtDays(days){
+  const totalDays = Math.max(0, finiteNumber(days, 0));
+  const seasonNumber = Math.floor(totalDays / DAYS_PER_SEASON);
+  const seasonIndex = mod(seasonNumber, SEASON_ORDER.length);
+  const dayInSeason = totalDays - seasonNumber * DAYS_PER_SEASON;
+  let fromIndex = seasonIndex;
+  let toIndex = seasonIndex;
+  let blend = 1;
+  let transition = false;
+
+  if(seasonNumber > 0 && dayInSeason < HALF_TRANSITION_DAYS){
+    fromIndex = mod(seasonIndex - 1, SEASON_ORDER.length);
+    toIndex = seasonIndex;
+    blend = 0.5 + 0.5 * smoothstep(0, HALF_TRANSITION_DAYS, dayInSeason);
+    transition = true;
+  } else if(dayInSeason >= DAYS_PER_SEASON - HALF_TRANSITION_DAYS){
+    fromIndex = seasonIndex;
+    toIndex = mod(seasonIndex + 1, SEASON_ORDER.length);
+    blend = 0.5 * smoothstep(DAYS_PER_SEASON - HALF_TRANSITION_DAYS, DAYS_PER_SEASON, dayInSeason);
+    transition = true;
+  }
+
+  const from = seasonByIndex(fromIndex);
+  const to = seasonByIndex(toIndex);
+  const profile = mixProfiles(from, to, blend);
+  const label = transition && from.id !== to.id
+    ? from.label + ' -> ' + to.label
+    : seasonByIndex(seasonIndex).label;
+  return {
+    day: Math.floor(totalDays) + 1,
+    dayFloat: totalDays + 1,
+    seasonDay: dayInSeason + 1,
+    seasonIndex,
+    season: SEASON_ORDER[seasonIndex],
+    label,
+    transition,
+    from: from.id,
+    to: to.id,
+    blend,
+    nextInDays: DAYS_PER_SEASON - dayInSeason,
+    profile,
+  };
+}
+
+function currentState(){
+  if(forcedSeason){
+    const idx = SEASON_ORDER.indexOf(forcedSeason);
+    const raw = idx >= 0 ? seasonByIndex(idx) : BASE_PROFILES.spring;
+    return {
+      day: Math.floor(elapsedSeconds / DAY_SECONDS) + 1,
+      dayFloat: elapsedSeconds / DAY_SECONDS + 1,
+      seasonDay: 1,
+      seasonIndex: Math.max(0, idx),
+      season: raw.id,
+      label: raw.label + ' (debug)',
+      transition: false,
+      from: raw.id,
+      to: raw.id,
+      blend: 1,
+      nextInDays: DAYS_PER_SEASON,
+      profile: cloneProfile(raw),
+      forced: true,
+    };
+  }
+  if(cachedState && cachedAt === elapsedSeconds) return cachedState;
+  cachedAt = elapsedSeconds;
+  const elapsedDays = elapsedSeconds / DAY_SECONDS;
+  const s = stateAtDays(elapsedDays + CALENDAR_START_OFFSET_DAYS);
+  // The CALENDAR opens in early summer (owner ruling: every run wakes to a warm
+  // morning), but day COUNTING stays elapsed-based — invasion difficulty, quests
+  // and every "day N" readout keep their original pacing. calendarDayFloat is
+  // the season-calendar position (daylight model, terrain epochs).
+  cachedState = Object.assign({}, s, {
+    day: Math.floor(elapsedDays) + 1,
+    dayFloat: elapsedDays + 1,
+    calendarDayFloat: s.dayFloat,
+  });
+  return cachedState;
+}
+
+function hostilityAdjustedProfile(base, x){
+  if(!base || base.id === 'off') return base || DISABLED_PROFILE;
+  const h = HOSTILITY.at(activeWorldX(finiteNumber(x, 0)));
+  if(h.hostility <= 0.001) return base;
+  const out = Object.assign({}, base);
+  const extreme = h.seasonExtremeMult || 1;
+  out.temperatureDelta = cleanProfileNumber(
+    'temperatureDelta',
+    finiteNumber(base.temperatureDelta, 0) * extreme + h.temperatureBias * 0.45,
+    finiteNumber(base.temperatureDelta, 0)
+  );
+  // animalSpawnMult stays purely seasonal here: regional spawn pressure is owned
+  // by HOSTILITY.mobSpawnMult in mobs.js. Re-applying hostility here too would
+  // double-count it against mob spawn rate (and muddy the player-facing readout).
+  out.animalSpawnMult = finiteNumber(base.animalSpawnMult, 1);
+  out.windMult = cleanProfileNumber(
+    'windMult',
+    finiteNumber(base.windMult, 1) * (h.windExtremeMult || 1),
+    finiteNumber(base.windMult, 1)
+  );
+  out.squallChanceMult = cleanProfileNumber(
+    'squallChanceMult',
+    finiteNumber(base.squallChanceMult, 1) * (1 + h.hostility * 0.45 + h.cold * 0.65),
+    finiteNumber(base.squallChanceMult, 1)
+  );
+  out.stormChanceMult = cleanProfileNumber(
+    'stormChanceMult',
+    finiteNumber(base.stormChanceMult, 1) * (1 + h.hot * 0.45 + h.cold * 0.25),
+    finiteNumber(base.stormChanceMult, 1)
+  );
+  out.stormFeedMult = cleanProfileNumber(
+    'stormFeedMult',
+    finiteNumber(base.stormFeedMult, 1) * (1 + h.hot * 0.35 + h.cold * 0.20),
+    finiteNumber(base.stormFeedMult, 1)
+  );
+  out.rainRateMult = cleanProfileNumber(
+    'rainRateMult',
+    finiteNumber(base.rainRateMult, 1) * (1 + h.hot * 0.18 + h.cold * 0.10),
+    finiteNumber(base.rainRateMult, 1)
+  );
+  out.borderMoistureMult = cleanProfileNumber(
+    'borderMoistureMult',
+    finiteNumber(base.borderMoistureMult, 1) * (1 + h.cold * 0.20 - h.hot * 0.10),
+    finiteNumber(base.borderMoistureMult, 1)
+  );
+  out.freezeStrength = cleanProfileNumber(
+    'freezeStrength',
+    finiteNumber(base.freezeStrength, 0) + h.cold * 0.38 - h.hot * 0.16,
+    finiteNumber(base.freezeStrength, 0)
+  );
+  out.thawStrength = cleanProfileNumber(
+    'thawStrength',
+    finiteNumber(base.thawStrength, 0) + h.hot * 0.30 - h.cold * 0.16,
+    finiteNumber(base.thawStrength, 0)
+  );
+  out.snowStrength = cleanProfileNumber(
+    'snowStrength',
+    finiteNumber(base.snowStrength, 0) + h.cold * 0.45 - h.hot * 0.18,
+    finiteNumber(base.snowStrength, 0)
+  );
+  out.snowMeltStrength = cleanProfileNumber(
+    'snowMeltStrength',
+    finiteNumber(base.snowMeltStrength, 0) + h.hot * 0.28 - h.cold * 0.14,
+    finiteNumber(base.snowMeltStrength, 0)
+  );
+  out.hostility = +h.hostility.toFixed(3);
+  out.hostilitySide = h.side;
+  return Object.freeze(out);
+}
+
+// profile() is polled many times per frame (wind target + squalls, every cloud's
+// rain/storm multipliers, terrain scans). Rebuilding + freezing the hostility-mixed
+// object each call was measurable allocation churn; memoize per (sim time, player
+// column, forced season) — everything the result depends on.
+let profileCacheKey = '';
+let profileCacheValue = null;
+function profile(){
+  if(!enabled) return DISABLED_PROFILE;
+  // worldSeed is part of the key: hostility varies per world, and a reload can
+  // land on the same sim time / player column as the previous world.
+  const key = elapsedSeconds + '|' + Math.round(activeWorldX(0)) + '|' + (forcedSeason || '') + '|' + worldSeed();
+  if(profileCacheValue && profileCacheKey === key) return profileCacheValue;
+  profileCacheValue = hostilityAdjustedProfile(currentState().profile);
+  profileCacheKey = key;
+  return profileCacheValue;
+}
+
+function emit(type, payload){
+  const ev = Object.freeze(Object.assign({
+    type,
+    atSeconds: +elapsedSeconds.toFixed(3),
+    day: Math.floor(elapsedSeconds / DAY_SECONDS) + 1,
+  }, payload || {}));
+  recentEvents.push(ev);
+  while(recentEvents.length > 24) recentEvents.shift();
+  for(const fn of listeners){
+    try{ fn(ev); }catch(e){}
+  }
+  return ev;
+}
+
+function subscribe(fn){
+  if(typeof fn !== 'function') return ()=>{};
+  listeners.add(fn);
+  return ()=>listeners.delete(fn);
+}
+
+function checkSeasonEvents(prev, next){
+  if(!prev || !next) return;
+  if(prev.season !== next.season){
+    emit('seasonChanged', {from: prev.season, to: next.season, label: next.label});
+  }
+}
+
+function worldGen(){
+  return root.MM && root.MM.worldGen ? root.MM.worldGen : null;
+}
+function worldSeed(){
+  const wg = worldGen();
+  return wg && Number.isFinite(wg.worldSeed) ? wg.worldSeed | 0 : 1;
+}
+function seaLevel(){
+  const wg = worldGen();
+  return wg && wg.settings && Number.isFinite(wg.settings.seaLevel) ? wg.settings.seaLevel : 62;
+}
+function surfaceHeight(x, getTile){
+  const wg = worldGen();
+  try{ if(wg && typeof wg.surfaceHeight === 'function') return wg.surfaceHeight(Math.round(x)); }catch(e){}
+  if(typeof getTile === 'function'){
+    for(let y = 1; y < WORLD_H - 1; y++){
+      const t = getTile(x, y);
+      if(!skyOpenTile(t) && t !== T.WATER) return y;
+    }
+  }
+  return seaLevel();
+}
+function baseTemperature(x){
+  const wg = worldGen();
+  try{ if(wg && typeof wg.temperature === 'function') return wg.temperature(Math.round(x)); }catch(e){}
+  return 0.5;
+}
+function cycleInfo(){
+  const bg = root.MM && root.MM.background;
+  if(bg && typeof bg.getCycleInfo === 'function'){
+    try{
+      const c = bg.getCycleInfo();
+      if(c && typeof c.isDay === 'boolean' && Number.isFinite(c.tDay)) return c;
+    }catch(e){}
+  }
+  return null;
+}
+function diurnalTemperatureDelta(info){
+  const c = info || cycleInfo();
+  if(!c) return 0;
+  const t = clamp(finiteNumber(c.tDay, 0.5), 0, 1);
+  const sun = Math.sin(t * Math.PI);
+  // Smaller than the cloud model's air swing: terrain changes should lag behind
+  // weather, but winter nights and warm middays still matter mechanically.
+  return c.isDay ? (-0.025 + 0.105 * sun) : (-0.075 - 0.075 * sun);
+}
+function currentDiurnalTemperatureDelta(){ return diurnalTemperatureDelta(cycleInfo()); }
+function temperatureAt(x, row, baseTemp, prof, dayTempDelta){
+  const clim = Number.isFinite(baseTemp) ? baseTemp : baseTemperature(x);
+  const lapse = Math.max(0, seaLevel() - finiteNumber(row, seaLevel())) * 0.004;
+  const p = prof || profile();
+  const daily = Number.isFinite(dayTempDelta) ? dayTempDelta : currentDiurnalTemperatureDelta();
+  return clim + finiteNumber(p.temperatureDelta, 0) + daily - lapse;
+}
+function temperatureCelsius(value){
+  return typeof value === 'number' && Number.isFinite(value)
+    ? TEMPERATURE_C_MIN + value * TEMPERATURE_C_SPAN
+    : null;
+}
+
+function skyOpenTile(t){
+  return isSkyOpenTile(t);
+}
+function skyExposed(x, y, getTile, maxScan){
+  if(typeof getTile !== 'function') return true;
+  const limit = Math.max(4, maxScan || 36);
+  for(let yy = y - 1, n = 0; yy >= 0 && n < limit; yy--, n++){
+    const t = getTile(x, yy);
+    if(!skyOpenTile(t) && t !== T.WATER) return false;
+  }
+  return true;
+}
+function wakeWater(x, y, getTile){
+  try{ if(root.MM.water && root.MM.water.onTileChanged) root.MM.water.onTileChanged(x, y, getTile); }catch(e){}
+}
+// Freezing converts a water cell into one FULL block of ice, but leveled surfaces
+// are usually partial sub-tile cells — freezing 4/10 of a block into ice that later
+// thaws back to 10/10 would mint volume every winter. water.solidifyAt tops the cell
+// up from the body below first (volume-true) or reports that it cannot; without the
+// fluid sim (headless stubs) cells are full by definition and freezing proceeds.
+function solidifyWaterForFreeze(x, y, getTile, setTile){
+  const w = root.MM && root.MM.water;
+  if(!w || typeof w.solidifyAt !== 'function') return true;
+  try{ return !!w.solidifyAt(x, y, getTile, setTile); }catch(e){ return true; }
+}
+function notifyTileChanged(x, y, old, tile, getTile){
+  if(old === T.WATER || tile === T.WATER || old === T.ICE || tile === T.ICE) wakeWater(x, y, getTile);
+  // Toxic snowpack melts into POLLUTED water, never clean runoff.
+  if(old === T.TOXIC_SNOW && tile === T.WATER){
+    try{
+      const w = root.MM.water;
+      if(w && w.polluteAt) w.polluteAt(x, y, getTile, null, {source:'toxic_snow'});
+    }catch(e){}
+  }
+  // Ground thaw can mint loose SAND mid-slope; let the falling system re-inspect it.
+  if(tile === T.SAND){
+    try{ if(root.MM.fallingSolids && root.MM.fallingSolids.afterPlacement) root.MM.fallingSolids.afterPlacement(x, y); }catch(e){}
+  }
+}
+function replaceTile(x, y, tile, getTile, setTile){
+  if(!Number.isFinite(x) || !Number.isFinite(y) || y < 0 || y >= WORLD_H) return false;
+  if(typeof getTile !== 'function' || typeof setTile !== 'function') return false;
+  const old = getTile(x, y);
+  if(old === tile) return false;
+  setTile(x, y, tile);
+  if(getTile(x, y) !== tile) return false;
+  notifyTileChanged(x, y, old, tile, getTile);
+  return true;
+}
+function hash01(x, y, salt){
+  let h = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(salt | 0, 1442695041);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h = (h ^ (h >>> 16)) >>> 0;
+  return h / 4294967296;
+}
+function seasonalPass(strength, x, y, salt, base, gain, epochSeconds){
+  const s = clamp(finiteNumber(strength, 0), 0, 1);
+  if(s >= 0.98) return true;
+  const chance = clamp((base || 0) + s * (gain || 0), 0, 0.95);
+  const epoch = Math.floor(elapsedSeconds / Math.max(0.5, finiteNumber(epochSeconds, CFG.effectEpochSeconds)));
+  const seedSalt = (worldSeed() ^ Math.imul(epoch + 1, 2654435761)) | 0;
+  return hash01(x, y, salt ^ seedSalt) < chance;
+}
+
+function columnContext(x, getTile, metrics, dayTempDelta){
+  const surf = surfaceHeight(x, getTile);
+  const baseTemp = baseTemperature(x);
+  if(metrics){
+    metrics.surfaceLookups++;
+    metrics.tempLookups++;
+  }
+  return {surface: surf, baseTemp, dayTempDelta: Number.isFinite(dayTempDelta) ? dayTempDelta : currentDiurnalTemperatureDelta()};
+}
+
+function resolveSurface(x, getTile, ctx){
+  if(ctx && Number.isFinite(ctx.surface)) return ctx.surface;
+  if(Number.isFinite(ctx)) return ctx;
+  return surfaceHeight(x, getTile);
+}
+
+function columnTemp(x, y, prof, ctx){
+  return temperatureAt(
+    x,
+    y,
+    ctx && Number.isFinite(ctx.baseTemp) ? ctx.baseTemp : undefined,
+    prof,
+    ctx && Number.isFinite(ctx.dayTempDelta) ? ctx.dayTempDelta : undefined
+  );
+}
+
+function freezeTemperatureLimit(strength){
+  const s = clamp(finiteNumber(strength, 0), 0, 1);
+  return CFG.freezeTemp + s * finiteNumber(CFG.freezeTempBoost, 0.12) + (1 - s) * 0.08;
+}
+
+function scanBounds(surf, above, below){
+  return {
+    y0: Math.max(1, Math.floor(surf - above)),
+    y1: Math.min(WORLD_H - 2, Math.floor(surf + below)),
+  };
+}
+
+function applyFreezeColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.freezeStrength, 0), 0, 1);
+  if(strength <= 0.04) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, CFG.surfaceAbove, CFG.surfaceBelow);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.WATER) continue;
+    if(getTile(x, y - 1) === T.WATER) continue;
+    const above = getTile(x, y - 1);
+    if(!skyOpenTile(above) && above !== T.SNOW && above !== T.TOXIC_SNOW) continue;
+    if(columnTemp(x, y, prof, ctx) > freezeTemperatureLimit(strength)) return false;
+    if(!solidifyWaterForFreeze(x, y, getTile, setTile)) return false;
+    return replaceTile(x, y, T.ICE, getTile, setTile);
+  }
+  return false;
+}
+
+function applyThawColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.thawStrength, 0), 0, 1);
+  if(strength <= 0.04) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, CFG.surfaceAbove, CFG.surfaceBelow);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.ICE) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.thawTemp - strength * 0.05) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(!seasonalPass(strength, x, y, 211, 0.08, 0.45, epochSeconds)) return false;
+    return replaceTile(x, y, T.WATER, getTile, setTile);
+  }
+  return false;
+}
+
+// Winter dusting: living turf whitens into GRASS_SNOW. Real SNOW tiles are NOT
+// minted here — they come only from cloud deposition (engine/clouds.js), which
+// keeps the water ledger volume-true: every SNOW block is backed by cloud mass.
+function applySnowColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.snowStrength, 0), 0, 1);
+  if(strength <= 0.05) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y = Math.max(1, Math.min(WORLD_H - 2, Math.floor(surf)));
+  const t = getTile(x, y);
+  if(t !== T.GRASS) return false;
+  if(!skyExposed(x, y, getTile, 42)) return false;
+  if(columnTemp(x, y, prof, ctx) > CFG.snowTemp + (1 - strength) * 0.06) return false;
+  if(!seasonalPass(strength, x, y, 151, 0.05, 0.46, epochSeconds)) return false;
+  return replaceTile(x, y, T.GRASS_SNOW, getTile, setTile);
+}
+
+// Deposited snowpack melts into real water (runoff/spring floods); the one legacy
+// exception is a snow tile capping bare DIRT — that was the old converted-lawn
+// contract, so it melts back to GRASS instead of leaving mud pits behind.
+function snowMeltResult(below){
+  if(below === T.DIRT) return T.GRASS;
+  return T.WATER;
+}
+function applySnowMeltColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.snowMeltStrength, 0), 0, 1);
+  if(strength <= 0.05) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 3, 5);
+  for(let y = y0; y <= y1; y++){
+    const t = getTile(x, y);
+    if(t !== T.SNOW && t !== T.TOXIC_SNOW) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.snowMeltTemp - strength * 0.06) continue;
+    if(!seasonalPass(strength, x, y, 251, 0.06, 0.44, epochSeconds)) return false;
+    return replaceTile(x, y, t === T.TOXIC_SNOW ? T.WATER : snowMeltResult(getTile(x, y + 1)), getTile, setTile);
+  }
+  return false;
+}
+
+// Spring dust-melt: once the snow cap above is gone, winter turf thaws back to grass.
+function applyDustMeltColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.snowMeltStrength, 0), 0, 1);
+  if(strength <= 0.05) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 3, 5);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.GRASS_SNOW) continue;
+    if(getTile(x, y - 1) === T.SNOW || getTile(x, y - 1) === T.TOXIC_SNOW) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.snowMeltTemp - strength * 0.06) continue;
+    if(!seasonalPass(strength, x, y, 269, 0.06, 0.44, epochSeconds)) return false;
+    return replaceTile(x, y, T.GRASS, getTile, setTile);
+  }
+  return false;
+}
+
+// Permafrost active layer: deep-cold exposed soil freezes over (digging tax),
+// and thaws back when the column warms. Worldgen owns the deep frozen band;
+// the scanner only works the surface tile so the seasonal edge stays cheap.
+function groundFreezeTarget(t){
+  if(t === T.MUD) return T.FROZEN_DIRT;
+  if(t === T.WET_CLAY) return T.FROZEN_CLAY;
+  return frozenEarthVariant(t);
+}
+function applyGroundFreezeColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.freezeStrength, 0), 0, 1);
+  if(strength <= 0.04) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y = Math.max(1, Math.min(WORLD_H - 2, Math.floor(surf)));
+  const target = groundFreezeTarget(getTile(x, y));
+  if(target == null) return false;
+  if(!skyExposed(x, y, getTile, 42)) return false;
+  if(columnTemp(x, y, prof, ctx) > CFG.groundFrostTemp + strength * 0.04) return false;
+  if(!seasonalPass(strength, x, y, 421, 0.05, 0.42, epochSeconds)) return false;
+  return replaceTile(x, y, target, getTile, setTile);
+}
+function applyGroundThawColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.thawStrength, 0), 0, 1);
+  if(strength <= 0.04) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 2, 3);
+  for(let y = y0; y <= y1; y++){
+    const t = getTile(x, y);
+    if(!isFrozenEarth(t)) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.groundThawTemp - strength * 0.05) continue;
+    if(!seasonalPass(strength, x, y, 433, 0.06, 0.42, epochSeconds)) return false;
+    return replaceTile(x, y, thawedEarthVariant(t), getTile, setTile);
+  }
+  return false;
+}
+
+function applySpringLeavesColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.leafGrowStrength, 0), 0, 1);
+  if(strength <= 0.05) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y0 = Math.max(1, Math.floor(surf - 28));
+  const y1 = Math.min(WORLD_H - 2, Math.floor(surf + 8));
+  for(let y = y0; y <= y1; y++){
+    const tile = getTile(x, y);
+    if(!isAutumnLeaf(tile)) continue;
+    if(!skyExposed(x, y, getTile, 28)) continue;
+    if(!seasonalPass(strength, x, y, 307, 0.08, 0.42, epochSeconds)) return false;
+    return replaceTile(x, y, T.LEAF, getTile, setTile);
+  }
+  return false;
+}
+
+function autumnLeafColor(x, y){
+  return hash01(x, y, 719 ^ worldSeed()) < 0.58 ? T.AUTUMN_LEAF_ORANGE : T.AUTUMN_LEAF_RED;
+}
+
+function applyAutumnLeavesColumn(x, getTile, setTile, prof, ctx, epochSeconds){
+  prof = prof || profile();
+  const strength = clamp(finiteNumber(prof.leafDropStrength, 0), 0, 1);
+  if(strength <= 0.05) return false;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y0 = Math.max(1, Math.floor(surf - 28));
+  const y1 = Math.min(WORLD_H - 2, Math.floor(surf + 8));
+  for(let y = y0; y <= y1; y++){
+    const tile = getTile(x, y);
+    if(tile === T.LEAF){
+      if(strength < 0.45) continue;
+      if(!skyExposed(x, y, getTile, 28)) continue;
+      if(!seasonalPass(strength, x, y, 397, 0.08, 0.42, epochSeconds)) return false;
+      return replaceTile(x, y, autumnLeafColor(x, y), getTile, setTile);
+    }
+    if(isAutumnLeaf(tile)) continue;
+  }
+  return false;
+}
+
+function emptyTerrainPlan(){
+  return {
+    epoch: '',
+    scanEpoch: '',
+    target: '',
+    cursor: 0,
+    center: 0,
+    queue: [],
+    queuedKeys: new Set(),
+    seenColumns: new Set(),
+    prepared: 0,
+    applied: 0,
+    dropped: 0,
+    visibleApplied: 0,
+    visibleSkipped: 0,
+    playerProtected: 0,
+    columns: 0,
+    scanMs: 0,
+    applyMs: 0,
+    lastAction: 'idle',
+    deferReason: '',
+    relocation: false,
+    changed: {freeze: 0, thaw: 0, snow: 0, snowMelt: 0, dustMelt: 0, groundFreeze: 0, groundThaw: 0, leafGrow: 0, leafDrop: 0},
+  };
+}
+
+function resetTerrainPlan(reason){
+  terrainPlan = emptyTerrainPlan();
+  terrainApplyAcc = 0;
+  terrainVisibleApplyAcc = 0;
+  if(reason) terrainPlan.deferReason = reason;
+}
+
+function nextSeasonId(id){
+  const idx = SEASON_ORDER.indexOf(id);
+  return SEASON_ORDER[mod(idx < 0 ? 1 : idx + 1, SEASON_ORDER.length)];
+}
+
+function terrainTargetForState(s, sc){
+  if(!s) return 'spring';
+  if(s.forced) return s.season;
+  if(s.transition && s.to) return s.to;
+  if(finiteNumber(s.nextInDays, DAYS_PER_SEASON) <= finiteNumber(sc && sc.prepareAheadDays, 0)) return nextSeasonId(s.season);
+  return s.season;
+}
+
+function terrainSeasonNumberForTarget(s, target){
+  // terrain epochs follow the CALENDAR (which starts in summer), not raw elapsed
+  const totalDays = Math.max(0, elapsedSeconds / DAY_SECONDS + CALENDAR_START_OFFSET_DAYS);
+  let n = Math.floor(totalDays / DAYS_PER_SEASON);
+  if(s && !s.forced && target && target !== s.season){
+    const cur = SEASON_ORDER.indexOf(s.season);
+    const dst = SEASON_ORDER.indexOf(target);
+    if(cur >= 0 && dst >= 0 && mod(dst - cur, SEASON_ORDER.length) === 1) n++;
+  }
+  return n;
+}
+
+function terrainEpochForState(s, target){
+  const forced = s && s.forced ? 'forced' : 'natural';
+  return [worldSeed(), forced, target || 'spring', terrainSeasonNumberForTarget(s, target)].join('|');
+}
+
+function terrainProfileForTarget(target){
+  return cloneProfile(BASE_PROFILES[target] || BASE_PROFILES.spring);
+}
+
+function terrainTargetActive(s, target){
+  if(!s || !target) return false;
+  if(s.forced) return s.season === target;
+  if(s.season === target) return true;
+  return !!(s.transition && s.to === target && finiteNumber(s.blend, 0) >= 0.5);
+}
+
+function terrainCandidate(type, x, y, from, to){
+  return {type, x:Math.floor(x), y:Math.floor(y), from, to, chunk:Math.floor(x / CHUNK_W)};
+}
+
+function terrainScanEpoch(sc, dayTempDelta){
+  const passEpoch = Math.floor(elapsedSeconds / Math.max(0.5, finiteNumber(sc && sc.epochSeconds, CFG.effectEpochSeconds)));
+  const tempBucket = Math.round(finiteNumber(dayTempDelta, 0) * 20);
+  return passEpoch + ':' + tempBucket;
+}
+
+function planFreezeColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.freezeStrength, 0), 0, 1);
+  if(strength <= 0.04) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, CFG.surfaceAbove, CFG.surfaceBelow);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.WATER) continue;
+    if(getTile(x, y - 1) === T.WATER) continue;
+    const above = getTile(x, y - 1);
+    if(!skyOpenTile(above) && above !== T.SNOW && above !== T.TOXIC_SNOW) continue;
+    if(columnTemp(x, y, prof, ctx) > freezeTemperatureLimit(strength)) return null;
+    return terrainCandidate('freeze', x, y, T.WATER, T.ICE);
+  }
+  return null;
+}
+
+function planThawColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.thawStrength, 0), 0, 1);
+  if(strength <= 0.04) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, CFG.surfaceAbove, CFG.surfaceBelow);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.ICE) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.thawTemp - strength * 0.05) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(!seasonalPass(strength, x, y, 211, 0.08, 0.45, epochSeconds)) return null;
+    return terrainCandidate('thaw', x, y, T.ICE, T.WATER);
+  }
+  return null;
+}
+
+function planSnowColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.snowStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y = Math.max(1, Math.min(WORLD_H - 2, Math.floor(surf)));
+  const t = getTile(x, y);
+  if(t !== T.GRASS) return null;
+  if(!skyExposed(x, y, getTile, 42)) return null;
+  if(columnTemp(x, y, prof, ctx) > CFG.snowTemp + (1 - strength) * 0.06) return null;
+  if(!seasonalPass(strength, x, y, 151, 0.05, 0.46, epochSeconds)) return null;
+  return terrainCandidate('snow', x, y, t, T.GRASS_SNOW);
+}
+
+function planSnowMeltColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.snowMeltStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 3, 5);
+  for(let y = y0; y <= y1; y++){
+    const t = getTile(x, y);
+    if(t !== T.SNOW && t !== T.TOXIC_SNOW) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.snowMeltTemp - strength * 0.06) continue;
+    if(!seasonalPass(strength, x, y, 251, 0.06, 0.44, epochSeconds)) return null;
+    return terrainCandidate('snowMelt', x, y, t, t === T.TOXIC_SNOW ? T.WATER : snowMeltResult(getTile(x, y + 1)));
+  }
+  return null;
+}
+
+function planDustMeltColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.snowMeltStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 3, 5);
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.GRASS_SNOW) continue;
+    if(getTile(x, y - 1) === T.SNOW || getTile(x, y - 1) === T.TOXIC_SNOW) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.snowMeltTemp - strength * 0.06) continue;
+    if(!seasonalPass(strength, x, y, 269, 0.06, 0.44, epochSeconds)) return null;
+    return terrainCandidate('dustMelt', x, y, T.GRASS_SNOW, T.GRASS);
+  }
+  return null;
+}
+
+function planGroundFreezeColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.freezeStrength, 0), 0, 1);
+  if(strength <= 0.04) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y = Math.max(1, Math.min(WORLD_H - 2, Math.floor(surf)));
+  const from = getTile(x, y);
+  const target = groundFreezeTarget(from);
+  if(target == null) return null;
+  if(!skyExposed(x, y, getTile, 42)) return null;
+  if(columnTemp(x, y, prof, ctx) > CFG.groundFrostTemp + strength * 0.04) return null;
+  if(!seasonalPass(strength, x, y, 421, 0.05, 0.42, epochSeconds)) return null;
+  return terrainCandidate('groundFreeze', x, y, from, target);
+}
+
+function planGroundThawColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.thawStrength, 0), 0, 1);
+  if(strength <= 0.04) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const {y0, y1} = scanBounds(surf, 2, 3);
+  for(let y = y0; y <= y1; y++){
+    const t = getTile(x, y);
+    if(!isFrozenEarth(t)) continue;
+    if(!skyExposed(x, y, getTile, 40)) continue;
+    if(columnTemp(x, y, prof, ctx) < CFG.groundThawTemp - strength * 0.05) continue;
+    if(!seasonalPass(strength, x, y, 433, 0.06, 0.42, epochSeconds)) return null;
+    return terrainCandidate('groundThaw', x, y, t, thawedEarthVariant(t));
+  }
+  return null;
+}
+
+function planSpringLeavesColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.leafGrowStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y0 = Math.max(1, Math.floor(surf - 28));
+  const y1 = Math.min(WORLD_H - 2, Math.floor(surf + 8));
+  for(let y = y0; y <= y1; y++){
+    const tile = getTile(x, y);
+    if(!isAutumnLeaf(tile)) continue;
+    if(!skyExposed(x, y, getTile, 28)) continue;
+    if(!seasonalPass(strength, x, y, 307, 0.08, 0.42, epochSeconds)) return null;
+    return terrainCandidate('leafGrow', x, y, tile, T.LEAF);
+  }
+  return null;
+}
+
+function planAutumnLeavesColumn(x, getTile, prof, ctx, epochSeconds){
+  const strength = clamp(finiteNumber(prof.leafDropStrength, 0), 0, 1);
+  if(strength <= 0.05) return null;
+  const surf = resolveSurface(x, getTile, ctx);
+  const y0 = Math.max(1, Math.floor(surf - 28));
+  const y1 = Math.min(WORLD_H - 2, Math.floor(surf + 8));
+  for(let y = y0; y <= y1; y++){
+    if(getTile(x, y) !== T.LEAF) continue;
+    if(strength < 0.45) continue;
+    if(!skyExposed(x, y, getTile, 28)) continue;
+    if(!seasonalPass(strength, x, y, 397, 0.08, 0.42, epochSeconds)) return null;
+    return terrainCandidate('leafDrop', x, y, T.LEAF, autumnLeafColor(x, y));
+  }
+  return null;
+}
+
+function terrainCandidatesForColumn(x, getTile, prof, ctx, epochSeconds){
+  const out = [];
+  const freeze = planFreezeColumn(x, getTile, prof, ctx, epochSeconds);
+  if(freeze) out.push(freeze);
+  const thaw = planThawColumn(x, getTile, prof, ctx, epochSeconds);
+  if(thaw) out.push(thaw);
+  const snow = planSnowColumn(x, getTile, prof, ctx, epochSeconds);
+  if(snow) out.push(snow);
+  const snowMelt = planSnowMeltColumn(x, getTile, prof, ctx, epochSeconds);
+  if(snowMelt) out.push(snowMelt);
+  const dustMelt = planDustMeltColumn(x, getTile, prof, ctx, epochSeconds);
+  if(dustMelt) out.push(dustMelt);
+  const groundFreeze = planGroundFreezeColumn(x, getTile, prof, ctx, epochSeconds);
+  if(groundFreeze) out.push(groundFreeze);
+  const groundThaw = planGroundThawColumn(x, getTile, prof, ctx, epochSeconds);
+  if(groundThaw) out.push(groundThaw);
+  const leafGrow = planSpringLeavesColumn(x, getTile, prof, ctx, epochSeconds);
+  if(leafGrow) out.push(leafGrow);
+  const leafDrop = planAutumnLeavesColumn(x, getTile, prof, ctx, epochSeconds);
+  if(leafDrop) out.push(leafDrop);
+  return out;
+}
+
+function terrainOpKey(op){
+  return op.x + ',' + op.y + ':' + op.from + '>' + op.to;
+}
+
+function terrainOpPriority(op){
+  if(!op) return 99;
+  if(op.type === 'freeze') return 0;
+  if(op.type === 'thaw') return 1;
+  if(op.type === 'snowMelt') return 2;
+  if(op.type === 'dustMelt') return 2;
+  if(op.type === 'groundThaw') return 2;
+  if(op.type === 'snow') return 3;
+  if(op.type === 'groundFreeze') return 3;
+  return 4;
+}
+
+function queueTerrainCandidate(op, sc){
+  if(!op || terrainPlan.queue.length >= sc.terrainQueueCap) return false;
+  const key = terrainOpKey(op);
+  if(terrainPlan.queuedKeys.has(key)) return false;
+  terrainPlan.queuedKeys.add(key);
+  terrainPlan.queue.push(op);
+  terrainPlan.prepared++;
+  return true;
+}
+
+function ensureTerrainPlanForState(s, sc, player){
+  const target = terrainTargetForState(s, sc);
+  const epoch = terrainEpochForState(s, target);
+  if(terrainPlan.epoch !== epoch || terrainPlan.target !== target){
+    terrainPlan = emptyTerrainPlan();
+    terrainPlan.epoch = epoch;
+    terrainPlan.target = target;
+    terrainPlan.center = playerScanCenter(player);
+  }
+  return terrainPlan;
+}
+
+function terrainScanColumn(center, radius, cursor){
+  const span = radius * 2 + 1;
+  const n = mod(cursor, span);
+  if(n === 0) return center;
+  const step = Math.ceil(n / 2);
+  return center + (n % 2 === 1 ? step : -step);
+}
+
+function prepareTerrainPlan(getTile, player, s, sc, opts){
+  if(typeof getTile !== 'function') return 0;
+  const plan = ensureTerrainPlanForState(s, sc, player);
+  const started = typeof performance !== 'undefined' && performance.now ? performance.now() : 0;
+  const center = playerScanCenter(player);
+  const relocated = !!(opts && opts.relocation);
+  const radius = sc.terrainRadius;
+  const span = radius * 2 + 1;
+  const cols = relocated ? sc.terrainPlanRelocationCols : sc.terrainPlanCols;
+  const prof = terrainProfileForTarget(plan.target);
+  const dayTempDelta = currentDiurnalTemperatureDelta();
+  const scanEpoch = terrainScanEpoch(sc, dayTempDelta);
+  if(plan.scanEpoch !== scanEpoch){
+    plan.scanEpoch = scanEpoch;
+    plan.seenColumns.clear();
+  }
+  let made = 0;
+  let visited = 0;
+  plan.center = center;
+  plan.relocation = relocated;
+  for(let i = 0; i < cols; i++){
+    const wx = terrainScanColumn(center, radius, plan.cursor + i);
+    if(plan.seenColumns.has(wx)) continue;
+    plan.seenColumns.add(wx);
+    visited++;
+    const metrics = null;
+    const ctx = columnContext(wx, getTile, metrics, dayTempDelta);
+    const candidates = terrainCandidatesForColumn(wx, getTile, prof, ctx, sc.epochSeconds);
+    for(const op of candidates){
+      if(queueTerrainCandidate(op, sc)) made++;
+      if(made >= sc.terrainPlanMaxCandidates) break;
+    }
+    if(made >= sc.terrainPlanMaxCandidates) break;
+  }
+  plan.cursor = (plan.cursor + cols) % span;
+  plan.columns += visited;
+  if(plan.seenColumns.size > sc.terrainSeenCap) plan.seenColumns.clear();
+  if(started) plan.scanMs = +(plan.scanMs + Math.max(0, performance.now() - started)).toFixed(3);
+  if(made > 0) plan.lastAction = 'prepared';
+  return made;
+}
+
+function viewportFromOpts(opts){
+  const v = opts && opts.viewport;
+  if(!v) return null;
+  const x0 = Math.min(finiteNumber(v.x0, Infinity), finiteNumber(v.x1, -Infinity));
+  const x1 = Math.max(finiteNumber(v.x0, -Infinity), finiteNumber(v.x1, Infinity));
+  const y0 = Math.min(finiteNumber(v.y0, Infinity), finiteNumber(v.y1, -Infinity));
+  const y1 = Math.max(finiteNumber(v.y0, -Infinity), finiteNumber(v.y1, Infinity));
+  if(!Number.isFinite(x0) || !Number.isFinite(x1) || !Number.isFinite(y0) || !Number.isFinite(y1)) return null;
+  return {x0, x1, y0, y1};
+}
+
+function terrainOpVisible(op, opts, sc){
+  const v = viewportFromOpts(opts);
+  if(!v) return false;
+  const m = sc.terrainVisibleMargin;
+  return op.x >= v.x0 - m && op.x <= v.x1 + m && op.y >= v.y0 - m && op.y <= v.y1 + m;
+}
+
+function terrainOpNearPlayer(op, player, sc){
+  const p = player || root.player || {};
+  const px = finiteNumber(p.x, NaN);
+  const py = finiteNumber(p.y, NaN);
+  if(!Number.isFinite(px) || !Number.isFinite(py)) return false;
+  const halfW = Math.max(0.35, finiteNumber(p.w, 0.7) * 0.5) + sc.terrainPlayerMargin;
+  const halfH = Math.max(0.48, finiteNumber(p.h, 0.95) * 0.5) + sc.terrainPlayerMargin;
+  return op.x + 1 > px - halfW && op.x < px + halfW && op.y + 1 > py - halfH && op.y < py + halfH;
+}
+
+function terrainInputActive(player, opts, sc){
+  if(opts && opts.inputActive) return true;
+  const p = player || {};
+  const speed = Math.max(Math.abs(finiteNumber(p.vx, 0)), Math.abs(finiteNumber(p.vy, 0)));
+  return speed > sc.terrainMovingSpeed;
+}
+
+function takeTerrainCandidate(player, opts, sc, allowVisible){
+  const limit = Math.min(sc.terrainApplySearchLimit, terrainPlan.queue.length);
+  let skippedVisible = 0;
+  let skippedPlayer = 0;
+  let bestIndex = -1;
+  let bestVisible = false;
+  let bestPriority = Infinity;
+  let bestVisibleRank = Infinity;
+  for(let i = 0; i < limit; i++){
+    const op = terrainPlan.queue[i];
+    const visible = terrainOpVisible(op, opts, sc);
+    const playerProtected = terrainOpNearPlayer(op, player, sc);
+    if(playerProtected){
+      skippedPlayer++;
+      continue;
+    }
+    if(visible && !allowVisible){
+      skippedVisible++;
+      continue;
+    }
+    const priority = terrainOpPriority(op);
+    const visibleRank = visible ? 0 : 1;
+    if(
+      bestIndex < 0 ||
+      priority < bestPriority ||
+      (priority === bestPriority && visibleRank < bestVisibleRank)
+    ){
+      bestIndex = i;
+      bestVisible = visible;
+      bestPriority = priority;
+      bestVisibleRank = visibleRank;
+      if(priority === 0 && visibleRank === 0) break;
+    }
+  }
+  if(bestIndex >= 0){
+    const op = terrainPlan.queue.splice(bestIndex, 1)[0];
+    terrainPlan.queuedKeys.delete(terrainOpKey(op));
+    return {op, visible: bestVisible, skippedVisible, skippedPlayer};
+  }
+  return {op: null, visible: false, skippedVisible, skippedPlayer};
+}
+
+function applyTerrainPlan(getTile, setTile, player, s, sc, opts){
+  if(typeof getTile !== 'function' || typeof setTile !== 'function') return 0;
+  if(!terrainPlan.queue.length) return 0;
+  if(!terrainTargetActive(s, terrainPlan.target)){
+    terrainPlan.deferReason = 'waiting';
+    return 0;
+  }
+  if(sc.terrainApplySlowFrameMs > 0 && recentFrameMs() > sc.terrainApplySlowFrameMs){
+    terrainPlan.deferReason = 'frame';
+    return 0;
+  }
+  const moving = terrainInputActive(player, opts, sc);
+  const allowVisible = sc.terrainAllowVisible && !moving && terrainVisibleApplyAcc >= sc.terrainVisibleInterval;
+  const started = typeof performance !== 'undefined' && performance.now ? performance.now() : 0;
+  let applied = 0;
+  let visibleApplied = 0;
+  let dropped = 0;
+  let skippedVisible = 0;
+  let skippedPlayer = 0;
+  const maxOps = sc.terrainApplyOps;
+  for(let i = 0; i < maxOps; i++){
+    const picked = takeTerrainCandidate(player, opts, sc, allowVisible && visibleApplied === 0);
+    if(!picked || !picked.op){
+      if(picked){
+        skippedVisible += picked.skippedVisible || 0;
+        skippedPlayer += picked.skippedPlayer || 0;
+      }
+      break;
+    }
+    skippedVisible += picked.skippedVisible || 0;
+    skippedPlayer += picked.skippedPlayer || 0;
+    const {op, visible} = picked;
+    if(getTile(op.x, op.y) !== op.from){
+      dropped++;
+      continue;
+    }
+    if(op.type === 'freeze' && !solidifyWaterForFreeze(op.x, op.y, getTile, setTile)){
+      dropped++;
+      continue;
+    }
+    if(replaceTile(op.x, op.y, op.to, getTile, setTile)){
+      applied++;
+      if(visible) visibleApplied++;
+      if(Object.prototype.hasOwnProperty.call(terrainPlan.changed, op.type)) terrainPlan.changed[op.type]++;
+    } else {
+      dropped++;
+    }
+  }
+  if(applied > 0){
+    terrainPlan.applied += applied;
+    terrainPlan.visibleApplied += visibleApplied;
+    terrainPlan.lastAction = 'applied';
+    terrainPlan.deferReason = '';
+    if(visibleApplied > 0) terrainVisibleApplyAcc = 0;
+  } else if(dropped > 0) {
+    terrainPlan.lastAction = 'dropped';
+    terrainPlan.deferReason = '';
+  } else {
+    terrainPlan.deferReason = moving ? 'moving' : (skippedPlayer > 0 ? 'player' : 'visible');
+  }
+  terrainPlan.dropped += dropped;
+  terrainPlan.visibleSkipped += skippedVisible;
+  terrainPlan.playerProtected += skippedPlayer;
+  if(started) terrainPlan.applyMs = +(terrainPlan.applyMs + Math.max(0, performance.now() - started)).toFixed(3);
+  return applied;
+}
+
+function terrainPlanScanMetrics(){
+  const m = emptyScanMetrics();
+  m.columns = terrainPlan.columns | 0;
+  m.ops = terrainPlan.applied | 0;
+  m.leafOps = (terrainPlan.changed.leafGrow | 0) + (terrainPlan.changed.leafDrop | 0);
+  m.cursor = terrainPlan.cursor | 0;
+  m.ms = +(finiteNumber(terrainPlan.scanMs, 0) + finiteNumber(terrainPlan.applyMs, 0)).toFixed(3);
+  m.relocation = !!terrainPlan.relocation;
+  m.deferred = !!terrainPlan.deferReason;
+  m.deferReason = terrainPlan.deferReason || '';
+  m.changed = Object.assign({}, terrainPlan.changed);
+  return m;
+}
+
+function playerScanCenter(player){
+  const p = player || root.player || {};
+  return Math.floor(finiteNumber(p.x, 0));
+}
+
+function queueRelocationBurst(player, sc){
+  const cx = playerScanCenter(player);
+  if(lastScanCenterX == null){
+    lastScanCenterX = cx;
+    return false;
+  }
+  const dist = Math.abs(cx - lastScanCenterX);
+  if(!(sc && sc.relocationDistance > 0) || dist < sc.relocationDistance) return false;
+  lastScanCenterX = cx;
+  scanCursor = 0;
+  relocationBurstRemaining = Math.max(relocationBurstRemaining, sc.relocationScans);
+  return true;
+}
+
+function recentFrameMs(){
+  return finiteNumber(root.__mmFrameMs, 0);
+}
+
+function deferSeasonScan(sc){
+  if(!sc || !(sc.slowFrameSkipMs > 0)) return false;
+  const ms = recentFrameMs();
+  return ms > sc.slowFrameSkipMs;
+}
+
+function markDeferredScan(reason){
+  const m = emptyScanMetrics();
+  m.deferred = true;
+  m.deferReason = reason || '';
+  lastScan = m;
+  return m;
+}
+
+function runScan(getTile, setTile, player, opts){
+  if(typeof getTile !== 'function' || typeof setTile !== 'function') return;
+  const sc = scanConfig();
+  const started = typeof performance !== 'undefined' && performance.now ? performance.now() : 0;
+  const cx = playerScanCenter(player);
+  const prof = profile();
+  const dayTempDelta = currentDiurnalTemperatureDelta();
+  const cols = safeInt(opts && opts.cols, sc.cols, 1, Math.min(160, sc.span));
+  const maxOps = safeInt(opts && opts.maxOps, sc.maxOps, 1, 64);
+  const maxLeafOps = safeInt(opts && opts.maxLeafOps, sc.maxLeafOps, 0, Math.min(16, maxOps));
+  let ops = 0;
+  let leafOps = 0;
+  const metrics = emptyScanMetrics();
+  metrics.cursor = scanCursor;
+  metrics.relocation = !!(opts && opts.relocation);
+  for(let i = 0; i < cols; i++){
+    const wx = cx - sc.radius + ((scanCursor + i) % sc.span);
+    const ctx = columnContext(wx, getTile, metrics, dayTempDelta);
+    metrics.columns++;
+    if(ops < maxOps && applyFreezeColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.freeze++; }
+    if(ops < maxOps && applyThawColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.thaw++; }
+    if(ops < maxOps && applySnowColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.snow++; }
+    if(ops < maxOps && applySnowMeltColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.snowMelt++; }
+    if(ops < maxOps && applyDustMeltColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.dustMelt++; }
+    if(ops < maxOps && applyGroundFreezeColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.groundFreeze++; }
+    if(ops < maxOps && applyGroundThawColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; metrics.changed.groundThaw++; }
+    if(ops < maxOps && leafOps < maxLeafOps && applySpringLeavesColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; leafOps++; metrics.changed.leafGrow++; }
+    if(ops < maxOps && leafOps < maxLeafOps && applyAutumnLeavesColumn(wx, getTile, setTile, prof, ctx, sc.epochSeconds)){ ops++; leafOps++; metrics.changed.leafDrop++; }
+    if(ops >= maxOps) break;
+  }
+  scanCursor = (scanCursor + cols) % sc.span;
+  metrics.ops = ops;
+  metrics.leafOps = leafOps;
+  metrics.deferred = ops >= maxOps || leafOps >= maxLeafOps;
+  if(started) metrics.ms = +Math.max(0, (performance.now() - started)).toFixed(3);
+  lastScan = metrics;
+  return metrics;
+}
+
+function update(dt, getTile, setTile, player, opts){
+  if(!enabled) return;
+  if(!(dt > 0) || !Number.isFinite(dt)) return;
+  const prevState = currentState();
+  elapsedSeconds += Math.min(dt, 0.2);
+  cachedState = null;
+  cachedAt = -1;
+  const nextState = currentState();
+  checkSeasonEvents(prevState, nextState);
+  if(typeof getTile !== 'function' || typeof setTile !== 'function') return;
+  const sc = scanConfig();
+  const relocated = queueRelocationBurst(player, sc);
+  scanAcc += dt;
+  terrainApplyAcc += dt;
+  terrainVisibleApplyAcc += dt;
+  let passes = 0;
+  if(scanAcc >= sc.interval){
+    scanAcc = 0;
+    passes = 1;
+  }
+  if(relocationBurstRemaining > 0){
+    passes = Math.max(passes, Math.min(sc.relocationPassesPerTick, relocationBurstRemaining));
+  }
+  if(!sc.autoTerrainEffects){
+    const m = emptyScanMetrics();
+    m.deferred = true;
+    m.deferReason = 'terrain-off';
+    lastScan = m;
+    terrainPlan.deferReason = 'terrain-off';
+    return;
+  }
+  if(deferSeasonScan(sc)){
+    scanAcc = Math.min(scanAcc, sc.interval * 0.75);
+    markDeferredScan('frame');
+    terrainPlan.deferReason = 'frame';
+    return;
+  }
+  if(passes > 0){
+    for(let i = 0; i < passes; i++){
+      const relocation = relocated || relocationBurstRemaining > 0;
+      prepareTerrainPlan(getTile, player, nextState, sc, {relocation});
+      if(relocationBurstRemaining > 0) relocationBurstRemaining = Math.max(0, relocationBurstRemaining - 1);
+    }
+  }
+  if(terrainApplyAcc >= sc.terrainApplyInterval){
+    terrainApplyAcc = 0;
+    applyTerrainPlan(getTile, setTile, player, nextState, sc, opts || null);
+  }
+  lastScan = terrainPlanScanMetrics();
+}
+
+function scanNow(getTile, setTile, player){
+  if(!enabled) return null;
+  const m = runScan(getTile, setTile, player);
+  if(m) emit('scanDebug', {columns: m.columns, ops: m.ops, changed: Object.assign({}, m.changed)});
+  return m || null;
+}
+
+function setEnabled(value){
+  const next = value !== false;
+  if(enabled === next) return true;
+  enabled = next;
+  scanAcc = 0;
+  lastScan = emptyScanMetrics();
+  resetTerrainPlan(next ? 'enabled' : 'disabled');
+  cachedState = null;
+  cachedAt = -1;
+  emit(next ? 'seasonEnabled' : 'seasonDisabled', {enabled: next});
+  return true;
+}
+
+function isEnabled(){ return enabled; }
+
+function reset(){
+  elapsedSeconds = 0;
+  scanAcc = 0;
+  scanCursor = 0;
+  lastScanCenterX = null;
+  relocationBurstRemaining = 0;
+  resetTerrainPlan('reset');
+  forcedSeason = null;
+  enabled = true;
+  cachedState = null;
+  cachedAt = -1;
+  lastScan = emptyScanMetrics();
+  recentEvents.length = 0;
+}
+
+function snapshot(){
+  return {
+    v: 2,
+    elapsedSeconds: +elapsedSeconds.toFixed(3),
+    scanCursor: scanCursor | 0,
+  };
+}
+
+function restore(data){
+  reset();
+  if(!data || typeof data !== 'object') return false;
+  elapsedSeconds = clamp(finiteNumber(data.elapsedSeconds, 0), 0, 60 * 60 * 24 * 3650);
+  scanCursor = safeInt(data.scanCursor, 0, 0, 4096);
+  return true;
+}
+
+function scanMetricsSnapshot(scan, relocationRemaining){
+  const s = scan || emptyScanMetrics();
+  return {
+    columns: s.columns | 0,
+    ops: s.ops | 0,
+    leafOps: s.leafOps | 0,
+    surfaceLookups: s.surfaceLookups | 0,
+    tempLookups: s.tempLookups | 0,
+    cursor: s.cursor | 0,
+    ms: +finiteNumber(s.ms, 0).toFixed(3),
+    relocation: !!s.relocation,
+    deferred: !!s.deferred,
+    deferReason: String(s.deferReason || ''),
+    relocationRemaining: relocationRemaining | 0,
+    changed: Object.assign({}, s.changed),
+  };
+}
+
+function terrainMetricsSnapshot(){
+  return {
+    target: terrainPlan.target || '',
+    epoch: terrainPlan.epoch || '',
+    queued: terrainPlan.queue ? terrainPlan.queue.length : 0,
+    prepared: terrainPlan.prepared | 0,
+    applied: terrainPlan.applied | 0,
+    dropped: terrainPlan.dropped | 0,
+    visibleApplied: terrainPlan.visibleApplied | 0,
+    visibleSkipped: terrainPlan.visibleSkipped | 0,
+    playerProtected: terrainPlan.playerProtected | 0,
+    columns: terrainPlan.columns | 0,
+    scanMs: +finiteNumber(terrainPlan.scanMs, 0).toFixed(3),
+    applyMs: +finiteNumber(terrainPlan.applyMs, 0).toFixed(3),
+    action: String(terrainPlan.lastAction || 'idle'),
+    deferReason: String(terrainPlan.deferReason || ''),
+    relocation: !!terrainPlan.relocation,
+    changed: Object.assign({}, terrainPlan.changed),
+  };
+}
+
+function metrics(){
+  const s = currentState();
+  const p = profile();
+  const h = HOSTILITY.at(activeWorldX(0));
+  if(!enabled){
+    return {
+      day: s.day,
+      dayFloat: +s.dayFloat.toFixed(2),
+      seasonDay: +s.seasonDay.toFixed(2),
+      season: 'off',
+      label: DISABLED_PROFILE.label,
+      transition: false,
+      from: s.season,
+      to: s.season,
+      blend: 1,
+      nextInDays: 0,
+      temperatureDelta: 0,
+      diurnalTemperatureDelta: 0,
+      animalSpawnMult: 1,
+      windMult: 1,
+      stormChanceMult: 1,
+      rainRateMult: 1,
+      freezeStrength: 0,
+      thawStrength: 0,
+      snowStrength: 0,
+      snowMeltStrength: 0,
+      leafGrowStrength: 0,
+      leafDropStrength: 0,
+      terrainEffectsEnabled: false,
+      scan: scanMetricsSnapshot(null, 0),
+      terrain: terrainMetricsSnapshot(),
+      events: recentEvents.slice(-6),
+      forced: !!s.forced,
+      enabled: false,
+    };
+  }
+  return {
+    day: s.day,
+    dayFloat: +s.dayFloat.toFixed(2),
+    calendarDayFloat: +finiteNumber(s.calendarDayFloat, s.dayFloat).toFixed(2),
+    seasonDay: +s.seasonDay.toFixed(2),
+    season: s.season,
+    label: s.label,
+    transition: s.transition,
+    from: s.from,
+    to: s.to,
+    blend: +s.blend.toFixed(3),
+    nextInDays: +s.nextInDays.toFixed(2),
+    temperatureDelta: +finiteNumber(p.temperatureDelta, 0).toFixed(3),
+    diurnalTemperatureDelta: +currentDiurnalTemperatureDelta().toFixed(3),
+    animalSpawnMult: +finiteNumber(p.animalSpawnMult, 1).toFixed(3),
+    windMult: +finiteNumber(p.windMult, 1).toFixed(3),
+    stormChanceMult: +finiteNumber(p.stormChanceMult, 1).toFixed(3),
+    rainRateMult: +finiteNumber(p.rainRateMult, 1).toFixed(3),
+    freezeStrength: +finiteNumber(p.freezeStrength, 0).toFixed(3),
+    thawStrength: +finiteNumber(p.thawStrength, 0).toFixed(3),
+    snowStrength: +finiteNumber(p.snowStrength, 0).toFixed(3),
+    snowMeltStrength: +finiteNumber(p.snowMeltStrength, 0).toFixed(3),
+    leafGrowStrength: +finiteNumber(p.leafGrowStrength, 0).toFixed(3),
+    leafDropStrength: +finiteNumber(p.leafDropStrength, 0).toFixed(3),
+    terrainEffectsEnabled: CFG.autoTerrainEffects === true,
+    scan: scanMetricsSnapshot(lastScan, relocationBurstRemaining),
+    terrain: terrainMetricsSnapshot(),
+    events: recentEvents.slice(-6),
+    forced: !!s.forced,
+    enabled: true,
+    hostility: +h.hostility.toFixed(3),
+    hostilitySide: h.side,
+  };
+}
+
+function normalizeSeasonId(id){
+  let raw = String(id == null ? '' : id).trim().toLowerCase();
+  try{ raw = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }catch(e){}
+  return SEASON_ALIASES[raw] || raw;
+}
+
+function forceSeason(id){
+  if(id == null || id === 'natural'){
+    const was = forcedSeason;
+    forcedSeason = null;
+    cachedState = null;
+    cachedAt = -1;
+    if(was) emit('seasonNatural', {from: was, to: currentState().season, label: currentState().label});
+    return true;
+  }
+  const key = normalizeSeasonId(id);
+  if(!BASE_PROFILES[key]) return false;
+  const was = currentState().season;
+  forcedSeason = key;
+  cachedState = null;
+  cachedAt = -1;
+  emit('seasonForced', {from: was, to: key, label: seasonByIndex(SEASON_ORDER.indexOf(key)).label});
+  return true;
+}
+
+function setDay(day){
+  // Debug/event API in CALENDAR days: every caller picks a day for its SEASON
+  // ("31 = start of winter"), so the summer-start offset is subtracted here.
+  // Calendar days inside the pre-launch offset clamp to elapsed 0 (early summer).
+  const prev = currentState();
+  const d = Math.max(1, finiteNumber(day, 1));
+  elapsedSeconds = Math.max(0, (d - 1 - CALENDAR_START_OFFSET_DAYS) * DAY_SECONDS);
+  cachedState = null;
+  cachedAt = -1;
+  checkSeasonEvents(prev, currentState());
+  return true;
+}
+
+function advanceDays(days){
+  // RELATIVE elapsed-time jump — must not route through setDay, whose argument
+  // is now a CALENDAR day (routing would silently subtract the summer offset).
+  const n = finiteNumber(days, 0);
+  if(!Number.isFinite(n) || n === 0) return false;
+  const prev = currentState();
+  elapsedSeconds = clamp(elapsedSeconds + n * DAY_SECONDS, 0, 60 * 60 * 24 * 3650);
+  cachedState = null;
+  cachedAt = -1;
+  checkSeasonEvents(prev, currentState());
+  return true;
+}
+
+function jumpToNextTransition(){
+  const prev = currentState();
+  forcedSeason = null;
+  // transitions live on the CALENDAR (summer-start offset), not raw elapsed time
+  const totalDays = Math.max(0, elapsedSeconds / DAY_SECONDS + CALENDAR_START_OFFSET_DAYS);
+  const seasonNumber = Math.floor(totalDays / DAYS_PER_SEASON);
+  const seasonStart = seasonNumber * DAYS_PER_SEASON;
+  const dayInSeason = totalDays - seasonStart;
+  let targetDays;
+  if(dayInSeason >= DAYS_PER_SEASON - HALF_TRANSITION_DAYS){
+    targetDays = (seasonNumber + 1) * DAYS_PER_SEASON + HALF_TRANSITION_DAYS * 0.5;
+  } else {
+    targetDays = seasonStart + DAYS_PER_SEASON - HALF_TRANSITION_DAYS * 0.5;
+  }
+  elapsedSeconds = clamp((targetDays - CALENDAR_START_OFFSET_DAYS) * DAY_SECONDS, 0, 60 * 60 * 24 * 3650);
+  cachedState = null;
+  cachedAt = -1;
+  const next = currentState();
+  checkSeasonEvents(prev, next);
+  emit('transitionJump', {from: next.from, to: next.to, label: next.label, blend: +next.blend.toFixed(3)});
+  return true;
+}
+
+function eventPlayer(opts){
+  const p = opts && opts.player ? opts.player : root.player;
+  return p && Number.isFinite(p.x) ? p : {x: 0, y: seaLevel()};
+}
+function addEventClouds(px, count, mass, spread){
+  const clouds = root.MM && root.MM.clouds;
+  if(!clouds || typeof clouds.addCloud !== 'function') return 0;
+  let made = 0;
+  const n = safeInt(count, 1, 0, 8);
+  const s = clamp(finiteNumber(spread, 120), 10, 420);
+  for(let i = 0; i < n; i++){
+    const off = n <= 1 ? 0 : (-s * 0.5 + s * (i / Math.max(1, n - 1)));
+    const jitter = (hash01(Math.round(px), i, 913) - 0.5) * s * 0.22;
+    const c = clouds.addCloud(px + off + jitter, null, mass);
+    if(c) made++;
+  }
+  return made;
+}
+function forceSeasonEvent(id, opts){
+  if(!enabled) return false;
+  const key = normalizeSeasonId(id || currentState().season);
+  if(!BASE_PROFILES[key]) return false;
+  const p = eventPlayer(opts || {});
+  const clouds = root.MM && root.MM.clouds;
+  const wind = root.MM && root.MM.wind;
+  const dir = p && p.facing < 0 ? -1 : 1;
+  let ok = false;
+  let event = key;
+  if(key === 'spring'){
+    event = 'spring-rain';
+    if(clouds && typeof clouds.startStorm === 'function'){ clouds.startStorm(58, 0.55); ok = true; }
+    ok = addEventClouds(p.x, 3, 10, 150) > 0 || ok;
+    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 1.45, 24) || ok;
+  } else if(key === 'summer'){
+    event = 'summer-storm';
+    if(clouds && typeof clouds.startStorm === 'function'){ clouds.startStorm(92, 1); ok = true; }
+    ok = addEventClouds(p.x, 4, 16, 190) > 0 || ok;
+    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 4.7, 34) || ok;
+  } else if(key === 'autumn'){
+    event = 'autumn-gale';
+    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 6.5, 56) || ok;
+    if(clouds && typeof clouds.startStorm === 'function'){ clouds.startStorm(42, 0.45); ok = true; }
+    ok = addEventClouds(p.x, 2, 8, 180) > 0 || ok;
+  } else if(key === 'winter'){
+    event = 'winter-blizzard';
+    if(wind && typeof wind.forceSquall === 'function') ok = wind.forceSquall(dir, 5.8, 70) || ok;
+    if(clouds && typeof clouds.startStorm === 'function'){ clouds.startStorm(72, 0.62); ok = true; }
+    ok = addEventClouds(p.x, 3, 12, 170) > 0 || ok;
+  }
+  if(ok) emit('seasonEventForced', {season: key, event});
+  return ok;
+}
+
+const api = {
+  update,
+  reset,
+  snapshot,
+  restore,
+  profile,
+  metrics,
+  temperatureAt,
+  temperatureCelsius,
+  forceSeason,
+  setEnabled,
+  isEnabled,
+  setDay,
+  advanceDays,
+  jumpToNextTransition,
+  forceSeasonEvent,
+  scanNow,
+  subscribe,
+  config: CFG,
+  constants: {DAY_SECONDS, DAYS_PER_SEASON, TRANSITION_DAYS, TEMPERATURE_C_MIN, TEMPERATURE_C_SPAN},
+  _debug: {
+    stateAtDays,
+    seasonOrder: SEASON_ORDER,
+    baseProfiles: BASE_PROFILES,
+    applyFreezeColumn,
+    applyThawColumn,
+    applySnowColumn,
+    applySnowMeltColumn,
+    applySpringLeavesColumn,
+    applyAutumnLeavesColumn,
+    queueRelocationBurst,
+    columnContext,
+    diurnalTemperatureDelta,
+    forceSeasonEvent,
+  },
+};
+
+root.MM.seasons = api;
+
+export const seasons = api;
+export default seasons;

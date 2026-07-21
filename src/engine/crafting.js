@@ -1,0 +1,331 @@
+// Crafting meta-model: recipe affordability math plus the player-facing
+// quality-of-life state around it — favorites, one tracked recipe (HUD widget),
+// NEW-recipe detection and per-recipe craft statistics. Pure data logic shared
+// by the panel UI and the HUD tracker in main.js; no DOM here, so the whole
+// model runs headless in Node tests.
+//
+// Persistence contract: snapshot()/restore() ride the save file's `crafting`
+// part. restore() accepts the legacy `{seenAvailable:[...]}` shape (older saves)
+// and seeds "already craftable" silently when no snapshot exists, so loading an
+// old world never spams NEW badges for recipes the player has long had.
+const crafting = (function(){
+  const root = typeof window !== 'undefined' ? window : globalThis;
+  const MM = root.MM = root.MM || {};
+
+  // Where to find each craftable ingredient — surfaced when a recipe is missing
+  // that resource. One short player-facing phrase per key; `craft:` prefixed
+  // entries point at other recipes instead of the world.
+  const SOURCE_HINTS = {
+    silver: 'przetapiaj rudę srebra ogniem albo szukaj sztabek w skrzyniach',
+    silverWire: 'craft: sztabki srebra + plastik (Maszyny)',
+    wood: 'ścinaj drzewa',
+    leaf: 'korony drzew',
+    grass: 'kop trawiaste bloki',
+    dirt: 'kop ziemię tuż pod trawą',
+    stone: 'kop kamień pod powierzchnią',
+    granite: 'twarde, jasnoszare warstwy skalne',
+    basalt: 'ciemne skały głęboko pod ziemią i przy lawie',
+    coal: 'czarne złoża w skale',
+    gold: 'złote żyły ukryte w skale',
+    diamond: 'błyszczące złoża głęboko pod ziemią',
+    iridium: 'rzadkie złoża i kratery meteorytów',
+    obsidian: 'zastygła lawa (ugaś ją wodą)',
+    sand: 'pustynie i plaże',
+    clay: 'warstwy gliny pod trawą',
+    snow: 'zimowe szczyty i opady śniegu',
+    toxicSnow: 'śnieg spod skażonej gazem chmury (zielona zamieć)',
+    water: 'wykop kafle wody z jezior',
+    meatScrap: 'wypada z upolowanych zwierząt (podnieś E)',
+    meat: 'craft: skrawki mięsa (Jedzenie) lub skrzynie',
+    rottenMeat: 'surowe mięso zepsute z czasem (zostaw je w świecie)',
+    meteoricIron: 'kratery po meteorytach',
+    meteorDust: 'pył z kraterów meteorytów',
+    radioactiveOre: 'głębokie, skażone złoża',
+    copper: 'ruiny miast: maszyny i kable',
+    plastic: 'ruiny miast: wraki i sprzęty',
+    ufoConcrete: 'rozbieraj kadłuby i ruiny obcych',
+    wire: 'ruiny miast i pokonane roboty',
+    antimatter: 'zestrzelone UFO i rzadkie meteoryty',
+    alienBiomass: 'pozostałości po najeźdźcach',
+    motherIce: 'lód przy skale macierzystej',
+    motherLava: 'lawa przy skale macierzystej',
+    bedrock: 'wydobywaj skałę macierzystą kilofem macierzystym',
+    masterStone: 'serce wulkanu',
+    servantStone: 'kamienie sługi przy wulkanie',
+    springAntler: 'trofeum wiosennego jelenia',
+    summerHorn: 'trofeum letniego żubra',
+    autumnHeartwood: 'trofeum jesiennego łosia',
+    winterFur: 'trofeum zimowego niedźwiedzia',
+    glass: 'craft: piasek + węgiel (Przerób)',
+    brick: 'craft: glina + węgiel (Przerób)',
+    steel: 'craft: żelazo meteorytowe + węgiel (Przerób)',
+    transistor: 'craft: miedź + plastik + pył (Przerób)',
+    copperWire: 'craft: miedź + plastik (Maszyny)',
+    solarPanel: 'craft: szkło + przewody (Maszyny)',
+    waterPipe: 'craft: stal + plastik (Maszyny)',
+    dynamo: 'craft: stal + przewody (Maszyny)',
+    track: 'craft: stal + wegiel (Maszyny)',
+    torch: 'craft: drewno (Start)',
+    ladder: 'craft: drewno (Budowle)',
+    bedrockLadder: 'craft: skała macierzysta (Budowle)',
+    fish: 'wędkuj: F przy wodzie (potrzebna wędka)',
+    goldenFish: 'rzadki połów — wygraj walkę z dużą rybą',
+    glowshroom: 'świecące jaskinie w lasach i na bagnach',
+    graphite: 'gęsta sadza pod czarnym dymem prasuje się w żyłę',
+    graphene: 'ostrzeliwuj grafit prądem, aż się wyżarzy',
+    smrCell: 'craft: grafit + ruda radioaktywna + elektronika (Maszyny)',
+    ice: 'odwilż strąca sople — zbierz odłamki z ziemi',
+    soot: 'przebiegnij gęsty czarny nalot albo rozkrusz węgiel',
+    weathervane: 'craft: stal + drewno (Maszyny) — czytaj wiatr z dachu',
+    lightningRod: 'craft: stal + srebrny przewód (Maszyny) — burza jako żniwa',
+    throwingStoneGranite: 'craft: granit (Bronie) — twardszy rzut, częściej przeżywa',
+    throwingStoneBasalt: 'craft: bazalt (Bronie) — ciężki twardy pocisk',
+    throwingStoneObsidian: 'craft: obsydian (Bronie) — tnie i niemal nie pęka',
+    throwingStoneDiamond: 'craft: diament (Bronie) — pocisk praktycznie wieczny',
+    halogen: 'craft: stal + srebrny przewód + szkło (Przetrwanie) — mocniejsza latarka'
+  };
+
+  function createCraftingModel(cfg){
+    cfg = cfg || {};
+    const recipes = Array.isArray(cfg.recipes) ? cfg.recipes : [];
+    const getHave = typeof cfg.getHave === 'function' ? cfg.getHave : ()=>0;
+    const isDone = typeof cfg.isDone === 'function' ? cfg.isDone : ()=>false;
+    const maxBatch = Math.max(1, cfg.maxBatch|0 || 999);
+    const recipeById = new Map();
+    const materialKeys = new Set();
+    for(const r of recipes){
+      if(r && typeof r.id==='string' && !recipeById.has(r.id)) recipeById.set(r.id,r);
+      for(const k of Object.keys((r && r.cost) || {})) materialKeys.add(k);
+    }
+
+    const favorites = new Set();      // recipe ids pinned by the player
+    const seenAvailable = new Set();  // ids that have EVER been craftable (toast bookkeeping)
+    const fresh = new Set();          // newly craftable/unlocked, not yet viewed in the panel (NEW badges)
+    const counts = new Map();         // id -> times crafted (lifetime, rides the save)
+    // Progressive recipe discovery: a recipe stays HIDDEN until the player has
+    // touched every ingredient type at least once (knownMaterials = resource
+    // keys ever held) or has seen the crafted result standing in the world
+    // (seenResults, fed by the viewport scan in main.js). Both ride the save.
+    const knownMaterials = new Set(); // resource keys the player has ever owned
+    const seenResults = new Set();    // recipe ids whose result was spotted in the world
+    let trackedId = null;             // the one recipe pinned to the HUD tracker
+    let trackedReadyAnnounced = false; // edge detector: announce "ready" once per dip
+
+    function byId(id){ return recipeById.get(id) || null; }
+    function known(id){ return typeof id==='string' && !!byId(id); }
+    function done(r){ try{ return !!isDone(r); }catch(e){ return false; } }
+    function costEntries(r){ return Object.entries((r && r.cost) || {}); }
+    function have(key){ const n=getHave(key); return (typeof n==='number' && isFinite(n)) ? Math.max(0, n) : 0; }
+
+    function maxCrafts(r){
+      if(!r || done(r)) return 0;
+      const entries = costEntries(r);
+      if(!entries.length) return 1;
+      let max = Infinity;
+      for(const [k,v] of entries){
+        const need = Math.max(1, v|0);
+        max = Math.min(max, Math.floor(have(k)/need));
+      }
+      return Math.max(0, Math.min(maxBatch, max===Infinity ? 1 : max));
+    }
+    function missing(r){
+      return costEntries(r)
+        .map(([k,v])=>({key:k, need:v, have:have(k), missing:Math.max(0, v-have(k))}))
+        .filter(x=>x.missing>0);
+    }
+    function canCraft(r){ return maxCrafts(r)>0; }
+    // Overall affordability 0..1 (bottleneck ingredient) — drives progress bars.
+    function progress(r){
+      if(!r) return 0;
+      if(done(r)) return 1;
+      const entries = costEntries(r);
+      if(!entries.length) return 1;
+      let p = 1;
+      for(const [k,v] of entries){
+        const need = Math.max(1, v|0);
+        p = Math.min(p, Math.min(1, have(k)/need));
+      }
+      return p;
+    }
+
+    // --- Favorites ---
+    function isFavorite(id){ return favorites.has(id); }
+    function toggleFavorite(id){
+      if(!known(id)) return false;
+      if(favorites.has(id)) favorites.delete(id); else favorites.add(id);
+      return favorites.has(id);
+    }
+    function favoriteIds(){ return [...favorites]; }
+
+    // --- Tracked recipe (HUD ingredient tracker) ---
+    function setTracked(id){
+      const next = known(id) ? id : null;
+      if(next!==trackedId){ trackedId=next; trackedReadyAnnounced=false; }
+      return trackedId;
+    }
+    function toggleTracked(id){ return setTracked(trackedId===id ? null : id); }
+    function getTrackedId(){ return trackedId; }
+    // Snapshot of the tracked recipe for the HUD; `justReady` fires exactly once
+    // each time the recipe crosses from unaffordable to affordable.
+    function trackedStatus(){
+      const r = byId(trackedId);
+      if(!r){ trackedId=null; return null; }
+      const ready = canCraft(r);
+      let justReady = false;
+      if(ready && !trackedReadyAnnounced){ trackedReadyAnnounced=true; justReady=true; }
+      else if(!ready && trackedReadyAnnounced && !done(r)) trackedReadyAnnounced=false;
+      return {recipe:r, canCraft:ready, done:done(r), missing:missing(r), progress:progress(r), justReady};
+    }
+
+    // --- Craft statistics ---
+    function countOf(id){ return counts.get(id)|0; }
+    function recordCraft(id, n){
+      if(!known(id)) return 0;
+      const add = Number.isFinite(Number(n)) ? Math.max(1,Math.floor(Number(n))) : 1;
+      const next = Math.min(999999, Math.max(0,counts.get(id)||0) + add);
+      counts.set(id, next);
+      return next;
+    }
+    function totalCrafts(){ let t=0; counts.forEach(v=>{ t+=v; }); return t; }
+
+    // --- Recipe discovery (progressive unlocks) ---
+    function costKeys(r){ return costEntries(r).map(([k])=>k); }
+    function isKnownMaterial(key){ return knownMaterials.has(key); }
+    // Unlocked = the player has a reason to know this recipe exists:
+    // crafted it, could once afford it, saw its result in the world, or has
+    // handled every ingredient type it needs (amounts don't matter here).
+    function isUnlocked(idOrRecipe){
+      const r = typeof idOrRecipe==='string' ? byId(idOrRecipe) : idOrRecipe;
+      if(!r) return false;
+      if(done(r)) return true;
+      if((counts.get(r.id)|0) > 0) return true;
+      if(seenAvailable.has(r.id)) return true;
+      if(seenResults.has(r.id)) return true;
+      const keys = costKeys(r);
+      if(!keys.length) return true;
+      return keys.every(k=>knownMaterials.has(k));
+    }
+    function unlockedRecipes(){ return recipes.filter(isUnlocked); }
+    function lockedCount(){ return recipes.length - unlockedRecipes().length; }
+    // Feed the set of currently-held resource keys. Returns the recipes that
+    // just crossed into unlocked (they also get a NEW badge); opts.silent
+    // seeds knowledge without badges or announcements (boot / legacy saves).
+    function noteMaterials(keys, opts){
+      const silent = !!(opts && opts.silent);
+      const before = silent ? null : new Set(recipes.filter(isUnlocked).map(r=>r.id));
+      let added = false;
+      for(const k of (keys||[])){
+        if(typeof k==='string' && materialKeys.has(k) && !knownMaterials.has(k)){ knownMaterials.add(k); added=true; }
+      }
+      if(silent || !added) return [];
+      const newly = recipes.filter(r=>!before.has(r.id) && isUnlocked(r));
+      newly.forEach(r=>fresh.add(r.id));
+      return newly;
+    }
+    // The crafted result was spotted standing in the world (NPC house, ruin…).
+    // Returns the recipe when this sighting is what unlocked it.
+    function noteSeenResult(id){
+      const r = byId(id);
+      if(!r || seenResults.has(r.id)) return null;
+      const was = isUnlocked(r);
+      seenResults.add(r.id);
+      if(was) return null;
+      fresh.add(r.id);
+      return r;
+    }
+    // Legacy saves / fresh worlds: silently mark every currently-held resource
+    // and every ingredient of once-craftable recipes as known.
+    function seedKnown(){
+      for(const r of recipes){
+        for(const k of costKeys(r)){
+          if(have(k)>0) knownMaterials.add(k);
+        }
+        if(seenAvailable.has(r.id)) costKeys(r).forEach(k=>knownMaterials.add(k));
+      }
+    }
+
+    // --- Availability tracking (toasts + NEW badges) ---
+    // Returns the recipes that just became craftable for the first time.
+    function syncAvailability(){
+      const newly=[];
+      for(const r of recipes){
+        if(!canCraft(r) || seenAvailable.has(r.id)) continue;
+        seenAvailable.add(r.id);
+        fresh.add(r.id);
+        newly.push(r);
+      }
+      return newly;
+    }
+    function isFresh(id){ return fresh.has(id); }
+    function markSeen(id){ fresh.delete(id); }
+    function freshCount(){ return fresh.size; }
+    function freshIds(){ return [...fresh]; }
+    // Seed "already craftable" silently (fresh stays empty): first boot / legacy saves.
+    function seedSeen(){ recipes.forEach(r=>{ if(canCraft(r)) seenAvailable.add(r.id); }); }
+
+    // --- Persistence ---
+    function reset(){
+      favorites.clear(); seenAvailable.clear(); fresh.clear(); counts.clear();
+      knownMaterials.clear(); seenResults.clear();
+      trackedId=null; trackedReadyAnnounced=false;
+    }
+    function snapshot(){
+      const countsObj={};
+      counts.forEach((v,k)=>{ if(known(k) && v>0) countsObj[k]=v; });
+      return {
+        seenAvailable:[...seenAvailable].filter(known),
+        fresh:[...fresh].filter(known),
+        favorites:[...favorites].filter(known),
+        tracked: known(trackedId) ? trackedId : null,
+        counts: countsObj,
+        knownMaterials:[...knownMaterials],
+        seenResults:[...seenResults].filter(known)
+      };
+    }
+    function restore(src){
+      reset();
+      if(!src || typeof src!=='object' || !Array.isArray(src.seenAvailable)){
+        seedSeen();
+        seedKnown();
+        return false;
+      }
+      const restoreLimit=Math.max(32,recipes.length*2);
+      src.seenAvailable.slice(0,restoreLimit).forEach(id=>{ if(known(id)) seenAvailable.add(id); });
+      if(Array.isArray(src.fresh)) src.fresh.slice(0,restoreLimit).forEach(id=>{ if(known(id) && seenAvailable.has(id)) fresh.add(id); });
+      if(Array.isArray(src.knownMaterials)) src.knownMaterials.slice(0,restoreLimit).forEach(k=>{ if(typeof k==='string' && materialKeys.has(k)) knownMaterials.add(k); });
+      // Pre-discovery saves carry no material knowledge: seed it silently so
+      // long-standing recipes don't vanish from a veteran's panel.
+      else seedKnown();
+      if(Array.isArray(src.seenResults)) src.seenResults.slice(0,restoreLimit).forEach(id=>{ if(known(id)) seenResults.add(id); });
+      if(Array.isArray(src.favorites)) src.favorites.slice(0,restoreLimit).forEach(id=>{ if(known(id)) favorites.add(id); });
+      if(known(src.tracked)) trackedId=src.tracked;
+      if(src.counts && typeof src.counts==='object'){
+        for(const [k,v] of Object.entries(src.counts).slice(0,restoreLimit)){
+          if(known(k) && typeof v==='number' && isFinite(v) && v>0) counts.set(k, Math.min(999999, Math.floor(v)));
+        }
+      }
+      return true;
+    }
+
+    return {
+      byId, known, costEntries,
+      maxCrafts, missing, canCraft, progress,
+      isFavorite, toggleFavorite, favoriteIds,
+      setTracked, toggleTracked, trackedId:getTrackedId, trackedStatus,
+      countOf, recordCraft, totalCrafts,
+      syncAvailability, isFresh, markSeen, freshCount, freshIds, seedSeen,
+      isUnlocked, unlockedRecipes, lockedCount, noteMaterials, noteSeenResult,
+      isKnownMaterial, seedKnown,
+      reset, snapshot, restore
+    };
+  }
+
+  const api = { createCraftingModel, SOURCE_HINTS };
+  MM.crafting = api;
+  return api;
+})();
+
+export const createCraftingModel = crafting.createCraftingModel;
+export const SOURCE_HINTS = crafting.SOURCE_HINTS;
+export { crafting };
+export default crafting;

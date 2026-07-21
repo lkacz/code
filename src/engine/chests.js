@@ -1,0 +1,408 @@
+// Chest / Loot system with rarity tiers and procedural modifier items
+import { T, INFO } from '../constants.js';
+import world from './world.js';
+import { worldGen as WORLDGEN } from './worldgen.js';
+import { rollChestFurnishing } from './furnishings.js';
+(function(){
+  window.MM = window.MM || {};
+  const WORLD = world || (window.MM && MM.world);
+  const RNG = (seed)=>{ let s=seed>>>0; return ()=>{ s = (s*1664525 + 1013904223)>>>0; return (s>>>8)/0xFFFFFF; } };
+  const DYN_KEY='mm_dynamic_loot_v1';
+  const DYN_VERSION=1;
+  let weaponHitHandler=null;
+  let droppedOpenHandler=null;
+  // Load previously saved dynamic loot (items from opened chests)
+  try{
+    const raw=localStorage.getItem(DYN_KEY);
+    if(raw){
+      const d=JSON.parse(raw);
+      if(d && typeof d==='object'){
+        MM.dynamicLoot = MM.dynamicLoot || {capes:[],eyes:[],outfits:[],weapons:[],pickaxes:[],charms:[],antennas:[]};
+        ['capes','eyes','outfits','weapons','pickaxes','charms','antennas'].forEach(k=>{
+          if(!Array.isArray(MM.dynamicLoot[k])) MM.dynamicLoot[k]=[];
+          if(Array.isArray(d[k])){
+            d[k].forEach(it=>{
+              if(!MM.dynamicLoot[k].find(e=>e.id===it.id)) MM.dynamicLoot[k].push(it);
+            });
+          }
+        });
+      }
+    }
+  }catch(e){}
+  // The pool grows for the whole session and every pickup/craft used to
+  // stringify ALL of it synchronously — debounce the write (trailing 400ms,
+  // flushed on tab hide/close) so loot bursts cost one serialization, not N.
+  let dynSaveT=null;
+  function writeDynamicLootNow(){ dynSaveT=null; try{ if(MM.dynamicLoot) localStorage.setItem(DYN_KEY, JSON.stringify({version:DYN_VERSION, ...MM.dynamicLoot})); }catch(e){} }
+  function saveDynamicLoot(){ try{ if(dynSaveT!=null) return; dynSaveT=setTimeout(writeDynamicLootNow,400); }catch(e){ writeDynamicLootNow(); } }
+  try{
+    window.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden' && dynSaveT!=null){ clearTimeout(dynSaveT); writeDynamicLootNow(); } });
+    window.addEventListener('beforeunload',()=>{ if(dynSaveT!=null){ clearTimeout(dynSaveT); writeDynamicLootNow(); } });
+  }catch(e){}
+
+  // Function-pure loot (contract shared with inventory.js KIND_STAT_PRIORITY):
+  // an item rolls ONLY its kind's job stats — capes jump, eyes see, outfits carry
+  // one work/movement profile, weapons their class numbers, charms one passive.
+  // Rarity buys BIGGER numbers of those same stats (ranges barely overlap so a
+  // rare/epic find is obviously superior), never extra unrelated stats. Percent
+  // values sit on the clean 5% ladder; swim is an absolute water-speed fraction,
+  // vision in whole tiles, range half-tiles.
+  const TIERS={
+    common:{weight:58, rolls:[1,1], uniqueChance:0.02,
+      airJumps:1, vision:[11,12],
+      lootMagnetLevel:1, specialVisionLevel:1, treasureSenseLevel:1,
+      outfitPct:{mine:[10,15], move:[5,10],  jump:[5,10]},
+      charmPct:{mine:[5,10],  move:[5],     jump:[5]},
+      swim:[0.75],
+      meleeDmg:[2,3],  bowDmg:[3,4],  bowCd:[0.55,0.6],      dps:[4,6],   range:[5,6],
+      energyCap:[15,20,25], crush:[1], eCost:[13,14],
+      antVision:[10,11], antAttack:[1,1], antGuard:[0.04]},
+    uncommon:{weight:20, rolls:[1,2], uniqueChance:0.04,
+      airJumps:2, vision:[12,13],
+      lootMagnetLevel:2, specialVisionLevel:2, treasureSenseLevel:2,
+      outfitPct:{mine:[20,25], move:[10], jump:[10]},
+      charmPct:{mine:[10,15], move:[5,10], jump:[5,10]},
+      swim:[0.75,1],
+      meleeDmg:[3,5],  bowDmg:[4,6],  bowCd:[0.5,0.55],      dps:[5,8],   range:[6,6.5],
+      energyCap:[20,30,35], crush:[1,2], eCost:[12,13],
+      antVision:[11,12], antAttack:[1,2], antGuard:[0.06]},
+    rare:{weight:15, rolls:[1,2], uniqueChance:0.07,
+      airJumps:2, vision:[13,14],
+      lootMagnetLevel:3, specialVisionLevel:3, treasureSenseLevel:3,
+      outfitPct:{mine:[25,30,35], move:[10,15], jump:[10,15]},
+      charmPct:{mine:[15,20], move:[10], jump:[10]},
+      swim:[1],
+      meleeDmg:[4,6],  bowDmg:[5,7],  bowCd:[0.45,0.5],      dps:[7,10],  range:[6.5,7.5],
+      energyCap:[30,40,50], crush:[2], eCost:[10,12],
+      antVision:[12,13], antAttack:[2,3], antGuard:[0.08]},
+    epic:{weight:5, rolls:[2,3], uniqueChance:0.18,
+      airJumps:3, vision:[15,17],
+      lootMagnetLevel:4, specialVisionLevel:4, treasureSenseLevel:4,
+      outfitPct:{mine:[50,60,70], move:[20,25], jump:[20,25]},
+      charmPct:{mine:[25,30], move:[15,20], jump:[15,20]},
+      swim:[1.25],
+      meleeDmg:[8,12], bowDmg:[9,13], bowCd:[0.3,0.35,0.4],  dps:[12,16], range:[8,9],
+      energyCap:[60,80,100], crush:[3,4], eCost:[8,9],
+      antVision:[13,15], antAttack:[3,4], antGuard:[0.10]},
+    legendary:{weight:2, rolls:[2,4], uniqueChance:0.30,
+      airJumps:4, vision:[18,20],
+      lootMagnetLevel:4, specialVisionLevel:4, treasureSenseLevel:4,
+      outfitPct:{mine:[80,90,100], move:[30,35], jump:[30,35]},
+      charmPct:{mine:[35,40], move:[20,25], jump:[20,25]},
+      swim:[1.25],
+      meleeDmg:[13,16], bowDmg:[14,18], bowCd:[0.22,0.25], dps:[18,22], range:[9,10],
+      energyCap:[120,150], crush:[5,6], eCost:[6,7],
+      antVision:[15,17], antAttack:[4,6], antGuard:[0.12]}
+  };
+  const TIER_ORDER=['common','uncommon','rare','epic','legendary'];
+  const TIER_INDEX={}; TIER_ORDER.forEach((t,i)=>{ TIER_INDEX[t]=i; });
+
+  // Every chest can surprise: the tile's tier sets the CENTER of the item-tier
+  // distribution, not a ceiling — even a plain wooden chest holds a sliver of
+  // a legendary roll, while high chests keep a floor so they never feel cheap.
+  const CHEST_TIER_MIX={
+    common:   [['common',0.70],['uncommon',0.21],['rare',0.07],['epic',0.017],['legendary',0.003]],
+    uncommon: [['common',0.30],['uncommon',0.47],['rare',0.17],['epic',0.05],['legendary',0.01]],
+    rare:     [['uncommon',0.28],['rare',0.55],['epic',0.145],['legendary',0.025]],
+    epic:     [['rare',0.33],['epic',0.60],['legendary',0.07]],
+    legendary:[['epic',0.70],['legendary',0.30]]
+  };
+  function rollChestItemTier(r,chestTier){
+    const mix=CHEST_TIER_MIX[chestTier]||CHEST_TIER_MIX.common;
+    let roll=r();
+    for(const [t,w] of mix){ if((roll-=w)<0) return t; }
+    return mix[mix.length-1][0];
+  }
+
+  // Procedural display names: "<base> <suffix>" (tier shown separately in the UI)
+  const NAME_BASES={cape:'Peleryna', eyes:'Oczy', outfit:'Strój', weapon:'Ostrze', pickaxe:'Kilof', charm:'Talizman', antenna:'Antenka'};
+  const WEAPON_NAME_BASES={melee:'Ostrze', bow:'Łuk', flame:'Miotacz', hose:'Sikawka', gas:'Emiter', electric:'Elektromiotacz'};
+  const ANTENNA_NAME_BASES={vision:'Antenka radarowa', attack:'Antenka bojowa', guard:'Antenka ochronna',
+    cloak:'Antenka kameleona', surge:'Antenka burzowa', echo:'Antenka echolokacyjna'};
+  const NAME_SUFFIXES=['wiatru','cienia','głębin','świtu','gór','burzy','lasu','żaru','echa','mrozu','otchłani','słońca'];
+
+  function randInt(r,min,max){ return Math.floor(r()*(max-min+1))+min; }
+  function randRange(r,min,max){ return min + (max-min)*r(); }
+  function pick(r,arr){ return arr[randInt(r,0,arr.length-1)]; }
+  // Add a clean percent step to a multiplier stat, additively: 1.05 + 10% = 1.15
+  function addPct(item,key,pct){ item[key]=+(((item[key]||1)+pct/100).toFixed(2)); }
+  const PROFILE_KEYS={mine:'mineSpeedMult', move:'moveSpeedMult', jump:'jumpPowerMult'};
+
+  // Unique find (rarer the higher the tier chance): the item's PRIMARY stat gets a
+  // further visible boost — a superior version of its own function, nothing new.
+  const UNIQUE_NAMES={cape:'sky_bound', eyes:'deep_vision', outfit:'earth_breaker', charm:'wind_dancer', weapon:'storm_edge', pickaxe:'deep_delver', antenna:'signal_lord'};
+  function applyUniqueBoost(item){
+    item.unique=UNIQUE_NAMES[item.kind]||'storm_edge';
+    if(item.kind==='cape'){ item.airJumps=(item.airJumps||0)+1; return; }
+    if(item.kind==='eyes'){
+      if(typeof item.specialVisionLevel==='number') item.specialVisionLevel=Math.min(4,item.specialVisionLevel+1);
+      else item.visionRadius=(item.visionRadius||10)+2;
+      return;
+    }
+    if(item.kind==='antenna'){
+      // actives carry no number to raise — a unique active antenna instead cools
+      // down faster (antennas.js UNIQUE_CD_MULT reads the `unique` marker)
+      if(typeof item.visionRadius==='number'){ item.visionRadius+=2; return; }
+      if(typeof item.attackDamage==='number'){ item.attackDamage+=1; return; }
+      if(typeof item.damageReductionBonus==='number'){ item.damageReductionBonus=+(Math.min(0.25,item.damageReductionBonus+0.03)).toFixed(2); return; }
+      return;
+    }
+    if(item.kind==='pickaxe'){ addPct(item,'mineSpeedMult',10); return; }
+    if(item.kind==='outfit' || item.kind==='charm'){
+      if(typeof item.treasureSenseLevel==='number'){ item.treasureSenseLevel=Math.min(4,item.treasureSenseLevel+1); return; }
+      if(typeof item.lootMagnetLevel==='number'){ item.lootMagnetLevel=Math.min(4,item.lootMagnetLevel+1); return; }
+      if(typeof item.crushResistBonus==='number'){ item.crushResistBonus+=1; return; }
+      if(typeof item.energyCapacityBonus==='number'){ item.energyCapacityBonus+=25; return; }
+      if(typeof item.waterMoveSpeedMult==='number'){ item.waterMoveSpeedMult=Math.min(1.25, +(item.waterMoveSpeedMult+0.25).toFixed(2)); return; }
+      for(const k of ['mineSpeedMult','moveSpeedMult','jumpPowerMult']){
+        if(typeof item[k]==='number'){ addPct(item,k,10); return; }
+      }
+      return;
+    }
+    if(item.weaponType==='melee' || item.weaponType==='bow'){ item.attackDamage=(item.attackDamage||0)+3; return; }
+    item.fireDps=(item.fireDps||0)+3;
+    item.fireRange=Math.min(10,(item.fireRange||5)+1);
+  }
+
+  function genItem(r,tier,opts){
+    opts=opts||{};
+    const kinds=['cape','eyes','outfit','weapon','pickaxe','charm','antenna'];
+    // Species-themed drops (drops.js) force the kind/weapon class; chest rolls stay random.
+    const kind=kinds.includes(opts.kind) ? opts.kind : kinds[randInt(r,0,kinds.length-1)];
+    const item={kind, id:kind+'_'+Math.random().toString(36).slice(2,7), tier};
+    const td=TIERS[tier];
+    let antProfile=null;
+    if(kind==='cape'){ item.airJumps=td.airJumps; }
+    else if(kind==='eyes'){
+      const forced=['vision','night','thermal'].includes(opts.profile) ? opts.profile : null;
+      const profiles=tier==='common'
+        ? ['vision','vision','vision','night']
+        : tier==='uncommon'
+          ? ['vision','vision','night','thermal']
+          : ['vision','night','night','thermal'];
+      const p=forced||pick(r,profiles);
+      if(p==='night' || p==='thermal'){
+        item.specialVisionLevel=td.specialVisionLevel;
+        item.visionMode=p;
+      }else item.visionRadius=randInt(r, td.vision[0], td.vision[1]);
+    }
+    else if(kind==='outfit'){
+      const low= tier==='common' || tier==='uncommon';
+      const pool= low? ['mine','move','jump','magnet'] : ['mine','move','jump','crush','magnet'];
+      const p=pool.includes(opts.profile)?opts.profile:pick(r,pool);
+      if(p==='magnet') item.lootMagnetLevel=td.lootMagnetLevel;
+      else if(p==='crush') item.crushResistBonus=pick(r, td.crush);
+      else addPct(item, PROFILE_KEYS[p], pick(r, td.outfitPct[p]));
+    }
+    else if(kind==='charm'){
+      const low= tier==='common' || tier==='uncommon';
+      const pool= low? ['mine','move','jump','energy','swim','magnet','compass'] : ['mine','move','jump','energy','crush','swim','magnet','compass'];
+      const p=pool.includes(opts.profile)?opts.profile:pick(r,pool);
+      if(p==='compass') item.treasureSenseLevel=td.treasureSenseLevel;
+      else if(p==='magnet') item.lootMagnetLevel=td.lootMagnetLevel;
+      else if(p==='energy') item.energyCapacityBonus=pick(r, td.energyCap);
+      else if(p==='crush') item.crushResistBonus=pick(r, td.crush);
+      else if(p==='swim') item.waterMoveSpeedMult=pick(r, td.swim);
+      else addPct(item, PROFILE_KEYS[p], pick(r, td.charmPct[p]));
+    }
+    else if(kind==='pickaxe'){
+      // A pickaxe HEAD: one mining-speed number (same percent ladder as outfit
+      // mine profiles) and — above common — a perk identity; main.js PICK_PERKS
+      // owns the perk numbers, exactly like meleeEffect/antennaActive.
+      addPct(item,'mineSpeedMult',pick(r, td.outfitPct.mine));
+      const perkPool= tier==='common' ? [null,null,'lucky'] : tier==='uncommon' ? [null,'lucky','double'] : ['lucky','double','vein'];
+      const perk=['lucky','double','vein'].includes(opts.profile)?opts.profile:pick(r,perkPool);
+      if(perk) item.pickPerk=perk;
+    }
+    else if(kind==='antenna'){
+      // Passive aerials carry ONE stat; active aerials carry ONLY the power's
+      // name (antennas.js ACTIVES owns every number, keyed by the item tier).
+      // Actives join the pool above common so the Q-power stays a real find.
+      const low= tier==='common';
+      const pool= low? ['vision','vision','attack','guard'] : ['vision','attack','guard','cloak','surge','echo'];
+      const p=pool.includes(opts.profile)?opts.profile:pick(r,pool);
+      if(p==='vision') item.visionRadius=randInt(r, td.antVision[0], td.antVision[1]);
+      else if(p==='attack') item.attackDamage=randInt(r, td.antAttack[0], td.antAttack[1]);
+      else if(p==='guard') item.damageReductionBonus=pick(r, td.antGuard);
+      else item.antennaActive=p;
+      antProfile=p;
+    }
+    else {
+      // Weapon class roll: melee strike, bow (arrows), or a stream weapon
+      // (flame/hose/gas terrain streams, electric energy beam) — class numbers only.
+      const wRoll=r();
+      const forced=['melee','bow','flame','hose','gas','electric'].includes(opts.weaponType) ? opts.weaponType : null;
+      const wType= forced || (wRoll<0.40? 'melee' : wRoll<0.65? 'bow' : wRoll<0.78? 'flame' : wRoll<0.87? 'hose' : wRoll<0.95? 'gas' : 'electric');
+      item.weaponType=wType;
+      if(wType==='melee'){ item.attackDamage=randInt(r, td.meleeDmg[0], td.meleeDmg[1]); }
+      else if(wType==='bow'){ item.attackDamage=randInt(r, td.bowDmg[0], td.bowDmg[1]); item.fireCooldown=pick(r, td.bowCd); }
+      else {
+        const dps=randInt(r, td.dps[0], td.dps[1]);
+        item.fireDps= wType==='hose'? Math.max(1,Math.round(dps/2)) : wType==='electric'? dps+2 : dps;
+        item.fireRange=Math.round(randRange(r, td.range[0], td.range[1])*2)/2; // 0.5-tile steps
+        if(wType==='electric'){
+          item.fireRange=Math.min(10, item.fireRange+1);
+          item.energyCost=randInt(r, td.eCost[0], td.eCost[1]);
+        }
+      }
+    }
+    const nameBase = kind==='antenna'
+      ? (ANTENNA_NAME_BASES[antProfile]||NAME_BASES.antenna)
+      : typeof item.specialVisionLevel==='number'
+      ? (item.visionMode==='thermal'?'Termowizor':'Noktowizor')
+      : typeof item.treasureSenseLevel==='number'
+        ? 'Wisiorek-kompas'
+      : typeof item.lootMagnetLevel==='number'
+      ? (kind==='outfit'?'Strój zbieracza':'Wisiorek przyciągania')
+      : kind==='weapon'? (WEAPON_NAME_BASES[item.weaponType]||'Ostrze') : (NAME_BASES[kind]||'Przedmiot');
+    item.name = nameBase + ' ' + NAME_SUFFIXES[randInt(r,0,NAME_SUFFIXES.length-1)];
+    if(item.pickPerk==='lucky') item.desc='Mniej więcej co dziesiąty blok pęka od pierwszego uderzenia.';
+    else if(item.pickPerk==='double') item.desc='Blok ma szansę wysypać podwójny urobek.';
+    else if(item.pickPerk==='vein') item.desc='Sąsiedni blok tego samego surowca czasem pęka razem z kopanym.';
+    // Guardian relics (drops.js) are always unique finds; chest rolls stay a chance.
+    if(opts.forceUnique || r()<td.uniqueChance) applyUniqueBoost(item);
+    if(typeof item.lootMagnetLevel==='number'){
+      const reach=item.lootMagnetLevel-1;
+      item.desc=reach===0?'Przyciąga łupy z bloku, w którym stoisz.':'Przyciąga łupy z promienia +'+reach+' '+(reach===1?'bloku':'bloków')+'.';
+    }
+    if(typeof item.treasureSenseLevel==='number') item.desc='Wychyla się ku cennym, już odkrytym rudom i skrytkom; poziom '+item.treasureSenseLevel+'.';
+    if(typeof item.specialVisionLevel==='number') item.desc=(item.visionMode==='thermal'?'Termowizja podkreślająca widoczne istoty.':'Noktowizja wzmacniająca zastane światło.')+' Nie odsłania mgły ani ścian.';
+    if(item.antennaActive==='cloak') item.desc='Moc pod [Q]: kilka sekund niewidzialności — zwykłe stwory tracą cel (kontakt wciąż boli, strażnicy i najeźdźcy mają sensory).';
+    else if(item.antennaActive==='surge') item.desc='Moc pod [Q]: krótkie przepięcie napędza nogi — zryw prędkości na kilka sekund.';
+    else if(item.antennaActive==='echo') item.desc='Moc pod [Q]: sonar — pobliskie istoty pulsują przez ściany, póki echo trwa.';
+    return item;
+  }
+
+  const CHEST_METAL_TABLE=Object.freeze({
+    common:{silver:[0.22,1,1],gold:[0.08,1,1]},
+    uncommon:{silver:[0.46,1,2],gold:[0.20,1,1]},
+    rare:{silver:[0.76,1,3],gold:[0.46,1,2]},
+    epic:{silver:[1,2,4],gold:[0.76,1,3]},
+    legendary:{silver:[1,3,6],gold:[1,2,4]}
+  });
+  function rollChestMetals(tier,r){
+    const table=CHEST_METAL_TABLE[tier]||CHEST_METAL_TABLE.common;
+    const out=[];
+    for(const key of ['silver','gold']){
+      const row=table[key];
+      if(r()<row[0]) out.push({key,n:randInt(r,row[1],row[2]),label:key==='silver'?'sztabka srebra':'sztabka zlota'});
+    }
+    return out;
+  }
+
+  function releaseLoot(tier,seed,cx,cy){
+    const r=RNG(seed>>>0);
+    const tierDef=TIERS[tier]||TIERS.common;
+    const rolls=randInt(r,tierDef.rolls[0], tierDef.rolls[1]);
+    // Item tiers draw from the chest's mix, so any chest can pay above its
+    // station (and the best ones never pay far below it).
+    const items=[]; for(let i=0;i<rolls;i++) items.push(genItem(r, rollChestItemTier(r,tier)));
+    const furnishing=rollChestFurnishing(tier,r);
+    const metals=rollChestMetals(tier,r);
+    // The chest bursts open: its loot pops out as PHYSICAL drops the player has
+    // to pick up (drops.js pipeline — same as creature loot). Picking a drop up
+    // is what routes it into dynamicLoot + the inventory bag.
+    const drops=MM.drops;
+    let spawned=0;
+    if(drops && typeof drops.spawnGear==='function'){
+      items.forEach((it,i)=>{
+        // A roll ABOVE the chest's own tier is a jackpot moment — that one gets
+        // the full spawn fanfare (burst + golden sting + toast); expected-tier
+        // loot stays quiet, the chest-open sound already covered it.
+        const surprise=(TIER_INDEX[it.tier]||0)>(TIER_INDEX[tier]||0);
+        const d=drops.spawnGear(cx, cy, it, {vx:(r()*2-1)*2.8, vy:-(4.2+r()*2.4), announce:surprise});
+        if(d){ d.source='chest'; spawned++; }
+      });
+    }
+    let furnishingSpawned=false;
+    if(furnishing && drops && typeof drops.spawnResource==='function'){
+      const dropTier=tier==='legendary'?'legendary':'epic';
+      const d=drops.spawnResource(cx,cy,furnishing.key,1,{
+        vx:(r()*2-1)*2.2,vy:-(4.8+r()*1.8),tier:dropTier,announce:true,source:'chest'
+      });
+      furnishingSpawned=!!d;
+    }
+    const metalSpawns=[];
+    for(const metal of metals){
+      let spawnedMetal=false;
+      if(drops && typeof drops.spawnResource==='function'){
+        const d=drops.spawnResource(cx,cy,metal.key,metal.n,{
+          vx:(r()*2-1)*2.4,vy:-(4.4+r()*1.7),tier:metal.key==='gold'?'rare':'uncommon',announce:false,source:'chest'
+        });
+        spawnedMetal=!!d;
+      }
+      if(!spawnedMetal){
+        const inv=window.inv;
+        if(inv && typeof inv==='object') inv[metal.key]=(Number(inv[metal.key])||0)+metal.n;
+      }
+      metalSpawns.push({key:metal.key,n:metal.n,spawned:spawnedMetal});
+    }
+    if(spawned<items.length){
+      // Fallback (DOM-less sims / drops module missing): straight to the bag.
+      if(!MM.dynamicLoot){ MM.dynamicLoot={capes:[],eyes:[],outfits:[],weapons:[],pickaxes:[],charms:[],antennas:[]}; }
+      ['capes','eyes','outfits','weapons','charms','antennas'].forEach(k=>{ if(!Array.isArray(MM.dynamicLoot[k])) MM.dynamicLoot[k]=[]; });
+      const leftovers=items.slice(spawned);
+      leftovers.forEach(it=>{ if(it.kind==='cape') MM.dynamicLoot.capes.push(it); else if(it.kind==='eyes') MM.dynamicLoot.eyes.push(it); else if(it.kind==='outfit') MM.dynamicLoot.outfits.push(it); else if(it.kind==='weapon') MM.dynamicLoot.weapons.push(it); else if(it.kind==='pickaxe') (MM.dynamicLoot.pickaxes=MM.dynamicLoot.pickaxes||[]).push(it); else if(it.kind==='charm') MM.dynamicLoot.charms.push(it); else if(it.kind==='antenna') MM.dynamicLoot.antennas.push(it); });
+      saveDynamicLoot();
+      if(MM.onLootGained) MM.onLootGained(leftovers,tier);
+    }
+    if(furnishing){
+      if(!furnishingSpawned){
+        const inv=window.inv;
+        if(inv && typeof inv==='object') inv[furnishing.key]=(Number(inv[furnishing.key])||0)+1;
+      }
+      try{ if(typeof MM.noteCraftResultSeen==='function') MM.noteCraftResultSeen(furnishing.key,{source:'chest'}); }catch(e){}
+    }
+    return {tier,items,spawned,furnishing:furnishing||null,furnishingSpawned,metals:metalSpawns};
+  }
+
+  function openChestAt(x,y){
+    const t=WORLD.getTile(x,y), info=INFO[t];
+    if(!info || !info.chestTier) return null;
+    WORLD.setTile(x,y,T.AIR);
+    const seed=(Math.imul(x|0,73856093)^Math.imul(y|0,19349663)^(WORLDGEN.worldSeed|0))>>>0;
+    return releaseLoot(info.chestTier,seed,x+0.5,y+0.35);
+  }
+
+  function setDroppedOpenHandler(handler){
+    droppedOpenHandler=typeof handler==='function' ? handler : null;
+    return !!droppedOpenHandler;
+  }
+  function openDroppedChest(drop,opts){
+    if(!drop || drop.kind!=='chest' || !TIERS[drop.tier]) return null;
+    const drops=MM.drops;
+    if(!drops || typeof drops.remove!=='function' || !drops.remove(drop)) return null;
+    const res=releaseLoot(drop.tier,drop.lootSeed>>>0,drop.x,drop.y-0.12);
+    if(droppedOpenHandler){
+      try{ droppedOpenHandler(drop,res,opts||{}); }catch(e){}
+    }
+    return res;
+  }
+
+  // Weapons run in a lower-level simulation module, while main.js owns the
+  // complete chest presentation (sound, toast, temple reaction, particles and
+  // saving). Use that presentation when registered, with a simulation fallback.
+  function setWeaponHitHandler(handler){
+    weaponHitHandler=typeof handler==='function' ? handler : null;
+    return !!weaponHitHandler;
+  }
+  function openFromWeaponHitAt(x,y,opts){
+    const wx=Number(x), wy=Number(y);
+    if(!Number.isFinite(wx) || !Number.isFinite(wy)) return false;
+    const physical=MM.drops && typeof MM.drops.chestAtPoint==='function' ? MM.drops.chestAtPoint(wx,wy,opts&&opts.hitRadius) : null;
+    if(physical) return !!openDroppedChest(physical,opts||{});
+    const tx=Math.floor(wx), ty=Math.floor(wy);
+    if(!Number.isFinite(tx) || !Number.isFinite(ty)) return false;
+    const t=WORLD.getTile(tx,ty);
+    if(!(INFO[t] && INFO[t].chestTier)) return false;
+    if(weaponHitHandler){
+      try{ return !!weaponHitHandler(tx,ty,opts||{}); }catch(e){}
+    }
+    return !!openChestAt(tx,ty);
+  }
+
+  MM.chests={openChestAt,openDroppedChest,openFromWeaponHitAt,setWeaponHitHandler,setDroppedOpenHandler,TIERS,TIER_ORDER,CHEST_TIER_MIX,CHEST_METAL_TABLE,rollChestItemTier,rollChestMetals,genItem,saveDynamicLoot,_releaseLoot:releaseLoot};
+})();
+// ESM export (progressive migration)
+export const chests = (typeof window!=='undefined' && window.MM) ? window.MM.chests : undefined;
+export default chests;
