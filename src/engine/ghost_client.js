@@ -2104,8 +2104,8 @@ const ghostClient = (function(){
 		// .mmGhostHero, so hotbar/craft/weapons/controls behave exactly like solo —
 		// only #menuWrap (host-side moderation/pause chrome) stays hidden for guests
 		st.textContent = 'body.mmGhostMode:not(.mmGhostHero) #hotbarWrap, body.mmGhostMode:not(.mmGhostHero) #weaponBar, body.mmGhostMode:not(.mmGhostHero) #craft,'
-			+ 'body.mmGhostMode:not(.mmGhostHero) #craftTracker, body.mmGhostMode:not(.mmGhostHero) #cornerCards, body.mmGhostMode:not(.mmGhostHero) #radarBtn,'
-			+ 'body.mmGhostMode:not(.mmGhostHero) #fireBtn, body.mmGhostMode:not(.mmGhostHero) #ultBtn, body.mmGhostMode:not(.mmGhostHero) #controls,'
+			+ 'body.mmGhostMode:not(.mmGhostHero) #craftTracker, body.mmGhostMode:not(.mmGhostHero) #cornerCards, body.mmGhostMode:not(.mmGhostHero) #touchActionRail,'
+			+ 'body.mmGhostMode:not(.mmGhostHero) #controls,'
 			+ 'body.mmGhostMode:not(.mmGhostHero) #dirRing, body.mmGhostMode #menuWrap, body.mmGhostMode:not(.mmGhostHero) #help,'
 			+ 'body.mmGhostMode:not(.mmGhostHero) #hoverInfo, body.mmGhostMode:not(.mmGhostHero) #hudTip { display:none !important; }'
 			+ '#ghostBar{ position:fixed; left:50%; bottom:12px; transform:translateX(-50%); z-index:140; display:flex; align-items:center; gap:8px;'

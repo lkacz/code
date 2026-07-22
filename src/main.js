@@ -21,7 +21,14 @@ import { applyHorizontalMovement, applyJumpArcControl, surfaceTraction } from '.
 import { BUILD_STROKE_CELL_LIMIT, rasterizeTileLine } from './engine/build_stroke.js';
 import { debugShortcutsEnabled } from './engine/debug_shortcuts.js';
 import './engine/input_mode.js'; // stamps data-input-mode on <html>; touch clusters gate off it
-import { createTouchJoystick, quantizeTouchDirection, touchMovementIntent } from './engine/touch_joystick.js';
+import {
+	createTouchJoystick,
+	nextTouchActionMode,
+	normalizeTouchActionMode,
+	quantizeTouchDirection,
+	touchMovementIntent,
+	touchTargetSelection
+} from './engine/touch_joystick.js';
 import { keybinds as KEYBINDS } from './engine/keybinds.js';
 import { CRUSH_TUNING, crushTickDamage, heroCrushCapacity, heroEmbeddedTiles, resolveHeroBurial } from './engine/hero_crush.js';
 import { cape as CAPE } from './engine/cape.js';
@@ -1957,16 +1964,16 @@ function announceTreasureCompass(){
 	return true;
 }
 function refreshTreasureButton(){
-	const b=document.getElementById('radarBtn');
+	const b=document.getElementById('radarMenuBtn');
 	if(!b) return;
 	const level=treasureCompassLevel();
 	const target=TREASURE_SCANNER.target();
 	const key=[level,target?target.key||target.x+','+target.y:'none',target?Math.round(target.distance):0].join('|');
 	if(key===treasureButtonKey) return;
 	treasureButtonKey=key;
-	b.textContent='🧭';
+	b.textContent='Radar skarbów 🧭';
 	b.disabled=level<=0;
-	b.title=level<=0?'Załóż wisiorek-kompas':target?(target.label+' · '+Math.round(target.distance)+' bloków · '+treasureDirectionLabel(target)):('Kompas skarbów '+level+' · skanowanie');
+	b.title=level<=0?'Radar wymaga założonego wisiorka-kompasu':target?(target.label+' · '+Math.round(target.distance)+' bloków · '+treasureDirectionLabel(target)):('Kompas skarbów '+level+' · skanowanie');
 	b.setAttribute('aria-label',b.title);
 }
 window.addEventListener('mm-inventory-change',()=>{
@@ -4092,7 +4099,7 @@ function canRunIdleAutoSave(){
 	try{
 		if(document.visibilityState==='hidden') return true;
 		if(Math.abs(player.vx)>0.05 || Math.abs(player.vy)>0.05) return false;
-		if(mining || mineBtnHeld || fireBtnHeld || minePointerId!=null || weaponPointerId!=null) return false;
+		if(mining || mineBtnHeld || fireBtnHeld || touchActionButtonHeld || minePointerId!=null || weaponPointerId!=null) return false;
 		if(activePointers && activePointers.size) return false;
 		for(const k in keys){ if(keys[k]) return false; }
 	}catch(e){ return false; }
@@ -9132,8 +9139,12 @@ let backgroundBuildMode=false;
 let fireBtnHeld=false, fireBtnPointerId=null; // quick-fire owns one captured touch pointer
 let moveStickController=null, actionStickController=null;
 const touchMoveState={active:false,axisX:0,axisY:0,left:false,right:false,up:false,down:false};
-const touchActionState={active:false,mode:'tool',armed:false,x:1,y:0,lastX:1,lastY:0,hasAim:false,dir:null};
-let touchActionWeaponHeld=false, touchActionMineTimer=0, touchPlaceMode=false, touchJumpHeld=false;
+const TOUCH_ACTION_MODE_KEY='mm_touch_action_mode_v2';
+let touchActionMode='mine';
+try{ touchActionMode=normalizeTouchActionMode(localStorage.getItem(TOUCH_ACTION_MODE_KEY)); }catch(e){}
+const touchActionState={active:false,mode:touchActionMode,x:1,y:0,lastX:1,lastY:0,magnitude:0,hasAim:false,dir:null};
+let touchActionWeaponHeld=false, touchPlaceMode=touchActionMode==='build', touchJumpHeld=false;
+let touchActionButtonHeld=false, touchActionButtonMode=null, touchLastBuildTargetKey='', touchLastWeaponId=null;
 let lastTouchHapticAt=0;
 function touchHaptic(duration,minGap){
 	const now=performance.now();
@@ -9690,12 +9701,11 @@ function releaseGameplayInput(){
 	endTurboEnergyHold();
 	if(moveStickController && moveStickController.active()) moveStickController.cancel();
 	if(actionStickController && actionStickController.active()) actionStickController.cancel();
-	if(touchActionMineTimer){ clearTimeout(touchActionMineTimer); touchActionMineTimer=0; }
 	for(const k in keys) keys[k]=false;
 	keysOnce.clear();
 	Object.assign(touchMoveState,{active:false,axisX:0,axisY:0,left:false,right:false,up:false,down:false});
-	Object.assign(touchActionState,{active:false,armed:false,x:touchActionState.lastX||1,y:touchActionState.lastY||0,hasAim:false,dir:null});
-	touchActionWeaponHeld=false; touchJumpHeld=false;
+	Object.assign(touchActionState,{active:false,x:touchActionState.lastX||1,y:touchActionState.lastY||0,dir:null});
+	touchActionWeaponHeld=false; touchActionButtonHeld=false; touchActionButtonMode=null; touchLastBuildTargetKey=''; touchJumpHeld=false;
 	jumpBufferT=0;
 	jumpPrev=false;
 	trapdoorDropBufferT=0;
@@ -9708,13 +9718,15 @@ function releaseGameplayInput(){
 	pinch=null;
 	const quick=document.getElementById('fireBtn'); if(quick) quick.classList.remove('on');
 	const jump=document.getElementById('jumpBtn'); if(jump) jump.classList.remove('on');
-	if(touchPlaceMode) setTouchPlaceMode(false);
 }
 function queueJumpInput(k){
 	if(k===' ' || ((k==='w' || k==='arrowup') && !heroTouchesLadder())) jumpBufferT=JUMP_BUFFER;
 }
 window.addEventListener('mm-modal-input',e=>{ if(e.detail && e.detail.open) releaseGameplayInput(); });
-window.addEventListener('mm-input-mode-change',e=>{ if(e.detail && e.detail.mode==='pc') releaseGameplayInput(); });
+window.addEventListener('mm-input-mode-change',e=>{
+	if(e.detail && e.detail.mode==='pc') releaseGameplayInput();
+	else if(e.detail && e.detail.mode==='touch') setTouchActionMode(touchActionMode,{announce:false,remember:false});
+});
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) releaseGameplayInput(); });
 // Debug overlay toggle (F3)
 let showPerfHud = false;
@@ -9777,6 +9789,8 @@ function updateHelpDiscoveries(){
 function normalizeLegacyHelpDebugCopy(){
 	const help=document.getElementById('help');
 	if(!help || help.dataset.debugCopyNormalized==='1') return;
+	const touchHelp=help.querySelector('.touchHelp');
+	if(touchHelp) touchHelp.innerHTML='<b>Dotyk:</b> lewy joystick steruje ruchem; wychylenie w górę lub przycisk ↑ skacze, także ponownie w powietrzu. Prawy joystick tylko wybiera cel. Przycisk TRYB przełącza Kopanie → Budowanie → Walkę, a sąsiedni duży przycisk wykonuje akcję. Możesz wycelować, puścić joystick i dopiero potwierdzić albo używać obu naraz. Nadal możesz stuknąć bezpośrednio przeciwnika, łup, obiekt lub blok. Kompas skarbów jest w menu i wymaga założonego wisiorka-kompasu.';
 	for(const node of help.childNodes){
 		if(node.nodeType!==3 || !node.textContent) continue;
 		node.textContent=node.textContent.replace(
@@ -9828,6 +9842,7 @@ function selectWeaponKey(key){
 		if(!hadWeapon){ const owned=ownedPicks(); const i=owned.indexOf(player.tool); player.tool=owned[(i+1)%owned.length]; }
 		msg('⛏ Kilof '+pickLabel(player.tool)+(hadWeapon?' — broń schowana':''));
 		updateInventory(); updateWeaponBar();
+		if(MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch()) setTouchActionMode('mine',{announce:false,equip:false});
 		return;
 	}
 	if(actionStickController && actionStickController.active()) actionStickController.cancel();
@@ -9841,6 +9856,7 @@ function selectWeaponKey(key){
 	if(it) msg(cat.icon+' '+(it.name||it.id));
 	else msg(cat.label+': brak broni w skrócie — zaznacz „Skrót" w Ekwipunku');
 	updateWeaponBar();
+	if(it && MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch()) setTouchActionMode('combat',{announce:false,equip:false});
 }
 // Weapon shortcut bar (above the block hotbar): highlights the active mode and
 // previews what each key holds — the held item on the active slot and each
@@ -10464,7 +10480,7 @@ function seasonUpdateContext(){
 		keys['a'] || keys['d'] || keys['arrowleft'] || keys['arrowright'] ||
 		keys['w'] || keys['arrowup'] || keys[' '] || keys['s'] || keys['arrowdown'] ||
 		touchMoveState.active || touchActionState.active ||
-		mining || mineBtnHeld || fireBtnHeld || touchActionWeaponHeld || minePointerId!=null || weaponPointerId!=null ||
+		mining || mineBtnHeld || fireBtnHeld || touchActionButtonHeld || touchActionWeaponHeld || minePointerId!=null || weaponPointerId!=null ||
 		(activePointers && activePointers.size)
 	);
 	return {
@@ -12035,12 +12051,17 @@ function startMine(opts){
 	mining=true; mineTimer=0; mineTx=tx; mineTy=ty; mineBossTarget=bossTarget; mineBtn.classList.add('on');
 	if(godMode) instantBreak();
 }
-// Contextual right stick: with a tool it selects one of the eight neighbouring
-// tiles and keeps digging; with a weapon it preserves the full analogue vector
-// and continuously aims. The mode is latched for the life of a gesture so an
-// equipment change can cancel cleanly instead of turning a dig into a shot.
+// The right stick is a TARGET SELECTOR, never a trigger. It keeps a persistent
+// grid/aim cursor; the neighbouring action button performs the selected mode.
+// This makes mine/build/combat explicit and lets one thumb aim, release, then
+// confirm, while two-thumb players can aim and hold the action simultaneously.
 const actionStickEl=document.getElementById('dirRing');
 const actionStickHint=document.getElementById('actionStickHint');
+const TOUCH_ACTION_META=Object.freeze({
+	mine:{icon:'⛏️',short:'KOP',label:'Kopanie'},
+	build:{icon:'🧱',short:'BUD',label:'Budowanie'},
+	combat:{icon:'⚔️',short:'WAL',label:'Walka'}
+});
 function touchAimAlongVector(x,y,opts){
 	opts=opts||{};
 	let ux=Number(x)||0, uy=Number(y)||0;
@@ -12087,7 +12108,7 @@ function touchActionWeaponAim(){
 	if(!touchActionState.hasAim) return touchQuickWeaponAim();
 	return touchAimAlongVector(touchActionState.lastX,touchActionState.lastY,{assist:true,range:9});
 }
-function releaseActionStickWeapon(cancel){
+function releaseTouchActionWeapon(cancel){
 	if(!touchActionWeaponHeld) return false;
 	const aim=touchActionWeaponAim();
 	const it=activeWeaponItem();
@@ -12100,22 +12121,110 @@ function releaseActionStickWeapon(cancel){
 	if(used) notifyInvasionWeaponUse(it,{released:true});
 	return true;
 }
-function armActionStickMine(){
-	if(!touchActionState.active || touchActionState.mode!=='tool' || !isToolMode()) return false;
-	mineBtnHeld=true;
-	if(mining) stopMining();
-	startMine({quiet:true});
-	touchActionState.armed=true;
-	return true;
-}
-function armActionStickWeapon(){
-	if(touchActionWeaponHeld || !touchActionState.active || touchActionState.mode!=='weapon' || !activeWeaponItem()) return false;
+function armTouchActionWeapon(){
+	if(touchActionWeaponHeld || !activeWeaponItem()) return false;
 	// Weapon charge/hold state is singular. Last deliberate control wins,
 	// avoiding one finger releasing a bow charged by another control.
 	if(weaponPointerId!=null){ if(WEAPONS && WEAPONS.cancelHeld) WEAPONS.cancelHeld(); weaponPointerId=null; directWeaponTarget=null; directWeaponStart=null; }
-	if(fireBtnHeld){ releaseTouchWeaponFire(true); fireBtnHeld=false; fireBtnPointerId=null; const quick=document.getElementById('fireBtn'); if(quick) quick.classList.remove('on'); }
 	touchActionWeaponHeld=true;
 	return true;
+}
+function touchSelectedGridTarget(mode){
+	mode=mode||touchActionMode;
+	const maxDistance=mode==='build'?Math.min(4,PLACE_REACH):MINE_REACH;
+	const selection=touchTargetSelection({
+		x:touchActionState.lastX,
+		y:touchActionState.lastY,
+		magnitude:touchActionState.hasAim?touchActionState.magnitude:0
+	},{fallback:{dx:player.facing||1,dy:0},maxDistance,minMagnitude:0.08});
+	const tx=Math.floor(player.x+selection.offsetX+(selection.dx>0?player.w/2:selection.dx<0?-player.w/2:0));
+	const ty=Math.floor(player.y+selection.offsetY);
+	return Object.assign({tx,ty},selection);
+}
+function rememberTouchWeapon(){
+	const item=activeWeaponItem();
+	if(item && item.id) touchLastWeaponId=item.id;
+	return item;
+}
+function restoreTouchWeapon(){
+	if(activeWeaponItem()) return activeWeaponItem();
+	const INV=MM.inventory;
+	if(!INV || !INV.equip) return null;
+	let candidate=null;
+	if(touchLastWeaponId && INV.getItem) candidate=INV.getItem(touchLastWeaponId);
+	if(!candidate && INV.WEAPON_CATEGORIES && INV.selectedWeaponForCategory){
+		for(const category of INV.WEAPON_CATEGORIES){
+			candidate=INV.selectedWeaponForCategory(category.id);
+			if(candidate) break;
+		}
+	}
+	if(candidate && candidate.id){
+		INV.equip(candidate.id);
+		updateInventory(); updateWeaponBar();
+	}
+	return activeWeaponItem();
+}
+function startTouchSelectedMine(){
+	if(!isToolMode()) return false;
+	const target=touchSelectedGridTarget('mine');
+	mineDir={dx:target.dx,dy:target.dy};
+	return !!startMineAt(target.tx,target.ty,{quiet:true});
+}
+function placeTouchSelectedBlock(){
+	if(!isToolMode()) return false;
+	const target=touchSelectedGridTarget('build');
+	return !!useToolSecondaryAt(target.tx,target.ty);
+}
+function retargetTouchHeldAction(){
+	if(!touchActionButtonHeld) return;
+	const mode=touchActionButtonMode;
+	if(mode!=='mine' && mode!=='build') return;
+	const target=touchSelectedGridTarget(mode);
+	const key=target.tx+','+target.ty;
+	if(key===touchLastBuildTargetKey) return;
+	touchLastBuildTargetKey=key;
+	if(mode==='mine'){
+		if(mining) stopMining();
+		startTouchSelectedMine();
+	}else placeTouchSelectedBlock();
+}
+function drawTouchActionTarget(){
+	if(!(MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch())) return;
+	const mode=touchActionMode;
+	const pulse=0.72+Math.sin(performance.now()/170)*0.12;
+	ctx.save();
+	ctx.lineWidth=Math.max(1.5,TILE*0.055);
+	if(mode==='combat'){
+		if(!touchActionState.hasAim){ ctx.restore(); return; }
+		const aim=touchActionWeaponAim();
+		const ax=(Number(aim.x)||0)*TILE, ay=(Number(aim.y)||0)*TILE;
+		const hx=(player.x+player.w/2)*TILE, hy=(player.y+player.h*0.42)*TILE;
+		ctx.strokeStyle='rgba(255,157,68,'+pulse.toFixed(3)+')';
+		ctx.setLineDash([TILE*0.14,TILE*0.10]);
+		ctx.beginPath(); ctx.moveTo(hx,hy); ctx.lineTo(ax,ay); ctx.stroke();
+		ctx.setLineDash([]);
+		ctx.beginPath(); ctx.arc(ax,ay,TILE*(aim.target?0.48:0.28),0,Math.PI*2); ctx.stroke();
+		ctx.beginPath(); ctx.moveTo(ax-TILE*0.18,ay); ctx.lineTo(ax+TILE*0.18,ay); ctx.moveTo(ax,ay-TILE*0.18); ctx.lineTo(ax,ay+TILE*0.18); ctx.stroke();
+		ctx.restore(); return;
+	}
+	const target=touchSelectedGridTarget(mode);
+	let ok=false;
+	if(mode==='build') ok=!!canPlaceAt(target.tx,target.ty).ok;
+	else {
+		const tileId=mineTileIdAt(target.tx,target.ty);
+		ok=tileId!==T.AIR && !isGasTileId(tileId) && withinReach(target.tx,target.ty,MINE_REACH)
+			&& canPhysicallyTargetTile(target.tx,target.ty) && canMineTileWithCurrentTool(tileId,target.tx,target.ty);
+	}
+	const rgb=ok?(mode==='build'?'82,230,145':'94,178,255'):'255,105,105';
+	const x=target.tx*TILE, y=target.ty*TILE;
+	ctx.fillStyle='rgba('+rgb+',0.12)'; ctx.fillRect(x+2,y+2,TILE-4,TILE-4);
+	ctx.strokeStyle='rgba('+rgb+','+pulse.toFixed(3)+')';
+	ctx.setLineDash([TILE*0.18,TILE*0.10]); ctx.strokeRect(x+1.5,y+1.5,TILE-3,TILE-3); ctx.setLineDash([]);
+	ctx.beginPath();
+	ctx.moveTo(x+TILE*0.30,y+TILE*0.50); ctx.lineTo(x+TILE*0.70,y+TILE*0.50);
+	ctx.moveTo(x+TILE*0.50,y+TILE*0.30); ctx.lineTo(x+TILE*0.50,y+TILE*0.70);
+	ctx.stroke();
+	ctx.restore();
 }
 function applyActionStickSample(sample){
 	if(!touchActionState.active) return;
@@ -12123,25 +12232,19 @@ function applyActionStickSample(sample){
 		const len=Math.hypot(sample.x,sample.y)||1;
 		touchActionState.x=sample.x/len; touchActionState.y=sample.y/len;
 		touchActionState.lastX=touchActionState.x; touchActionState.lastY=touchActionState.y;
+		touchActionState.magnitude=sample.magnitude;
 		touchActionState.hasAim=true;
-	}
-	if(touchActionState.mode==='weapon'){
-		if(sample.magnitude>0.08 && armActionStickWeapon()) touchHaptic(5,55);
-		return;
 	}
 	const dir=quantizeTouchDirection(sample,{minMagnitude:0.08});
 	if(!dir) return;
 	const changed=!touchActionState.dir || dir.dx!==touchActionState.dir.dx || dir.dy!==touchActionState.dir.dy;
 	touchActionState.dir=dir;
 	mineDir={dx:dir.dx,dy:dir.dy};
-	if(touchActionMineTimer){ clearTimeout(touchActionMineTimer); touchActionMineTimer=0; }
-	if(changed || !touchActionState.armed){ armActionStickMine(); touchHaptic(5,55); }
+	if(changed) touchHaptic(5,55);
+	retargetTouchHeldAction();
 }
-function finishActionStick(cancelled){
-	if(touchActionMineTimer){ clearTimeout(touchActionMineTimer); touchActionMineTimer=0; }
-	if(touchActionState.mode==='weapon') releaseActionStickWeapon(cancelled);
-	else { mineBtnHeld=false; stopMining(); }
-	touchActionState.active=false; touchActionState.armed=false; touchActionState.dir=null;
+function finishActionStick(){
+	touchActionState.active=false;
 	noteSaveActivity();
 }
 if(actionStickEl){
@@ -12150,99 +12253,138 @@ if(actionStickEl){
 		onStart(sample){
 			noteSaveActivity();
 			touchActionState.active=true;
-			touchActionState.mode=isToolMode()?'tool':'weapon';
-			touchActionState.armed=false; touchActionState.dir=null; touchActionState.hasAim=false;
-			if(touchActionState.mode==='tool'){
-				touchActionMineTimer=setTimeout(()=>{
-					touchActionMineTimer=0;
-					if(!touchActionState.dir) mineDir={dx:player.facing||1,dy:0};
-					armActionStickMine();
-				},90);
-			}
+			touchActionState.mode=touchActionMode;
 			touchHaptic(5,80);
 		},
 		onChange:applyActionStickSample,
-		onEnd(sample,event,cancelled){ finishActionStick(cancelled); }
+		onEnd(){ finishActionStick(); }
 	});
 }
 function setTouchPlaceMode(next){
-	const enable=!!next && isToolMode();
+	const enable=!!next;
 	if(touchPlaceMode!==enable) clearBuildStroke();
 	if(enable){
-		if(actionStickController && actionStickController.active()) actionStickController.cancel();
 		minePointerId=null; mineBtnHeld=false; stopMining();
 	}
 	touchPlaceMode=enable;
-	const button=document.getElementById('placeBtn');
-	if(button){
-		button.classList.toggle('on',touchPlaceMode);
-		button.setAttribute('aria-pressed',touchPlaceMode?'true':'false');
-		button.setAttribute('aria-label',touchPlaceMode?'Wyłącz tryb budowania':'Włącz tryb budowania');
-	}
 	document.documentElement.dataset.touchPlaceMode=touchPlaceMode?'on':'off';
 }
 function syncTouchActionMode(){
-	const mode=isToolMode()?'tool':'weapon';
+	const mode=touchActionMode;
 	if(touchActionState.active && touchActionState.mode!==mode && actionStickController) actionStickController.cancel();
-	if(!touchActionState.active && touchActionState.mode!==mode){ touchActionState.mode=mode; touchActionState.hasAim=false; }
-	if(mode==='weapon' && touchPlaceMode) setTouchPlaceMode(false);
+	if(!touchActionState.active) touchActionState.mode=mode;
+	setTouchPlaceMode(mode==='build');
 	document.documentElement.dataset.touchActionMode=mode;
 	const stick=document.getElementById('dirRing');
-	if(stick){ stick.dataset.mode=mode; stick.setAttribute('aria-label',mode==='tool'?'Joystick kopania: przeciągnij w kierunku i przytrzymaj':'Joystick ataku: przeciągnij, aby celować, i przytrzymaj'); }
-	if(mineBtn) mineBtn.textContent=mode==='tool'?'⛏️':'⚔️';
-	if(actionStickHint) actionStickHint.textContent=mode==='tool'?'Kop':'Celuj';
+	const meta=TOUCH_ACTION_META[mode];
+	if(stick){ stick.dataset.mode=mode; stick.setAttribute('aria-label','Celownik trybu '+meta.label+': wybierz kierunek i odległość, potem naciśnij przycisk akcji'); }
+	if(mineBtn) mineBtn.textContent=mode==='combat'?'🎯':meta.icon;
+	if(actionStickHint) actionStickHint.textContent=mode==='combat'?'Celuj':mode==='build'?'Wskaż':'Wybierz';
+	const modeButton=document.getElementById('actionModeBtn');
+	if(modeButton){
+		modeButton.dataset.mode=mode;
+		const icon=modeButton.querySelector('.touchModeIcon'); if(icon) icon.textContent=meta.icon;
+		const label=modeButton.querySelector('.touchModeLabel'); if(label) label.textContent='TRYB';
+		modeButton.title='Tryb: '+meta.label+' — stuknij, aby przełączyć';
+		modeButton.setAttribute('aria-label',modeButton.title);
+	}
 	const quick=document.getElementById('fireBtn');
 	if(quick){
-		const it=activeWeaponItem(), type=(it&&it.weaponType)||'melee';
-		quick.textContent=type==='harpoon'?'🔱':(it&&it.aquaticStyle==='trident')?'🔱':type==='bow'?'🏹':type==='flame'?'🔥':type==='hose'?'💧':type==='gas'?'☠️':type==='electric'?'⚡':'⚔️';
-		quick.title=it?'Szybki atak — '+(it.name||it.id):'Szybki atak z automatycznym celowaniem';
+		const actionIcon=quick.querySelector('.touchActionIcon');
+		const actionLabel=quick.querySelector('.touchActionLabel');
+		if(mode==='mine'){
+			if(actionIcon) actionIcon.textContent='⛏️'; if(actionLabel) actionLabel.textContent='KOP';
+			quick.title='Przytrzymaj, aby kopać wybrany blok';
+		}else if(mode==='build'){
+			if(actionIcon) actionIcon.textContent='🧱'; if(actionLabel) actionLabel.textContent='POSTAW';
+			quick.title='Postaw blok w wybranym polu';
+		}else{
+			const it=activeWeaponItem(), type=(it&&it.weaponType)||'melee';
+			if(actionIcon) actionIcon.textContent=type==='harpoon'?'🔱':(it&&it.aquaticStyle==='trident')?'🔱':type==='bow'?'🏹':type==='flame'?'🔥':type==='hose'?'💧':type==='gas'?'☠️':type==='electric'?'⚡':'⚔️';
+			if(actionLabel) actionLabel.textContent='ATAK';
+			quick.title=it?'Atak w wybranym kierunku — '+(it.name||it.id):'Atak — wybierz broń na pasku';
+		}
 		quick.setAttribute('aria-label',quick.title);
 	}
 }
-const placeBtn=document.getElementById('placeBtn');
-if(placeBtn){
-	placeBtn.addEventListener('click',e=>{
+function setTouchActionMode(next,opts){
+	opts=opts||{};
+	const mode=normalizeTouchActionMode(next,touchActionMode);
+	if(touchActionButtonHeld) finishTouchActionButton(null,true);
+	if(actionStickController && actionStickController.active()) actionStickController.cancel();
+	if(mode!=='combat') rememberTouchWeapon();
+	touchActionMode=mode;
+	touchActionState.mode=mode;
+	setTouchPlaceMode(mode==='build');
+	if(opts.equip!==false){
+		if(mode==='combat') restoreTouchWeapon();
+		else if(!isToolMode()) selectToolMode({quiet:true});
+	}
+	if(opts.remember!==false){ try{ localStorage.setItem(TOUCH_ACTION_MODE_KEY,mode); }catch(e){} }
+	syncTouchActionMode();
+	if(opts.announce!==false){
+		if(mode==='mine') msg('⛏ Kopanie: wskaż blok joystickiem i przytrzymaj ⛏');
+		else if(mode==='build') msg('🧱 Budowanie: wskaż pole joystickiem i naciśnij 🧱');
+		else msg(activeWeaponItem()?'⚔ Walka: wyceluj joystickiem i przytrzymaj atak':'⚔ Walka: wybierz broń na pasku 2–4');
+	}
+}
+const actionModeBtn=document.getElementById('actionModeBtn');
+if(actionModeBtn){
+	actionModeBtn.addEventListener('click',e=>{
 		e.preventDefault(); noteSaveActivity();
-		if(!isToolMode()){ msg('Wybierz 1, aby budować'); return; }
-		setTouchPlaceMode(!touchPlaceMode); touchHaptic(7,60);
-		msg(touchPlaceMode?'🧱 Budowanie: stukaj lub przeciągaj po świecie':'⛏ Kopanie dotykiem włączone');
+		setTouchActionMode(nextTouchActionMode(touchActionMode));
+		touchHaptic(7,60);
 	});
 }
 syncTouchActionMode();
 
-// Quick-fire is the accessible one-button alternative to aimed right-stick fire.
+// One contextual trigger performs the mode selected by actionModeBtn. The stick
+// remains free to move the cursor while this button is held with another thumb.
 const fireBtn=document.getElementById('fireBtn');
 function releaseTouchWeaponFire(cancel){
-	if(!fireBtnHeld) return false;
-	const aim=touchQuickWeaponAim();
-	const it=activeWeaponItem();
-	let used=false;
-	if(WEAPONS){
-		if(cancel && WEAPONS.cancelHeld) WEAPONS.cancelHeld();
-		else if(WEAPONS.releaseHeld) used=!!WEAPONS.releaseHeld(player, aim.x, aim.y);
-	}
-	if(used) notifyInvasionWeaponUse(it,{released:true});
+	if(!fireBtnHeld && !touchActionWeaponHeld) return false;
+	return releaseTouchActionWeapon(cancel);
+}
+function finishTouchActionButton(e,cancel){
+	if(fireBtnPointerId!=null && e && e.pointerId!==fireBtnPointerId) return false;
+	noteSaveActivity();
+	const mode=touchActionButtonMode;
+	if(mode==='combat') releaseTouchWeaponFire(cancel);
+	else if(mode==='mine'){ mineBtnHeld=false; stopMining(); }
+	touchActionButtonHeld=false; touchActionButtonMode=null; touchLastBuildTargetKey='';
+	fireBtnHeld=false; fireBtnPointerId=null;
+	if(fireBtn) fireBtn.classList.remove('on');
 	return true;
 }
 if(fireBtn){
-	function finishQuickWeaponFire(e,cancel){
-		if(fireBtnPointerId!=null && e && e.pointerId!==fireBtnPointerId) return false;
-		noteSaveActivity(); releaseTouchWeaponFire(cancel);
-		fireBtnHeld=false; fireBtnPointerId=null; fireBtn.classList.remove('on');
-		return true;
-	}
 	fireBtn.addEventListener('pointerdown',e=>{
 		e.preventDefault(); noteSaveActivity();
-		if(!activeWeaponItem()){ msg('Wybierz broń — stuknij pasek broni (2–4)'); return; }
-		if(actionStickController && actionStickController.active()) actionStickController.cancel();
-		if(weaponPointerId!=null){ if(WEAPONS && WEAPONS.cancelHeld) WEAPONS.cancelHeld(); weaponPointerId=null; directWeaponTarget=null; directWeaponStart=null; }
-		fireBtnHeld=true; fireBtnPointerId=e.pointerId; fireBtn.classList.add('on');
+		if(touchActionButtonHeld) return;
+		const mode=touchActionMode;
+		if(mode==='combat'){
+			if(!activeWeaponItem()) restoreTouchWeapon();
+			if(!activeWeaponItem()){ msg('Wybierz broń — stuknij pasek broni (2–4)'); return; }
+			if(!armTouchActionWeapon()) return;
+			fireBtnHeld=true;
+		}else if(!isToolMode()){
+			rememberTouchWeapon(); selectToolMode({quiet:true});
+		}
+		touchActionButtonHeld=true; touchActionButtonMode=mode; fireBtnPointerId=e.pointerId; fireBtn.classList.add('on');
+		touchLastBuildTargetKey='';
+		if(mode==='mine'){
+			mineBtnHeld=true;
+			const target=touchSelectedGridTarget('mine'); touchLastBuildTargetKey=target.tx+','+target.ty;
+			startTouchSelectedMine();
+		}else if(mode==='build'){
+			const target=touchSelectedGridTarget('build'); touchLastBuildTargetKey=target.tx+','+target.ty;
+			placeTouchSelectedBlock();
+		}
 		try{ fireBtn.setPointerCapture(e.pointerId); }catch(err){ /* capture is optional */ }
 		touchHaptic(5,60);
 	});
-	fireBtn.addEventListener('pointerup',e=>finishQuickWeaponFire(e,false));
-	fireBtn.addEventListener('pointercancel',e=>finishQuickWeaponFire(e,true));
-	fireBtn.addEventListener('lostpointercapture',e=>{ if(fireBtnPointerId===e.pointerId) finishQuickWeaponFire(e,true); });
+	fireBtn.addEventListener('pointerup',e=>finishTouchActionButton(e,false));
+	fireBtn.addEventListener('pointercancel',e=>finishTouchActionButton(e,true));
+	fireBtn.addEventListener('lostpointercapture',e=>{ if(fireBtnPointerId===e.pointerId) finishTouchActionButton(e,true); });
 }
 // Touch ult trigger: the PPM-ult without a right button. It reuses the latest
 // stick direction when available, otherwise the same auto-target as quick-fire.
@@ -12588,7 +12730,11 @@ function drawFallingBlocks(){ TREES.drawFallingBlocks(ctx,TILE,INFO,worldFxVisib
 // its direction, a held left button re-aims at whatever tile is under the cursor (drag mining).
 function resumeHeldMining(){
 	if(!isToolMode()) return;
-	if(mineBtnHeld){ startMine({quiet:true}); return; }
+	if(mineBtnHeld){
+		if(touchActionButtonHeld && touchActionButtonMode==='mine') startTouchSelectedMine();
+		else startMine({quiet:true});
+		return;
+	}
 	if(minePointerId!=null && lastPointer.has){ const p=screenToWorldTile(lastPointer.x,lastPointer.y); startMineAt(p.tx,p.ty,{quiet:true}); }
 }
 let mineLuckyKey='', mineLuckyArmed=false;
@@ -13982,6 +14128,7 @@ function draw(){ // Background first
 	 }
  }
  if(mining){ ctx.strokeStyle='#fff'; ctx.strokeRect(mineTx*TILE+1,mineTy*TILE+1,TILE-2,TILE-2); const info=mineInfoForId(mineTileIdAt(mineTx,mineTy))||{hp:1}; const need=Math.max(0.1,info.hp/6); const p=mineTimer/need; ctx.fillStyle='rgba(255,255,255,.3)'; ctx.fillRect(mineTx*TILE, mineTy*TILE + (1-p)*TILE, TILE, p*TILE); }
+ drawTouchActionTarget();
  if(TUTORIAL_NPC && TUTORIAL_NPC.drawObservationSignal){
 	 try{ TUTORIAL_NPC.drawObservationSignal(ctx,TILE,player,worldFxVisible(Math.floor(player.x),Math.floor(player.y)),performance.now()); }catch(e){}
  }
@@ -16521,7 +16668,7 @@ function regenWorld(){
 	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Nowy świat seed '+worldSeed); }
 document.getElementById('centerBtn').addEventListener('click',()=>{ snapCameraToPlayer(); });
 document.getElementById('helpBtn').addEventListener('click',()=>toggleHelp());
-const radarBtn=document.getElementById('radarBtn'); radarBtn?.addEventListener('click',()=>{ if(announceTreasureCompass()) radarFlash=performance.now()+1500; }); let radarFlash=0;
+let radarFlash=0;
 // Listen for UI-dispatched radar pulse from the menu
 window.addEventListener('mm-radar-pulse',()=>{ if(announceTreasureCompass()) radarFlash=performance.now()+1500; });
 refreshTreasureButton();
@@ -17327,11 +17474,12 @@ if(!loaded && !MM.ghostMode){
 	}catch(e){}
 }
 updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); normalizeLegacyHelpDebugCopy();
+if(MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch()) setTouchActionMode(touchActionMode,{announce:false,remember:false});
 if(MM.ghostMode){ /* the ghost veil owns the first paint */ }
 else if(!loaded){
 	const touchWelcome=MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch();
 	msg(touchWelcome
-		?'Dotyk: lewy joystick = ruch, ↑ = skok i skoki w powietrzu, prawy = kop/celuj. Stukaj też bezpośrednio w moby, łupy i bloki.'
+		?'Dotyk: prawy joystick wybiera cel. TRYB przełącza Kopanie, Budowanie i Walkę; sąsiedni przycisk wykonuje akcję. Bezpośrednie stuknięcia nadal działają.'
 		:'Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. E=Ekwipunek, '+visionShortcutLabel()+'=optyka, C=Centrum, H=Pomoc. Debug: panel 🛠.');
 } else msg('Wczytano zapis – miłej gry!');
 // Ghost spectator bridge: the one sanctioned window into main.js internals for

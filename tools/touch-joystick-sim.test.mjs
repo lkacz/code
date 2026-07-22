@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 import {
+	nextTouchActionMode,
+	normalizeTouchActionMode,
 	quantizeTouchDirection,
 	sampleTouchStick,
-	touchMovementIntent
+	touchMovementIntent,
+	touchTargetSelection
 } from '../src/engine/touch_joystick.js';
 
 function close(actual,expected,message,epsilon=1e-10){
@@ -109,9 +112,28 @@ function close(actual,expected,message,epsilon=1e-10){
 	}
 }
 
-// --- 6. Integration seams keep joystick and direct-touch interaction parallel.
+// --- 6. Action modes are explicit and the right stick selects, but never fires.
+{
+	assert.equal(normalizeTouchActionMode('mine'),'mine');
+	assert.equal(normalizeTouchActionMode('unknown'),'mine','unknown persisted modes safely fall back to mining');
+	assert.equal(nextTouchActionMode('mine'),'build');
+	assert.equal(nextTouchActionMode('build'),'combat');
+	assert.equal(nextTouchActionMode('combat'),'mine');
+
+	const adjacent=touchTargetSelection({x:0.12,y:0,magnitude:0.12},{maxDistance:3});
+	assert.deepEqual({dx:adjacent.dx,dy:adjacent.dy,distance:adjacent.distance,offsetX:adjacent.offsetX,offsetY:adjacent.offsetY},{dx:1,dy:0,distance:1,offsetX:1,offsetY:0});
+	const middle=touchTargetSelection({x:0,y:-0.5,magnitude:0.5},{maxDistance:4});
+	assert.deepEqual({dx:middle.dx,dy:middle.dy,distance:middle.distance,offsetX:middle.offsetX,offsetY:middle.offsetY},{dx:0,dy:-1,distance:2,offsetX:0,offsetY:-2});
+	const far=touchTargetSelection({x:-0.8,y:0.8,magnitude:1},{maxDistance:3});
+	assert.deepEqual({dx:far.dx,dy:far.dy,distance:far.distance,offsetX:far.offsetX,offsetY:far.offsetY},{dx:-1,dy:1,distance:3,offsetX:-3,offsetY:3});
+	const fallback=touchTargetSelection({x:0,y:0,magnitude:0},{fallback:{dx:-1,dy:0},maxDistance:3});
+	assert.deepEqual({dx:fallback.dx,dy:fallback.dy,distance:fallback.distance},{dx:-1,dy:0,distance:1});
+}
+
+// --- 7. Integration seams keep joystick and direct-touch interaction parallel.
 {
 	const mainSource=fs.readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+	const indexSource=fs.readFileSync(new URL('../index.html',import.meta.url),'utf8');
 	const dropsSource=fs.readFileSync(new URL('../src/engine/drops.js',import.meta.url),'utf8');
 	assert.match(mainSource,/moveStickController=createTouchJoystick/,'the movement zone is bound as a joystick');
 	assert.match(mainSource,/actionStickController=createTouchJoystick/,'the contextual action zone is bound as a joystick');
@@ -122,6 +144,13 @@ function close(actual,expected,message,epsilon=1e-10){
 	assert.doesNotMatch(mainSource,/e\.pointerType!=='touch' && DROPS && DROPS\.pickupAt/,'touch pickup is not excluded from canvas selection');
 	assert.match(mainSource,/MOBS\.nearestLiving\(aim\.x,aim\.y,0\.9\)/,'a direct touch can snap to the specifically tapped mob');
 	assert.match(mainSource,/e\.pointerType==='touch' && touchPlaceMode/,'placement is explicit while ordinary canvas taps remain mine, attack, collect, or interact');
+	assert.match(mainSource,/setTouchActionMode\(nextTouchActionMode\(touchActionMode\)\)/,'the mode button explicitly cycles the right-stick action');
+	assert.match(mainSource,/if\(mode==='mine'\)[\s\S]{0,500}startTouchSelectedMine\(\)[\s\S]{0,300}else if\(mode==='build'\)/,'the contextual action button executes mining and building after target selection');
+	assert.match(mainSource,/drawTouchActionTarget\(\)/,'the selected tile or combat aim has a persistent world cursor');
+	assert.doesNotMatch(mainSource,/function applyActionStickSample\(sample\)[\s\S]{0,900}armTouchActionWeapon\(\)/,'moving the right stick alone never starts an attack');
+	assert.match(indexSource,/id="actionModeBtn"[\s\S]{0,300}touchModeLabel">TRYB/,'the touch rail exposes a labelled action-mode switch');
+	assert.match(indexSource,/id="fireBtn"[\s\S]{0,300}touchActionLabel">KOP/,'the contextual trigger states the action it will perform');
+	assert.doesNotMatch(indexSource,/id="radarBtn"/,'the unexplained compass button no longer occupies the primary touch rail');
 	assert.match(dropsSource,/const hitScale=Math\.max\(1,Math\.min\(1\.8/,'drop hit enlargement is bounded');
 }
 

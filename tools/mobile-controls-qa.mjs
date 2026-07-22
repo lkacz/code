@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Headless-Edge live QA for input-mode detection (engine/input_mode.js) and the
-// touch control clusters: boots the real game over CDP and walks the modes a
-// player can hit, asserting the DOM gating and capturing layout screenshots:
+// touch control clusters: boots the real game over CDP and walks the explicit
+// mine/build/combat modes, asserting DOM gating and capturing layout screenshots:
 //   tools/mobile-controls-qa.png    desktop 1600x900, mouse → touch UI hidden
 //   tools/mobile-controls-qa-b.png  phone 390x844 portrait, touch → touch UI shown
 //   tools/mobile-controls-qa-c.png  hybrid: mouse press on a touch device → hidden
@@ -40,18 +40,29 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // In-page probe: mode stamp, live media features and per-cluster visibility.
 const PROBE = `(()=>{
-	const ids=['controls','dirRing','touchActionRail','jumpBtn','radarBtn'];
-	const vis=id=>{ const el=document.getElementById(id); if(!el) return 'missing'; return getComputedStyle(el).display==='none'?'hidden':'shown'; };
-	const r=sel=>{ const el=document.querySelector(sel); if(!el) return null; const b=el.getBoundingClientRect(); return [Math.round(b.left),Math.round(b.top),Math.round(b.right),Math.round(b.bottom)]; };
-	const targetSizes=[...document.querySelectorAll('#touchActionRail button')].filter(el=>getComputedStyle(el).display!=='none').map(el=>{ const b=el.getBoundingClientRect(); return {id:el.id,w:Math.round(b.width),h:Math.round(b.height)}; });
+	const ids=['controls','dirRing','touchActionRail','jumpBtn','actionModeBtn','fireBtn'];
+	const vis=id=>{ const el=document.getElementById(id); if(!el) return 'missing'; return el.getClientRects().length===0?'hidden':'shown'; };
+	const r=sel=>{ const el=document.querySelector(sel); if(!el||el.getClientRects().length===0) return null; const b=el.getBoundingClientRect(); if(b.width<=0||b.height<=0) return null; return [Math.round(b.left),Math.round(b.top),Math.round(b.right),Math.round(b.bottom)]; };
+	const targetSizes=[...document.querySelectorAll('#touchActionRail button')].filter(el=>el.getClientRects().length>0).map(el=>{ const b=el.getBoundingClientRect(); return {id:el.id,w:Math.round(b.width),h:Math.round(b.height),textFits:el.scrollWidth<=el.clientWidth&&el.scrollHeight<=el.clientHeight}; });
+	const selectors={
+		pad:'#controls .pad', ring:'#dirRing', actionRail:'#touchActionRail',
+		modeButton:'#actionModeBtn', actionButton:'#fireBtn', hotbar:'#hotbarWrap',
+		weaponBar:'#weaponBar', craft:'#craft', craftTracker:'#craftTracker',
+		messages:'#messages', worldStatus:'#worldStatusPanel', atomicWinter:'#atomicWinterTimerPanel',
+		task:'#taskPanel', fps:'#fpsPanel', menu:'#menuWrap', cornerCards:'#cornerCards'
+	};
+	const rects=Object.fromEntries(Object.entries(selectors).map(([name,selector])=>[name,r(selector)]));
+	rects.vitals=(window.MM&&MM.vitalsHud&&MM.vitalsHud.bounds)?(()=>{ const b=MM.vitalsHud.bounds(); return b?[Math.round(b.x),Math.round(b.y),Math.round(b.x+b.width),Math.round(b.y+b.height)]:null; })():null;
 	return JSON.stringify({
 		mode:(document.documentElement.dataset.inputMode)||'(none)',
 		actionMode:(document.documentElement.dataset.touchActionMode)||'(none)',
 		caps:{coarse:matchMedia('(pointer:coarse)').matches, hover:matchMedia('(hover:hover)').matches, fine:matchMedia('(pointer:fine)').matches, touchPoints:navigator.maxTouchPoints|0},
 		ui:Object.fromEntries(ids.map(id=>[id,vis(id)])),
 		targetSizes,
+		stickHintsVisible:[...document.querySelectorAll('.touchStickHint')].filter(el=>el.getClientRects().length>0).map(el=>el.textContent.trim()),
 		craftOpen:(()=>{ const c=document.getElementById('craft'); return !!(c && c.dataset.collapsed!=='true'); })(),
-		rects:{pad:r('#controls .pad'), ring:r('#dirRing'), actionRail:r('#touchActionRail'), hotbar:r('#hotbarWrap'), weaponBar:r('#weaponBar'), vitals:(window.MM&&MM.vitalsHud&&MM.vitalsHud.bounds)?(()=>{ const b=MM.vitalsHud.bounds(); return b?[Math.round(b.x),Math.round(b.y),Math.round(b.x+b.width),Math.round(b.y+b.height)]:null; })():null}
+		viewport:[innerWidth,innerHeight],
+		rects
 	});
 })()`;
 
@@ -134,18 +145,18 @@ async function main(){
 			await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
 		};
 		const allUi = (p, want) => Object.entries(p.ui).filter(([,v]) => v !== want).map(([k,v]) => k + '=' + v).join(',');
-		const overlaps = p => {
+		const layoutIssues = p => {
 			const r = p.rects;
 			const hit = (a, b) => a && b && a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
 			const bad = [];
-			const controls = ['pad','ring','actionRail'];
-			for (const c of controls){
-				for (const bar of ['hotbar','weaponBar']) if (hit(r[c], r[bar])) bad.push(c + '∩' + bar);
+			const persistent=['pad','ring','actionRail','hotbar','weaponBar','craft','craftTracker','messages','worldStatus','atomicWinter','task','fps','menu','cornerCards','vitals'];
+			for(let i=0;i<persistent.length;i++) for(let j=i+1;j<persistent.length;j++){
+				if(hit(r[persistent[i]],r[persistent[j]])) bad.push(persistent[i]+' intersects '+persistent[j]);
 			}
-			for (let i = 0; i < controls.length; i++) for (let j = i + 1; j < controls.length; j++){
-				if (hit(r[controls[i]], r[controls[j]])) bad.push(controls[i] + '∩' + controls[j]);
+			for(const name of persistent){
+				const b=r[name];
+				if(b&&(b[0]<-1||b[1]<-1||b[2]>p.viewport[0]+1||b[3]>p.viewport[1]+1)) bad.push(name+' outside viewport');
 			}
-			for (const el of [...controls, 'hotbar', 'weaponBar']) if (hit(r[el], r.vitals)) bad.push(el + '∩vitals');
 			return bad.join(',');
 		};
 
@@ -183,9 +194,21 @@ async function main(){
 		check('B phone lands in touch mode', p.mode === 'touch', p.mode);
 		check('B touch UI shown on phone', allUi(p, 'shown') === '', allUi(p, 'shown'));
 		check('B visible touch targets are at least 48px', p.targetSizes.every(t=>t.w>=48&&t.h>=48), JSON.stringify(p.targetSizes));
+		check('B touch button labels fit their targets', p.targetSizes.every(t=>t.textFits), JSON.stringify(p.targetSizes));
+		check('B stick labels do not cover the joystick', p.stickHintsVisible.length === 0, p.stickHintsVisible.join(','));
+		check('B action mode defaults to mine', p.actionMode === 'mine', p.actionMode);
 		check('B craft panel boots collapsed on touch', p.craftOpen === false, 'open=' + p.craftOpen);
-		check('B portrait controls do not overlap', overlaps(p) === '', overlaps(p));
+		check('B portrait interface does not overlap or clip', layoutIssues(p) === '', layoutIssues(p));
 		await shot(outB);
+		const modeRect=p.rects.modeButton;
+		await tap((modeRect[0]+modeRect[2])/2,(modeRect[1]+modeRect[3])/2);
+		await sleep(180);
+		p=await probe();
+		check('B mode button cycles mine to build', p.actionMode === 'build', p.actionMode);
+		await tap((modeRect[0]+modeRect[2])/2,(modeRect[1]+modeRect[3])/2);
+		await sleep(180);
+		p=await probe();
+		check('B mode button cycles build to combat', p.actionMode === 'combat', p.actionMode);
 
 		// --- stage C: hybrid — mouse press while touch-capable -------------------
 		await sleep(900); // clear the ghost-mouse grace window
@@ -211,7 +234,9 @@ async function main(){
 		check('D landscape stays in touch mode', p.mode === 'touch', p.mode);
 		check('D touch UI shown in landscape', allUi(p, 'shown') === '', allUi(p, 'shown'));
 		check('D visible touch targets are at least 48px', p.targetSizes.every(t=>t.w>=48&&t.h>=48), JSON.stringify(p.targetSizes));
-		check('D landscape controls do not overlap', overlaps(p) === '', overlaps(p));
+		check('D touch button labels fit their targets', p.targetSizes.every(t=>t.textFits), JSON.stringify(p.targetSizes));
+		check('D stick labels do not cover the joystick', p.stickHintsVisible.length === 0, p.stickHintsVisible.join(','));
+		check('D landscape interface does not overlap or clip', layoutIssues(p) === '', layoutIssues(p));
 		await shot(outD);
 
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 5).join('\n---\n'));

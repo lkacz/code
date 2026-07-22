@@ -2217,9 +2217,10 @@ MM.ui = (function(){
     },1100);
     panel.appendChild(box);
   }
-  // Radar pulse helper (adds/removes pulse class on #radarBtn)
+  // Radar pulse helper (the treasure scan lives in the menu; the mobile rail
+  // uses its former slot for the explicit mine/build/combat mode switch).
   function setRadarPulsing(active){
-    const b = document.getElementById('radarBtn');
+    const b = document.getElementById('radarMenuBtn');
     if(!b) return;
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }

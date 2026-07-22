@@ -11,6 +11,8 @@ export const TOUCH_STICK_DEFAULTS=Object.freeze({
 	verticalThreshold:0.46
 });
 
+export const TOUCH_ACTION_MODES=Object.freeze(['mine','build','combat']);
+
 function finite(value,fallback){
 	value=Number(value);
 	return Number.isFinite(value)?value:fallback;
@@ -68,6 +70,39 @@ export function quantizeTouchDirection(sample,opts){
 	const dx=Math.round(Math.cos(octant*Math.PI/4));
 	const dy=Math.round(Math.sin(octant*Math.PI/4));
 	return {dx,dy,octant:(octant+8)%8,angle};
+}
+
+export function normalizeTouchActionMode(value,fallback){
+	const safeFallback=TOUCH_ACTION_MODES.includes(fallback)?fallback:'mine';
+	return TOUCH_ACTION_MODES.includes(value)?value:safeFallback;
+}
+
+export function nextTouchActionMode(value){
+	const mode=normalizeTouchActionMode(value);
+	return TOUCH_ACTION_MODES[(TOUCH_ACTION_MODES.indexOf(mode)+1)%TOUCH_ACTION_MODES.length];
+}
+
+// Grid actions keep the eight-way direction, while radial travel selects how
+// far along that direction the cursor sits. A tiny deliberate movement always
+// selects the adjacent tile; full travel reaches maxDistance.
+export function touchTargetSelection(sample,opts){
+	opts=opts||{};
+	const fallback=opts.fallback||{dx:1,dy:0};
+	const direction=quantizeTouchDirection(sample,{minMagnitude:opts.minMagnitude})
+		|| quantizeTouchDirection({x:fallback.dx,y:fallback.dy},{minMagnitude:0.01})
+		|| {dx:1,dy:0,octant:0,angle:0};
+	const maxDistance=Math.max(1,Math.min(8,Math.trunc(finite(opts.maxDistance,3))));
+	const vectorMagnitude=Math.hypot(finite(sample&&sample.x,0),finite(sample&&sample.y,0));
+	const magnitude=Math.max(0,Math.min(1,finite(sample&&sample.magnitude,vectorMagnitude)));
+	const distance=Math.max(1,Math.min(maxDistance,Math.ceil(magnitude*maxDistance)));
+	return {
+		dx:direction.dx,
+		dy:direction.dy,
+		octant:direction.octant,
+		distance,
+		offsetX:direction.dx*distance,
+		offsetY:direction.dy*distance
+	};
 }
 
 function zeroSample(){
