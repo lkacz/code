@@ -1131,7 +1131,8 @@ const drops = (function(){
 
   // --- persistence ------------------------------------------------------------
   const ITEM_NUM_FIELDS=['airJumps','visionRadius','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus'];
-  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType'];
+  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','mergePerk'];
+  const ITEM_MERGE_PERKS=new Set(['vampire','venom','frost','storm','fury']);
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','charm']);
   function sanitizeItem(raw){
     if(!raw || typeof raw!=='object') return null;
@@ -1140,6 +1141,7 @@ const drops = (function(){
     const it={id:raw.id, kind:raw.kind};
     ITEM_NUM_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='number' && isFinite(v)) it[f]=v; });
     ITEM_STR_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='string' && v.length<=80) it[f]=v; });
+    if(it.mergePerk && (it.kind!=='weapon' || !ITEM_MERGE_PERKS.has(it.mergePerk))) delete it.mergePerk;
     if(typeof it.lootMagnetLevel==='number'){
       const level=Math.trunc(it.lootMagnetLevel);
       if(level<1) delete it.lootMagnetLevel;

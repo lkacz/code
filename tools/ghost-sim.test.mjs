@@ -1511,6 +1511,13 @@ assert.ok(/ghostMirrorState, ghostApplyMirror, ghostLerp,/.test(lairSrc), 'the m
 	assert.ok(/slice\(0,10\)/.test(applySlice) && /slice\(0,48\)/.test(applySlice) && /slice\(0,16\)/.test(applySlice),
 		'hostile mirror payloads are bounded on every axis (entities, hazards, effects)');
 	assert.ok(/GHOST_HAZ_TYPES\.includes\(w\.t\)/.test(applySlice), 'unknown hazard types are refused, not drawn');
+	assert.ok(/'torchJet'/.test(lairSrc) && /e\.torchLit=fin\(w\.tl,1\)!==0;/.test(applySlice),
+		'Nara torch hazards and vulnerability visuals survive the bounded spectator mirror');
+	assert.ok(/sl:e\.sealed===false\?0:1/.test(lairSrc) && /e\.sealed=fin\(w\.sl,1\)!==0;/.test(applySlice)
+		&& /e\.quietT=Math\.max/.test(applySlice) && /e\.listeningT=Math\.max/.test(applySlice),
+		'Sile sealed/listening state and its readable meter survive the bounded spectator mirror');
+	assert.ok(/variant:typeof w\.v===['"]string['"]\?w\.v\.slice\(0,16\):['"]['"]/.test(applySlice),
+		'West memory, heartglass, icicle, and hush hazard variants keep their authored watcher artwork');
 }
 assert.ok(/function guardTick\(s, t\)/.test(hostSrc) && /if\(t - s\.last\.guard >= CAD\.guard\) guardTick\(s, t\);/.test(hostSrc),
 	'the host streams the guardian mirror on its own cadence');
@@ -1676,7 +1683,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/function nearestPartyTarget\(wx,wy,p\)/.test(g) && /if\(!bodies\) return p;/.test(g),
 		'guardian aim selection falls back to the host with no bodies');
 	// boss + sidekick attacks aim at the nearest party member; lifecycle stays host-anchored
-	const gue = g.slice(g.indexOf('function updateEntity(e,p,getTile,setTile,dt)'), g.indexOf('function updateEntity(e,p,getTile,setTile,dt)') + 900);
+	const updateEntityStart = g.indexOf('function updateEntity(e,p,getTile,setTile,dt,clockDt)');
+	const gue = g.slice(updateEntityStart, updateEntityStart + 980);
 	assert.ok(/const aim=nearestPartyTarget\(e\.x,e\.y,p\);/.test(gue)
 		&& /updateFireBoss\(e,aim,getTile,dt,L\);/.test(gue) && /updateSidekick\(e,aim,getTile,setTile,dt,L\);/.test(gue),
 		'guardian attacks aim at the NEAREST party member (host or guest body)');
@@ -1688,7 +1696,7 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	// every hazard type hit-tests the guest bodies and routes through body.hurt()
 	const guh = g.slice(g.indexOf('function updateHazards(dt,p,getTile,setTile)'), g.indexOf('function updateEffects'));
 	assert.ok(/const coop=coopBodies\(\);/.test(guh), 'the hazard pass hoists the body list once per frame');
-	for(const cause of ['guardian_lightning','guardian_storm_meteor','guardian_projectile','guardian_impact','guardian_beam','guardian_ring','guardian_blizzard']){
+	for(const cause of ['guardian_lightning','guardian_storm_meteor','guardian_projectile','guardian_impact','guardian_beam','nara_coal_torch','guardian_ring','guardian_blizzard']){
 		assert.ok(new RegExp("(hurtBodiesInCircle\\(coop,[^\\n]*'" + cause + "'|b\\.hurt\\(h\\.dmg,[^\\n]*'" + cause + "'\\))").test(guh),
 			'guardian hazard "' + cause + '" hit-tests guest bodies through body.hurt()');
 	}

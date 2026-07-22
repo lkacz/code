@@ -1119,6 +1119,32 @@ window.MM = window.MM || {};
     }
     return landed;
   }
+  // Authored scenes sometimes need a deliberate patch of fluff at an exact
+  // floor cell (rather than a column sample from the open sky). This keeps that
+  // path on the same receptiveness, conversion and occupancy rules as weather
+  // fallout while making repeated scene activation idempotent: `units` is a
+  // target depth, not an amount to add every time the player returns.
+  function seedCells(list,mat,getTile,setTile){
+    if(!MATS[mat] || !Array.isArray(list) || typeof getTile!=='function') return 0;
+    let landed=0;
+    for(const src of list.slice(0,160)){
+      if(!src || !Number.isFinite(src.x) || !Number.isFinite(src.y)) continue;
+      const x=Math.floor(src.x), y=Math.floor(src.y);
+      const want=clamp(Math.floor(src.units)||1,1,matMaxUnits(mat));
+      // Allow enough bounded attempts to grind away one pre-existing drift and
+      // then establish the requested cover. Snow intentionally only stains
+      // under soot, so that owner rule still wins and the cap ends the attempt.
+      for(let attempt=0;attempt<UNITS+want;attempt++){
+        const before=cells.get(K(x,y));
+        const have=(before && before.m===mat) ? clamp(before.u|0,0,want) : 0;
+        if(have>=want) break;
+        if(!addUnitAtCell(x,y,mat,getTile,setTile)) break;
+        const after=cells.get(K(x,y));
+        if(after && after.m===mat && after.u>have) landed+=after.u-have;
+      }
+    }
+    return landed;
+  }
   function clearAll(){
     const n=cells.size;
     cells.clear();
@@ -1151,7 +1177,7 @@ window.MM = window.MM || {};
   }
 
   MM.softDrifts={update, draw, drawStorm, reset, metrics, count:()=>cells.size,
-    startStorm, stopStorm, isStormActive, seedAround, clearAll,
+    startStorm, stopStorm, isStormActive, seedAround, seedCells, clearAll,
     ghostLevelsIn, ghostApplyLevelsWindow, ghostStormOut, ghostApplyStorm,
     ghostPrintsIn, ghostApplyPrintsWindow,
     UNITS, materials:MAT_ORDER.slice(), config:CFG,

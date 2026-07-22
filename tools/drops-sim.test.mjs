@@ -653,13 +653,16 @@ assert.equal(drops._debug.list.includes(ticking), false, 'an unclaimed epic burn
 drops.reset();
 drops.spawnResource(90.5, SURF - 1, 'meatScrap', 2, { vx: 0, vy: 0 });
 drops.spawnGear(92.5, SURF - 1, { id: 'cape_x', kind: 'cape', name: 'Y', tier: 'rare', airJumps: 1 }, { vx: 0, vy: 0 });
+drops.spawnGear(94.5, SURF - 1, { id: 'guardian_frost_test', kind: 'weapon', weaponType: 'bow', name: 'Frost', tier: 'epic', attackDamage: 12, mergePerk: 'frost' }, { vx: 0, vy: 0 });
 const snap = drops.snapshot();
-assert.equal(snap.list.length, 2, 'snapshot captures both drops');
+assert.equal(snap.list.length, 3, 'snapshot captures resources and both gear drops');
 drops.reset();
 drops.restore(snap);
-assert.equal(drops.metrics().active, 2, 'restore brings both drops back');
+assert.equal(drops.metrics().active, 3, 'restore brings every drop back');
 const restoredGear = drops._debug.list.find(d => d.kind === 'gear');
 assert.equal(restoredGear.item.id, 'cape_x', 'gear payload survives the roundtrip');
+const restoredFrost=drops._debug.list.find(d=>d.kind==='gear' && d.item && d.item.id==='guardian_frost_test');
+assert.equal(restoredFrost.item.mergePerk,'frost','a guardian frost relic keeps its whitelisted perk through discard/drop persistence');
 drops.restore({ v: 1, list: [ { x: 'nan', y: 1 }, { kind: 'gear', x: 1, y: 1, item: { id: 5 } }, { kind: 'resource', x: 1, y: 1, res: 42 } ] });
 assert.equal(drops.metrics().active, 0, 'malformed snapshot entries are dropped');
 

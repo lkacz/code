@@ -1894,12 +1894,13 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     // creatures, bosses, plants
     const blastSource=typeof opts.source==='string' && opts.source ? opts.source : 'hero';
     const blastCause=typeof opts.cause==='string' && opts.cause ? opts.cause : 'weapon_blast';
+    const blastOpts={kind:'explosion',source:blastSource,cause:blastCause,terrainDamage:true};
     damageBlastCreatures(MM,wx,wy,R+1.5,14,{source:blastSource,cause:blastCause});
-    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt){ const mirrorOpts={kind:'explosion',source:blastSource,cause:blastCause}; MM.centerGuardian.damageAt(bx,by,14,mirrorOpts); MM.centerGuardian.damageAt(bx+1,by,9,mirrorOpts); MM.centerGuardian.damageAt(bx-1,by,9,mirrorOpts); } }catch(e){}
-    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,14); MM.guardianLairs.damageAt(bx+1,by,9); MM.guardianLairs.damageAt(bx-1,by,9); MM.guardianLairs.damageAt(bx,by-1,9); } }catch(e){}
+    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt){ MM.centerGuardian.damageAt(bx,by,14,blastOpts); MM.centerGuardian.damageAt(bx+1,by,9,blastOpts); MM.centerGuardian.damageAt(bx-1,by,9,blastOpts); } }catch(e){}
+    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,14,blastOpts); MM.guardianLairs.damageAt(bx+1,by,9,blastOpts); MM.guardianLairs.damageAt(bx-1,by,9,blastOpts); MM.guardianLairs.damageAt(bx,by-1,9,blastOpts); } }catch(e){}
     try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.undergroundBoss.damageAt(bx,by,14,gasOpts); MM.undergroundBoss.damageAt(bx+1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx-1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
     try{ if(MM.skyGuardian && MM.skyGuardian.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.skyGuardian.damageAt(bx,by,14,gasOpts); MM.skyGuardian.damageAt(bx+1,by,9,gasOpts); MM.skyGuardian.damageAt(bx-1,by,9,gasOpts); MM.skyGuardian.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
-    try{ if(MM.bosses && MM.bosses.damageAt){ const blastOpts={kind:'explosion',source:blastSource,cause:blastCause,terrainDamage:true}; MM.bosses.damageAt(bx,by,12,blastOpts); MM.bosses.damageAt(bx+1,by,8,blastOpts); MM.bosses.damageAt(bx-1,by,8,blastOpts); MM.bosses.damageAt(bx,by-1,8,blastOpts); } }catch(e){}
+    try{ if(MM.bosses && MM.bosses.damageAt){ MM.bosses.damageAt(bx,by,12,blastOpts); MM.bosses.damageAt(bx+1,by,8,blastOpts); MM.bosses.damageAt(bx-1,by,8,blastOpts); MM.bosses.damageAt(bx,by-1,8,blastOpts); } }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt){ MM.ufo.damageAt(bx,by,14); MM.ufo.damageAt(bx,by-1,8); } }catch(e){}
     try{ if(MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(wx,wy,R+1); }catch(e){}
     // the hero standing close is hurt and hurled (central damageHero handles
@@ -2215,6 +2216,34 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       tier:'thrown', color:toxicSpit?TOXIC_SPIT_COLOR:(stoneTier?stoneTier.color:spec.color), headColor:toxicSpit?TOXIC_SPIT_HEAD:(stoneTier?stoneTier.head:spec.head), windCap:sp*1.3,
       weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id, mergePerk:(w&&w.mergePerk)||undefined
     });
+  }
+  // `a.snowball` predates hand-thrown weapons and now means "round/ball"
+  // internally (water balloons, gas grenades and sticky bombs all set it).
+  // Elemental consumers must classify from the splat identity, otherwise every
+  // round projectile becomes an ice weakness exploit.
+  function projectileImpactOpts(a){
+    a=a||{};
+    const trueSnow=!!a.snowball && (a.splat==='snow' || a.splat==='toxic');
+    const thrown=!!a.thrown || trueSnow;
+    const water=a.splat==='wet';
+    const spit=a.splat==='spit';
+    let cause;
+    if(trueSnow) cause=a.splat==='toxic'?'toxic_snowball':'snowball';
+    else if(water) cause='water_balloon';
+    else if(spit) cause='spit';
+    else if(a.splat==='gascloud') cause='gas_grenade';
+    else if(a.splat==='bomb') cause='sticky_bomb';
+    return {
+      source:a.coopOwner?'coop':'hero',
+      kind:trueSnow?'snowball':(a.harpoon?'harpoon':(thrown?'thrown':'arrow')),
+      weaponType:thrown?'thrown':(a.harpoon?'harpoon':'bow'),
+      element:trueSnow?'ice':((water||spit)?'water':(a.fire?'fire':undefined)),
+      snowball:trueSnow,
+      spit,
+      cause,
+      x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,pierceLeft:a.pierceLeft||0,
+      fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike
+    };
   }
   function fireThrown(player, aimX, aimY, w){
     if(throwCd>0) return false;
@@ -2667,7 +2696,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         let undergroundResult=false;
         // a co-op guest's arrow wounds like the hero's but is credited 'coop': no
         // host XP special-casing, no heroFocus power bookkeeping (mobs.js decides)
-        const arrowOpts={source:a.coopOwner?'coop':'hero',kind:a.harpoon?'harpoon':'arrow',weaponType:a.harpoon?'harpoon':'bow',x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,pierceLeft:a.pierceLeft||0,fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike};
+        const arrowOpts=projectileImpactOpts(a);
         if(!a.coopOwner && !a.noDamage && !a.spent && (a.ignoreUndergroundT||0)<=0 && MM.undergroundBoss && MM.undergroundBoss.damageAt){
           undergroundResult=MM.undergroundBoss.damageAt(tx,ty,hitDmg,arrowOpts);
           if(undergroundResult==='bounce'){
@@ -2706,7 +2735,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         const beforeRoamingBoss=creatureGate && ((!a.coopOwner && MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,hitDmg,arrowOpts))
           || (!a.coopOwner && MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,hitDmg,targetArrowOpts))
           || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,hitDmg,targetArrowOpts))
-          || (!a.coopOwner && MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg))
+          || (!a.coopOwner && MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,hitDmg,arrowOpts))
           || undergroundResult
           || (!a.coopOwner && MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,hitDmg,arrowOpts)));
         let roamingBossResult=false;
@@ -4048,7 +4077,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,stoneInfo,hudStatus,addUltCharge,
     metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowResourceKey,dropSurvivingArrow,spawnDroppedArrowPickup,splatProjectile,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
+    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowResourceKey,dropSurvivingArrow,spawnDroppedArrowPickup,splatProjectile,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,projectileImpactOpts,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

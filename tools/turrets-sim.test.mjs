@@ -46,6 +46,7 @@ function reset(){
   delete globalThis.player;
   delete globalThis.MM.mobs;
   delete globalThis.MM.bosses;
+  delete globalThis.MM.guardianLairs;
   delete globalThis.MM.ufo;
 }
 function placeDynamo(cx,y,orientation='horizontal'){
@@ -116,6 +117,29 @@ function fakeBossAt(x,y,hp=40){
     }
   };
   return {boss,part,state};
+}
+function fakeGuardianAt(x,y,hp=40){
+  const guardian={x,y,hp,maxHp:hp,boss:true,dead:false};
+  const state={hits:0,opts:null};
+  globalThis.MM.guardianLairs={
+    targetsForTurret(wx,wy,r,onlyBoss){
+      if(onlyBoss && onlyBoss!==true && onlyBoss!==guardian) return [];
+      if(guardian.dead || !(guardian.hp>0)) return [];
+      const dx=x-wx, dy=y-wy;
+      if(dx*dx+dy*dy>r*r) return [];
+      return [{kind:'guardian',guardian,raw:guardian,x,y,tx:Math.floor(x),ty:Math.floor(y),hp:guardian.hp,d2:dx*dx+dy*dy}];
+    },
+    damageAt(tx,ty,dmg,opts){
+      if(guardian.dead || !(guardian.hp>0)) return false;
+      if(Math.abs((tx+0.5)-x)>1 || Math.abs((ty+0.5)-y)>1) return false;
+      guardian.hp-=Math.max(0.5,Number(dmg)||1);
+      guardian.dead=guardian.hp<=0;
+      state.hits++;
+      state.opts=opts;
+      return true;
+    }
+  };
+  return {guardian,state};
 }
 function fakeUfoAt(x,y,hp=60){
   const craft={name:'test saucer',archetype:'test',phase:'scan',x,y,hp,maxHp:hp,hullW:4,seed:1};
@@ -232,6 +256,18 @@ assert.equal(INFO[T.TURRET].passable,false,'turrets are solid defensive machines
   assert.ok(state.scans>0,'basic turret asks the boss system for hostile targets');
   assert.ok(turrets.metrics().shots>0,'basic turret fires when a boss part is in range');
   assert.ok(state.hits>0 && part.hp<32,'basic turret damages boss parts through the boss API');
+}
+
+{
+  reset();
+  setTile(0,10,T.FIRE_TURRET);
+  turrets._debug.debugChargeAt(0,10,turrets._debug.TURRET_CAPACITY,getTile);
+  const {guardian,state}=fakeGuardianAt(6.5,10.5,32);
+  for(let i=0;i<80;i++) tick(1/30);
+  assert.ok(state.hits>0 && guardian.hp<32,'fire turret damages guardian targets through the guardian API');
+  assert.equal(state.opts && state.opts.source,'turret','guardian turret hits retain their autonomous source');
+  assert.equal(state.opts && state.opts.element,'fire','guardian turret hits retain the turret element for boss weaknesses');
+  assert.equal(state.opts && state.opts.kind,'fire_turret','guardian turret hits retain their concrete weapon family');
 }
 
 {

@@ -328,9 +328,12 @@ export const DEFAULT_ROLES = Object.freeze({
   commander:{weight:0.25, minRange:1.2, maxRange:5.2, speedMult:0.78, fireCd:1.3, damageMult:1.25, aim:0.86, stoic:true, guard:true}
 });
 
-// Guaranteed opening variety: small squads still feel like a coordinated
-// strike team instead of N copies of the same unit.
-const ROLE_OPENING = ['rusher','tank','healer','sniper','orbiter','flanker','engineer','sapper'];
+// Every squad opens with a readable assault core. Specialists are rolled below
+// so two raids of the same size do not always ship the exact same composition.
+// Commanders are promoted by the host after assignment; they never leak into
+// hordes through the weighted fallback.
+const ROLE_CORE = ['rusher','tank','healer'];
+const ROLE_SPECIALISTS = ['sniper','orbiter','flanker','engineer','sapper'];
 
 export function makeTeamProfile(opts){
   opts = opts || {};
@@ -367,6 +370,7 @@ export function makeTeamProfile(opts){
     routeBreachAfter: Number.isFinite(opts.routeBreachAfter) ? Math.max(0.15, Number(opts.routeBreachAfter)) : 1.15,
     routeBreachRange: Number(opts.routeBreachRange) || Math.max(14, Number(opts.breachRange) || 12),
     buildCap: Number.isFinite(opts.buildCap) ? opts.buildCap : 8,
+    coreRoles: Array.isArray(opts.coreRoles) ? opts.coreRoles.slice() : ROLE_CORE.slice(),
     roles
   };
 }
@@ -374,12 +378,28 @@ export function makeTeamProfile(opts){
 export function assignRoles(count, profile, rand){
   const rng = typeof rand === 'function' ? rand : Math.random;
   const roles = profile && profile.roles ? profile.roles : DEFAULT_ROLES;
-  const names = Object.keys(roles);
+  const coreRoles = profile && Array.isArray(profile.coreRoles) ? profile.coreRoles : ROLE_CORE;
+  const names = Object.keys(roles).filter(name=>name !== 'commander');
   if(!names.length) return new Array(Math.max(0,count|0)).fill('rusher');
   const out = [];
-  for(const name of ROLE_OPENING){
+  for(const name of coreRoles){
     if(out.length >= count) break;
     if(roles[name]) out.push(name);
+  }
+  // Guarantee two different specialist silhouettes when room permits, but
+  // roll which ones appear. Larger squads may then double down on a tactic.
+  const specialists = ROLE_SPECIALISTS.filter(name=>roles[name]);
+  const guaranteed = Math.min(2, Math.max(0, count - out.length), specialists.length);
+  for(let i=0;i<guaranteed;i++){
+    let total = 0;
+    for(const name of specialists) total += Math.max(0, Number(roles[name].weight) || 1);
+    let pick = rng() * (total || 1);
+    let index = 0;
+    for(let j=0;j<specialists.length;j++){
+      pick -= Math.max(0, Number(roles[specialists[j]].weight) || 1);
+      if(pick <= 0){ index = j; break; }
+    }
+    out.push(specialists.splice(index,1)[0]);
   }
   let totalW = 0;
   for(const name of names) totalW += Math.max(0, Number(roles[name].weight) || 1);

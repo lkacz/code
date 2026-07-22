@@ -431,15 +431,16 @@ const turrets = (function(){
     return lineClear(m.x+0.5,m.y+0.5,c.x,c.y,getTile,m.x,m.y,c.tx,c.ty);
   }
 
-  function damageAt(tx,ty,dmg){
+  function damageAt(tx,ty,dmg,opts){
     let hit=false;
+    opts=opts || {source:'turret',kind:'turret',element:'electric',cause:'turret'};
     // The center mirror reflects turret fire too: automated blows are still the hero's.
-    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,{source:'turret',kind:'turret'})){ return true; } }catch(e){}
+    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt && MM.centerGuardian.damageAt(tx,ty,dmg,opts)){ return true; } }catch(e){}
     try{ if(MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
-    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
-    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
-    try{ if(MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,dmg,{source:'turret',kind:'turret'})) hit=true; }catch(e){}
-    try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
+    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt && MM.guardianLairs.damageAt(tx,ty,dmg,opts)) hit=true; }catch(e){}
+    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt && MM.undergroundBoss.damageAt(tx,ty,dmg,opts)) hit=true; }catch(e){}
+    try{ if(MM.skyGuardian && MM.skyGuardian.damageAt && MM.skyGuardian.damageAt(tx,ty,dmg,opts)) hit=true; }catch(e){}
+    try{ if(MM.bosses && MM.bosses.damageAt && MM.bosses.damageAt(tx,ty,dmg,opts)) hit=true; }catch(e){}
     try{ if(MM.ufo && MM.ufo.damageAt && MM.ufo.damageAt(tx,ty,dmg)) hit=true; }catch(e){}
     return hit;
   }
@@ -462,7 +463,13 @@ const turrets = (function(){
       }
       return hit;
     }
-    return damageAt(tx,ty,dmg);
+    const element=kind==='fire' ? 'fire' : (kind==='water' ? 'water' : 'electric');
+    return damageAt(tx,ty,dmg,{
+      source:'turret',
+      kind:kind+'_turret',
+      element,
+      cause:kind+'_turret'
+    });
   }
 
   function pushShot(fx){
@@ -476,7 +483,7 @@ const turrets = (function(){
   function spawnFirePuffs(sx,sy,dx,dy,range){
     try{
       if(MM.weapons && typeof MM.weapons.spawnExternalStream==='function'){
-        return MM.weapons.spawnExternalStream('flame',sx,sy,dx,dy,{range,dps:CFG.fire.damage*2.1,emitScale:1.8,spread:0.24,muzzle:0.38,speedMult:1.02,vyKick:-0.35,scale:1.08});
+        return MM.weapons.spawnExternalStream('flame',sx,sy,dx,dy,{range,dps:CFG.fire.damage*2.1,emitScale:1.8,spread:0.24,muzzle:0.38,speedMult:1.02,vyKick:-0.35,scale:1.08,source:'turret',cause:'fire_turret'});
       }
     }catch(e){}
     const n=10;

@@ -254,10 +254,112 @@ undergroundBoss._debug().forceEmerge();
 core.hp = 12;
 const cratersBefore = meteorites.metrics().craters;
 const hpBeforeDeathBlast = globalThis.player.hp;
-assert.equal(undergroundBoss.damageAt(Math.floor(core.x), Math.floor(core.y), 9999), true, 'direct damage can defeat the underground boss');
-assert.equal(globalThis.inv.heartEarth, 1, 'underground boss awards heartEarth once');
-assert.equal(marks.earth, 1, 'progress records the earth guardian defeat');
-assert.ok(meteorites.metrics().craters > cratersBefore, 'underground boss death uses the normal meteorite crater pipeline');
+assert.equal(undergroundBoss.damageAt(Math.floor(core.x), Math.floor(core.y), 9999), true, 'direct damage breaks the Nyxolith excavator shell');
+assert.equal(globalThis.inv.heartEarth, 0, 'breaking the machine shell does not prematurely award heartEarth');
+assert.equal(marks.earth, undefined, 'progress waits for the concrete final figure instead of the shell');
+assert.equal(meteorites.metrics().craters, cratersBefore, 'the machine shell reveal does not prematurely collapse the arena into a crater');
+status=undergroundBoss.status();
+assert.equal(status.stage, 'surveyor', 'breaking Nyxolith reveals the personal surveyor stage');
+assert.equal(status.shellBroken, true, 'the shell-broken story stage is explicit');
+let surveyor=undergroundBoss._debug().entities.find(e=>e.role==='surveyor' && !e.dead);
+let cairns=undergroundBoss._debug().entities.filter(e=>e.role==='memoryCairn' && !e.dead);
+assert.equal(surveyor.name, 'Mara, the Last Surveyor', 'the final guardian is a named concrete molekin person');
+assert.equal(cairns.length, 2, 'Mara enters with readable memory-cairn targets');
+
+const surveyorHpBeforeArrow=surveyor.hp;
+assert.equal(undergroundBoss.damageAt(Math.floor(surveyor.x),Math.floor(surveyor.y),100,{kind:'arrow',source:'hero'}),true,'arrows damage Mara instead of inheriting the excavator ricochet rule');
+assert.ok(surveyor.hp<surveyorHpBeforeArrow,'Mara takes immediate damage while a cairn banks the remainder');
+assert.ok(surveyor.buriedDamage>=55,'memory cairns visibly bank most of a strike as buried damage');
+assert.equal(undergroundBoss.status().gasFear,0,'the excavator gas-fear rule does not leak into the personal duel');
+const hpBeforeCairn=cairns[0].hp;
+assert.equal(undergroundBoss.damageAt(Math.floor(cairns[0].x),Math.floor(cairns[0].y),20),true,'memory cairns are ordinary readable combat targets');
+assert.ok(cairns[0].hp<hpBeforeCairn,'memory cairns lose health through the shared damage pipeline');
+const surveyorBeforeRelease=surveyor.hp;
+assert.equal(undergroundBoss.damageAt(Math.floor(cairns[0].x),Math.floor(cairns[0].y),9999),true,'a memory cairn can be shattered');
+assert.ok(surveyor.hp<surveyorBeforeRelease,'shattering a cairn releases banked damage back into Mara');
+
+// The personal stage, its puzzle reserve, and its supporting figures survive save/load.
+undergroundBoss.damageAt(Math.floor(surveyor.x),Math.floor(surveyor.y),80,{kind:'melee',source:'hero'});
+const surveyorSnap=undergroundBoss.snapshot();
+assert.equal(surveyorSnap.v,2,'underground persistence schema records the two-stage guardian arc');
+assert.equal(surveyorSnap.shellBroken,true,'snapshot remembers that the excavator shell is gone');
+undergroundBoss.reset();
+undergroundBoss.restore(surveyorSnap);
+status=undergroundBoss.status();
+assert.equal(status.stage,'surveyor','reload resumes Mara rather than resurrecting Nyxolith');
+assert.ok(status.buriedDamage>0,'reload preserves Mara\'s banked damage reserve');
+undergroundBoss.restore({
+  v:2,unlocked:true,awakened:true,shellBroken:true,
+  entities:[
+    {role:'surveyor',id:'broken-surveyor',x:999999,y:-99999,vx:999,vy:-999,hp:99999,buriedDamage:99999,cairnCd:-4,lanternCd:999,collapseCd:-8,speechStep:999},
+    {role:'memoryCairn',id:'broken-cairn',x:-999999,y:999999,hp:99999,ownerId:'broken-surveyor'}
+  ]
+});
+let sanitizedSurveyor=undergroundBoss.status().entities.find(e=>e.role==='surveyor');
+let sanitizedCairn=undergroundBoss.status().entities.find(e=>e.role==='memoryCairn');
+assert.equal(sanitizedSurveyor.hp,undergroundBoss.config.SURVEYOR_HP,'restore clamps oversized Mara HP');
+assert.ok(sanitizedSurveyor.x>=L.minX+8 && sanitizedSurveyor.x<=L.maxX-8,'restore clamps Mara inside the stable vault');
+assert.equal(undergroundBoss.status().buriedDamage,undergroundBoss.config.SURVEYOR_BURIED_CAP,'restore clamps corrupt buried damage to its combat cap');
+assert.equal(sanitizedCairn.hp,undergroundBoss.config.SURVEYOR_CAIRN_HP,'restore clamps oversized memory-cairn HP');
+undergroundBoss.restore(surveyorSnap);
+surveyor=undergroundBoss._debug().entities.find(e=>e.role==='surveyor' && !e.dead);
+cairns=undergroundBoss._debug().entities.filter(e=>e.role==='memoryCairn' && !e.dead);
+
+// Force every final-stage timer together, then stress the resulting mixed pattern.
+surveyor.revealT=0;
+surveyor.attackCd=0;
+surveyor.lanternCd=0;
+surveyor.collapseCd=0;
+surveyor.cairnCd=0;
+undergroundBoss.update(0.05,globalThis.player,world.getTile,world.setTile);
+assert.ok(undergroundBoss._debug().hazards.some(h=>h.type==='shovelWave'),'Mara swings a travelling faultline with her spade');
+assert.ok(undergroundBoss._debug().hazards.some(h=>h.type==='surveyLine'),'Mara telegraphs a dodgeable lantern survey line');
+assert.ok(undergroundBoss.status().memoryCairns<=undergroundBoss.config.SURVEYOR_CAIRN_MAX,'Mara respects the memory-cairn cap');
+globalThis.player.hp=100000;
+const surveyStressStart=performance.now();
+for(let i=0;i<2700;i++) undergroundBoss.update(1/30,globalThis.player,world.getTile,world.setTile);
+const surveyStressMs=performance.now()-surveyStressStart;
+assert.ok(surveyStressMs<1800,'90 seconds of Mara patterns stays within the perf budget ('+surveyStressMs.toFixed(1)+' ms)');
+assert.ok(undergroundBoss.metrics().hazards<=undergroundBoss.config.HAZARD_CAP,'Mara stress simulation respects the shared hazard cap');
+assert.ok(undergroundBoss.metrics().effects<=undergroundBoss.config.EFFECT_CAP,'Mara stress simulation respects the shared effect cap');
+
+// Code-native render probe: every Canvas call is accepted and the figurative stage draws.
+let renderCalls=0;
+const gradient={addColorStop(){ renderCalls++; }};
+const drawCtx=new Proxy({}, {
+  get(target,key){
+    if(key in target) return target[key];
+    if(key==='createRadialGradient' || key==='createLinearGradient') return ()=>gradient;
+    return (...args)=>{ void args; renderCalls++; };
+  },
+  set(target,key,value){ target[key]=value; return true; }
+});
+assert.doesNotThrow(()=>undergroundBoss.draw(drawCtx,16,()=>true,L.minX,L.minY,1600,900,1),'the full underground guardian render pass accepts the figurative stage');
+assert.ok(renderCalls>40,'Mara, cairns, links, hazards and effects produce a substantial render pass');
+
+const grantedRewards=[];
+globalThis.MM.inventory={
+  itemScore(item){ return Math.round((Number(item && item.attackDamage)||0)*6+(Number(item && item.energyCapacityBonus)||0)*0.55); },
+  items(){ return [{id:'late-game-reference',kind:'weapon',weaponType:'melee',attackDamage:42}]; },
+  equippedItem(){ return null; },
+  grantItem(item,opts){ grantedRewards.push({item,opts}); return true; }
+};
+globalThis.player.hp=hpBeforeDeathBlast;
+cairns=undergroundBoss._debug().entities.filter(e=>e.role==='memoryCairn' && !e.dead);
+for(const cairn of cairns) undergroundBoss.damageAt(Math.floor(cairn.x),Math.floor(cairn.y),9999);
+surveyor=undergroundBoss._debug().entities.find(e=>e.role==='surveyor' && !e.dead);
+surveyor.hp=12;
+assert.equal(undergroundBoss.damageAt(Math.floor(surveyor.x),Math.floor(surveyor.y),9999),true,'direct damage can defeat Mara after the cairns are resolved');
+assert.equal(globalThis.inv.heartEarth, 1, 'defeating Mara awards heartEarth once');
+assert.equal(marks.earth, 1, 'progress records the earth guardian only after Mara falls');
+assert.equal(grantedRewards.length,1,'Mara grants one guaranteed personal relic');
+assert.equal(grantedRewards[0].item.id,'guardian_earth_surveyor_relic','Mara grants her unique Faultline Spade');
+assert.ok(globalThis.MM.inventory.itemScore(grantedRewards[0].item)>globalThis.MM.inventory.itemScore(globalThis.MM.inventory.items()[0]),'the final relic scales above the player\'s late-game weapon baseline');
+assert.ok(meteorites.metrics().craters > cratersBefore, 'Mara defeat uses the normal meteorite crater pipeline');
+assert.ok(undergroundBoss._debug().effects.some(e=>e.type==='lanternRest'),'Mara leaves a unique resting-lantern death effect');
+undergroundBoss.update(0.1,globalThis.player,world.getTile,world.setTile);
+assert.ok(undergroundBoss._debug().effects.some(e=>e.type==='lanternRest'),'final death visuals persist beyond the first post-defeat frame');
+assert.equal(undergroundBoss.status().entities.length,0,'post-defeat cleanup removes combat bodies while preserving visual payoff');
 const deathCrater = meteorites.snapshot().craters.at(-1);
 assert.equal(deathCrater.site, 'underground_boss_defeat', 'underground boss crater is tagged as its defeat impact');
 assert.ok(undergroundCollateralBlasts>=2,'underground boss death explosion also damages nearby mobs');
@@ -271,8 +373,13 @@ const rawRematch = undergroundBoss._debug().entities.find(e=>e.boss);
 undergroundBoss._debug().entities.filter(e=>e.role==='drone').forEach(e=>{ e.dead=true; });
 undergroundBoss._debug().forceEmerge();
 rawRematch.hp = 9;
-assert.equal(undergroundBoss.damageAt(Math.floor(rawRematch.x), Math.floor(rawRematch.y), 9999), true, 'debug rematch underground boss can be defeated');
+assert.equal(undergroundBoss.damageAt(Math.floor(rawRematch.x), Math.floor(rawRematch.y), 9999), true, 'debug rematch can break the excavator shell again');
+const rematchSurveyor=undergroundBoss._debug().entities.find(e=>e.role==='surveyor' && !e.dead);
+undergroundBoss._debug().entities.filter(e=>e.role==='memoryCairn').forEach(e=>{ e.dead=true; });
+rematchSurveyor.hp=9;
+assert.equal(undergroundBoss.damageAt(Math.floor(rematchSurveyor.x),Math.floor(rematchSurveyor.y),9999),true,'debug rematch can complete the personal stage again');
 assert.equal(globalThis.inv.heartEarth, 1, 'debug rematch does not duplicate heartEarth');
+assert.equal(grantedRewards.length,1,'debug rematch does not duplicate Mara\'s unique relic');
 
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
@@ -311,6 +418,10 @@ assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.
 assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /carveTunnelAt/, 'underground boss carves real terrain tunnels');
 assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /drawExcavatorBody/, 'underground boss renderer draws a figurative excavator body');
 assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /drawTreads/, 'underground boss renderer draws treads instead of only abstract rings');
+assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /drawSurveyor/, 'underground guardian ends with a dedicated concrete molekin figure renderer');
+assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /Faultline Spade/, 'Mara carries and awards a named personal earth weapon');
+assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /buriedDamage/, 'Mara converts memory cairns into a persisted backfilled-damage mechanic');
+assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /surveyLine/, 'Mara telegraphs a distinct lantern survey attack');
 assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /burrowBomb/, 'underground boss fight includes timed burrow bombs');
 assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /ZOMBIE_GOLEM_SPAWN_SECONDS:\s*30/, 'underground boss zombie golem waves use a 30 second cadence');
 assert.match(await readFile(new URL('../src/engine/underground_boss.js', import.meta.url), 'utf8'), /drawZombieGolem/, 'underground boss renderer draws figurative zombie golem attackers');

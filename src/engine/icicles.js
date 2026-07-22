@@ -349,6 +349,20 @@ window.MM = window.MM || {};
     for(const c of [...hang.values()]){ dropIcicle(c); n++; }
     return n;
   }
+  function dropAround(px,py,rx,ry){
+    px=Number(px); py=Number(py);
+    if(!Number.isFinite(px) || !Number.isFinite(py)) return 0;
+    const radiusX=Number(rx), radiusY=Number(ry);
+    rx=Number.isFinite(radiusX) ? clamp(radiusX,0,96) : 0;
+    ry=Number.isFinite(radiusY) ? clamp(radiusY,0,64) : rx;
+    let n=0;
+    for(const c of [...hang.values()]){
+      if(Math.abs(c.x-px)>rx || Math.abs(c.y-py)>ry) continue;
+      dropIcicle(c);
+      n++;
+    }
+    return n;
+  }
 
   function reset(){
     hang.clear(); shards.length=0; ghostHang.clear();
@@ -358,7 +372,7 @@ window.MM = window.MM || {};
     return {hanging:hang.size, shards:shards.length, fallen, hits, ghost:ghostHang.size};
   }
 
-  MM.icicles={update, draw, reset, metrics, seedAround, dropAll,
+  MM.icicles={update, draw, reset, metrics, seedAround, dropAll, dropAround,
     ghostIciclesIn, ghostApplyIciclesWindow, config:CFG,
     _debug:{hang, shards, ghostHang, eligible, scanAround, dropIcicle, hurtBodies, hash01}};
 })();

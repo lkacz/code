@@ -1,11 +1,14 @@
 #!/usr/bin/env node
-// Headless-Edge live QA for invasion extraction + the relocated minimap.
+// Headless-Edge live QA for invasion extraction, roster diversity, death FX,
+// and the relocated minimap.
 // Boots the real game, sinks a squad down a sealed shaft and watches the world
 // get them out — aliens on the saucer's tractor beam, kretoludzie by digging
 // back up to their own tunnel mouth. Also frames the minimap in its new corner.
 //   tools/invasion-escape-qa.png    minimap bottom-right on a normal PC frame
 //   tools/invasion-escape-qa-b.png  an alien riding the beam out of the shaft
 //   tools/invasion-escape-qa-c.png  a molekin surfacing near its burrow
+//   tools/invasion-escape-qa-d.png  a mixed pet-menagerie / airborne battle
+//   tools/invasion-escape-qa-e.png  all 16 unit forms in their unique death sequences
 // Usage: node tools/invasion-escape-qa.mjs [--url=http://127.0.0.1:8123/index.html]
 import { spawn } from 'node:child_process';
 import { writeFile, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -22,6 +25,8 @@ const [winW, winH] = opt('size', '960x540').split('x').map(Number);
 const outA = opt('out', 'tools/invasion-escape-qa.png');
 const outB = outA.replace(/\.png$/, '-b.png');
 const outC = outA.replace(/\.png$/, '-c.png');
+const outD = outA.replace(/\.png$/, '-d.png');
+const outE = outA.replace(/\.png$/, '-e.png');
 
 const EDGE_CANDIDATES = [
 	'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -150,6 +155,73 @@ const STAGE_C = `(async()=>{ ${HELPERS}
 		'dxToMouth '+wasDx.toFixed(1)+'->'+dx.toFixed(1),'hp='+a.hp].join(' :: ');
 })()`;
 
+// Scene D: the procedural roster itself. Put an Alien menagerie on one side and
+// an airborne Molekin wing on the other, then prove that the live renderer and
+// simulation retain the generated forms, pets, flyers, and weapon families.
+const STAGE_D = `(async()=>{ ${HELPERS}
+	MM.invasions.reset();
+	const craft=document.getElementById('craft');
+	const craftToggle=document.getElementById('craftToggle');
+	if(craft&&craft.dataset.collapsed!=='true'&&craftToggle) craftToggle.click();
+	player.hp=player.maxHp; player.vx=0; player.vy=0;
+	const aliens=MM.invasions.forceNightInvasion(player,T,S,{day:24,teams:1,kind:'aliens',playerLevel:40,encounter:'menagerie',loadoutSeed:7301,forceVisible:true,immediate:true});
+	const moles=MM.invasions.forceMolekinInvasion(player,T,S,{day:24,teams:1,playerLevel:40,encounter:'airborne',loadoutSeed:7302,forceVisible:true,immediate:true});
+	if(!aliens[0]||!moles[0]) return 'D FAILED :: procedural teams did not spawn';
+	await sleep(1800);
+	const units=[...aliens[0].aliens,...moles[0].aliens].filter(a=>a&&!a.dead&&a.hp>0);
+	const forms=new Set(units.map(a=>a.form));
+	const weapons=new Set(units.map(a=>a.weaponType));
+	const pets=units.filter(a=>a.isPet).length;
+	const flyers=units.filter(a=>a.mobility!=='ground').length;
+	const ok=units.length>=16&&forms.size>=7&&weapons.size>=5&&pets>=5&&flyers>=5;
+	return ['D '+(ok?'ok':'FAILED'),'units='+units.length,'forms='+forms.size,'weapons='+weapons.size,'pets='+pets,'flyers='+flyers].join(' :: ');
+})()`;
+
+// Scene E: death readability. Spawn complete wildcard rosters plus their rare
+// colossi, retain one representative of every form, and kill those sixteen on
+// the same frame. The team is immediately defeated, proving the independent FX
+// layer keeps the final falls on screen instead of hiding them with the roster.
+const STAGE_E = `(async()=>{ ${HELPERS}
+	MM.invasions.reset();
+	const craft=document.getElementById('craft');
+	const craftToggle=document.getElementById('craftToggle');
+	if(craft&&craft.dataset.collapsed!=='true'&&craftToggle) craftToggle.click();
+	player.hp=player.maxHp;player.vx=0;player.vy=0;
+	const spawned=[];
+	spawned.push(MM.invasions.forceNightInvasion(player,T,S,{day:24,teams:1,kind:'aliens',playerLevel:40,encounter:'wildcard',loadoutSeed:8201,forceVisible:true,immediate:true})[0]);
+	spawned.push(MM.invasions.forceNightInvasion(player,T,S,{day:24,teams:1,kind:'aliens',playerLevel:40,encounter:'colossus',loadoutSeed:8202,forceVisible:true,immediate:true})[0]);
+	spawned.push(MM.invasions.forceMolekinInvasion(player,T,S,{day:24,teams:1,playerLevel:40,encounter:'wildcard',loadoutSeed:8203,forceVisible:true,immediate:true})[0]);
+	spawned.push(MM.invasions.forceMolekinInvasion(player,T,S,{day:24,teams:1,playerLevel:40,encounter:'colossus',loadoutSeed:8204,forceVisible:true,immediate:true})[0]);
+	if(spawned.some(t=>!t)) return 'E FAILED :: death-gallery teams did not spawn';
+	const wanted={
+		aliens:['trooper','skitter','razorhound','glider','jelly','jetpack','brute','colossus'],
+		molekin:['miner','tunnel_hound','ember_mite','cave_bat','drill_beetle','rocket_mole','brute','colossus']
+	};
+	const reps=[];
+	for(const kind of ['aliens','molekin']) for(const form of wanted[kind]){
+		let found=null,owner=null;
+		for(const team of spawned){if(team.kind!==kind) continue;const a=team.aliens.find(u=>u.form===form);if(a){found=a;owner=team;break;}}
+		if(found) reps.push({team:owner,a:found});
+	}
+	if(reps.length!==16) return 'E FAILED :: only '+reps.length+'/16 death forms generated';
+	const keep=new Set(reps.map(r=>r.a));
+	for(const team of spawned) for(const a of team.aliens) if(!keep.has(a)){a.hp=0;a.dead=true;a.deathFxSpawned=true;}
+	const baseX=player.x,baseY=player.y;
+	reps.forEach((r,i)=>{
+		r.a.x=baseX+(i%8-3.5)*2.25;
+		r.a.y=baseY+(i<8?-2.65:0.05);
+		r.a.vx=(i%2?1:-1)*0.24;r.a.vy=0;r.a.facing=i%2?1:-1;r.a.onGround=i>=8;
+		MM.invasions._debug.finalizeAlienDeath(r.team,r.a,{weaponType:i%3===0?'electric':(i%3===1?'bow':'melee'),suppressReaction:true});
+	});
+	await sleep(360);
+	const fx=MM.invasions._debug.deathFx;
+	const styles=new Set(fx.map(v=>v.style));
+	const forms=new Set(fx.map(v=>v.kind+':'+v.form));
+	const giants=fx.filter(v=>v.giant).length;
+	const ok=fx.length===16&&styles.size===16&&forms.size===16&&giants===2;
+	return ['E '+(ok?'ok':'FAILED'),'deathEffects='+fx.length,'styles='+styles.size,'forms='+forms.size,'giants='+giants].join(' :: ');
+})()`;
+
 async function main(){
 	const { existsSync } = await import('node:fs');
 	const edge = EDGE_CANDIDATES.find(p => existsSync(p)) || EDGE_CANDIDATES[0];
@@ -220,6 +292,8 @@ async function main(){
 		await run('stage B', STAGE_B, null);
 		await run('stage B-shot', STAGE_B_SHOT, outB);
 		await run('stage C', STAGE_C, outC);
+		await run('stage D', STAGE_D, outD);
+		await run('stage E', STAGE_E, outE);
 
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 3).join('\n---\n'));
 		console.log(failed ? 'invasion-escape-qa: FAILED' : 'invasion-escape-qa: ALL SCENES OK');

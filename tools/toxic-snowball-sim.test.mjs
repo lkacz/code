@@ -25,6 +25,30 @@ const { T } = await import('../src/constants.js');
 const { weapons } = await import('../src/engine/weapons.js');
 assert.ok(weapons, 'weapons module exports');
 
+// Impact metadata must distinguish actual snow from the older broad `snowball`
+// shape flag shared by every round thrown projectile.
+const trueSnowOpts=weapons._debug.projectileImpactOpts({snowball:true,thrown:true,splat:'snow'});
+assert.equal(trueSnowOpts.element,'ice','plain snow carries the ice element');
+assert.equal(trueSnowOpts.snowball,true,'plain snow is marked as the Guardian secret weapon');
+const toxicSnowOpts=weapons._debug.projectileImpactOpts({snowball:true,splat:'toxic',tier:'toxicSnowball'});
+assert.equal(toxicSnowOpts.element,'ice','toxic bow snowballs still carry ice metadata');
+assert.equal(toxicSnowOpts.cause,'toxic_snowball','toxic snow preserves its status cause');
+const balloonOpts=weapons._debug.projectileImpactOpts({snowball:true,thrown:true,splat:'wet'});
+assert.equal(balloonOpts.element,'water','water balloons are classified as water, not ice');
+assert.equal(balloonOpts.snowball,false,'water balloons cannot exploit snowball-only weaknesses');
+assert.equal(balloonOpts.kind,'thrown','water balloons retain their thrown-weapon identity');
+const spitOpts=weapons._debug.projectileImpactOpts({thrown:true,splat:'spit'});
+assert.equal(spitOpts.element,'water','spitting carries water metadata into Guardian combat');
+assert.equal(spitOpts.spit,true,'spitting retains its distinct second-best coolant identity');
+assert.equal(spitOpts.cause,'spit','spitting carries an explicit impact cause');
+for(const [splat,cause] of [['gascloud','gas_grenade'],['bomb','sticky_bomb']]){
+  const opts=weapons._debug.projectileImpactOpts({snowball:true,thrown:true,splat});
+  assert.equal(opts.element,undefined,splat+' carries no fabricated ice element');
+  assert.equal(opts.snowball,false,splat+' is not marked as a true snowball');
+  assert.equal(opts.cause,cause,splat+' preserves its own impact cause');
+}
+assert.equal(weapons._debug.projectileImpactOpts({fire:true,tier:'wood'}).element,'fire','burning arrows carry explicit fire metadata');
+
 // flat world: solid floor at y=5, wall at x=12
 const getTile=(x,y)=>{
   if(y>=5) return T.STONE;

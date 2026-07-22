@@ -93,9 +93,28 @@ never prints a bare "go to X":
    from `STORY_LORE.progressionBeats`) and both horizons open as goals: the West
    Ice Guardian (rejection/emotional cold) and the East Fire Guardian (unanswered
    passion), ±10 000 columns out (`guardian_lairs.js`).
+   Physical arena entry wakes either gate even before the tutorial is complete.
+   The West is the stable **Palace of Rejected Seasons**: bedrock-rooted Mother Ice,
+   every permafrost material, snow drifts, working icicles, breakable thin-ice mirror
+   pools, aurora weather and Aurex's four-pattern sovereign fight. Breaking Aurex
+   reveals **Sile, the Choir Beneath the Ice**, five heartglass voices whose ward
+   resets on deliberate player strikes; lingering effects, pets and turrets are
+   blocked without deadlocking the puzzle. Briefly listening instead of attacking opens a
+   generous answer window, where fire is strongest but every loadout works. The
+   shell/reveal stage persists across reloads, and only releasing Sile awards the
+   Heart of Ice, the frost-bearing Heartglass Refrain and underground progress.
 3. **Trzeci Kret** — both elemental hearts open the alien passage down to
-   Nyxolith, the buried-memory mole (`underground_boss.js`). The gate self-heals
-   into place on old saves.
+   Nyxolith, the buried-memory mole (`underground_boss.js`). Its armored Root
+   Kernel drills real tunnels, plants delayed burrow bombs, commands cutter and
+   backfill drones, and wakes zombie golems that fire can cook into allies. Gas
+   panics the machine and amplifies damage; arrows ricochet until it surfaces.
+   Breaking that shell reveals **Mara, the Last Surveyor**, a concrete molekin
+   figure with miner clothes, helmet lamp, lantern and faultline spade. Her memory
+   cairns bank part of each hit as buried damage; breaking a cairn makes that debt
+   return visibly, while her shovel waves and telegraphed survey lines demand
+   movement. This shell/reveal stage persists across reloads. Only Mara's defeat
+   awards the Heart of Earth, her progression-scaled Faultline Spade and the
+   colossal final crater. The gate self-heals into place on old saves.
 4. **Niebo niespelnienia** — the earth heart raises the **Tower of Ambition**, a
    climbable ladder spire from the surface to the Sky Gate arena (ladder cells are
    infrastructure overlays; the hatch through the arena floor is a steel trapdoor

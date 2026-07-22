@@ -30,10 +30,10 @@ const STORY_LORE = {
       earth_mole:{
         id:'earth_mole',
         stage:'underground',
-        name:'Trzeci Kret',
+        name:'Mara, Ostatnia Geodetka',
         symbol:'wyparte wspomnienie zakopane zbyt gleboko',
-        reveal:'Podziemny kret jest tym, co chce zostac ukryte: wspomnieniem lub prawda tak ciezka, ze symulacja uczy ja ryc tunele zamiast wyjsc na powierzchnie.',
-        motifs:['tunel pod pamiecia','pazur zamiast przyznania','kamien nad sekretem','oddech spod ziemi']
+        reveal:'Nyxolith jest maszyna uniku. W jego peknietej skorupie siedzi Mara, konkretna kretka-geodetka, ktora zakopywala trudne wspomnienie w kopcach wyparcia, wymowki i wstydu, az symulacja uznala je za bezpieczne dane.',
+        motifs:['tunel pod pamiecia','lopata, ktora odkopuje i usprawiedliwia','kopiec z odlozonego bolu','latarnia mierzaca prawde']
       },
       sky_ambition:{
         id:'sky_ambition',
@@ -72,7 +72,7 @@ const STORY_LORE = {
     {
       id:'earth_mole',
       stage:'underground',
-      reveal:'Trzeci Kret i podziemne tunele sugeruja, ze sama ziemia tez jest aktywna warstwa programu. W glebszej warstwie to prawda, ktora chciala zostac zakopana.'
+      reveal:'Trzeci Kret i podziemne tunele sugeruja, ze sama ziemia tez jest aktywna warstwa programu. Po rozbiciu maszyny wychodzi Mara, Ostatnia Geodetka: osoba, ktora nazywala zakopywanie pamieci redundancja. Rozbite kopce oddaja jej odlozony bol, a prawda okazuje sie mniejsza niz wykopany dla niej tunel.'
     },
     {
       id:'sky_guardian',

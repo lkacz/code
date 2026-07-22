@@ -64,6 +64,14 @@ const player = {x:0,y:49,hp:100,maxHp:100,vx:0,vy:0,xp:0};
 let saveMarks = 0;
 const physicalChests=[];
 MM.drops={spawnChest(x,y,tier,opts){ const d={id:physicalChests.length+1,x,y,tier,opts}; physicalChests.push(d); return d; }};
+const deathParticleCalls=[];
+MM.particles={
+  spawnBurst(...args){ deathParticleCalls.push(['burst',...args]); },
+  spawnSparks(...args){ deathParticleCalls.push(['sparks',...args]); },
+  spawnImpactChips(...args){ deathParticleCalls.push(['chips',...args]); },
+  spawnSmoke(...args){ deathParticleCalls.push(['smoke',...args]); },
+  spawnSplash(...args){ deathParticleCalls.push(['splash',...args]); }
+};
 const ctx = {getTile,setTile,spawnBurst(){},msg:globalThis.msg,ensureChunkAtY(){},notifyStructureTileChanged(){},saveState(){ saveMarks++; }};
 
 invasions.reset();
@@ -167,8 +175,8 @@ assert.equal(getTile(34,49), T.AIR, 'offscreen molekin despawn removes temporary
 assert.ok(saveMarks >= 1, 'offscreen molekin despawn marks the host save dirty');
 simDayFloat = 2;
 
-// player-level scaling keeps pressure visible: more squads, more aliens,
-// stronger visible grades/weapons, better XP and better reward odds.
+// Player-level scaling keeps pressure visible without front-loading the second
+// squad: stronger bodies arrive first, then another team in the mid-game.
 invasions.reset();
 overrides.clear();
 player.xp = 0;
@@ -181,7 +189,7 @@ const highPressure = invasions.forceNightInvasion(player,getTile,setTile,{day:3}
 const highTeam = highPressure[0];
 const highRewardProfile = invasions._debug.rewardProfileForTeam(highTeam,player);
 assert.ok(highTeam.playerLevel > lowTeam.playerLevel, 'high-XP hero maps to a higher invasion player level');
-assert.ok(highPressure.length > lowPressure.length, 'high-level hero attracts more alien teams at the same world day');
+assert.ok(highPressure.length >= lowPressure.length, 'higher-level pressure never removes teams at the same world day');
 assert.ok(highTeam.alienCount > lowTeam.alienCount, 'high-level invasion squads field more aliens at the same world day');
 assert.ok(highTeam.threatLevel > lowTeam.threatLevel, 'high-level invasion records a higher threat level');
 assert.ok(highTeam.grade > lowTeam.grade, 'high-level invasion records a visible higher alien grade');
@@ -191,6 +199,199 @@ assert.ok(highRewardProfile.dropChance > lowRewardProfile.dropChance, 'high-leve
 assert.ok(highRewardProfile.rareChance > lowRewardProfile.rareChance, 'high-level invasion has better rare chest odds');
 assert.ok(highRewardProfile.epicChance > lowRewardProfile.epicChance, 'high-level invasion has better epic chest odds');
 assert.ok(highRewardProfile.maxDrops >= lowRewardProfile.maxDrops, 'high-level invasion can award at least as many reward chests');
+
+// Long-form guardrail: every ten-level band through 50 must add a meaningful
+// axis of pressure, while loot probabilities remain a real probability ladder.
+const levelBands = [1,10,20,30,40,50];
+const bandPlans = levelBands.map(playerLevel=>{
+  const day = 3;
+  const threatLevel = invasions._debug.threatLevelFor(day,playerLevel,{});
+  invasions.reset();
+  const team = invasions.forceNightInvasion(player,getTile,setTile,{
+    day,teams:1,kind:'aliens',playerLevel,forceVisible:true,immediate:true
+  })[0];
+  const reward = invasions._debug.rewardProfileForTeam(team,player);
+  return {
+    playerLevel,
+    threatLevel,
+    grade:team.grade,
+    units:team.alienCount,
+    elites:team.eliteCount,
+    xp:team.xpReward,
+    naturalTeams:Math.min(2,invasions._debug.teamCountForDay(day,playerLevel,threatLevel)),
+    reward
+  };
+});
+for(let i=1;i<bandPlans.length;i++){
+  assert.ok(bandPlans[i].threatLevel > bandPlans[i-1].threatLevel, 'threat rises from level '+bandPlans[i-1].playerLevel+' to '+bandPlans[i].playerLevel);
+  assert.ok(bandPlans[i].units >= bandPlans[i-1].units, 'bounded squad size never falls across level bands');
+  assert.ok(bandPlans[i].elites >= bandPlans[i-1].elites, 'elite accents never fall across level bands');
+  assert.ok(bandPlans[i].xp > bandPlans[i-1].xp, 'XP rewards keep progressing through level '+bandPlans[i].playerLevel);
+  assert.ok(bandPlans[i].reward.dropChance >= bandPlans[i-1].reward.dropChance, 'drop chance never falls across level bands');
+}
+assert.deepEqual(bandPlans.map(b=>b.grade),[0,1,1,2,2,3], 'visible grades are spread across the level-1-to-50 arc');
+assert.deepEqual(bandPlans.map(b=>b.elites),[0,0,0,1,2,2], 'larger late squads retain a bounded elite accent');
+assert.deepEqual(bandPlans.map(b=>b.naturalTeams),[1,1,2,2,2,2], 'natural squad count steps up once and remains capped at two');
+assert.ok(invasions._debug.xpRewardForTeam(1,3,1,1) < 213, 'first-night XP cannot jump a fresh hero straight from level 1 to 3');
+const level50Plan = bandPlans.at(-1);
+assert.ok(level50Plan.xp >= 1500 && level50Plan.xp <= 2300, 'level-50 squad pays meaningful but bounded XP');
+assert.equal(level50Plan.reward.maxDrops,3, 'third possible chest unlocks at the level-50 endgame band');
+for(const band of bandPlans){
+  const tierTotal = band.reward.legendaryChance + band.reward.epicChance + band.reward.rareChance;
+  assert.ok(tierTotal <= 0.900001, 'reward tiers reserve common/uncommon space at level '+band.playerLevel);
+}
+
+// Procedural encounter deck: nightly squads can be mixed patrols, pet-heavy
+// menageries, airborne wings, weapon showcases, swarms, colossi, or wildcards.
+// Each archetype has a real combat silhouette and deterministic saved loadout.
+const encounterDeck = ['patrol','menagerie','airborne','arsenal','swarm','colossus','wildcard'];
+const diversityTotals = {};
+let diversitySnapshot = null;
+let diversitySignature = null;
+for(const kind of ['aliens','molekin']){
+  const factionForms = new Set();
+  const factionWeapons = new Set();
+  for(let encounterIndex=0; encounterIndex<encounterDeck.length; encounterIndex++){
+    const encounter = encounterDeck[encounterIndex];
+    invasions.reset();
+    const team = invasions.forceNightInvasion(player,getTile,setTile,{
+      day:24,teams:1,kind,playerLevel:40,encounter,loadoutSeed:7300+encounterIndex,
+      forceVisible:true,immediate:true
+    })[0];
+    assert.ok(team,kind+' '+encounter+' encounter spawns');
+    assert.equal(team.encounter,encounter,kind+' persists the requested '+encounter+' identity');
+    assert.equal(team.aliens.length,team.alienCount,kind+' '+encounter+' fills its planned roster');
+    assert.ok(team.aliens.every(a=>a.form && a.weaponType && a.mobility),kind+' '+encounter+' gives every unit a saved form, weapon, and mobility type');
+    for(const a of team.aliens){ factionForms.add(a.form); factionWeapons.add(a.weaponType); }
+    if(encounter === 'patrol') assert.ok(new Set(team.aliens.map(a=>a.form)).size >= 2,kind+' patrol mixes soldiers with a nonstandard body form');
+    if(encounter === 'menagerie'){
+      assert.ok(team.aliens.length >= 6,kind+' menagerie expands beyond a small tactical squad');
+      assert.ok(team.aliens.filter(a=>a.isPet).length >= team.aliens.length-1,kind+' menagerie is led by one handler and many procedural pets');
+      assert.ok(new Set(team.aliens.map(a=>a.form)).size >= 5,kind+' menagerie cycles through at least four different pet species');
+    }
+    if(encounter === 'airborne'){
+      assert.ok(team.aliens.filter(a=>a.mobility !== 'ground').length >= team.aliens.length-1,kind+' airborne wing is genuinely aerial');
+    }
+    if(encounter === 'arsenal'){
+      assert.ok(new Set(team.aliens.map(a=>a.weaponType)).size >= (kind==='aliens'?6:5),kind+' arsenal fields many mechanically different weapons');
+    }
+    if(encounter === 'swarm'){
+      assert.ok(team.aliens.length >= 18 && team.aliens.length <= 30,kind+' swarm fills the screen with 18-30 bodies');
+      assert.ok(team.aliens.every(a=>a.isPet && a.chaff),kind+' swarm spends its budget on weak creatures instead of elites');
+    }
+    if(encounter === 'colossus'){
+      const giants=team.aliens.filter(a=>a.giant);
+      const escorts=team.aliens.filter(a=>!a.giant);
+      assert.equal(giants.length,1,kind+' colossus encounter has exactly one giant centerpiece');
+      assert.ok(!escorts.length || giants[0].maxHp > Math.max(...escorts.map(a=>a.maxHp))*3,kind+' giant has unmistakably more durability than its escorts');
+    }
+    if(encounter === 'wildcard'){
+      assert.ok(new Set(team.aliens.map(a=>a.form)).size >= 6,kind+' wildcard guarantees an over-the-top mixture of silhouettes');
+      if(kind === 'aliens'){
+        diversitySnapshot=invasions.snapshot();
+        diversitySignature=team.aliens.map(a=>[a.form,a.weaponType,a.mobility,a.isPet,a.giant]);
+      }
+    }
+  }
+  diversityTotals[kind]={forms:factionForms.size,weapons:factionWeapons.size};
+}
+assert.ok(diversityTotals.aliens.forms >= 8 && diversityTotals.molekin.forms >= 8,'both factions expose at least eight body forms across the encounter deck');
+assert.ok(diversityTotals.aliens.weapons >= 7 && diversityTotals.molekin.weapons >= 6,'both factions expose their complete varied weapon families');
+invasions.reset();
+assert.equal(invasions.restore(diversitySnapshot,getTile,setTile),true,'procedural invasion snapshot restores');
+assert.deepEqual(invasions.state().teams[0].aliens.map(a=>[a.form,a.weaponType,a.mobility,a.isPet,a.giant]),diversitySignature,'forms, weapons, pets, flyers, and giants survive save/restore exactly');
+
+// Death grammar is as diverse as the living roster: every one of the sixteen
+// body forms owns a different, persistent visual verb, while a deterministic
+// per-entity seed keeps fragment trajectories from looking stamped out.
+const deathForms={
+  aliens:['trooper','skitter','razorhound','glider','jelly','jetpack','brute','colossus'],
+  molekin:['miner','tunnel_hound','ember_mite','cave_bat','drill_beetle','rocket_mole','brute','colossus']
+};
+const petForms=new Set(['skitter','razorhound','glider','jelly','tunnel_hound','ember_mite','cave_bat','drill_beetle']);
+const deathStyles=new Set();
+for(const [kind,forms] of Object.entries(deathForms)){
+  for(const form of forms){
+    const profile=invasions._debug.deathProfileFor({kind},{kind,form});
+    assert.ok(profile.style&&profile.life>=0.75,kind+' '+form+' has a readable persistent death profile');
+    assert.ok(!deathStyles.has(profile.style),kind+' '+form+' does not reuse another body form death animation');
+    deathStyles.add(profile.style);
+  }
+}
+assert.equal(deathStyles.size,16,'all sixteen invasion body forms have unique death animations');
+
+invasions.reset();
+deathParticleCalls.length=0;
+let deathDummySeq=0;
+for(const [kind,forms] of Object.entries(deathForms)){
+  for(const form of forms){
+    const giant=form==='colossus';
+    const id='death_dummy_'+(deathDummySeq++);
+    const body={
+      id,teamId:'death_team_'+kind,kind,x:10+(deathDummySeq%8)*1.5,y:49,vx:(deathDummySeq%3-1)*0.25,vy:0,
+      hp:10,maxHp:10,dead:false,facing:deathDummySeq%2?-1:1,onGround:true,role:'rusher',form,weaponType:kind==='molekin'?'stone':'pulse',
+      isPet:petForms.has(form),giant,chaff:false,elite:false,grade:1,weaponTier:1,hitboxScale:giant?2.25:1,phase:deathDummySeq*0.37,
+      variant:{body:giant?2.25:1,height:giant?2.2:1,head:1,eye:1,arm:1,leg:1,gait:1,glow:1,tail:1,wing:1,horn:1,pattern:deathDummySeq%6}
+    };
+    const team={id:body.teamId,kind,state:'active',aliens:[body],reactionCooldowns:{}};
+    assert.ok(invasions._debug.finalizeAlienDeath(team,body,{weaponType:deathDummySeq%2?'electric':'bow',suppressReaction:true}),kind+' '+form+' finalizes through the shared death path');
+    assert.ok(body.dead&&body.hp===0&&body.deathFxSpawned,kind+' '+form+' is dead and cannot emit a duplicate effect');
+  }
+}
+assert.equal(invasions.metrics().deathEffects,16,'all simultaneous form deaths remain visible after their bodies are removed');
+assert.equal(invasions.metrics().deathStyles,16,'the live death layer contains all sixteen distinct form animations');
+assert.equal(new Set(invasions._debug.deathFx.map(fx=>fx.seed)).size,16,'each dead individual receives a distinct deterministic breakup seed');
+assert.ok(deathParticleCalls.filter(c=>c[0]==='chips').length>=16,'every death emits physical impact fragments in addition to its canvas animation');
+assert.ok(invasions._debug.deathFx.filter(fx=>fx.giant).every(fx=>fx.life>=2.7),'both colossi receive long multi-stage collapse sequences');
+
+let deathDrawOps=0;
+const gradient={addColorStop(){ deathDrawOps++; }};
+const deathDrawCtx={
+  globalAlpha:1,globalCompositeOperation:'source-over',fillStyle:'',strokeStyle:'',lineWidth:1,lineCap:'round',font:'',textAlign:'center',textBaseline:'middle',
+  save(){deathDrawOps++;},restore(){deathDrawOps++;},translate(){deathDrawOps++;},rotate(){deathDrawOps++;},scale(){deathDrawOps++;},
+  beginPath(){deathDrawOps++;},closePath(){deathDrawOps++;},moveTo(){deathDrawOps++;},lineTo(){deathDrawOps++;},quadraticCurveTo(){deathDrawOps++;},bezierCurveTo(){deathDrawOps++;},
+  arc(){deathDrawOps++;},ellipse(){deathDrawOps++;},rect(){deathDrawOps++;},clip(){deathDrawOps++;},fill(){deathDrawOps++;},stroke(){deathDrawOps++;},fillRect(){deathDrawOps++;},strokeRect(){deathDrawOps++;},
+  fillText(){deathDrawOps++;},strokeText(){deathDrawOps++;},setLineDash(){deathDrawOps++;},measureText(text){return {width:String(text).length*6};},
+  createLinearGradient(){return gradient;},createRadialGradient(){return gradient;}
+};
+for(let i=0;i<5;i++) invasions._debug.updateDeathFx(0.08);
+invasions._debug.drawDeathEffects(deathDrawCtx,20,()=>true,performance.now());
+assert.ok(deathDrawOps>500,'the form-specific death layer performs substantial visible rendering work');
+
+const deathRoster=invasions.ghostRoster();
+assert.equal(deathRoster.deaths.length,16,'multiplayer pose stream carries every recent death event');
+invasions.reset();
+assert.ok(invasions.ghostApplyRoster(deathRoster),'a guest accepts a death-only roster update');
+assert.equal(invasions.metrics().deathEffects,16,'a guest reconstructs all remote form-specific deaths');
+invasions.ghostApplyRoster(deathRoster);
+assert.equal(invasions.metrics().deathEffects,16,'repeated ghost packets cannot duplicate a death effect');
+for(let i=0;i<46;i++) invasions._debug.updateDeathFx(0.08);
+assert.equal(invasions.metrics().deathEffects,0,'death effects expire cleanly after their readable animation window');
+
+invasions.reset();
+const firstPatrol=invasions.forceNightInvasion(player,getTile,setTile,{day:24,teams:1,kind:'aliens',playerLevel:40,encounter:'patrol',loadoutSeed:101,forceVisible:true,immediate:true})[0];
+const firstPatrolSignature=firstPatrol.aliens.map(a=>a.form+':'+a.weaponType).join('|');
+invasions.reset();
+const secondPatrol=invasions.forceNightInvasion(player,getTile,setTile,{day:24,teams:1,kind:'aliens',playerLevel:40,encounter:'patrol',loadoutSeed:202,forceVisible:true,immediate:true})[0];
+assert.notEqual(secondPatrol.aliens.map(a=>a.form+':'+a.weaponType).join('|'),firstPatrolSignature,'different squad seeds produce different same-archetype rosters');
+
+invasions.reset();
+const laserArsenal=invasions.forceNightInvasion(player,getTile,setTile,{day:24,teams:1,kind:'aliens',playerLevel:40,encounter:'arsenal',loadoutSeed:303,forceVisible:true,immediate:true})[0];
+const scatterAlien=laserArsenal.aliens.find(a=>a.weaponType==='scatter');
+assert.ok(scatterAlien,'alien arsenal includes a scatter-laser carrier');
+const laserCountBefore=invasions._debug.lasers.length;
+const scatterCharge=invasions._debug.fireAlienLaser(scatterAlien,laserArsenal,player,getTile,setTile,ctx,{aimX:scatterAlien.x+6,aimY:scatterAlien.y-2});
+invasions._debug.releaseAlienLaser(scatterAlien,laserArsenal,player,getTile,setTile,ctx,scatterCharge);
+assert.equal(invasions._debug.lasers.length-laserCountBefore,3,'scatter laser releases three genuinely separate beams');
+assert.ok(invasions._debug.lasers.slice(-3).every(l=>l.kind==='alien_scatter'),'scatter beams preserve their distinct visual weapon identity');
+
+invasions.reset();
+const moleArsenal=invasions.forceNightInvasion(player,getTile,setTile,{day:24,teams:1,kind:'molekin',playerLevel:40,encounter:'arsenal',loadoutSeed:404,forceVisible:true,immediate:true})[0];
+const firepotMole=moleArsenal.aliens.find(a=>a.weaponType==='firepot');
+assert.ok(firepotMole,'molekin arsenal includes a firepot thrower');
+const firepotShot=invasions._debug.fireMolekinAttack(firepotMole,moleArsenal,player,getTile,setTile,ctx,{aimX:firepotMole.x+5,aimY:firepotMole.y-1});
+assert.equal(firepotShot.weaponType,'firepot','molekin projectile preserves its selected weapon family');
+assert.ok(firepotShot.heavy && firepotShot.hazardChance >= 0.5 && firepotShot.radius > 0.2,'firepot has a large, heavy, hazard-producing combat profile');
 invasions.reset();
 player.xp = 12000;
 invasions.forceNightInvasion(player,getTile,setTile,{day:3,teams:1});
@@ -209,7 +410,9 @@ player.xp = 12000;
 const rewardSquad = invasions.forceNightInvasion(player,getTile,setTile,{day:3,teams:1,alienCount:1,forceRewardChance:1,forceRewardTier:'epic'})[0];
 const rewardLander = rewardSquad.lander;
 assert.ok(invasions.damageAt(Math.floor(rewardLander.x),Math.floor(rewardLander.y),9999), 'hero can destroy a reward-scaled invasion lander');
+assert.ok(invasions._debug.deathFx.some(fx=>fx.style==='alien_lander_breakup'),'destroyed lander gets a persistent hull-breakup sequence instead of only disappearing into one particle burst');
 invasions.update(0.1, player, getTile, setTile, ctx);
+assert.ok(invasions.metrics().deathEffects>=1,'the final lander destruction remains visible after its team is defeated');
 assert.ok(physicalChests.some(d=>d.tier==='epic' && d.opts.source==='invasion'), 'defeating a high-level alien squad drops a physical epic reward chest');
 assert.ok(![...overrides.values()].some(t=>[T.CHEST_COMMON,T.CHEST_UNCOMMON,T.CHEST_RARE,T.CHEST_EPIC,T.CHEST_LEGENDARY].includes(t)), 'invasion rewards never write chest blocks');
 player.xp = 0;
@@ -229,7 +432,9 @@ assert.ok(invasions.metrics().aliens >= 1, 'landing completes by deploying small
 state = invasions.state();
 const alien = state.teams[0].aliens[0];
 assert.ok(invasions.attackAt(Math.floor(alien.x),Math.floor(alien.y-0.45),500), 'melee attacks can hit small aliens');
+assert.equal(invasions._debug.deathFx.at(-1).form,alien.form,'ordinary attacks route the killed body form into its matching death sequence');
 invasions.update(0.1, player, getTile, setTile, ctx);
+assert.ok(invasions.metrics().deathEffects>=1,'the final alien death remains visible after team defeat and XP payout');
 assert.ok(invasions.metrics().activeTeams === 0 || player.xp > 0, 'killing the final alien can finish the team');
 
 // --- tactical AI integration ------------------------------------------------
@@ -1115,9 +1320,9 @@ assert.match(weaponsSrc, /damageBlastCreatures\(MM,wx,wy,R\+1\.5,14/, 'gas explo
   MM.background = {timeInfo:()=>({phase:'night', isDay:false, hour:23})};
 }
 
-{ // --- squad size scales by QUALITY, not headcount: regular teams cap at 8,
+{ // --- squad size balances quality and headcount: regular teams cap at 10,
   // the old curve's surplus units come back as elites (+1 grade/tier, tougher,
-  // shinier), and an occasional HORDE trades quality for a 14-20 mass of the
+  // shinier), and an occasional HORDE trades quality for an 18-30 mass of the
   // weakest units. Bounded populations are also the fps guarantee that dawn
   // retreat + the spawn gate rest on.
   invasions.reset();
@@ -1128,7 +1333,7 @@ assert.match(weaponsSrc, /damageBlastCreatures\(MM,wx,wy,R\+1\.5,14/, 'gas explo
   const late = invasions.forceNightInvasion(player,getTile,setTile,{day:60,teams:2,forceVisible:true,immediate:true});
   assert.equal(late.length, 2, 'late-game probe stages two teams');
   for(const t of late){
-    assert.ok(t.aliens.length >= 3 && t.aliens.length <= 8, 'late-game regular team fields 3-8 units, never the old 18 ('+t.aliens.length+')');
+    assert.ok(t.aliens.length >= 3 && t.aliens.length <= 10, 'late-game regular team stays bounded at 3-10 units ('+t.aliens.length+')');
     assert.ok(t.eliteCount >= 1 && t.eliteCount <= 3, 'late-game team converts lost headcount into 1-3 elites — an accent, never the bulk ('+t.eliteCount+')');
     const elites = t.aliens.filter(a=>a.elite);
     assert.equal(elites.length, t.eliteCount, 'planned elites all deploy');
@@ -1141,9 +1346,16 @@ assert.match(weaponsSrc, /damageBlastCreatures\(MM,wx,wy,R\+1\.5,14/, 'gas explo
   assert.equal(hordeSpawn.length, 1, 'horde probe stages one team');
   const horde = hordeSpawn[0];
   assert.ok(horde.horde === true, 'horde flag survives team creation');
-  assert.ok(horde.aliens.length >= 14 && horde.aliens.length <= 20, 'a horde is a genuine mass: 14-20 units ('+horde.aliens.length+')');
+  assert.ok(horde.aliens.length >= 18 && horde.aliens.length <= 30, 'a horde is a genuine mass: 18-30 units ('+horde.aliens.length+')');
   assert.ok(horde.aliens.every(a=>a.grade === 0 && a.weaponTier === 0 && !a.elite), 'horde bodies are the weakest possible: grade 0, tier 0, no elites');
   assert.ok(horde.aliens.every(a=>a.role !== 'commander'), 'hordes have no commander');
+  const hordeShooter = horde.aliens.find(a=>a.role === 'rusher') || horde.aliens[0];
+  assert.ok(hordeShooter.threatLevel < horde.threatLevel, 'horde bodies use reduced combat threat instead of the full late-game team threat');
+  const hordeCharge = invasions._debug.fireAlienLaser(hordeShooter,horde,player,getTile,setTile,ctx,{
+    aimX:hordeShooter.x+6,aimY:hordeShooter.y-0.5
+  });
+  invasions._debug.releaseAlienLaser(hordeShooter,horde,player,getTile,setTile,ctx,hordeCharge);
+  assert.equal(invasions._debug.lasers.at(-1).weaponTier,0, 'a tier-0 horde body actually fires a tier-0 weapon');
   const regularPeer = invasions.forceNightInvasion(player,getTile,setTile,{day:60,teams:1,forceVisible:true,immediate:true})[0];
   const avgHp = list=>list.reduce((s,a)=>s+a.maxHp,0)/Math.max(1,list.length);
   assert.ok(avgHp(horde.aliens) < avgHp(regularPeer.aliens) * 0.6, 'horde units are dramatically weaker per body than a regular late squad');

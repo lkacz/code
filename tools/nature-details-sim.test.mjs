@@ -192,6 +192,15 @@ const { icicles } = await import('../src/engine/icicles.js');
   const applied = icicles.ghostApplyIciclesWindow(0, 0, 24, 20, rows);
   assert.equal(applied, rows.length, 'the watcher mirror applied the window');
   assert.equal(icicles.ghostApplyIciclesWindow(0, 0, 24, 20, [[3, 10, 99], ['x', 2, 3]]), 1, 'garbage rows are dropped, lengths clamped');
+  // Scripted arena events need a bounded release seam.  A distant cave must
+  // not shed its ceiling merely because a guardian changed phase elsewhere.
+  icicles.reset();
+  icicles._debug.hang.set('12,12', {x:12,y:12,len:0.8,maxLen:1,drip:5});
+  icicles._debug.hang.set('212,12', {x:212,y:12,len:0.8,maxLen:1,drip:5});
+  assert.equal(icicles.dropAround(12,12,20,10),1,'bounded icicle release drops only spikes inside its requested area');
+  assert.equal(icicles._debug.hang.has('12,12'),false,'near icicle enters the falling-shard simulation');
+  assert.equal(icicles._debug.hang.has('212,12'),true,'remote icicle remains attached after a local release');
+  assert.equal(icicles.dropAround(NaN,12,20,10),0,'bounded icicle release rejects invalid centers without touching world state');
   // striking a hanging tip: a light poke, the spike shatters IN PLACE (no
   // falling shard that would hit the striker a second time), ice may drop
   icicles.reset();
@@ -253,7 +262,11 @@ const { thinIce } = await import('../src/engine/thin_ice.js');
   assert.ok(notes.includes('thin_ice'), 'the thin-ice discovery fired');
   assert.ok(thinIce.metrics().broken >= 1, 'break metric counts');
   // thaw: warm samples melt the glaze back to open water on their own
-  player.x = 30.5; player.y = 26.5;
+  // Center the sampler over this tiny synthetic lake. Keeping the player thirty
+  // columns away made the random-column integration check needlessly flaky even
+  // though real lakes span far more than ten cells.
+  player.x = 4.5; player.y = 20.5;
+  thinIce.config.BAND = 10;
   colTemp = 0.6;
   for(let i = 0; i < 200 && thinIce.metrics().melted < 2; i++) thinIce.update(0.5, player, getTile, setTile);
   assert.ok(thinIce.metrics().melted >= 2, 'a thaw gives the glaze back to the lake');

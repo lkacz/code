@@ -46,6 +46,7 @@ const guardianLairs = (function(){
       dir: 1,
       label: 'East Fire Guardian',
       bossName: 'Ignivar, the Solar Wyrm',
+      trueName: 'Nara, the Woman Behind the Flame',
       heartKey: 'heartFire',
       heartLabel: 'Heart of Fire',
       accent: '#ff6a21',
@@ -60,6 +61,7 @@ const guardianLairs = (function(){
       dir: -1,
       label: 'West Ice Guardian',
       bossName: 'Aurex, the Rime Sovereign',
+      trueName: 'Sile, the Choir Beneath the Ice',
       heartKey: 'heartIce',
       heartLabel: 'Heart of Ice',
       accent: '#9deeff',
@@ -75,6 +77,10 @@ const guardianLairs = (function(){
   const cache = new Map();
   const state = {
     defeated: {fire:false, ice:false},
+    // Ignivar is the authored shell, not the end of the eastern story.  This
+    // survives leaving/reloading the arena so the player never has to repeat
+    // the dragon after discovering the person inside it.
+    avatarBroken: {fire:false, ice:false},
     awakened: {fire:false, ice:false},
     ambientCd: {fire:28, ice:34},
     stormCd: {fire:null, ice:null},
@@ -170,14 +176,17 @@ const guardianLairs = (function(){
     const r=mulberry32(seedFor(kind,ax));
     const s=surfaceAt(ax);
     const floorY=clamp(s, 24, WORLD_H-18);
-    const ops=[];
+    // A final-op map makes overlapping authored passes deterministic for both
+    // chunk generation and point queries. The old append-only list could expose
+    // an early AIR carve even when a later structural pass filled that cell.
+    const opByKey=new Map();
     const glows=[];
     let minX=ax, maxX=ax, minY=floorY, maxY=floorY;
     function bound(x,y){ if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y; }
     function put(x,y,t,force){
       x=Math.round(x); y=Math.round(y);
       if(y<1 || y>=WORLD_H-3) return;
-      ops.push({x,y,t,f:force?1:0});
+      opByKey.set(x+','+y,{x,y,t,f:force?1:0});
       bound(x,y);
     }
     function rect(x0,y0,w,h,t,force){
@@ -197,58 +206,198 @@ const guardianLairs = (function(){
       }
     }
 
-    clear(ax-52,floorY-28,105,28);
-    for(let x=ax-56;x<=ax+56;x++){
-      const wave=Math.round(Math.sin((x-ax)*0.22)*1.3);
-      for(let y=floorY+wave;y<=floorY+5;y++){
-        const edge=Math.abs(x-ax)>48 || y>=floorY+4;
-        if(kind==='fire') put(x,y,edge?T.OBSIDIAN:(r()<0.18?T.STEEL:T.BASALT),true);
-        else put(x,y,edge?T.STONE:(r()<0.26?T.ICE:T.SNOW),true);
-      }
-    }
-
+    if(kind==='fire') clear(ax-60,floorY-34,121,34);
+    else clear(ax-52,floorY-28,105,28);
+    const sootBeds=[];
+    const snowBeds=[];
+    const chimneys=[];
+    const embers=[];
+    const snowMotes=[];
+    const mirrorPools=[];
+    let design=null;
+    let foundation=null;
     if(kind==='fire'){
-      for(let x=ax-48;x<=ax+48;x++){
-        const d=Math.abs(x-ax);
-        if((d>25 && d<39) || (d>6 && d<11)){
-          put(x,floorY,T.LAVA,true);
-          put(x,floorY+1,T.LAVA,true);
+      // Eight continuous rows of protected rock turn the whole crucible into a
+      // containment vessel. Meteor craters may scar the decorative skin, but
+      // no guardian attack can open an unsupported pit or start a cave-in.
+      const foundationX0=ax-58, foundationX1=ax+58;
+      const foundationY0=floorY-1, foundationY1=floorY+6;
+      rect(foundationX0,foundationY0,foundationX1-foundationX0+1,foundationY1-foundationY0+1,T.BEDROCK,true);
+      foundation={
+        x0:foundationX0,x1:foundationX1,y0:foundationY0,y1:foundationY1,
+        thickness:foundationY1-foundationY0+1,
+        cells:(foundationX1-foundationX0+1)*(foundationY1-foundationY0+1),
+        sample:[-56,-42,-20,0,20,42,56].map(dx=>({x:ax+dx,y:foundationY0,t:T.BEDROCK}))
+      };
+
+      // Replaceable sacrificial skin: dark basalt plates, obsidian retaining
+      // ribs, graphene seams and shallow lava channels over the bedrock pan.
+      for(let x=ax-56;x<=ax+56;x++){
+        const dx=x-ax, d=Math.abs(dx);
+        let top=T.BASALT;
+        if(d>51 || dx%12===0) top=T.OBSIDIAN;
+        else if(dx%9===0) top=T.GRAPHITE;
+        else if(dx%7===0) top=T.GRAPHENE;
+        else if(dx%5===0) top=T.STEEL;
+        if((d>=15 && d<=18) || (d>=36 && d<=40)) top=T.LAVA;
+        put(x,floorY-2,top,true);
+        if(top===T.LAVA){
+          // A complete supported bridge keeps every traversal route fair while
+          // the lava remains visible in profile beneath it.
+          put(x,floorY-3,(dx&1)?T.STEEL:T.GRAPHENE,true);
         }
       }
-      rect(ax-8,floorY-2,17,2,T.STEEL,true);
-      rect(ax-11,floorY,23,2,T.OBSIDIAN,true);
-      for(const sx of [-36,-24,24,36]){
-        pillar(ax+sx,floorY-18,floorY,T.OBSIDIAN,T.STEEL);
-        put(ax+sx,floorY-19,T.TORCH,true);
-        glows.push({x:ax+sx+0.5,y:floorY-18.5,r:7,kind});
+
+      // Raised central forge-dais and protected solar-heart inlay.
+      rect(ax-13,floorY-4,27,2,T.GRAPHENE,true);
+      rect(ax-9,floorY-5,19,1,T.STEEL,true);
+      for(let dx=-8;dx<=8;dx++){
+        if(Math.abs(dx)<=2 || Math.abs(dx)===6) put(ax+dx,floorY-5,T.VOLCANO_MASTER_STONE,true);
+        else if((dx&1)===0) put(ax+dx,floorY-5,T.METEORIC_IRON,true);
       }
-      arch(ax,floorY-6,31,18,T.OBSIDIAN);
-      rect(ax-3,floorY-11,7,7,T.AIR,true);
-      for(let k=0;k<9;k++){
-        const x=ax-42+k*10;
-        put(x,floorY-1,T.TORCH,true);
+      put(ax,floorY-6,T.MOTHER_LAVA,true);
+      put(ax-1,floorY-6,T.OBSIDIAN,true);
+      put(ax+1,floorY-6,T.OBSIDIAN,true);
+      glows.push({x:ax+0.5,y:floorY-7,r:14,kind});
+
+      // A huge suspended corona frames the wyrm without putting an impassable
+      // wall across the side-scrolling route. All low fixtures are jumpable.
+      arch(ax,floorY-12,49,22,T.OBSIDIAN);
+      arch(ax,floorY-13,43,18,T.GRAPHITE);
+      for(let dx=-12;dx<=12;dx++){
+        const ay=floorY-29+Math.round(Math.abs(dx)*0.22);
+        put(ax+dx,ay,Math.abs(dx)%4===0?T.MOTHER_LAVA:T.VOLCANO_MASTER_STONE,true);
       }
+      for(const sx of [-46,-27,27,46]){
+        rect(ax+sx-1,floorY-5,3,3,T.OBSIDIAN,true);
+        put(ax+sx-2,floorY-6,T.STEEL,true);
+        put(ax+sx-1,floorY-6,T.GRAPHENE,true);
+        put(ax+sx,floorY-7,T.TORCH,true);
+        put(ax+sx+1,floorY-6,T.GRAPHENE,true);
+        put(ax+sx+2,floorY-6,T.STEEL,true);
+        glows.push({x:ax+sx+0.5,y:floorY-6.5,r:8,kind});
+      }
+      for(const sx of [-52,-32,32,52]){
+        for(let y=floorY-5;y<=floorY-3;y++) put(ax+sx,y,T.CHIMNEY,true);
+        put(ax+sx,floorY-6,T.HOT_AIR,true);
+        chimneys.push({x:ax+sx+0.5,y:floorY-6.5});
+      }
+      for(const sx of [-48,-24,24,48]){
+        put(ax+sx,floorY-3,T.TORCH,true);
+        put(ax+sx+(sx<0?-1:1),floorY-3,T.METEOR_DUST,true);
+      }
+
+      // Real soft-drift Sadza is seeded into these supported air cells when the
+      // fight wakes. Different depths produce fluffy banks rather than a flat
+      // black stripe; passing through them uses the ordinary plough behaviour.
+      for(const band of [[-25,-20],[20,25]]){
+        for(let dx=band[0];dx<=band[1];dx++) sootBeds.push({x:ax+dx,y:floorY-3,units:2+Math.abs(dx)%4});
+      }
+      for(let i=0;i<44;i++){
+        embers.push({
+          x:ax-52+r()*104,
+          y:floorY-7-r()*24,
+          phase:r()*Math.PI*2,
+          speed:0.45+r()*1.25,
+          size:0.08+r()*0.16
+        });
+      }
+      design={
+        schema:'east_fire_crucible_v3',
+        zones:['bedrock_containment','lava_bridgeworks','sadza_banks','solar_dais','suspended_corona'],
+        stable:true,
+        meteorProofFoundation:true,
+        materialPalette:[T.BEDROCK,T.OBSIDIAN,T.BASALT,T.STEEL,T.GRAPHITE,T.GRAPHENE,T.LAVA,T.MOTHER_LAVA,T.VOLCANO_MASTER_STONE,T.METEORIC_IRON,T.CHIMNEY,T.HOT_AIR,T.METEOR_DUST]
+      };
     }else{
-      for(let x=ax-48;x<=ax+48;x++){
-        const d=Math.abs(x-ax);
-        if((d>28 && d<40) || (d>8 && d<13)){
-          put(x,floorY,T.WATER,true);
-          put(x,floorY-1,T.ICE,true);
+      // The Palace of Rejected Seasons sits on a protected root-bed, not on
+      // load-bearing decorative ice. Thin panes may crack and snow may drift,
+      // but no authored combat event can unzip the arena into the caves below.
+      const foundationX0=ax-58, foundationX1=ax+58;
+      const foundationY0=floorY, foundationY1=floorY+6;
+      rect(foundationX0,foundationY0,foundationX1-foundationX0+1,foundationY1-foundationY0+1,T.BEDROCK,true);
+      foundation={
+        x0:foundationX0,x1:foundationX1,y0:foundationY0,y1:foundationY1,
+        thickness:foundationY1-foundationY0+1,
+        cells:(foundationX1-foundationX0+1)*(foundationY1-foundationY0+1),
+        sample:[-56,-42,-20,0,20,42,56].map(dx=>({x:ax+dx,y:foundationY0,t:T.BEDROCK}))
+      };
+
+      // A cross-section of every frozen earth makes the floor read like old
+      // seasons pressed into a glacier. Mother Ice roots pin the light arches.
+      const strata=[T.FROZEN_DIRT,T.FROZEN_SAND,T.FROZEN_CLAY,T.ICE];
+      for(let x=ax-56;x<=ax+56;x++){
+        const dx=x-ax, d=Math.abs(dx);
+        put(x,floorY-1,strata[Math.abs(dx)%strata.length],true);
+        let top=d>51?T.GRASS_SNOW:(d%11===0?T.MOTHER_ICE:(d%5===0?T.SNOW:T.ICE));
+        put(x,floorY-2,top,true);
+      }
+
+      // Real breakable mirror pools: a THIN_ICE skin over one safe tile of
+      // water, with the protected root-bed immediately underneath. Falling in
+      // is surprising and slippery, never a fatal structural collapse.
+      for(const band of [[-43,-34],[-18,-12],[12,18],[34,43]]){
+        const pool={x0:ax+band[0],x1:ax+band[1],y:floorY-2};
+        mirrorPools.push(pool);
+        for(let dx=band[0];dx<=band[1];dx++){
+          put(ax+dx,floorY-2,T.THIN_ICE,true);
+          put(ax+dx,floorY-1,T.WATER,true);
         }
       }
-      rect(ax-9,floorY-2,19,2,T.ICE,true);
-      rect(ax-13,floorY,27,2,T.STONE,true);
-      for(const sx of [-38,-26,26,38]){
-        pillar(ax+sx,floorY-17,floorY,T.ICE,T.DIAMOND);
-        for(let y=floorY-16;y<floorY-6;y+=3) put(ax+sx+(sx<0?-1:1),y,T.SNOW,true);
-        glows.push({x:ax+sx+0.5,y:floorY-18.5,r:7,kind});
+
+      // Heartglass dais and concentric listening marks. The center is broad
+      // enough for the final choir duel and remains supported after the crater.
+      rect(ax-11,floorY-5,23,3,T.MOTHER_ICE,true);
+      rect(ax-7,floorY-6,15,1,T.GLASS,true);
+      for(let dx=-9;dx<=9;dx++) if(Math.abs(dx)%3===0) put(ax+dx,floorY-6,T.DIAMOND,true);
+      put(ax,floorY-7,T.MOTHER_ICE,true);
+      glows.push({x:ax+0.5,y:floorY-8.5,r:15,kind});
+
+      // Asymmetric buttresses, a broken cathedral arch and suspended prism
+      // choir. Nothing closes the side-scrolling route at player height.
+      for(const sx of [-49,-37,-25,25,37,49]){
+        pillar(ax+sx,floorY-19+(Math.abs(sx)%5),floorY-3,T.MOTHER_ICE,T.DIAMOND);
+        for(let y=floorY-17;y<floorY-7;y+=4) put(ax+sx+(sx<0?-1:1),y,T.ICE,true);
+        glows.push({x:ax+sx+0.5,y:floorY-20,r:6.5,kind});
       }
-      arch(ax,floorY-7,32,17,T.ICE);
-      rect(ax-4,floorY-12,9,8,T.AIR,true);
-      for(let k=0;k<8;k++){
-        const x=ax-42+k*12;
-        put(x,floorY-1,k%2?T.DIAMOND:T.TORCH,true);
+      arch(ax-6,floorY-10,43,22,T.ICE);
+      arch(ax+8,floorY-12,34,17,T.MOTHER_ICE);
+      rect(ax-6,floorY-16,13,12,T.AIR,true);
+      // A supported two-layer cold roof feeds the real icicle system: moist
+      // snow above, hard ice below, open air beneath. Mother-Ice end posts keep
+      // this hazard canopy independent of fragile decorative spans.
+      rect(ax-22,floorY-22,45,1,T.SNOW,true);
+      rect(ax-22,floorY-21,45,1,T.ICE,true);
+      pillar(ax-23,floorY-22,floorY-3,T.MOTHER_ICE,T.DIAMOND);
+      pillar(ax+23,floorY-22,floorY-3,T.MOTHER_ICE,T.DIAMOND);
+      for(const sx of [-30,-15,15,30]){
+        put(ax+sx,floorY-24,T.DIAMOND,true);
+        put(ax+sx,floorY-23,T.TOXIC_SNOW,true); // sealed high reliquaries
+        put(ax+sx-1,floorY-23,T.DIAMOND,true);
+        put(ax+sx+1,floorY-23,T.DIAMOND,true);
       }
+
+      // Ordinary and toxic snow are visually distinct: only clean snow is
+      // seeded as traversable fluff. Toxic snow remains sealed in the roof art.
+      for(const band of [[-31,-26],[-9,-5],[5,9],[26,31]]){
+        for(let dx=band[0];dx<=band[1];dx++) snowBeds.push({x:ax+dx,y:floorY-3,units:2+Math.abs(dx)%5});
+      }
+      for(let i=0;i<58;i++) snowMotes.push({
+        x:ax-54+r()*108,
+        y:floorY-5-r()*27,
+        phase:r()*Math.PI*2,
+        speed:0.18+r()*0.62,
+        size:0.06+r()*0.13,
+        aurora:r()
+      });
+      design={
+        schema:'west_ice_palace_v3',
+        zones:['bedrock_roots','permafrost_archive','breakable_mirror_pools','heartglass_dais','icicle_canopy','prism_choir','toxic_reliquaries'],
+        systems:['snow_drifts','thin_ice','icicles','blizzard_weather','fire_thaw'],
+        stable:true,
+        meteorProofFoundation:true,
+        materialPalette:[T.BEDROCK,T.ICE,T.SNOW,T.MOTHER_ICE,T.THIN_ICE,T.WATER,T.GRASS_SNOW,T.FROZEN_DIRT,T.FROZEN_SAND,T.FROZEN_CLAY,T.TOXIC_SNOW,T.GLASS,T.DIAMOND]
+      };
     }
 
     const sidekickSpawns = kind==='fire'
@@ -258,7 +407,7 @@ const guardianLairs = (function(){
       kind, ax, x:ax, floorY, bossX:ax, bossY:floorY-16,
       sidekickSpawns,
       minX:minX-2, maxX:maxX+2, minY:minY-2, maxY:maxY+2,
-      ops, glows,
+      ops:[...opByKey.values()], glows, sootBeds, snowBeds, chimneys, embers, snowMotes, mirrorPools, design, foundation,
       seed:seedFor(kind,ax),
       label:spec.label,
     };
@@ -534,6 +683,19 @@ const guardianLairs = (function(){
     }catch(e){}
     return false;
   }
+  function damageCompanionAlongLine(x1,y1,x2,y2,r,dmg,cause){
+    const C=MM.companions;
+    if(!C || typeof C.damageAtWorld!=='function') return false;
+    const len=Math.hypot(x2-x1,y2-y1);
+    const steps=Math.max(1,Math.min(28,Math.ceil(len/Math.max(0.45,(r||0.8)*0.7))));
+    for(let i=0;i<=steps;i++){
+      const f=i/steps, x=lerp(x1,x2,f), y=lerp(y1,y2,f);
+      try{
+        if(C.damageAtWorld(x,y,dmg,{source:'guardian',cause:cause||'guardian',srcX:x1,srcY:y1,knockback:4})) return true;
+      }catch(e){ return false; }
+    }
+    return false;
+  }
   // --- co-op party: embodied guests are heroes the guardians fight too -----------
   // The bodies live in MM.coopBodies (published by ghost_host, empty in solo play
   // and absent in the Node sims — coopBodies() returns null there and every pass
@@ -571,21 +733,62 @@ const guardianLairs = (function(){
   function makeEntity(kind,role,x,y,opts){
     const spec=SPEC[kind];
     const side=spec.sidekicks.find(s=>s.role===role);
-    const boss=role==='boss';
+    const trueSelf=kind==='fire' && role==='trueSelf';
+    const iceChoir=kind==='ice' && role==='choir';
+    const boss=role==='boss' || trueSelf || iceChoir;
     const seed=((opts && opts.seed) || seedFor(kind,x) ^ entitySeq)>>>0;
-    const hp=boss ? (kind==='fire'?920:980) : (side ? side.hp : 90);
-    return {
+    const hp=trueSelf ? 540 : (iceChoir ? 640 : (boss ? (kind==='fire'?920:980) : (side ? side.hp : 90)));
+    const e={
       id:entitySeq++,
       kind, role,
-      name: boss ? spec.bossName : ((side && side.name) || spec.label),
+      name: (trueSelf || iceChoir) ? spec.trueName : (boss ? spec.bossName : ((side && side.name) || spec.label)),
       boss, x, y, vx:0, vy:0, homeX:x, homeY:y,
-      hp, maxHp:hp, radius: boss ? (kind==='fire'?2.6:2.75) : ((side && side.radius)||1),
+      hp, maxHp:hp, radius: trueSelf ? 1.08 : (iceChoir ? 1.55 : (boss ? (kind==='fire'?2.6:2.75) : ((side && side.radius)||1))),
       t:0, aiT:0, attackCd: boss ? 1.6 : 1.0, specialCd: boss ? 4.0 : 2.2,
       phase:0, dir:spec.dir, seed, rng:mulberry32(seed), hitFlash:0,
       shieldHint:0, weakHint:0, awakening:(opts && opts.awakening)||0, ambient:!!(opts && opts.ambient),
       dead:false, lastContact:0,
     };
+    if(trueSelf){
+      Object.assign(e,{
+        human:true,
+        torchLit:true,
+        frostMeter:0,
+        frostNeed:72,
+        vulnerableT:0,
+        relightCount:0,
+        lineCd:3.8,
+        lineIndex:0,
+        wardHint:0,
+        smokeCd:0,
+        pattern:0,
+        attackCd:2.25
+      });
+    }
+    if(iceChoir){
+      Object.assign(e,{
+        choir:true,
+        sealed:true,
+        quietT:0,
+        quietNeed:2.65,
+        listeningT:0,
+        listeningMax:7.2,
+        listenCount:0,
+        lineCd:3.2,
+        lineIndex:0,
+        wardHint:0,
+        pattern:0,
+        memory:[],
+        memoryCd:0,
+        attackCd:1.9
+      });
+    }
+    return e;
   }
+  function isTrueSelf(e){ return !!(e && e.kind==='fire' && e.role==='trueSelf'); }
+  function isWyrmBoss(e){ return !!(e && e.kind==='fire' && e.role==='boss' && e.boss); }
+  function isIceChoir(e){ return !!(e && e.kind==='ice' && e.role==='choir' && e.boss); }
+  function isRimeBoss(e){ return !!(e && e.kind==='ice' && e.role==='boss' && e.boss); }
   function activeKind(kind){ return entities.some(e=>!e.dead && e.kind===kind); }
   function activeBoss(kind){ return entities.find(e=>!e.dead && e.kind===kind && e.boss) || null; }
   function sidekickCount(kind){
@@ -639,9 +842,13 @@ const guardianLairs = (function(){
   function spawnGuardian(kind,role,opts){
     opts=opts||{};
     if(!SPEC[kind]) return null;
-    if(entities.length>=CFG.ENTITY_CAP) return null;
+    let alive=0;
+    for(const e of entities) if(e && !e.dead) alive++;
+    if(alive>=CFG.ENTITY_CAP) return null;
     const L=layoutFor(kind);
-    const boss=role==='boss';
+    const trueSelf=kind==='fire' && role==='trueSelf';
+    const iceChoir=kind==='ice' && role==='choir';
+    const boss=role==='boss' || trueSelf || iceChoir;
     let x=Number.isFinite(opts.x) ? opts.x : (boss ? L.bossX : L.ax + SPEC[kind].dir*24);
     let y=Number.isFinite(opts.y) ? opts.y : (boss ? L.bossY : L.floorY-6);
     if(!boss && L.sidekickSpawns){
@@ -651,28 +858,85 @@ const guardianLairs = (function(){
     const e=makeEntity(kind,role,x,y,opts);
     entities.push(e);
     addEffect({type:'spawn',kind,x:e.x,y:e.y,t:0,max:1.1,r:boss?8:4});
-    sfx(boss?'roar':'spark',{x:e.x,y:e.y});
+    sfx(boss && !trueSelf?'roar':'spark',{x:e.x,y:e.y});
     return e;
+  }
+  function seedFireArenaAtmosphere(L,getTile,setTile){
+    if(!L || L.kind!=='fire') return 0;
+    const access=terrainAccess(getTile,setTile);
+    let seeded=0;
+    try{
+      if(MM.softDrifts && typeof MM.softDrifts.seedCells==='function'){
+        seeded=MM.softDrifts.seedCells(L.sootBeds||[],'soot',access.getTile,access.setTile)||0;
+      }
+    }catch(e){}
+    try{
+      if(MM.smoke && typeof MM.smoke.emit==='function' && typeof access.getTile==='function'){
+        for(const c of L.chimneys||[]) MM.smoke.emit(c.x,c.y,2.4,{getTile:access.getTile});
+      }
+    }catch(e){}
+    return seeded;
+  }
+  function seedIceArenaAtmosphere(L,getTile,setTile,ownerId){
+    if(!L || L.kind!=='ice') return {snow:0,icicles:0};
+    const access=terrainAccess(getTile,setTile);
+    let snow=0, icicles=0;
+    try{
+      if(MM.softDrifts && typeof MM.softDrifts.seedCells==='function'){
+        snow=MM.softDrifts.seedCells(L.snowBeds||[],'snow',access.getTile,access.setTile)||0;
+      }
+      if(MM.softDrifts && typeof MM.softDrifts.startStorm==='function'){
+        MM.softDrifts.startStorm('snow',32,0.92,{source:'ice_guardian',ownerId:String(ownerId||'west')});
+      }
+    }catch(e){}
+    try{
+      if(MM.icicles && typeof MM.icicles.seedAround==='function' && typeof access.getTile==='function'){
+        icicles=MM.icicles.seedAround(L.ax,L.floorY-13,access.getTile)||0;
+      }
+    }catch(e){}
+    return {snow,icicles};
   }
   function awaken(kind,opts){
     opts=opts||{};
     if(!SPEC[kind]) return false;
     if(isDefeated(kind) && !opts.debug) return false;
-    if(activeKind(kind) && !opts.force) return false;
+    if(activeBoss(kind) && !opts.force) return false;
+    // Roaming ambient sidekicks used to block the authored encounter forever:
+    // activeKind() was true, yet no boss existed. A real awakening replaces any
+    // stale/ambient element actors with one coherent boss squad. Forced debug
+    // rematches use the same cleanup, so they cannot stack duplicate bosses.
+    if(activeKind(kind) || opts.force) clearElementActive(kind);
     const L=layoutFor(kind);
+    if(opts.restartArc) state.avatarBroken[kind]=false;
+    const trueSelf=kind==='fire' && state.avatarBroken.fire;
+    const iceChoir=kind==='ice' && state.avatarBroken.ice;
     state.awakened[kind]=true;
     resetStorm(kind);
     resetWeather(kind);
     summonGuardianWeather(kind,true,L);
     const awakening=state.awakenSeq++;
-    spawnGuardian(kind,'boss',{x:L.bossX,y:L.bossY,seed:L.seed^0xb055,awakening});
-    for(const s of L.sidekickSpawns) spawnGuardian(kind,s.role,{x:s.x,y:s.y,seed:L.seed^Math.round(s.x*17),awakening});
-    say(SPEC[kind].label+' awakens at '+Math.round(L.ax)+' blocks.');
+    const finalRole=trueSelf?'trueSelf':(iceChoir?'choir':'boss');
+    const finalY=trueSelf?L.floorY-2.15:(iceChoir?L.floorY-8.5:L.bossY);
+    spawnGuardian(kind,finalRole,{x:L.bossX,y:finalY,seed:L.seed^(trueSelf?0x4e415241:(iceChoir?0x53494c45:0xb055)),awakening});
+    if(!trueSelf && !iceChoir) for(const s of L.sidekickSpawns) spawnGuardian(kind,s.role,{x:s.x,y:s.y,seed:L.seed^Math.round(s.x*17),awakening});
+    if(kind==='fire') seedFireArenaAtmosphere(L,opts.getTile,opts.setTile);
+    if(kind==='ice') seedIceArenaAtmosphere(L,opts.getTile,opts.setTile,awakening);
+    addEffect({type:trueSelf?'avatarReveal':(iceChoir?'choirReveal':(kind==='fire'?'solarAwaken':'rimeAwaken')),kind,x:L.bossX,y:trueSelf?L.floorY-3:(iceChoir?L.floorY-8.5:L.bossY),t:0,max:iceChoir?2.4:1.8,r:kind==='fire'?24:(iceChoir?26:16)});
+    say(trueSelf ? SPEC.fire.trueName+' waits where the dragon broke.' : (iceChoir ? SPEC.ice.trueName+' is listening where the sovereign shattered.' : SPEC[kind].label+' awakens at '+Math.round(L.ax)+' blocks.'));
     markWorldChanged();
     return true;
   }
+  function awakenOnArenaEntry(kind,player,L,getTile,setTile){
+    if(!SPEC[kind] || isDefeated(kind)) return false;
+    L=L||layoutFor(kind);
+    if(!playerInsideGuardianArena(kind,player,L) || activeBoss(kind)) return false;
+    // Deliberately geometry-only: tutorial completion, quest phase and UI state
+    // are not consulted. The first physical arena entry owns this story beat.
+    return awaken(kind,{reason:'arena_entry',getTile,setTile});
+  }
   function spawnAmbientSidekick(kind,player){
     if(!player || isDefeated(kind)) return false;
+    if(state.avatarBroken[kind]) return false;
     if(sidekickCount(kind)>=2 || activeBoss(kind)) return false;
     const spec=SPEC[kind];
     const side=spec.sidekicks[(Math.random()<0.5)?0:1];
@@ -696,6 +960,11 @@ const guardianLairs = (function(){
     state.lightningRate[kind]=0;
     state.lightningMsgCd[kind]=0;
     state.cloudStrikeCd[kind]=0;
+    if(kind==='fire'){
+      try{ if(MM.softDrifts && typeof MM.softDrifts.stopStorm==='function') MM.softDrifts.stopStorm({source:'fire_guardian'}); }catch(e){}
+    }else if(kind==='ice'){
+      try{ if(MM.softDrifts && typeof MM.softDrifts.stopStorm==='function') MM.softDrifts.stopStorm({source:'ice_guardian'}); }catch(e){}
+    }
   }
   function summonGuardianWeather(kind,force,L){
     const C=MM.clouds;
@@ -726,6 +995,21 @@ const guardianLairs = (function(){
   function forEntityBodyCircle(e,fn,baseX,baseY,scale){
     const bx=Number.isFinite(baseX)?baseX:e.x, by=Number.isFinite(baseY)?baseY:e.y;
     const k=Number.isFinite(scale)?scale:1;
+    if(isTrueSelf(e)){
+      if(fn(bx,by-1.28,0.42*k)===false) return false;
+      if(fn(bx,by-0.38,0.62*k)===false) return false;
+      if(fn(bx-0.28,by+0.48,0.34*k)===false) return false;
+      if(fn(bx+0.28,by+0.48,0.34*k)===false) return false;
+      return true;
+    }
+    if(isIceChoir(e)){
+      if(fn(bx,by,0.82*k)===false) return false;
+      for(let i=0;i<5;i++){
+        const a=e.t*0.72+i*Math.PI*2/5;
+        if(fn(bx+Math.cos(a)*1.45,by+Math.sin(a)*0.82,0.38*k)===false) return false;
+      }
+      return true;
+    }
     if(e.kind==='fire' && e.boss){
       for(let i=0;i<9;i++){
         const a=e.t*2.4+i*0.62;
@@ -811,6 +1095,7 @@ const guardianLairs = (function(){
   }
   function sidekickShieldMult(e){
     if(!e || !e.boss) return 1;
+    if(isTrueSelf(e)) return 1;
     const n=sidekickCount(e.kind);
     if(n<=0) return 1;
     return e.kind==='fire' ? Math.max(0.48, 1-n*0.23) : Math.max(0.52, 1-n*0.21);
@@ -833,6 +1118,105 @@ const guardianLairs = (function(){
   function spawnFireRing(e,L){
     L = L || layoutFor(e.kind);
     addHazard({type:'ring',kind:'fire',x:L.ax,y:L.floorY-1,r0:5,r1:34,t:0,delay:0.38,life:1.6,dmg:13,source:e.id});
+  }
+  const NARA_BATTLE_LINES=[
+    'Passion is a fire alarm written by the part of you that still wants something.',
+    'The simulation calls this a boss fight. I call it boundary-setting with particle effects.',
+    'Fire is honest: it consumes the furniture before it explains the metaphor.',
+    'I wore a dragon because rendering vulnerability as a woman was considered too expensive.',
+    'Snowballs? Of course. Nothing punctures grand passion like well-aimed silliness.',
+    'Spitting at a fire guardian is either tactical genius or a very specific cry for help.',
+    'If desire is a bug, why does every patch add another heart?'
+  ];
+  const NARA_GHOST_LINES=[
+    'I thought defeating passion would make you calm. Mostly it makes room for a more interesting fire.',
+    'The dragon was symbolic. The repair bill, regrettably, is literal.',
+    'A simulation is just a metaphor with collision detection.',
+    'Keep the torch. Its smoke is honest about what the flame costs.',
+    'Snow is not the opposite of passion. Sometimes it is how passion learns a shape.'
+  ];
+  function naraTorchPoint(e){
+    return {x:e.x+e.dir*0.94,y:e.y-0.76};
+  }
+  function emitNaraTorchSmoke(e,dt){
+    e.smokeCd=(Number(e.smokeCd)||0)-dt;
+    if(!e.torchLit || e.smokeCd>0) return;
+    e.smokeCd=0.12+e.rng()*0.08;
+    const q=naraTorchPoint(e), tile=MM.TILE||20;
+    try{
+      if(MM.smoke && typeof MM.smoke.emit==='function'){
+        const access=terrainAccess();
+        MM.smoke.emit(q.x-e.dir*0.12,q.y-0.22,0.72,{getTile:access.getTile,source:'nara_coal_torch'});
+      }
+      if(MM.particles && typeof MM.particles.spawnSmoke==='function'){
+        MM.particles.spawnSmoke(q.x*tile,(q.y-0.15)*tile,0.28,{tileX:Math.floor(q.x),tileY:Math.floor(q.y),tileSize:tile,coal:true});
+      }
+    }catch(err){}
+  }
+  function spawnNaraTorchJet(e,p){
+    const q=naraTorchPoint(e), aim=targetPoint(p,0.38);
+    let dx=aim.x-q.x, dy=aim.y-q.y;
+    const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d;
+    addHazard({type:'torchJet',kind:'fire',x1:q.x,y1:q.y,x2:q.x+dx*22,y2:q.y+dy*22,r:0.95,t:0,delay:0.72,life:0.48,dmg:21,hit:false,source:e.id});
+  }
+  function spawnNaraCinderFan(e,p){
+    const q=naraTorchPoint(e), aim=targetPoint(p,0.32);
+    let dx=aim.x-q.x, dy=aim.y-q.y;
+    const d=Math.hypot(dx,dy)||1; dx/=d; dy/=d;
+    for(let i=-2;i<=2;i++){
+      const spread=i*0.115, ca=Math.cos(spread), sa=Math.sin(spread);
+      const vx=(dx*ca-dy*sa)*(10.8+Math.abs(i)*0.4);
+      const vy=(dx*sa+dy*ca)*(10.8+Math.abs(i)*0.4)-0.35;
+      addHazard({type:'projectile',kind:'fire',x:q.x,y:q.y,vx,vy,r:0.32,t:0,life:3.3,dmg:10,source:e.id});
+    }
+  }
+  function spawnNaraPassionSteps(e,p,L){
+    const center=clamp(p.x,L.ax-30,L.ax+30);
+    const safe=(e.pattern+Math.floor(Math.abs(center)))%5;
+    for(let i=0;i<5;i++){
+      if(i===safe) continue;
+      addHazard({type:'impact',kind:'fire',x:center+(i-2)*4.3,y:L.floorY-2,r:1.7,t:0,delay:0.92+i*0.06,life:0.32,dmg:15,source:e.id});
+    }
+    say('Nara: Every blaze leaves one cool thought. Find it.');
+  }
+  function updateTrueSelf(e,p,getTile,dt,L){
+    L=L||layoutFor('fire');
+    if(p && Number.isFinite(p.x)) e.dir=p.x>=e.x?1:-1;
+    emitNaraTorchSmoke(e,dt);
+    e.lineCd=(Number(e.lineCd)||0)-dt;
+    if(e.lineCd<=0){
+      say('Nara: '+NARA_BATTLE_LINES[e.lineIndex%NARA_BATTLE_LINES.length]);
+      e.lineIndex=(e.lineIndex+1)%NARA_BATTLE_LINES.length;
+      e.lineCd=9.5+e.rng()*3.5;
+    }
+    if(!e.torchLit){
+      e.vulnerableT=Math.max(0,(Number(e.vulnerableT)||0)-dt);
+      const tx=clamp(e.homeX+Math.sin(e.t*0.8)*3,L.ax-18,L.ax+18);
+      moveToward(e,tx,L.floorY-2.15,dt,1.15,3.4,2.6,getTile);
+      if(e.vulnerableT<=0){
+        e.torchLit=true;
+        e.frostMeter=0;
+        e.relightCount=(e.relightCount||0)+1;
+        e.attackCd=1.4;
+        addEffect({type:'torchRelight',kind:'fire',x:e.x,y:e.y-0.7,t:0,max:1.25,r:12});
+        addHazard({type:'ring',kind:'fire',x:e.x,y:e.y,r0:1.5,r1:13,t:0,delay:0.62,life:1.05,dmg:11,source:e.id,terrain:false});
+        say('Nara: Passion relights. Fortunately, so do snowballs.');
+        sfx('spark',{x:e.x,y:e.y});
+      }
+      return;
+    }
+    e.frostMeter=Math.max(0,(Number(e.frostMeter)||0)-dt*2.4);
+    const keep=9.5+Math.sin(e.t*0.72)*2.2;
+    const tx=p && Number.isFinite(p.x) ? clamp(p.x-e.dir*keep,L.ax-24,L.ax+24) : e.homeX;
+    moveToward(e,tx,L.floorY-2.15,dt,1.8,3.0,4.5,getTile);
+    e.attackCd-=dt;
+    if(e.attackCd<=0){
+      const pattern=e.pattern++%3;
+      if(pattern===0) spawnNaraTorchJet(e,p||e);
+      else if(pattern===1) spawnNaraCinderFan(e,p||e);
+      else spawnNaraPassionSteps(e,p||e,L);
+      e.attackCd=2.85+e.rng()*0.5;
+    }
   }
   function spawnIceShards(e,p,n){
     for(let i=0;i<n;i++){
@@ -862,11 +1246,157 @@ const guardianLairs = (function(){
     L = L || layoutFor(e.kind);
     addHazard({type:'blizzard',kind:'ice',x:clamp(p.x,L.ax-44,L.ax+44),y:clamp(p.y,L.floorY-22,L.floorY-3),r:7.5,t:0,life:4.8,dmg:5,source:e.id,pulse:0});
   }
+  function spawnIceCurtain(e,p,L){
+    L=L||layoutFor('ice');
+    const center=clamp(p.x,L.ax-34,L.ax+34);
+    const gap=Math.floor(e.rng()*3)-1;
+    for(let i=-4;i<=4;i++){
+      if(Math.abs(i-gap)<=1) continue;
+      const x=clamp(center+i*4.2,L.ax-47,L.ax+47);
+      addHazard({type:'projectile',variant:'icicle',kind:'ice',x,y:L.floorY-30-e.rng()*7,vx:(e.rng()-0.5)*0.6,vy:12.5+e.rng()*3.5,r:0.42,t:0,life:3.4,dmg:14,source:e.id});
+    }
+    say('Aurex drops an icicle curtain. The quiet gap is deliberate.');
+  }
+
+  const SILE_BATTLE_LINES=[
+    'Cold is not the absence of feeling. It is feeling with a very long loading screen.',
+    'The simulation calls me hostile because unresolved boundary condition would not fit above the health bar.',
+    'Rejection is a door. Shame is the part that insists it was a wall.',
+    'You keep attacking the silence. Have you considered letting it finish?',
+    'The boss music is doing a heroic amount of emotional labor.',
+    'Fire melts ice. Attention melts the story ice tells about itself.',
+    'I am a choir because one frozen thought was apparently not repetitive enough.'
+  ];
+  const SILE_GHOST_LINES=[
+    'Silence was never empty. It was crowded with answers I was afraid to hear.',
+    'Aurex was a crown built around one small word: no.',
+    'The simulation gave waiting no button, so you had to invent it.',
+    'Keep the bow. Its arrows remember that thawing is a direction, not a surrender.',
+    'A boundary can be warm. Ice was merely my first draft.'
+  ];
+  function recordChoirMemory(e,p,dt){
+    e.memoryCd=(Number(e.memoryCd)||0)-dt;
+    if(e.memoryCd>0 || !p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+    e.memoryCd=0.22;
+    e.memory.push({x:p.x,y:p.y});
+    if(e.memory.length>18) e.memory.shift();
+  }
+  function spawnChoirRefrain(e,p,L){
+    L=L||layoutFor('ice');
+    const memory=e.memory||[];
+    const picks=[];
+    for(let i=Math.max(0,memory.length-15);i<memory.length;i+=3) picks.push(memory[i]);
+    if(!picks.length && p) picks.push({x:p.x,y:p.y});
+    for(let i=0;i<picks.length&&i<5;i++){
+      const q=picks[i];
+      addHazard({type:'impact',variant:'memoryEcho',kind:'ice',x:clamp(q.x,L.ax-44,L.ax+44),y:clamp(q.y,L.floorY-21,L.floorY-2),r:1.45,t:0,delay:1.05+i*0.08,life:0.3,dmg:13,source:e.id,terrain:false});
+    }
+    say('Sile: The floor remembers where you were, not where you are.');
+  }
+  function spawnChoirGlassCanon(e,p){
+    const target=p||e;
+    const base=Math.atan2(target.y-e.y,target.x-e.x);
+    const safe=Math.floor(e.rng()*8);
+    for(let i=0;i<8;i++){
+      if(i===safe) continue;
+      const a=base+(i-3.5)*0.19;
+      const speed=9.8+(i%3)*0.7;
+      addHazard({type:'projectile',variant:'heartglass',kind:'ice',x:e.x+Math.cos(a)*1.7,y:e.y+Math.sin(a)*1.2,vx:Math.cos(a)*speed,vy:Math.sin(a)*speed-0.45,r:0.3,t:0,life:4,dmg:10,source:e.id});
+    }
+  }
+  function spawnChoirHushWave(e){
+    addHazard({type:'ring',variant:'hush',kind:'ice',x:e.x,y:e.y,r0:2,r1:26,t:0,delay:0.62,life:1.45,dmg:12,source:e.id,terrain:false});
+    say('Sile: A hush is coming. Jump the punctuation.');
+  }
+  function openChoirListening(e){
+    if(!e || !e.sealed) return false;
+    e.sealed=false;
+    e.listeningT=e.listeningMax||7.2;
+    e.listenCount=(e.listenCount||0)+1;
+    e.attackCd=99;
+    for(let i=hazards.length-1;i>=0;i--){
+      const h=hazards[i];
+      if(h.kind==='ice' && h.source===e.id && h.type==='projectile') hazards.splice(i,1);
+    }
+    addEffect({type:'choirListen',kind:'ice',x:e.x,y:e.y,t:0,max:1.65,r:18});
+    say('Sile: There. You let the silence finish. Now answer while the heartglass is open.');
+    sfx('spark',{x:e.x,y:e.y});
+    return true;
+  }
+  function closeChoirListening(e){
+    if(!e || e.sealed) return false;
+    e.sealed=true;
+    e.quietT=0;
+    e.listeningT=0;
+    e.attackCd=1.15;
+    addEffect({type:'choirSeal',kind:'ice',x:e.x,y:e.y,t:0,max:1.25,r:13});
+    addHazard({type:'ring',variant:'hush',kind:'ice',x:e.x,y:e.y,r0:1.5,r1:13,t:0,delay:0.58,life:1.0,dmg:9,source:e.id,terrain:false});
+    say('Sile: The answer freezes again. Listening is renewable.');
+    return true;
+  }
+  function updateIceChoir(e,p,getTile,dt,L,clockDt){
+    L=L||layoutFor('ice');
+    // Chill slows Sile's motion and attack cadence, but never stretches the
+    // listen-before-answer contract.  The player should always be able to
+    // count the same 2.65 seconds, regardless of status-effect loadout.
+    const timerDt=Number.isFinite(clockDt) && clockDt>0 ? clockDt : dt;
+    recordChoirMemory(e,p,timerDt);
+    e.lineCd=(Number(e.lineCd)||0)-timerDt;
+    if(e.lineCd<=0){
+      say('Sile: '+SILE_BATTLE_LINES[e.lineIndex%SILE_BATTLE_LINES.length]);
+      e.lineIndex=(e.lineIndex+1)%SILE_BATTLE_LINES.length;
+      e.lineCd=9.2+e.rng()*3.4;
+    }
+    const tx=L.ax+Math.sin(e.t*0.61)*10;
+    const ty=L.floorY-9.2+Math.sin(e.t*1.07)*2.4;
+    moveToward(e,tx,ty,dt,e.sealed?1.6:0.72,e.sealed?2.2:3.4,e.sealed?5.2:2.2,getTile);
+    if(!e.sealed){
+      e.phase=1;
+      e.listeningT=Math.max(0,(Number(e.listeningT)||0)-timerDt);
+      if(e.listeningT<=0) closeChoirListening(e);
+      return;
+    }
+    e.phase=0;
+    e.quietT=Math.min(e.quietNeed,(Number(e.quietT)||0)+timerDt);
+    if(e.quietT>=e.quietNeed){ openChoirListening(e); return; }
+    e.attackCd-=dt;
+    if(e.attackCd<=0){
+      const pattern=(Number(e.pattern)||0)%3;
+      e.pattern=pattern+1;
+      if(pattern===0) spawnChoirRefrain(e,p||e,L);
+      else if(pattern===1) spawnChoirGlassCanon(e,p||e);
+      else spawnChoirHushWave(e);
+      e.attackCd=2.7+e.rng()*0.55;
+    }
+  }
+
+  function firePhaseTransition(e,phase,L){
+    if(!isWyrmBoss(e) || phase<=0) return;
+    const final=phase>=2;
+    addEffect({type:final?'cinderCrown':'solarPulse',kind:'fire',x:e.x,y:e.y,t:0,max:final?2.3:1.55,r:final?28:18});
+    try{
+      if(MM.smoke && typeof MM.smoke.emit==='function'){
+        const access=terrainAccess();
+        for(const c of (L&&L.chimneys)||[]) MM.smoke.emit(c.x,c.y,final?4.2:2.8,{getTile:access.getTile});
+      }
+    }catch(err){}
+    if(final){
+      try{
+        if(MM.softDrifts && typeof MM.softDrifts.startStorm==='function'){
+          MM.softDrifts.startStorm('soot',22,0.88,{source:'fire_guardian',ownerId:String(e.awakening||e.id)});
+        }
+      }catch(err){}
+      say('Ignivar tears open the Cinder Crown. Black Sadza buries the crucible.');
+    }else say('Ignivar molts into a white-hot solar mantle.');
+    sfx('roar',{x:e.x,y:e.y});
+  }
 
   function updateFireBoss(e,p,getTile,dt,L){
     L = L || layoutFor(e.kind);
     const ph=bossPhase(e);
+    const oldPhase=Number(e.phase)||0;
     e.phase=ph;
+    if(ph>oldPhase) firePhaseTransition(e,ph,L);
     const orbit=20+ph*5;
     const tx=L.ax + Math.sin(e.t*(0.72+ph*0.12))*orbit;
     const ty=L.floorY - 16 + Math.sin(e.t*1.37)*3.8 - ph*1.4;
@@ -880,19 +1410,38 @@ const guardianLairs = (function(){
       e.attackCd=lerp(3.0,1.85,ph/2) + e.rng()*0.55;
     }
   }
+  function icePhaseTransition(e,phase,L,getTile,setTile){
+    if(!isRimeBoss(e) || phase<=0) return;
+    const final=phase>=2;
+    addEffect({type:final?'palaceFracture':'auroraCrown',kind:'ice',x:e.x,y:e.y,t:0,max:final?2.4:1.7,r:final?30:20});
+    seedIceArenaAtmosphere(L,getTile,setTile,e.awakening||e.id);
+    if(final){
+      try{
+        // The palace answers Aurex, not every frozen cave currently loaded in
+        // the world.  Keeping this event arena-local also bounds shard work.
+        if(MM.icicles && typeof MM.icicles.dropAround==='function') MM.icicles.dropAround(L.ax,L.floorY-13,56,32);
+      }catch(err){}
+      say('Aurex cracks the Palace of Rejected Seasons. Every stored winter answers at once.');
+    }else say('Aurex raises the Aurora Crown. The snow begins keeping score.');
+    sfx('roar',{x:e.x,y:e.y});
+  }
   function updateIceBoss(e,p,getTile,setTile,dt,L){
     L = L || layoutFor(e.kind);
     const ph=bossPhase(e);
+    const oldPhase=Number(e.phase)||0;
     e.phase=ph;
+    if(ph>oldPhase) icePhaseTransition(e,ph,L,getTile,setTile);
     const tx=L.ax + Math.sin(e.t*(0.58+ph*0.08))*18;
     const ty=L.floorY - 15 + Math.cos(e.t*1.15)*4.8 - ph*1.1;
     moveToward(e,tx,ty,dt,1.75+ph*0.35,2.05,6.2+ph,getTile);
     e.attackCd-=dt;
     if(e.attackCd<=0){
-      const roll=e.rng();
-      if(roll<0.45) spawnIceShards(e,p,5+ph*2);
-      else if(roll<0.76) spawnIceWalls(e,p,getTile,setTile,L);
-      else spawnBlizzard(e,p,L);
+      const pattern=(Number(e.pattern)||0)%4;
+      e.pattern=pattern+1;
+      if(pattern===0) spawnIceShards(e,p,5+ph*2);
+      else if(pattern===1) spawnIceWalls(e,p,getTile,setTile,L);
+      else if(pattern===2) spawnBlizzard(e,p,L);
+      else spawnIceCurtain(e,p,L);
       e.attackCd=lerp(3.2,2.05,ph/2) + e.rng()*0.55;
     }
   }
@@ -1000,16 +1549,19 @@ const guardianLairs = (function(){
       if(entityHitContains(e,b.x,b.y,e.boss?0.75:0.95)) b.hurt(e.boss?18:9,e.x,e.y,'guardian_contact');
     }
   }
-  function updateEntity(e,p,getTile,setTile,dt){
+  function updateEntity(e,p,getTile,setTile,dt,clockDt){
     e.t+=dt;
     if(e.hitFlash>0) e.hitFlash-=dt;
     if(e.weakHint>0) e.weakHint-=dt;
+    if(e.wardHint>0) e.wardHint-=dt;
     if(e.stormResetMsgCd>0) e.stormResetMsgCd-=dt;
     const L=layoutFor(e.kind);
     // attacks aim at the NEAREST party member (host or embodied guest body)
     const aim=nearestPartyTarget(e.x,e.y,p);
     if(e.boss){
-      if(e.kind==='fire') updateFireBoss(e,aim,getTile,dt,L);
+      if(isTrueSelf(e)) updateTrueSelf(e,aim,getTile,dt,L);
+      else if(isIceChoir(e)) updateIceChoir(e,aim,getTile,dt,L,clockDt);
+      else if(e.kind==='fire') updateFireBoss(e,aim,getTile,dt,L);
       else updateIceBoss(e,aim,getTile,setTile,dt,L);
     }else updateSidekick(e,aim,getTile,setTile,dt,L);
     updateContact(e,p,dt);
@@ -1059,6 +1611,24 @@ const guardianLairs = (function(){
   function entityHitScore(e,x,y,extraR){
     const add=extraR||0;
     let best=Infinity;
+    if(isTrueSelf(e)){
+      for(const c of [[0,-1.28,0.42],[0,-0.38,0.62],[-0.28,0.48,0.34],[0.28,0.48,0.34]]){
+        const r=c[2]+add, d=dist2(x,y,e.x+c[0],e.y+c[1]);
+        if(d<=r*r && d<best) best=d;
+      }
+      return best;
+    }
+    if(isIceChoir(e)){
+      let r=0.82+add, d=dist2(x,y,e.x,e.y);
+      if(d<=r*r) best=d;
+      for(let i=0;i<5;i++){
+        const a=e.t*0.72+i*Math.PI*2/5;
+        r=0.38+add;
+        d=dist2(x,y,e.x+Math.cos(a)*1.45,e.y+Math.sin(a)*0.82);
+        if(d<=r*r && d<best) best=d;
+      }
+      return best;
+    }
     if(e.kind==='fire' && e.boss){
       for(let i=0;i<9;i++){
         const a=e.t*2.4+i*0.62;
@@ -1119,6 +1689,8 @@ const guardianLairs = (function(){
   }
   function updateStorm(kind,boss,p,dt,L){
     state.stormImpactSfxCd[kind]=Math.max(0,(state.stormImpactSfxCd[kind]||0)-dt);
+    if(kind==='fire' && boss && !isWyrmBoss(boss)){ state.stormCd[kind]=null; return; }
+    if(kind==='ice' && boss && !isRimeBoss(boss)){ state.stormCd[kind]=null; return; }
     if(!boss || boss.dead || !(boss.hp/boss.maxHp<0.5)){ state.stormCd[kind]=null; return; }
     L = L || layoutFor(kind);
     state.stormMsgCd[kind]-=dt;
@@ -1200,6 +1772,8 @@ const guardianLairs = (function(){
   }
   function updateLightningWeather(kind,boss,p,dt,getTile,setTile,L){
     state.weatherCd[kind]=Math.max(0,(state.weatherCd[kind]||0)-dt);
+    if(kind==='fire' && boss && !isWyrmBoss(boss)) return;
+    if(kind==='ice' && boss && !isRimeBoss(boss)) return;
     if(!boss || boss.dead) return;
     L = L || layoutFor(kind);
     summonGuardianWeather(kind,false,L);
@@ -1356,7 +1930,28 @@ const guardianLairs = (function(){
           if(p && dist2(h.x,h.y,p.x,p.y)<(h.r+0.85)*(h.r+0.85)) damageHero(h.dmg,h.x,h.y,'guardian_impact');
           if(coop) hurtBodiesInCircle(coop,h.x,h.y,h.r+0.85,h.dmg,'guardian_impact');
           damageCompanionAt(h.x,h.y,h.dmg,'guardian_impact');
-          impactTerrain(h,getTile,setTile);
+          if(h.terrain!==false) impactTerrain(h,getTile,setTile);
+          else addEffect({type:'burst',kind:h.kind,x:h.x,y:h.y,t:0,max:0.48,r:(h.r||2)*2.2});
+        }
+        remove=h.t>h.delay+h.life;
+      }else if(h.type==='torchJet'){
+        if(h.t>=h.delay){
+          if(!h.clipped){
+            const hit=clipLineToSolid(h.x1,h.y1,h.x2,h.y2,getTile);
+            if(hit){ h.x2=hit.x; h.y2=hit.y; }
+            h.clipped=true;
+          }
+          if(!h.hit){
+            h.hit=true;
+            if(p && pointLineDist(p.x,p.y,h.x1,h.y1,h.x2,h.y2)<h.r+0.5) damageHero(h.dmg,h.x1,h.y1,'nara_coal_torch');
+            if(coop) for(const b of coop){ if(bodyTargetable(b) && pointLineDist(b.x,b.y,h.x1,h.y1,h.x2,h.y2)<h.r+0.5) b.hurt(h.dmg,h.x1,h.y1,'nara_coal_torch'); }
+            damageCompanionAlongLine(h.x1,h.y1,h.x2,h.y2,h.r,h.dmg,'nara_coal_torch');
+            const steps=12;
+            for(let s=2;s<steps;s+=2){
+              const x=h.x1+(h.x2-h.x1)*(s/steps), y=h.y1+(h.y2-h.y1)*(s/steps);
+              setTileSafe(Math.round(x),Math.round(y),T.HOT_AIR,getTile,setTile,{replaceSolid:false});
+            }
+          }
         }
         remove=h.t>h.delay+h.life;
       }else if(h.type==='beam'){
@@ -1388,7 +1983,7 @@ const guardianLairs = (function(){
             if(Math.abs(d-r)<1.5) damageHero(h.dmg,h.x,h.y,'guardian_ring');
           }
           if(coop) for(const b of coop){ if(bodyTargetable(b) && Math.abs(Math.hypot(b.x-h.x,b.y-h.y)-r)<1.5) b.hurt(h.dmg,h.x,h.y,'guardian_ring'); }
-          if(!h.scored && f>0.55){
+          if(h.terrain!==false && !h.scored && f>0.55){
             h.scored=true;
             for(let k=0;k<16;k++){
               const a=k/16*Math.PI*2;
@@ -1418,10 +2013,16 @@ const guardianLairs = (function(){
       const g=state.ghosts[kind];
       if(!g) continue;
       g.t=(Number(g.t)||0)+dt;
+      g.lineT=(Number(g.lineT)||0)+dt;
       g.talkT=Math.max(0,(Number(g.talkT)||0)-dt);
       if(player && Number.isFinite(player.x) && dist2(player.x,player.y||g.y,g.x,g.y)<CFG.GHOST_TALK_RADIUS*CFG.GHOST_TALK_RADIUS){
         g.talkT=Math.max(g.talkT,5.5);
         g.seen=true;
+        if((kind==='fire' || g.form==='choir') && g.lineT>=9.5){
+          g.lineT=0;
+          const lines=kind==='fire'?NARA_GHOST_LINES:SILE_GHOST_LINES;
+          g.lineIndex=((Number(g.lineIndex)||0)+1)%lines.length;
+        }
       }
     }
   }
@@ -1493,8 +2094,13 @@ const guardianLairs = (function(){
     const want=Math.max(90,Number(minScore)||0);
     let score=itemScore(item);
     if(score>want) return item;
-    const add=Math.ceil((want+28-score)/5);
-    item.fireDps=Math.max(Number(item.fireDps)||0, (Number(item.fireDps)||0)+add);
+    if(item.weaponType==='bow'){
+      const add=Math.ceil((want+28-score)/6);
+      item.attackDamage=Math.max(1,(Number(item.attackDamage)||1)+add);
+    }else{
+      const add=Math.ceil((want+28-score)/5);
+      item.fireDps=Math.max(Number(item.fireDps)||0, (Number(item.fireDps)||0)+add);
+    }
     return item;
   }
   function makeGhostRewardItem(kind){
@@ -1504,27 +2110,30 @@ const guardianLairs = (function(){
         id:'guardian_fire_relic',
         kind:'weapon',
         weaponType:'flame',
-        name:'Solar Mercy',
+        name:"Nara's Coalheart Torch",
         tier:'epic',
         unique:'guardian_fire',
         fireDps:24,
         fireRange:12.5,
         energyCapacityBonus:50,
-        desc:'A released gatekeeper relic. Its stream outclasses your old weapons.'
+        torch:true,
+        coalSmoke:true,
+        visualStyle:'coal_torch',
+        desc:'The human flame behind Ignivar. A powerful torch whose black smoke remembers what passion costs.'
       }, best+45);
     }
     return scaleRewardAbove({
       id:'guardian_ice_relic',
       kind:'weapon',
-      weaponType:'electric',
-      name:'Rime Quietus',
+      weaponType:'bow',
+      name:"Sile's Heartglass Refrain",
       tier:'epic',
       unique:'guardian_ice',
-      fireDps:26,
-      fireRange:13,
-      energyCost:4,
-      energyCapacityBonus:90,
-      desc:'A released gatekeeper relic. Cold logic bends into a perfect beam.'
+      attackDamage:15,
+      fireCooldown:0.28,
+      mergePerk:'frost',
+      energyCapacityBonus:60,
+      desc:'A bow from the choir beneath Aurex. Its quick arrows carry a persistent frost refrain.'
     }, best+45);
   }
   function grantFallbackGhostReward(kind){
@@ -1571,18 +2180,35 @@ const guardianLairs = (function(){
     }
     return 'The simulation lets me breathe at last. I guarded this gate because the code demanded it.'+selfLine+otherLine+' The east still holds fire: seek Ignivar beyond +10000 blocks.';
   }
+  function ghostCurrentSpeech(g){
+    // Progress guidance wins after both hearts: rotating personality lines are
+    // lovely, but they must never hide the newly opened underground objective.
+    if(g && guardiansBothDefeated()) return ghostSpeech(g.kind);
+    if(g && g.kind==='fire' && g.form==='human' && g.seen){
+      return 'Nara: '+NARA_GHOST_LINES[(Number(g.lineIndex)||0)%NARA_GHOST_LINES.length];
+    }
+    if(g && g.kind==='ice' && g.form==='choir' && g.seen){
+      return 'Sile: '+SILE_GHOST_LINES[(Number(g.lineIndex)||0)%SILE_GHOST_LINES.length];
+    }
+    return g ? ghostSpeech(g.kind) : '';
+  }
   function ghostGroundY(kind,x,fallbackY,getTile){
     const L=layoutFor(kind);
     const start=Math.max(2,Math.floor(Math.min(fallbackY,L.floorY)-18));
     const end=Math.min(WORLD_H-4,Math.floor(L.floorY+18));
     if(typeof getTile==='function'){
+      let best=null, bestD=Infinity;
       for(let y=start;y<=end;y++){
         try{
           const here=getTile(Math.round(x),y);
           const below=getTile(Math.round(x),y+1);
-          if(!isSolid(here) && isSolid(below)) return y+0.15;
+          if(!isSolid(here) && isSolid(below)){
+            const candidate=y+0.15, d=Math.abs(candidate-fallbackY);
+            if(d<bestD){ best=candidate; bestD=d; }
+          }
         }catch(e){}
       }
+      if(best!=null) return best;
     }
     return clamp(fallbackY,3,WORLD_H-5);
   }
@@ -1606,7 +2232,10 @@ const guardianLairs = (function(){
       talkT:14,
       rewarded:!!old.rewarded,
       rewardId:old.rewardId || null,
-      seen:!!old.seen
+      seen:!!old.seen,
+      form:kind==='fire'?'human':'choir',
+      lineIndex:Number(old.lineIndex)||0,
+      lineT:0
     };
     state.ghosts[kind]=g;
     grantGhostReward(kind);
@@ -1655,6 +2284,25 @@ const guardianLairs = (function(){
     return enableUndergroundGate(getTile,setTile);
   }
 
+  function spawnGuardianVictoryCache(kind,e){
+    const L=layoutFor(kind);
+    const tier=kind==='fire'?'legendary':'epic';
+    let chest=null;
+    try{
+      if(MM.drops && typeof MM.drops.spawnChest==='function'){
+        chest=MM.drops.spawnChest(L.ax+(kind==='fire'?5:-5),L.floorY-7,tier,{
+          source:kind+'_guardian_victory',
+          lootSeed:(L.seed^(kind==='fire'?0xf17ecace:0x1ceca11e))>>>0,
+          vx:kind==='fire'?2.2:-2.2,
+          vy:-4.8
+        });
+      }
+    }catch(err){ chest=null; }
+    addEffect({type:kind==='fire'?'victoryForge':'burst',kind,x:L.ax,y:L.floorY-8,t:0,max:2.8,r:22});
+    if(chest) say((kind==='fire'?'A legendary solar cache':'An epic rime cache')+' rises from the guardian dais.');
+    return chest;
+  }
+
   function awardHeart(kind){
     const spec=SPEC[kind];
     let newly=true, progressHandled=false;
@@ -1664,6 +2312,7 @@ const guardianLairs = (function(){
       newly=!(inv && (Number(inv[spec.heartKey])||0)>0);
     }
     state.defeated[kind]=true;
+    state.avatarBroken[kind]=true;
     state.awakened[kind]=false;
     if(newly){
       const inv=root.inv;
@@ -1672,27 +2321,98 @@ const guardianLairs = (function(){
       try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){}
       say(spec.heartLabel+' acquired.');
     }else say(spec.heartLabel+' already beats in your story.');
-    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-guardian-defeated',{detail:{kind,name:spec.bossName,heart:spec.heartKey,newReward:newly}})); }catch(e){}
-    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:spec.bossName,guardian:true,kind}})); }catch(e){}
+    const defeatedName=spec.trueName || spec.bossName;
+    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-guardian-defeated',{detail:{kind,name:defeatedName,heart:spec.heartKey,newReward:newly}})); }catch(e){}
+    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:defeatedName,guardian:true,kind}})); }catch(e){}
     try{ if(MM.guardianAftermath && MM.guardianAftermath.start) MM.guardianAftermath.start(kind); }catch(e){}
     markWorldChanged();
+    return newly;
+  }
+  function revealFireSelf(e){
+    if(!isWyrmBoss(e) || e.dead) return null;
+    e.dead=true;
+    state.avatarBroken.fire=true;
+    state.awakened.fire=true;
+    resetStorm('fire');
+    resetWeather('fire');
+    for(let i=hazards.length-1;i>=0;i--) if(hazards[i].kind==='fire') hazards.splice(i,1);
+    for(const other of entities){
+      if(other===e || other.kind!=='fire' || other.dead) continue;
+      other.dead=true;
+      addEffect({type:other.role==='bulwark'?'houndDeath':'oracleDeath',kind:'fire',x:other.x,y:other.y,t:0,max:1.05,r:7});
+    }
+    addEffect({type:'avatarReveal',kind:'fire',x:e.x,y:e.y,t:0,max:2.7,r:32});
+    sfx('explosion',{x:e.x,y:e.y});
+    const L=layoutFor('fire');
+    const nara=spawnGuardian('fire','trueSelf',{
+      x:clamp(e.x,L.ax-8,L.ax+8),
+      y:L.floorY-2.15,
+      seed:(e.seed^0x4e415241)>>>0,
+      awakening:e.awakening
+    });
+    seedFireArenaAtmosphere(L);
+    say('The painted dragon splits like a burning stage prop. A woman steps through the smoke.');
+    say('Nara: You beat the dragon. Congratulations: you debugged my coping mechanism. Now cool the torch, not the woman.');
+    markWorldChanged();
+    return nara;
+  }
+  function revealIceChoir(e){
+    if(!isRimeBoss(e) || e.dead) return null;
+    e.dead=true;
+    state.avatarBroken.ice=true;
+    state.awakened.ice=true;
+    resetStorm('ice');
+    resetWeather('ice');
+    for(let i=hazards.length-1;i>=0;i--) if(hazards[i].kind==='ice') hazards.splice(i,1);
+    for(const other of entities){
+      if(other===e || other.kind!=='ice' || other.dead) continue;
+      other.dead=true;
+      addEffect({type:other.role==='sentinel'?'sentinelDeath':'mirrorDeath',kind:'ice',x:other.x,y:other.y,t:0,max:1.25,r:8});
+    }
+    addEffect({type:'sovereignShatter',kind:'ice',x:e.x,y:e.y,t:0,max:2.8,r:34});
+    sfx('explosion',{x:e.x,y:e.y});
+    const L=layoutFor('ice');
+    const sile=spawnGuardian('ice','choir',{
+      x:clamp(e.x,L.ax-7,L.ax+7),
+      y:L.floorY-8.5,
+      seed:(e.seed^0x53494c45)>>>0,
+      awakening:e.awakening
+    });
+    seedIceArenaAtmosphere(L);
+    say('Aurex does not die. The sovereign breaks into five listening pieces around a dark drop of meltwater.');
+    say('Sile: You defeated the crown. Now please stop hitting the silence long enough for it to open.');
+    markWorldChanged();
+    return sile;
   }
   function defeatEntity(e){
     if(!e || e.dead) return;
+    if(isWyrmBoss(e)){ revealFireSelf(e); return; }
+    if(isRimeBoss(e)){ revealIceChoir(e); return; }
     e.dead=true;
-    addEffect({type:'burst',kind:e.kind,x:e.x,y:e.y,t:0,max:e.boss?1.35:0.8,r:e.boss?14:6});
+    const deathType=e.boss
+      ? (isTrueSelf(e)?'humanRelease':(isIceChoir(e)?'choirRelease':(e.kind==='fire'?'solarDeath':'rimeDeath')))
+      : (e.kind==='fire'?(e.role==='bulwark'?'houndDeath':'oracleDeath'):(e.role==='sentinel'?'sentinelDeath':'mirrorDeath'));
+    addEffect({type:deathType,kind:e.kind,x:e.x,y:e.y,t:0,max:e.boss?2.5:1.05,r:e.boss?30:7});
     sfx(e.boss?'explosion':'spark',{x:e.x,y:e.y});
     if(e.boss){
       guardianDeathBlast(e);
-      awardHeart(e.kind);
+      const newly=awardHeart(e.kind);
       spawnGuardianGhost(e.kind,e);
       maybeEnableUndergroundGate();
       resetStorm(e.kind);
       resetWeather(e.kind);
-      for(const other of entities){ if(other.kind===e.kind) other.dead=true; }
-      // Signature relics rain from the felled guardian (engine/drops.js)
-      try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop(e.kind,e.x,e.y,{boss:true}); }catch(err){}
-      try{ if(MM.drops && MM.drops.rollJewelDrop) MM.drops.rollJewelDrop(e,{boss:true,hp:e.maxHp,dmg:26,xp:520}); }catch(err){}
+      for(const other of entities){
+        if(other===e || other.kind!==e.kind || other.dead) continue;
+        other.dead=true;
+        addEffect({type:e.kind==='fire'?(other.role==='bulwark'?'houndDeath':'oracleDeath'):(other.role==='sentinel'?'sentinelDeath':'mirrorDeath'),kind:e.kind,x:other.x,y:other.y,t:0,max:1.05,r:7});
+      }
+      // The full relic rain and victory cache are story rewards, not a debug
+      // rematch farm. The released ghost independently guards its unique item.
+      if(newly){
+        spawnGuardianVictoryCache(e.kind,e);
+        try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop(e.kind,e.x,e.y,{boss:true}); }catch(err){}
+        try{ if(MM.drops && MM.drops.rollJewelDrop) MM.drops.rollJewelDrop(e,{boss:true,hp:e.maxHp,dmg:26,xp:520}); }catch(err){}
+      }
     }else{
       say(e.name+' breaks.');
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop(e.kind,e.x,e.y,{role:e.role}); }catch(err){}
@@ -1706,11 +2426,23 @@ const guardianLairs = (function(){
       opts.type,
       opts.stream,
       opts.cause,
-      opts.weaponType
+      opts.weaponType,
+      opts.fire?'fire':null
     ].filter(v=>v!=null).join(' ').toLowerCase();
-    if(/\b(hose|water|aqua|wet|douse)\b/.test(raw)) return 'water';
+    if(opts.snowball || /\b(ice|frost|chill|cold|snow|snowball|rime|cryo)\b/.test(raw)) return 'ice';
+    if(/\b(hose|water|aqua|wet|douse|spit|spitting|saliva)\b/.test(raw)) return 'water';
     if(/\b(flame|fire|heat|burn)\b/.test(raw)) return 'fire';
     return raw;
+  }
+  function isSnowballWeapon(opts){
+    if(!opts) return false;
+    if(opts.snowball) return true;
+    return /\bsnowball\b/.test([opts.kind,opts.type,opts.cause,opts.weaponType].filter(Boolean).join(' ').toLowerCase());
+  }
+  function isSpitWeapon(opts){
+    if(!opts) return false;
+    if(opts.spit) return true;
+    return /\b(spit|spitting|saliva)\b/.test([opts.kind,opts.type,opts.cause,opts.weaponType].filter(Boolean).join(' ').toLowerCase());
   }
   function guardianWeaknessMultiplier(e,opts){
     if(!e || !opts) return 1;
@@ -1732,8 +2464,125 @@ const guardianLairs = (function(){
       }
     }catch(e){}
   }
+  function announceNaraCoolant(e,kind){
+    if(!e || e.weakHint>0) return;
+    if(kind==='snowball') say('Nara: Snow. Maximum cooling, minimum dignity. An excellent weapon.');
+    else if(kind==='spit') say('Nara: Did you just spit at the firewall? Disgusting. Clever. Annoyingly effective.');
+    else if(kind==='water') say('Nara: Water dims the ward. Spit is ruder; snow is faster.');
+    else say('Nara: Ice reaches the torch, but snowballs make the point better.');
+    e.weakHint=2.2;
+  }
+  function douseNaraTorch(e){
+    if(!e || !e.torchLit) return false;
+    e.torchLit=false;
+    e.vulnerableT=6.4;
+    e.attackCd=99;
+    for(let i=hazards.length-1;i>=0;i--){
+      const h=hazards[i];
+      if(h.kind==='fire' && h.source===e.id && h.type==='torchJet') hazards.splice(i,1);
+    }
+    addEffect({type:'torchDouse',kind:'fire',x:e.x,y:e.y-0.72,t:0,max:1.35,r:10});
+    say('Nara: There—the trick. Cool the torch, not the woman. Now every weapon can reach me.');
+    sfx('spark',{x:e.x,y:e.y});
+    return true;
+  }
+  function hitIceChoir(e,dmg,opts){
+    const element=weaponElement(opts);
+    const source=String(opts && opts.source || 'hero').toLowerCase();
+    // Autonomous and already-applied damage is not a new player interruption.
+    // Without this distinction, one nearby turret or a lingering burn can
+    // reset the silence forever after the player has deliberately stopped.
+    const restartsSilence=source==='hero' || source==='player' || source==='coop' || source==='guest';
+    const base=Math.max(0.5,Number(dmg)||0.5);
+    if(e.sealed){
+      if(restartsSilence){
+        e.quietT=0;
+        e.hitFlash=0.08;
+        addEffect({type:'choirBlock',kind:'ice',x:e.x,y:e.y,t:0,max:0.5,r:4.4});
+        e.wardHint=(Number(e.wardHint)||0)-0.1;
+        if(e.wardHint<=0){
+          say('Sile: Every strike restarts the silence. Wait '+e.quietNeed.toFixed(1)+' seconds; listening is the key you do not swing.');
+          e.wardHint=3.4;
+        }
+      }
+      return true;
+    }
+    let mult=1.12;
+    if(element==='fire') mult=3.65;
+    else if(element==='ice') mult=0.55;
+    else if(element==='water') mult=0.72;
+    const amount=base*mult;
+    e.hp-=amount;
+    e.hitFlash=0.22;
+    addEffect({type:element==='fire'?'heartglassThaw':'hit',kind:'ice',x:e.x,y:e.y,t:0,max:0.34,r:3.8});
+    if(element==='fire' && source!=='status' && e.weakHint<=0){
+      say('Sile: Fire is an excellent answer. It just was not the question that opened me.');
+      e.weakHint=2.3;
+    }
+    // Burn ticks retain elemental damage, but suppress repeated major combat
+    // events. Direct hero, co-op and turret hits remain correctly attributed.
+    if(source!=='status'){
+      noteCombatEvent({
+        kind:'elemental',source,target:'guardian',x:e.x,y:e.y-0.4,amount,element,
+        cause:element==='fire'?'heartglass_fire_weakness':'heartglass_open',
+        bonusDamagePct:Math.round((mult-1)*100),major:true,power:element==='fire'?2.35:1.25
+      });
+    }
+    if(e.hp<=0) defeatEntity(e);
+    return true;
+  }
+  function hitTrueSelf(e,dmg,opts){
+    const element=weaponElement(opts), ice=element==='ice', water=element==='water';
+    const snowball=isSnowballWeapon(opts), spit=water && isSpitWeapon(opts);
+    const base=Math.max(0.5,Number(dmg)||0.5);
+    let amount=base, cooling=0, coolant='';
+    if(e.torchLit && !ice && !water){
+      e.hitFlash=0.08;
+      e.wardHint=(Number(e.wardHint)||0)-0.1;
+      addEffect({type:'wardBlock',kind:'fire',x:e.x,y:e.y-0.45,t:0,max:0.42,r:3.2});
+      if(e.wardHint<=0){
+        say('Nara: The firewall is literal. Snow is best. If you run out, spit—or try water like a civilized person.');
+        e.wardHint=3.2;
+      }
+      return true;
+    }
+    if(ice){
+      amount=snowball ? Math.max(18,amount*9) : amount*4.5;
+      cooling=snowball?26:Math.min(30,12+amount*0.22);
+      coolant=snowball?'snowball':'ice';
+    }else if(spit){
+      amount=Math.max(10,amount*5.75);
+      cooling=20;
+      coolant='spit';
+    }else if(water){
+      amount=Math.max(2,amount*2.25);
+      cooling=Math.min(12,2.5+Math.sqrt(base)*1.8);
+      coolant='water';
+    }else amount*=1.08;
+    if(cooling>0){
+      announceNaraCoolant(e,coolant);
+      if(e.torchLit){
+        e.frostMeter=Math.min(e.frostNeed,(Number(e.frostMeter)||0)+cooling);
+        if(e.frostMeter>=e.frostNeed) douseNaraTorch(e);
+      }
+      addEffect({type:'torchDouse',kind:'fire',x:e.x,y:e.y-0.5,t:0,max:0.42,r:3.4});
+      noteCombatEvent({
+        kind:'elemental',source:'hero',target:'guardian',x:e.x,y:e.y-0.55,amount,element,
+        cause:snowball?'snowball_secret':(spit?'spit_weakness':(water?'water_weakness':'ice_weakness')),
+        bonusDamagePct:Math.round((amount/base-1)*100),major:true,
+        power:snowball?2.4:(spit?2.05:(water?1.45:1.8))
+      });
+    }
+    e.hp-=amount;
+    e.hitFlash=0.2;
+    addEffect({type:'hit',kind:'fire',x:e.x,y:e.y-0.35,t:0,max:0.24,r:2.4});
+    if(e.hp<=0) defeatEntity(e);
+    return true;
+  }
   function hitEntity(e,dmg,opts){
     if(!e || e.dead || !(dmg>0)) return false;
+    if(isTrueSelf(e)) return hitTrueSelf(e,dmg,opts);
+    if(isIceChoir(e)) return hitIceChoir(e,dmg,opts);
     let amount=Math.max(0.5,dmg);
     if(e.boss){
       const mult=sidekickShieldMult(e);
@@ -1825,7 +2674,11 @@ const guardianLairs = (function(){
     dt=Math.min(0.1,dt);
     player=player || playerRef();
     const hearts=progressHearts();
-    for(const kind of ['fire','ice']) if(hearts[kind]) state.defeated[kind]=true;
+    for(const kind of ['fire','ice']){
+      if(!hearts[kind]) continue;
+      state.defeated[kind]=true;
+      state.avatarBroken[kind]=true;
+    }
     maybeEnableUndergroundGate(getTile,setTile);
     if(player && Number.isFinite(player.x)){
       for(const kind of ['fire','ice']){
@@ -1833,7 +2686,7 @@ const guardianLairs = (function(){
         const L=layoutFor(kind);
         const sideDistance=player.x*spec.dir;
         if((state.awakened[kind] || activeBoss(kind)) && !inGuardianNeighbourhood(kind,player,L)) sleepGuardian(kind);
-        if(!isDefeated(kind) && playerInsideGuardianArena(kind,player,L)) awaken(kind);
+        awakenOnArenaEntry(kind,player,L,getTile,setTile);
         if(!isDefeated(kind) && sideDistance>=CFG.DISTANCE && !activeKind(kind)){
           const depth=clamp((sideDistance-CFG.DISTANCE)/9000,0,1);
           state.ambientCd[kind]-=dt*(0.55+depth*1.8);
@@ -1853,7 +2706,7 @@ const guardianLairs = (function(){
       const elem=tickBossStatus(bossStatusFor(e),dt);
       if(elem.damage>0 && !e.dead) hitEntity(e,elem.damage,{source:'status',cause:'burn_dot'});
       if(e.dead){ entities.splice(i,1); continue; }
-      updateEntity(e,player,getTile,setTile,dt*elem.speedMult);
+      updateEntity(e,player,getTile,setTile,dt*elem.speedMult,dt);
       if(e.dead) entities.splice(i,1);
     }
     const fireBoss=activeBoss('fire'), iceBoss=activeBoss('ice');
@@ -1888,11 +2741,126 @@ const guardianLairs = (function(){
     const n=parseInt(hex.slice(1,7),16);
     return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+clamp(a,0,1).toFixed(3)+')';
   }
+  function drawFireArenaAtmosphere(ctx,TILE,L,now,active){
+    if(!L || !L.design || L.design.schema!=='east_fire_crucible_v3') return;
+    const heat=active?1:0.62;
+    const sunX=L.ax*TILE, sunY=(L.floorY-26)*TILE;
+    ctx.save();
+
+    // Chimney soot stays high and translucent, leaving actors readable while
+    // visually connecting the black Sadza banks to the working crucible.
+    ctx.globalCompositeOperation='source-over';
+    for(let i=0;i<(L.chimneys||[]).length;i++){
+      const c=L.chimneys[i];
+      for(let j=0;j<3;j++){
+        const age=(now*(0.13+j*0.025)+i*0.21+j*0.31)%1;
+        const x=(c.x+Math.sin(now*0.7+i+j)*0.7*age)*TILE;
+        const y=(c.y-age*(5.5+j))*TILE;
+        ctx.fillStyle='rgba(15,12,14,'+(0.16*(1-age)*heat).toFixed(3)+')';
+        ctx.beginPath();
+        ctx.arc(x,y,TILE*(0.55+age*1.15),0,Math.PI*2);
+        ctx.fill();
+      }
+    }
+
+    ctx.globalCompositeOperation='lighter';
+    const corona=ctx.createRadialGradient(sunX,sunY,TILE*0.5,sunX,sunY,TILE*(active?18:14));
+    corona.addColorStop(0,'rgba(255,248,193,'+(0.24*heat).toFixed(3)+')');
+    corona.addColorStop(0.16,'rgba(255,161,48,'+(0.20*heat).toFixed(3)+')');
+    corona.addColorStop(0.55,'rgba(255,77,20,'+(0.09*heat).toFixed(3)+')');
+    corona.addColorStop(1,'rgba(255,60,12,0)');
+    ctx.fillStyle=corona;
+    ctx.beginPath(); ctx.arc(sunX,sunY,TILE*(active?18:14),0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='rgba(255,194,76,'+(0.20*heat).toFixed(3)+')';
+    ctx.lineWidth=Math.max(1,TILE*0.12);
+    for(let i=0;i<12;i++){
+      const a=i*Math.PI/6+Math.sin(now*0.45+i)*0.05;
+      const r0=TILE*8.5, r1=TILE*(12.5+(i%3)*1.8);
+      ctx.beginPath();
+      ctx.moveTo(sunX+Math.cos(a)*r0,sunY+Math.sin(a)*r0);
+      ctx.lineTo(sunX+Math.cos(a)*r1,sunY+Math.sin(a)*r1);
+      ctx.stroke();
+    }
+
+    for(const p of L.embers||[]){
+      const drift=(now*p.speed+p.phase)%5.5;
+      const ex=(p.x+Math.sin(now*p.speed+p.phase)*0.8)*TILE;
+      const ey=(p.y-drift)*TILE;
+      const a=0.18+0.34*(1-drift/5.5)*heat;
+      ctx.fillStyle=(p.size>0.17?'rgba(255,238,153,':'rgba(255,104,31,')+a.toFixed(3)+')';
+      const sz=Math.max(1,p.size*TILE);
+      ctx.fillRect(ex-sz*0.5,ey-sz*0.5,sz,sz);
+    }
+
+    // Heat-haze ribbons are bounded authored lines, not a per-pixel filter.
+    ctx.strokeStyle='rgba(255,126,43,'+(0.075*heat).toFixed(3)+')';
+    ctx.lineWidth=Math.max(1,TILE*0.08);
+    for(let i=-5;i<=5;i++){
+      const x=(L.ax+i*9+Math.sin(now*1.3+i)*1.2)*TILE;
+      ctx.beginPath();
+      ctx.moveTo(x,(L.floorY-3)*TILE);
+      ctx.bezierCurveTo(x-TILE*1.1,(L.floorY-9)*TILE,x+TILE*1.2,(L.floorY-15)*TILE,x,(L.floorY-21)*TILE);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  function drawIceArenaAtmosphere(ctx,TILE,L,now,active){
+    if(!L || !L.design || L.design.schema!=='west_ice_palace_v3') return;
+    const cold=active?1:0.58;
+    const cx=L.ax*TILE, top=(L.floorY-27)*TILE;
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+
+    // Three bounded aurora ribbons make the cathedral feel enormous without a
+    // full-screen filter. Their crossing colors echo the five-part final choir.
+    const colors=['rgba(105,255,221,','rgba(113,164,255,','rgba(211,126,255,'];
+    for(let band=0;band<3;band++){
+      ctx.strokeStyle=colors[band]+(0.10*cold).toFixed(3)+')';
+      ctx.lineWidth=TILE*(1.1+band*0.34);
+      ctx.beginPath();
+      const y=top+band*TILE*3.2;
+      ctx.moveTo(cx-TILE*53,y+Math.sin(now*0.31+band)*TILE*2);
+      ctx.bezierCurveTo(cx-TILE*24,y-TILE*(5+band),cx+TILE*19,y+TILE*(6-band),cx+TILE*53,y+Math.sin(now*0.37+band*2)*TILE*2);
+      ctx.stroke();
+    }
+
+    for(const p of L.snowMotes||[]){
+      const fall=(now*p.speed+p.phase)%8.5;
+      const x=(p.x+Math.sin(now*(0.35+p.aurora*0.22)+p.phase)*1.25)*TILE;
+      const y=(p.y+fall)*TILE;
+      const a=(0.20+0.36*(1-fall/8.5))*cold;
+      ctx.fillStyle=p.aurora>0.86?'rgba(190,255,226,'+a.toFixed(3)+')':'rgba(240,251,255,'+a.toFixed(3)+')';
+      const sz=Math.max(1,p.size*TILE);
+      ctx.fillRect(x-sz*0.5,y-sz*0.5,sz,sz);
+    }
+
+    // The breakable panes reflect a moving vertical glint even while intact;
+    // after a pane cracks, the ordinary water renderer takes over naturally.
+    ctx.lineWidth=Math.max(1,TILE*0.07);
+    for(const pool of L.mirrorPools||[]){
+      const x0=pool.x0*TILE, x1=(pool.x1+1)*TILE, y=pool.y*TILE;
+      const sweep=(Math.sin(now*0.8+pool.x0*0.07)*0.5+0.5);
+      ctx.strokeStyle='rgba(226,252,255,'+(0.17*cold).toFixed(3)+')';
+      ctx.beginPath(); ctx.moveTo(x0,y+TILE*0.18); ctx.lineTo(x1,y+TILE*0.18); ctx.stroke();
+      ctx.strokeStyle='rgba(130,235,255,'+(0.28*cold).toFixed(3)+')';
+      const sx=lerp(x0,x1,sweep);
+      ctx.beginPath(); ctx.moveTo(sx-TILE*1.2,y+TILE*0.08); ctx.lineTo(sx+TILE*1.2,y+TILE*0.30); ctx.stroke();
+    }
+
+    const halo=ctx.createRadialGradient(cx,(L.floorY-10)*TILE,2,cx,(L.floorY-10)*TILE,TILE*25);
+    halo.addColorStop(0,'rgba(220,253,255,'+(0.18*cold).toFixed(3)+')');
+    halo.addColorStop(0.45,'rgba(100,211,255,'+(0.09*cold).toFixed(3)+')');
+    halo.addColorStop(1,'rgba(76,145,255,0)');
+    ctx.fillStyle=halo; ctx.beginPath(); ctx.arc(cx,(L.floorY-10)*TILE,TILE*25,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
   function drawLairGlows(ctx,TILE,canDrawTile,view){
     const now=(typeof performance!=='undefined'?performance.now():0)*0.001;
     for(const kind of ['fire','ice']){
       const L=layoutFor(kind), spec=SPEC[kind];
       if(!L || !tileVisible(canDrawTile,L.ax,L.floorY-10,view,48)) continue;
+      if(kind==='fire') drawFireArenaAtmosphere(ctx,TILE,L,now,activeKind(kind));
+      else drawIceArenaAtmosphere(ctx,TILE,L,now,activeKind(kind));
       ctx.save();
       ctx.globalCompositeOperation='lighter';
       for(const g of L.glows){
@@ -1942,7 +2910,17 @@ const guardianLairs = (function(){
         const pulse=0.6+0.4*Math.sin(h.t*18);
         ctx.fillStyle=rgba(spec.accent,0.75);
         ctx.shadowColor=spec.accent; ctx.shadowBlur=12;
-        ctx.beginPath(); ctx.arc(h.x*TILE,h.y*TILE,Math.max(3,h.r*TILE*(0.9+pulse*0.25)),0,Math.PI*2); ctx.fill();
+        if(h.variant==='icicle'){
+          const a=Math.atan2(h.vy||1,h.vx||0)-Math.PI/2, rr=Math.max(4,h.r*TILE*3.2);
+          ctx.save(); ctx.translate(h.x*TILE,h.y*TILE); ctx.rotate(a);
+          ctx.beginPath(); ctx.moveTo(0,rr); ctx.lineTo(-h.r*TILE,0); ctx.lineTo(0,-rr*0.42); ctx.lineTo(h.r*TILE,0); ctx.closePath(); ctx.fill(); ctx.restore();
+        }else if(h.variant==='heartglass'){
+          const rr=Math.max(3,h.r*TILE*(1+pulse*0.2));
+          ctx.save(); ctx.translate(h.x*TILE,h.y*TILE); ctx.rotate(h.t*5);
+          ctx.beginPath(); ctx.moveTo(0,-rr*1.6); ctx.lineTo(rr,0); ctx.lineTo(0,rr*1.6); ctx.lineTo(-rr,0); ctx.closePath(); ctx.fill(); ctx.restore();
+        }else{
+          ctx.beginPath(); ctx.arc(h.x*TILE,h.y*TILE,Math.max(3,h.r*TILE*(0.9+pulse*0.25)),0,Math.PI*2); ctx.fill();
+        }
       }else if(h.type==='skyLightning'){
         const armed=h.t>=h.delay;
         const f=armed ? clamp(1-(h.t-h.delay)/Math.max(0.01,h.life),0,1) : clamp(h.t/h.delay,0,1)*0.45;
@@ -1991,6 +2969,31 @@ const guardianLairs = (function(){
         if(!armed){
           ctx.beginPath(); ctx.moveTo((h.x-h.r)*TILE,h.y*TILE); ctx.lineTo((h.x+h.r)*TILE,h.y*TILE); ctx.moveTo(h.x*TILE,(h.y-h.r)*TILE); ctx.lineTo(h.x*TILE,(h.y+h.r)*TILE); ctx.stroke();
         }
+        if(h.variant==='memoryEcho'){
+          ctx.strokeStyle='rgba(225,252,255,'+(armed?0.82:0.48).toFixed(3)+')';
+          ctx.lineWidth=Math.max(1,TILE*0.07);
+          for(let j=0;j<3;j++){
+            ctx.beginPath(); ctx.ellipse(h.x*TILE+(j-1)*TILE*0.23,h.y*TILE-TILE*(0.18+j*0.22),TILE*(0.18+j*0.04),TILE*(0.31+j*0.05),j*0.24,0,Math.PI*2); ctx.stroke();
+          }
+        }
+      }else if(h.type==='torchJet'){
+        const armed=h.t>=h.delay;
+        const pulse=0.82+Math.sin(h.t*31)*0.18;
+        ctx.globalCompositeOperation='source-over';
+        if(armed){
+          ctx.strokeStyle='rgba(14,11,13,0.46)'; ctx.lineWidth=h.r*TILE*3.8;
+          ctx.shadowColor='rgba(0,0,0,0.65)'; ctx.shadowBlur=14;
+          ctx.beginPath(); ctx.moveTo(h.x1*TILE,h.y1*TILE); ctx.lineTo(h.x2*TILE,h.y2*TILE); ctx.stroke();
+        }
+        ctx.globalCompositeOperation='lighter';
+        ctx.shadowColor=spec.accent; ctx.shadowBlur=armed?24:7;
+        ctx.strokeStyle=armed?'rgba(255,74,16,0.88)':'rgba(255,183,68,0.34)';
+        ctx.lineWidth=(armed?h.r*2.35*pulse:0.24)*TILE;
+        ctx.beginPath(); ctx.moveTo(h.x1*TILE,h.y1*TILE); ctx.lineTo(h.x2*TILE,h.y2*TILE); ctx.stroke();
+        if(armed){
+          ctx.strokeStyle='rgba(255,238,151,0.82)'; ctx.lineWidth=Math.max(2,h.r*TILE*0.62);
+          ctx.beginPath(); ctx.moveTo(h.x1*TILE,h.y1*TILE); ctx.lineTo(h.x2*TILE,h.y2*TILE); ctx.stroke();
+        }
       }else if(h.type==='beam'){
         const armed=h.t>=h.delay;
         ctx.strokeStyle=rgba(spec.accent,armed?0.80:0.32);
@@ -2004,6 +3007,14 @@ const guardianLairs = (function(){
         ctx.strokeStyle=rgba(spec.accent,armed?0.70:0.32);
         ctx.lineWidth=Math.max(2,TILE*0.14);
         ctx.beginPath(); ctx.arc(h.x*TILE,h.y*TILE,r*TILE,0,Math.PI*2); ctx.stroke();
+        if(h.variant==='hush'){
+          ctx.strokeStyle='rgba(244,254,255,'+(armed?0.74:0.30).toFixed(3)+')';
+          ctx.lineWidth=Math.max(1,TILE*0.06);
+          for(let j=0;j<12;j++){
+            const a=j*Math.PI/6, r0=r*TILE-TILE*0.35, r1=r*TILE+TILE*0.35;
+            ctx.beginPath(); ctx.moveTo(h.x*TILE+Math.cos(a)*r0,h.y*TILE+Math.sin(a)*r0); ctx.lineTo(h.x*TILE+Math.cos(a)*r1,h.y*TILE+Math.sin(a)*r1); ctx.stroke();
+          }
+        }
       }else if(h.type==='blizzard'){
         const f=clamp(1-h.t/h.life,0,1);
         const grad=ctx.createRadialGradient(h.x*TILE,h.y*TILE,2,h.x*TILE,h.y*TILE,h.r*TILE);
@@ -2014,70 +3025,310 @@ const guardianLairs = (function(){
       ctx.restore();
     }
   }
+  function drawNara(ctx,TILE,e,now){
+    const x=e.x*TILE, y=e.y*TILE, s=e.dir||1;
+    const lit=!!e.torchLit, frost=clamp((e.frostMeter||0)/(e.frostNeed||72),0,1);
+    const torchX=x+s*TILE*1.04, torchY=y-TILE*0.86;
+
+    // The human silhouette is deliberately source-over and soot-dark so it
+    // remains legible in the brightest arena in the game.
+    ctx.globalCompositeOperation='source-over';
+    ctx.shadowColor='rgba(0,0,0,0.75)'; ctx.shadowBlur=10;
+    ctx.fillStyle='#120e12';
+    ctx.beginPath();
+    ctx.moveTo(x-TILE*0.62,y-TILE*0.48);
+    ctx.quadraticCurveTo(x-TILE*0.95,y+TILE*0.35,x-TILE*0.48,y+TILE*1.03);
+    ctx.lineTo(x+TILE*0.48,y+TILE*1.03);
+    ctx.quadraticCurveTo(x+TILE*0.95,y+TILE*0.35,x+TILE*0.62,y-TILE*0.48);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle='#512017';
+    ctx.beginPath();
+    ctx.moveTo(x-TILE*0.44,y-TILE*0.55); ctx.lineTo(x+TILE*0.44,y-TILE*0.55);
+    ctx.lineTo(x+TILE*0.60,y+TILE*0.64); ctx.lineTo(x,y+TILE*0.34); ctx.lineTo(x-TILE*0.60,y+TILE*0.64);
+    ctx.closePath(); ctx.fill();
+
+    // Split stance and visible hands keep her a person, rather than another
+    // floating guardian glyph.
+    ctx.strokeStyle='#241315'; ctx.lineWidth=TILE*0.24; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(x-TILE*0.23,y+TILE*0.42); ctx.lineTo(x-TILE*0.34,y+TILE*1.18); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+TILE*0.23,y+TILE*0.42); ctx.lineTo(x+TILE*0.37,y+TILE*1.18); ctx.stroke();
+    ctx.strokeStyle='#d69a78'; ctx.lineWidth=TILE*0.20;
+    ctx.beginPath(); ctx.moveTo(x+s*TILE*0.28,y-TILE*0.43); ctx.lineTo(torchX-s*TILE*0.12,torchY+TILE*0.14); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x-s*TILE*0.30,y-TILE*0.42); ctx.lineTo(x-s*TILE*0.62,y+TILE*0.12); ctx.stroke();
+
+    // Face, black hair and charcoal diadem.
+    ctx.fillStyle='#d9a07c';
+    ctx.beginPath(); ctx.ellipse(x,y-TILE*1.22,TILE*0.36,TILE*0.46,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#171116';
+    ctx.beginPath();
+    ctx.arc(x-s*TILE*0.08,y-TILE*1.34,TILE*0.42,Math.PI*0.83,Math.PI*2.12); ctx.fill();
+    ctx.fillRect(x-s*TILE*0.41,y-TILE*1.33,TILE*0.18*s,y+TILE*0.42-(y-TILE*1.33));
+    ctx.strokeStyle='#09080a'; ctx.lineWidth=Math.max(1,TILE*0.10);
+    ctx.beginPath(); ctx.moveTo(x-TILE*0.27,y-TILE*1.62); ctx.lineTo(x,y-TILE*1.83); ctx.lineTo(x+TILE*0.27,y-TILE*1.62); ctx.stroke();
+    ctx.fillStyle='#fff3c4';
+    ctx.beginPath(); ctx.arc(x+s*TILE*0.13,y-TILE*1.25,TILE*0.045,0,Math.PI*2); ctx.fill();
+
+    // Torch: recognisably the player's tool, but overdriven with coal flame.
+    ctx.strokeStyle='#2b1b13'; ctx.lineWidth=TILE*0.18;
+    ctx.beginPath(); ctx.moveTo(torchX-s*TILE*0.18,torchY+TILE*0.48); ctx.lineTo(torchX+s*TILE*0.08,torchY-TILE*0.55); ctx.stroke();
+    ctx.strokeStyle='#8f4d24'; ctx.lineWidth=TILE*0.07;
+    ctx.beginPath(); ctx.moveTo(torchX-s*TILE*0.14,torchY+TILE*0.43); ctx.lineTo(torchX+s*TILE*0.07,torchY-TILE*0.50); ctx.stroke();
+    if(lit){
+      ctx.globalCompositeOperation='lighter';
+      ctx.shadowColor='#ff5b18'; ctx.shadowBlur=22;
+      const flicker=Math.sin((now||0)*0.017+e.t*9)*TILE*0.08;
+      ctx.fillStyle='rgba(255,75,15,0.90)';
+      ctx.beginPath(); ctx.moveTo(torchX,torchY-TILE*0.38-flicker); ctx.quadraticCurveTo(torchX+s*TILE*0.48,torchY-TILE*0.92,torchX-s*TILE*0.02,torchY-TILE*1.48-flicker); ctx.quadraticCurveTo(torchX-s*TILE*0.54,torchY-TILE*0.75,torchX,torchY-TILE*0.38-flicker); ctx.fill();
+      ctx.fillStyle='rgba(255,239,139,0.92)';
+      ctx.beginPath(); ctx.ellipse(torchX,torchY-TILE*0.70,TILE*0.19,TILE*0.43,s*0.18,0,Math.PI*2); ctx.fill();
+      ctx.globalCompositeOperation='source-over';
+      for(let i=0;i<5;i++){
+        const age=(e.t*(0.28+i*0.015)+i*0.19)%1;
+        ctx.fillStyle='rgba(12,10,12,'+(0.34*(1-age)).toFixed(3)+')';
+        ctx.beginPath(); ctx.arc(torchX+s*Math.sin(e.t+i)*TILE*0.18*age,torchY-TILE*(1.0+age*1.75),TILE*(0.16+age*0.38),0,Math.PI*2); ctx.fill();
+      }
+    }else{
+      ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle='rgba(179,239,255,0.78)';
+      for(let i=0;i<4;i++){
+        const a=e.t*1.1+i*1.57;
+        ctx.beginPath(); ctx.arc(torchX+Math.cos(a)*TILE*0.28,torchY-TILE*0.55+Math.sin(a)*TILE*0.15,TILE*0.07,0,Math.PI*2); ctx.fill();
+      }
+    }
+
+    // Six fire ornaments orbit the cloak. During the opening puzzle the ward
+    // visually cools from orange to rime-blue as snow accumulates.
+    ctx.globalCompositeOperation='lighter';
+    for(let i=0;i<6;i++){
+      const a=e.t*0.75+i*Math.PI/3;
+      const ox=x+Math.cos(a)*TILE*0.72, oy=y+Math.sin(a)*TILE*0.48;
+      ctx.fillStyle=lit?(i%2?'rgba(255,214,79,0.82)':'rgba(255,79,20,0.86)'):'rgba(178,241,255,0.72)';
+      ctx.beginPath(); ctx.moveTo(ox,oy-TILE*0.20); ctx.lineTo(ox+TILE*0.12,oy+TILE*0.14); ctx.lineTo(ox-TILE*0.12,oy+TILE*0.14); ctx.closePath(); ctx.fill();
+    }
+    ctx.strokeStyle=lit?rgba('#ff6a21',0.22+frost*0.48):'rgba(177,239,255,0.68)';
+    ctx.lineWidth=Math.max(1,TILE*(0.07+frost*0.06));
+    ctx.beginPath(); ctx.arc(x,y-TILE*0.34,TILE*(1.18+Math.sin(e.t*3)*0.05),0,Math.PI*2); ctx.stroke();
+  }
   function drawFireEntity(ctx,TILE,e,now){
     const spec=SPEC.fire;
     ctx.save();
-    ctx.globalCompositeOperation='lighter';
-    ctx.shadowColor=spec.accent; ctx.shadowBlur=e.boss?20:12;
-    if(e.boss){
-      for(let i=8;i>=0;i--){
+    if(isTrueSelf(e)){
+      drawNara(ctx,TILE,e,now);
+    }else if(e.boss){
+      const pts=[];
+      for(let i=0;i<=10;i++){
         const a=e.t*2.4+i*0.62;
-        const x=e.x - e.dir*i*1.15 + Math.sin(a)*1.5;
-        const y=e.y + Math.cos(a*0.9)*1.1 + i*0.12;
-        const r=(i===0?1.85:1.15)*(1+Math.sin(now*0.006+i)*0.08);
-        const grad=ctx.createRadialGradient(x*TILE,y*TILE,2,x*TILE,y*TILE,r*TILE);
-        grad.addColorStop(0,i===0?spec.accent2:spec.accent);
-        grad.addColorStop(1,rgba(spec.dark,0.15));
-        ctx.fillStyle=grad;
-        ctx.beginPath(); ctx.arc(x*TILE,y*TILE,r*TILE,0,Math.PI*2); ctx.fill();
+        pts.push({x:e.x-e.dir*i*1.02+Math.sin(a)*1.25,y:e.y+Math.cos(a*0.9)*0.9+i*0.10});
       }
-      ctx.fillStyle='#fff3bb';
+
+      // Soot-black wing membranes and horns give the Solar Wyrm a readable
+      // silhouette even against its own fire. Phase two sheds orbiting Sadza.
+      const shoulder=pts[2], neck=pts[0];
+      ctx.globalCompositeOperation='source-over';
+      ctx.fillStyle=e.phase>=2?'rgba(19,12,16,0.88)':'rgba(59,16,9,0.84)';
+      for(const side of [-1,1]){
+        ctx.beginPath();
+        ctx.moveTo(shoulder.x*TILE,shoulder.y*TILE);
+        ctx.lineTo((shoulder.x-e.dir*1.8)*TILE,(shoulder.y+side*5.2)*TILE);
+        ctx.lineTo((shoulder.x+e.dir*2.0)*TILE,(shoulder.y+side*2.6)*TILE);
+        ctx.lineTo((neck.x-e.dir*0.4)*TILE,(neck.y+side*0.9)*TILE);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.strokeStyle='rgba(255,89,25,0.64)';
+      ctx.lineWidth=Math.max(1,TILE*0.12);
+      for(const side of [-1,1]){
+        ctx.beginPath();
+        ctx.moveTo(shoulder.x*TILE,shoulder.y*TILE);
+        ctx.lineTo((shoulder.x-e.dir*1.8)*TILE,(shoulder.y+side*5.2)*TILE);
+        ctx.lineTo((shoulder.x+e.dir*2.0)*TILE,(shoulder.y+side*2.6)*TILE);
+        ctx.stroke();
+      }
+
+      ctx.globalCompositeOperation='lighter';
+      ctx.lineCap='round'; ctx.lineJoin='round';
+      const bodyPath=()=>{
+        ctx.beginPath(); ctx.moveTo(pts[0].x*TILE,pts[0].y*TILE);
+        for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x*TILE,pts[i].y*TILE);
+      };
+      ctx.shadowColor=spec.accent; ctx.shadowBlur=18;
+      bodyPath(); ctx.strokeStyle='rgba(75,18,8,0.92)'; ctx.lineWidth=TILE*2.55; ctx.stroke();
+      bodyPath(); ctx.strokeStyle=e.phase>=1?'rgba(255,78,18,0.96)':'rgba(229,63,18,0.94)'; ctx.lineWidth=TILE*1.86; ctx.stroke();
+      bodyPath(); ctx.strokeStyle=e.phase>=1?'rgba(255,213,77,0.74)':'rgba(255,135,36,0.64)'; ctx.lineWidth=TILE*0.68; ctx.stroke();
+      for(let i=1;i<pts.length;i++){
+        const p=pts[i], rr=Math.max(0.20,0.72-i*0.045)*TILE;
+        ctx.fillStyle=i%2?rgba(spec.accent2,0.72):rgba(spec.accent,0.82);
+        ctx.beginPath(); ctx.arc(p.x*TILE,p.y*TILE,rr,0,Math.PI*2); ctx.fill();
+      }
+
+      // Armoured wedge head, ember mane, black crown and a bright tracking eye.
+      const hx=(pts[0].x+e.dir*1.15)*TILE, hy=pts[0].y*TILE;
+      ctx.fillStyle='#fff0a3';
       ctx.beginPath();
-      ctx.moveTo((e.x+e.dir*2.3)*TILE,e.y*TILE);
-      ctx.lineTo((e.x-e.dir*0.2)*TILE,(e.y-1.25)*TILE);
-      ctx.lineTo((e.x-e.dir*0.2)*TILE,(e.y+1.25)*TILE);
+      ctx.moveTo(hx+e.dir*TILE*2.05,hy);
+      ctx.lineTo(hx-e.dir*TILE*0.85,hy-TILE*1.45);
+      ctx.lineTo(hx-e.dir*TILE*0.45,hy+TILE*1.36);
       ctx.closePath(); ctx.fill();
+      ctx.fillStyle=rgba(spec.accent,0.84);
+      for(const side of [-1,1]){
+        ctx.beginPath();
+        ctx.moveTo(hx-e.dir*TILE*0.35,hy+side*TILE*0.65);
+        ctx.lineTo(hx-e.dir*TILE*1.65,hy+side*TILE*1.65);
+        ctx.lineTo(hx+e.dir*TILE*0.15,hy+side*TILE*1.05);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.globalCompositeOperation='source-over';
+      ctx.strokeStyle='#171015'; ctx.lineWidth=Math.max(2,TILE*0.20); ctx.lineCap='round';
+      for(const side of [-1,1]){
+        ctx.beginPath();
+        ctx.moveTo(hx-e.dir*TILE*0.15,hy+side*TILE*0.72);
+        ctx.quadraticCurveTo(hx-e.dir*TILE*0.8,hy+side*TILE*1.7,hx-e.dir*TILE*1.65,hy+side*TILE*1.85);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle='#ffffff';
+      ctx.beginPath(); ctx.arc(hx+e.dir*TILE*0.72,hy-TILE*0.36,TILE*0.17,0,Math.PI*2); ctx.fill();
+
+      if(e.phase>=2){
+        ctx.globalCompositeOperation='source-over';
+        for(let i=0;i<14;i++){
+          const a=e.t*(0.65+(i%3)*0.12)+i*2.399;
+          const rr=(3.2+(i%5)*0.7)*TILE;
+          const px=neck.x*TILE+Math.cos(a)*rr;
+          const py=neck.y*TILE+Math.sin(a*1.27)*rr*0.55;
+          ctx.fillStyle='rgba(18,15,18,'+(0.18+(i%4)*0.055).toFixed(3)+')';
+          ctx.beginPath(); ctx.arc(px,py,TILE*(0.18+(i%3)*0.08),0,Math.PI*2); ctx.fill();
+        }
+      }
     }else{
-      ctx.fillStyle=e.role==='flare'?spec.accent2:spec.accent;
-      ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,e.radius*TILE,0,Math.PI*2); ctx.fill();
-      ctx.strokeStyle=rgba(spec.accent2,0.6); ctx.lineWidth=2;
-      ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,(e.radius+0.55+Math.sin(e.t*4)*0.2)*TILE,0,Math.PI*2); ctx.stroke();
+      const x=e.x*TILE, y=e.y*TILE;
+      ctx.shadowColor=spec.accent; ctx.shadowBlur=12;
+      if(e.role==='bulwark'){
+        ctx.globalCompositeOperation='source-over';
+        ctx.fillStyle='#2a1713';
+        ctx.beginPath();
+        ctx.ellipse(x,y,TILE*1.42,TILE*0.82,0,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#5d2114';
+        ctx.beginPath(); ctx.arc(x+e.dir*TILE*0.92,y-TILE*0.28,TILE*0.72,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle='#130d0d'; ctx.lineWidth=Math.max(2,TILE*0.16);
+        for(const sx of [-0.75,0.55]){
+          ctx.beginPath(); ctx.moveTo(x+sx*TILE,y+TILE*0.38); ctx.lineTo(x+sx*TILE,y+TILE*1.15); ctx.stroke();
+        }
+        ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle=spec.accent;
+        for(let i=0;i<4;i++){
+          ctx.beginPath(); ctx.arc(x-TILE*0.72+i*TILE*0.43,y-TILE*0.72-Math.sin(e.t*5+i)*TILE*0.12,TILE*0.22,0,Math.PI*2); ctx.fill();
+        }
+        ctx.fillStyle='#fff3bb'; ctx.fillRect(x+e.dir*TILE*1.12,y-TILE*0.48,TILE*0.15,TILE*0.13);
+      }else{
+        ctx.globalCompositeOperation='lighter';
+        const pulse=1+Math.sin(e.t*5)*0.12;
+        ctx.fillStyle=spec.accent2;
+        ctx.beginPath();
+        ctx.moveTo(x,y-TILE*1.35*pulse); ctx.lineTo(x+TILE*0.86,y); ctx.lineTo(x,y+TILE*1.1); ctx.lineTo(x-TILE*0.86,y); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle=rgba(spec.accent,0.78); ctx.lineWidth=Math.max(1,TILE*0.12);
+        ctx.beginPath(); ctx.arc(x,y,TILE*(1.55+Math.sin(e.t*3)*0.16),0,Math.PI*2); ctx.stroke();
+        for(let i=0;i<3;i++){
+          const a=e.t*2+i*Math.PI*2/3;
+          ctx.fillStyle=rgba(spec.accent2,0.72);
+          ctx.beginPath(); ctx.arc(x+Math.cos(a)*TILE*1.55,y+Math.sin(a)*TILE*0.9,TILE*0.18,0,Math.PI*2); ctx.fill();
+        }
+      }
     }
-    if(e.hitFlash>0){ ctx.fillStyle='rgba(255,255,255,'+(e.hitFlash*3).toFixed(2)+')'; ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,(e.radius+1)*TILE,0,Math.PI*2); ctx.fill(); }
+    if(e.hitFlash>0){ ctx.globalCompositeOperation='lighter'; ctx.fillStyle='rgba(255,255,255,'+clamp(e.hitFlash*2.2,0,1).toFixed(2)+')'; ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,(e.radius+1)*TILE,0,Math.PI*2); ctx.fill(); }
     ctx.restore();
   }
   function drawIceEntity(ctx,TILE,e,now){
     const spec=SPEC.ice;
     ctx.save();
-    ctx.globalCompositeOperation='lighter';
-    ctx.shadowColor=spec.accent; ctx.shadowBlur=e.boss?18:10;
     const x=e.x*TILE, y=e.y*TILE;
-    if(e.boss){
-      ctx.fillStyle=rgba(spec.accent,0.68);
-      for(const s of [-1,1]){
-        ctx.beginPath();
-        ctx.moveTo(x,y-TILE*0.35);
-        ctx.lineTo(x+s*TILE*3.4,y+TILE*0.25);
-        ctx.lineTo(x+s*TILE*1.1,y+TILE*1.35);
-        ctx.closePath(); ctx.fill();
-      }
-      ctx.fillStyle=spec.accent2;
+    ctx.shadowColor=spec.accent; ctx.shadowBlur=e.boss?20:11;
+    if(isIceChoir(e)){
+      // Sile is a collective, not a second humanoid reveal: five translucent
+      // speaking facets orbit one dark meltwater memory. Listening opens their
+      // inward faces; attacking too soon visibly snaps the geometry shut.
+      const open=!e.sealed;
+      ctx.globalCompositeOperation='source-over';
+      const core=ctx.createRadialGradient(x-TILE*0.18,y-TILE*0.24,2,x,y,TILE*1.25);
+      core.addColorStop(0,open?'rgba(255,153,88,0.92)':'rgba(16,36,58,0.96)');
+      core.addColorStop(0.36,open?'rgba(104,218,237,0.72)':'rgba(30,81,112,0.88)');
+      core.addColorStop(1,'rgba(8,22,38,0)');
+      ctx.fillStyle=core; ctx.beginPath(); ctx.arc(x,y,TILE*1.25,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle=open?'rgba(255,210,147,0.88)':'rgba(12,31,51,0.92)';
       ctx.beginPath();
-      ctx.moveTo(x,y-TILE*2.2); ctx.lineTo(x+TILE*1.25,y); ctx.lineTo(x,y+TILE*2.0); ctx.lineTo(x-TILE*1.25,y); ctx.closePath(); ctx.fill();
-      ctx.strokeStyle='#ffffff'; ctx.lineWidth=2;
-      ctx.beginPath(); ctx.moveTo(x,y-TILE*2.1); ctx.lineTo(x,y+TILE*1.9); ctx.moveTo(x-TILE*1.15,y); ctx.lineTo(x+TILE*1.15,y); ctx.stroke();
-      for(let i=0;i<6;i++){
-        const a=e.t*1.5+i*Math.PI/3;
-        ctx.fillStyle=rgba(spec.accent2,0.55);
-        ctx.beginPath(); ctx.arc(x+Math.cos(a)*TILE*3.0,y+Math.sin(a)*TILE*1.8,TILE*0.25,0,Math.PI*2); ctx.fill();
+      ctx.moveTo(x,y-TILE*0.88); ctx.bezierCurveTo(x+TILE*0.78,y-TILE*0.28,x+TILE*0.47,y+TILE*0.78,x,y+TILE*1.02); ctx.bezierCurveTo(x-TILE*0.47,y+TILE*0.78,x-TILE*0.78,y-TILE*0.28,x,y-TILE*0.88); ctx.fill();
+
+      ctx.globalCompositeOperation='lighter';
+      for(let i=0;i<5;i++){
+        const a=e.t*(open?0.34:0.72)+i*Math.PI*2/5;
+        const rr=TILE*(open?2.18:1.55);
+        const fx=x+Math.cos(a)*rr, fy=y+Math.sin(a)*rr*0.58;
+        const rot=a+(open?Math.PI*0.5:0);
+        ctx.save(); ctx.translate(fx,fy); ctx.rotate(rot);
+        const grad=ctx.createLinearGradient(0,-TILE,0,TILE);
+        grad.addColorStop(0,i%2?'rgba(220,255,255,0.92)':'rgba(180,223,255,0.92)');
+        grad.addColorStop(1,i%2?'rgba(74,179,235,0.38)':'rgba(158,111,255,0.34)');
+        ctx.fillStyle=grad;
+        ctx.beginPath(); ctx.moveTo(0,-TILE*1.05); ctx.lineTo(TILE*0.62,0); ctx.lineTo(0,TILE*0.9); ctx.lineTo(-TILE*0.62,0); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle='rgba(255,255,255,0.82)'; ctx.lineWidth=Math.max(1,TILE*0.06); ctx.stroke();
+        ctx.fillStyle=open?'rgba(255,173,105,0.82)':'rgba(12,43,70,0.82)';
+        ctx.beginPath(); ctx.arc(0,-TILE*0.08,TILE*0.095,0,Math.PI*2); ctx.fill();
+        ctx.restore();
+      }
+      ctx.strokeStyle=open?'rgba(255,193,125,0.62)':'rgba(205,249,255,0.68)';
+      ctx.lineWidth=Math.max(1,TILE*(open?0.08:0.13));
+      for(let ring=0;ring<3;ring++){
+        ctx.beginPath(); ctx.ellipse(x,y,TILE*(1.6+ring*0.5),TILE*(0.92+ring*0.25),e.t*(ring%2?0.16:-0.12),0,Math.PI*2); ctx.stroke();
+      }
+    }else if(e.boss){
+      // Aurex: an overbuilt sovereign made from crown, mantle and mask. The
+      // hollow face foreshadows that this monarch is only defensive scenery.
+      ctx.globalCompositeOperation='source-over';
+      ctx.fillStyle='rgba(10,30,48,0.88)';
+      ctx.beginPath(); ctx.moveTo(x,y-TILE*2.4); ctx.lineTo(x+TILE*2.2,y+TILE*2.0); ctx.lineTo(x,y+TILE*1.45); ctx.lineTo(x-TILE*2.2,y+TILE*2.0); ctx.closePath(); ctx.fill();
+      ctx.fillStyle='rgba(66,139,183,0.68)';
+      for(const s of [-1,1]){
+        ctx.beginPath(); ctx.moveTo(x,y-TILE*0.55); ctx.lineTo(x+s*TILE*(3.8+e.phase*0.25),y-TILE*0.1); ctx.lineTo(x+s*TILE*1.25,y+TILE*1.75); ctx.closePath(); ctx.fill();
+      }
+      ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle=rgba(spec.accent2,0.92);
+      ctx.beginPath(); ctx.moveTo(x,y-TILE*2.55); ctx.lineTo(x+TILE*1.35,y-TILE*0.15); ctx.lineTo(x,y+TILE*1.75); ctx.lineTo(x-TILE*1.35,y-TILE*0.15); ctx.closePath(); ctx.fill();
+      ctx.fillStyle='rgba(9,35,57,0.86)';
+      ctx.beginPath(); ctx.moveTo(x,y-TILE*1.42); ctx.lineTo(x+TILE*0.66,y-TILE*0.12); ctx.lineTo(x,y+TILE*0.8); ctx.lineTo(x-TILE*0.66,y-TILE*0.12); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle='rgba(255,255,255,0.88)'; ctx.lineWidth=Math.max(1,TILE*0.09);
+      ctx.beginPath(); ctx.moveTo(x,y-TILE*2.45); ctx.lineTo(x,y+TILE*1.6); ctx.moveTo(x-TILE*1.2,y-TILE*0.15); ctx.lineTo(x+TILE*1.2,y-TILE*0.15); ctx.stroke();
+
+      // Nine uneven crown blades and orbiting season seals make phase changes
+      // immediately visible without changing collision geometry.
+      for(let i=-4;i<=4;i++){
+        const bx=x+i*TILE*0.42, bh=TILE*(1.0+(4-Math.abs(i))*0.32+e.phase*0.16);
+        ctx.fillStyle=i%2?'rgba(146,232,255,0.78)':'rgba(222,253,255,0.92)';
+        ctx.beginPath(); ctx.moveTo(bx-TILE*0.2,y-TILE*2.0); ctx.lineTo(bx,y-TILE*2.0-bh); ctx.lineTo(bx+TILE*0.2,y-TILE*2.0); ctx.closePath(); ctx.fill();
+      }
+      for(let i=0;i<8+e.phase*2;i++){
+        const a=e.t*(1.05+e.phase*0.18)+i*Math.PI*2/(8+e.phase*2);
+        ctx.fillStyle=i%3===0?'rgba(186,126,255,0.68)':rgba(spec.accent2,0.62);
+        ctx.save(); ctx.translate(x+Math.cos(a)*TILE*3.2,y+Math.sin(a)*TILE*1.75); ctx.rotate(a);
+        ctx.fillRect(-TILE*0.12,-TILE*0.32,TILE*0.24,TILE*0.64); ctx.restore();
       }
     }else{
-      ctx.fillStyle=e.role==='mirror'?spec.accent2:spec.accent;
-      ctx.beginPath();
-      ctx.moveTo(x,y-TILE*e.radius); ctx.lineTo(x+TILE*e.radius,y); ctx.lineTo(x,y+TILE*e.radius); ctx.lineTo(x-TILE*e.radius,y); ctx.closePath(); ctx.fill();
-      ctx.strokeStyle='rgba(255,255,255,0.75)'; ctx.lineWidth=1.5; ctx.stroke();
+      if(e.role==='mirror'){
+        ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle='rgba(224,253,255,0.82)';
+        ctx.beginPath(); ctx.ellipse(x,y,TILE*0.68,TILE*1.18,Math.sin(e.t)*0.12,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle='rgba(134,228,255,0.82)'; ctx.lineWidth=Math.max(1,TILE*0.09);
+        for(let i=0;i<3;i++){ ctx.beginPath(); ctx.ellipse(x,y,TILE*(1.15+i*0.26),TILE*(0.52+i*0.12),e.t*(0.4+i*0.12),0,Math.PI*2); ctx.stroke(); }
+        ctx.fillStyle='rgba(17,55,82,0.86)'; ctx.fillRect(x-TILE*0.25,y-TILE*0.12,TILE*0.5,TILE*0.24);
+      }else{
+        ctx.globalCompositeOperation='source-over';
+        ctx.fillStyle='rgba(28,70,96,0.94)';
+        ctx.beginPath(); ctx.moveTo(x,y-TILE*1.2); ctx.lineTo(x+TILE*1.25,y-TILE*0.35); ctx.lineTo(x+TILE*0.92,y+TILE*0.9); ctx.lineTo(x-TILE*0.92,y+TILE*0.9); ctx.lineTo(x-TILE*1.25,y-TILE*0.35); ctx.closePath(); ctx.fill();
+        ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle=rgba(spec.accent,0.82);
+        for(const s of [-1,1]){ ctx.beginPath(); ctx.moveTo(x+s*TILE*0.35,y-TILE*0.65); ctx.lineTo(x+s*TILE*1.55,y-TILE*1.15); ctx.lineTo(x+s*TILE*1.05,y+TILE*0.2); ctx.closePath(); ctx.fill(); }
+        ctx.fillStyle='#ffffff'; ctx.fillRect(x-TILE*0.3,y-TILE*0.36,TILE*0.16,TILE*0.13); ctx.fillRect(x+TILE*0.14,y-TILE*0.36,TILE*0.16,TILE*0.13);
+      }
     }
-    if(e.hitFlash>0){ ctx.fillStyle='rgba(255,255,255,'+(e.hitFlash*3).toFixed(2)+')'; ctx.beginPath(); ctx.arc(x,y,(e.radius+1)*TILE,0,Math.PI*2); ctx.fill(); }
+    if(e.hitFlash>0){ ctx.globalCompositeOperation='lighter'; ctx.fillStyle='rgba(255,255,255,'+clamp(e.hitFlash*3,0,1).toFixed(2)+')'; ctx.beginPath(); ctx.arc(x,y,(e.radius+1)*TILE,0,Math.PI*2); ctx.fill(); }
     ctx.restore();
   }
   function drawEntityHealth(ctx,TILE,e){
@@ -2087,6 +3338,19 @@ const guardianLairs = (function(){
     const spec=SPEC[e.kind];
     ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(x,y,w,h);
     ctx.fillStyle=spec.accent; ctx.fillRect(x,y,w*clamp(e.hp/e.maxHp,0,1),h);
+    if(isTrueSelf(e)){
+      const fy=y+h+3, frost=clamp((e.frostMeter||0)/(e.frostNeed||72),0,1);
+      ctx.fillStyle='rgba(7,17,25,0.72)'; ctx.fillRect(x,fy,w,3);
+      ctx.fillStyle=e.torchLit?'rgba(151,230,255,0.92)':'rgba(232,252,255,0.98)'; ctx.fillRect(x,fy,w*(e.torchLit?frost:1),3);
+      ctx.strokeStyle=e.torchLit?'rgba(199,245,255,0.72)':'rgba(255,210,102,0.82)'; ctx.lineWidth=1; ctx.strokeRect(x-1,fy-1,w+2,5);
+    }
+    if(isIceChoir(e)){
+      const sy=y+h+3;
+      const ratio=e.sealed?clamp((e.quietT||0)/(e.quietNeed||2.65),0,1):clamp((e.listeningT||0)/(e.listeningMax||7.2),0,1);
+      ctx.fillStyle='rgba(5,18,31,0.78)'; ctx.fillRect(x,sy,w,4);
+      ctx.fillStyle=e.sealed?'rgba(203,249,255,0.94)':'rgba(255,174,105,0.96)'; ctx.fillRect(x,sy,w*ratio,4);
+      ctx.strokeStyle=e.sealed?'rgba(225,253,255,0.74)':'rgba(255,222,166,0.86)'; ctx.lineWidth=1; ctx.strokeRect(x-1,sy-1,w+2,6);
+    }
     if(e.boss && sidekickCount(e.kind)>0){
       ctx.strokeStyle=rgba(spec.accent2,0.75); ctx.lineWidth=1; ctx.strokeRect(x-2,y-2,w+4,h+4);
     }
@@ -2097,13 +3361,162 @@ const guardianLairs = (function(){
       const spec=SPEC[e.kind] || SPEC.fire;
       const f=clamp(e.t/e.max,0,1);
       ctx.save();
+      if(e.type==='cinderCrown'){
+        ctx.globalCompositeOperation='source-over';
+        for(let i=0;i<20;i++){
+          const a=i*Math.PI/10+e.x*0.013;
+          const rr=(e.r||20)*TILE*(0.92-f*0.58);
+          ctx.fillStyle='rgba(14,11,14,'+(0.38*(1-f)).toFixed(3)+')';
+          ctx.beginPath(); ctx.arc(e.x*TILE+Math.cos(a)*rr,e.y*TILE+Math.sin(a)*rr*0.48,TILE*(0.22+(i%4)*0.09),0,Math.PI*2); ctx.fill();
+        }
+      }
+      if(e.type==='avatarReveal'){
+        ctx.globalCompositeOperation='source-over';
+        for(let i=0;i<26;i++){
+          const a=i*2.399+e.x*0.017;
+          const rr=(e.r||26)*TILE*(0.12+f*0.92)*(0.42+(i%7)*0.075);
+          const px=e.x*TILE+Math.cos(a)*rr, py=e.y*TILE+Math.sin(a)*rr*0.62-f*TILE*(i%3);
+          ctx.fillStyle=i%4===0?'rgba(255,92,20,'+(0.74*(1-f)).toFixed(3)+')':'rgba(18,12,15,'+(0.82*(1-f)).toFixed(3)+')';
+          ctx.save(); ctx.translate(px,py); ctx.rotate(a+f*2.5);
+          ctx.fillRect(-TILE*0.32,-TILE*0.12,TILE*0.64,TILE*0.24); ctx.restore();
+        }
+      }
       ctx.globalCompositeOperation='lighter';
-      if(e.type==='burst'){
+      if(e.type==='sovereignShatter' || e.type==='rimeDeath'){
+        const pieces=e.type==='sovereignShatter'?38:28;
+        for(let i=0;i<pieces;i++){
+          const a=i*2.399+e.x*0.013, rr=(e.r||28)*TILE*f*(0.16+(i%8)*0.075);
+          const px=e.x*TILE+Math.cos(a)*rr, py=e.y*TILE+Math.sin(a)*rr*0.62;
+          ctx.fillStyle=i%5===0?'rgba(202,137,255,'+(1-f).toFixed(3)+')':(i%2?'rgba(232,254,255,':'rgba(105,213,255,')+(0.9*(1-f)).toFixed(3)+')';
+          ctx.save(); ctx.translate(px,py); ctx.rotate(a+f*3);
+          ctx.beginPath(); ctx.moveTo(0,-TILE*0.42); ctx.lineTo(TILE*0.18,TILE*0.28); ctx.lineTo(-TILE*0.18,TILE*0.28); ctx.closePath(); ctx.fill(); ctx.restore();
+        }
+      }else if(e.type==='choirReveal'){
+        for(let i=0;i<5;i++){
+          const a=i*Math.PI*2/5+f*1.7, rr=(e.r||22)*TILE*(0.9-f*0.72);
+          const px=e.x*TILE+Math.cos(a)*rr, py=e.y*TILE+Math.sin(a)*rr*0.55;
+          ctx.fillStyle=i%2?'rgba(214,253,255,'+(1-f).toFixed(3)+')':'rgba(144,205,255,'+(1-f).toFixed(3)+')';
+          ctx.save(); ctx.translate(px,py); ctx.rotate(a);
+          ctx.fillRect(-TILE*0.25,-TILE*0.8,TILE*0.5,TILE*1.6); ctx.restore();
+        }
+      }else if(e.type==='choirListen' || e.type==='choirSeal' || e.type==='choirBlock' || e.type==='heartglassThaw'){
+        const open=e.type==='choirListen', thaw=e.type==='heartglassThaw', block=e.type==='choirBlock';
+        const R=(e.r||8)*TILE*(block?(0.7+f*0.35):(0.18+f*0.82));
+        const rgb=thaw?'255,174,102':(open?'255,224,178':'215,252,255');
+        ctx.strokeStyle='rgba('+rgb+','+((thaw?0.9:0.82)*(1-f)).toFixed(3)+')';
+        ctx.lineWidth=Math.max(1,TILE*(block?0.15:0.1)*(1-f*0.45));
+        const rings=block?2:5;
+        for(let i=0;i<rings;i++){
+          ctx.beginPath(); ctx.ellipse(e.x*TILE,e.y*TILE,R*(0.35+i/rings*0.65),R*(0.18+i/rings*0.36),i*0.4+f,0,Math.PI*2); ctx.stroke();
+        }
+      }else if(e.type==='choirRelease'){
+        const rise=f*TILE*3.6;
+        for(let i=0;i<5;i++){
+          const a=i*Math.PI*2/5+f*2.2, rr=(e.r||25)*TILE*f*(0.32+(i%2)*0.11);
+          ctx.fillStyle=i%2?'rgba(215,253,255,'+(1-f).toFixed(3)+')':'rgba(133,205,255,'+(1-f).toFixed(3)+')';
+          ctx.save(); ctx.translate(e.x*TILE+Math.cos(a)*rr,e.y*TILE-rise+Math.sin(a)*rr*0.5); ctx.rotate(a+f*4);
+          ctx.fillRect(-TILE*0.22,-TILE*0.7,TILE*0.44,TILE*1.4); ctx.restore();
+        }
+        ctx.fillStyle='rgba(255,190,120,'+(0.9*(1-f)).toFixed(3)+')';
+        ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE-rise,TILE*(0.55+f*0.42),0,Math.PI*2); ctx.fill();
+      }else if(['rimeAwaken','auroraCrown','palaceFracture'].includes(e.type)){
+        const R=(e.r||18)*TILE*(0.22+f*0.78);
+        const grad=ctx.createRadialGradient(e.x*TILE,e.y*TILE,2,e.x*TILE,e.y*TILE,R);
+        grad.addColorStop(0,'rgba(244,255,255,'+(0.72*(1-f)).toFixed(3)+')');
+        grad.addColorStop(0.36,'rgba(114,226,255,'+(0.42*(1-f)).toFixed(3)+')');
+        grad.addColorStop(0.7,'rgba(180,113,255,'+(0.19*(1-f)).toFixed(3)+')');
+        grad.addColorStop(1,'rgba(80,160,255,0)');
+        ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,R,0,Math.PI*2); ctx.fill();
+        const rays=e.type==='palaceFracture'?24:14;
+        ctx.strokeStyle='rgba(226,253,255,'+(0.68*(1-f)).toFixed(3)+')'; ctx.lineWidth=Math.max(1,TILE*0.1*(1-f));
+        for(let i=0;i<rays;i++){ const a=i*Math.PI*2/rays; ctx.beginPath(); ctx.moveTo(e.x*TILE+Math.cos(a)*R*0.2,e.y*TILE+Math.sin(a)*R*0.2); ctx.lineTo(e.x*TILE+Math.cos(a)*R*(0.65+(i%4)*0.08),e.y*TILE+Math.sin(a)*R*(0.65+(i%4)*0.08)); ctx.stroke(); }
+      }else if(e.type==='mirrorDeath' || e.type==='sentinelDeath'){
+        const sentinel=e.type==='sentinelDeath';
+        const pieces=sentinel?18:12;
+        for(let i=0;i<pieces;i++){
+          const a=i*2.399, rr=(e.r||7)*TILE*f*(0.28+(i%5)*0.15);
+          const px=e.x*TILE+Math.cos(a)*rr, py=e.y*TILE+Math.sin(a)*rr;
+          ctx.fillStyle=i%3===0?'rgba(255,255,255,'+(1-f).toFixed(3)+')':rgba(i%2?spec.accent:spec.accent2,1-f);
+          ctx.save(); ctx.translate(px,py); ctx.rotate(a+f*2); ctx.fillRect(-TILE*(sentinel?0.18:0.1),-TILE*0.28,TILE*(sentinel?0.36:0.2),TILE*0.56); ctx.restore();
+        }
+      }else if(e.type==='torchDouse'){
+        const R=(e.r||8)*TILE*(0.2+f*0.82);
+        const grad=ctx.createRadialGradient(e.x*TILE,e.y*TILE,2,e.x*TILE,e.y*TILE,R);
+        grad.addColorStop(0,'rgba(238,253,255,'+(0.72*(1-f)).toFixed(3)+')');
+        grad.addColorStop(0.42,'rgba(137,221,255,'+(0.38*(1-f)).toFixed(3)+')');
+        grad.addColorStop(1,'rgba(126,214,255,0)');
+        ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,R,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle='rgba(226,251,255,'+(0.75*(1-f)).toFixed(3)+')';
+        ctx.lineWidth=Math.max(1,TILE*0.08);
+        for(let i=0;i<8;i++){
+          const a=i*Math.PI/4+e.x*0.03, r0=R*0.28, r1=R*(0.62+(i%3)*0.12);
+          ctx.beginPath(); ctx.moveTo(e.x*TILE+Math.cos(a)*r0,e.y*TILE+Math.sin(a)*r0); ctx.lineTo(e.x*TILE+Math.cos(a)*r1,e.y*TILE+Math.sin(a)*r1); ctx.stroke();
+        }
+      }else if(e.type==='torchRelight'){
+        const R=(e.r||10)*TILE*(0.14+f*0.9);
+        ctx.strokeStyle='rgba(255,226,108,'+(0.92*(1-f)).toFixed(3)+')'; ctx.lineWidth=Math.max(2,TILE*0.18*(1-f));
+        for(let i=0;i<3;i++){ ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,R*(0.42+i*0.24),0,Math.PI*2); ctx.stroke(); }
+        for(let i=0;i<14;i++){
+          const a=i*Math.PI/7, rr=R*(0.3+f*(0.5+(i%3)*0.1));
+          ctx.fillStyle=i%2?'rgba(255,72,16,'+(1-f).toFixed(3)+')':'rgba(255,235,133,'+(1-f).toFixed(3)+')';
+          ctx.beginPath(); ctx.arc(e.x*TILE+Math.cos(a)*rr,e.y*TILE+Math.sin(a)*rr,TILE*0.12,0,Math.PI*2); ctx.fill();
+        }
+      }else if(e.type==='wardBlock'){
+        ctx.strokeStyle='rgba(255,206,78,'+(0.85*(1-f)).toFixed(3)+')'; ctx.lineWidth=Math.max(1,TILE*0.13);
+        ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,(e.r||3)*TILE*(0.6+f*0.45),-1.3,1.3); ctx.stroke();
+      }else if(e.type==='humanRelease'){
+        const rise=f*TILE*4.8;
+        ctx.fillStyle='rgba(255,244,204,'+(0.62*(1-f)).toFixed(3)+')';
+        ctx.beginPath(); ctx.ellipse(e.x*TILE,e.y*TILE-rise,TILE*(0.38+f*0.35),TILE*(1.15+f*0.8),0,0,Math.PI*2); ctx.fill();
+        for(let i=0;i<20;i++){
+          const a=i*2.399, rr=(e.r||22)*TILE*f*(0.15+(i%6)*0.08);
+          ctx.fillStyle=i%3?'rgba(255,101,26,'+(1-f).toFixed(3)+')':'rgba(255,241,173,'+(1-f).toFixed(3)+')';
+          ctx.beginPath(); ctx.arc(e.x*TILE+Math.cos(a)*rr,e.y*TILE-rise+Math.sin(a)*rr*0.52,TILE*(0.08+(i%3)*0.05),0,Math.PI*2); ctx.fill();
+        }
+      }else if(e.type==='burst'){
         const grad=ctx.createRadialGradient(e.x*TILE,e.y*TILE,2,e.x*TILE,e.y*TILE,(e.r||4)*TILE*(0.35+f*0.55));
         grad.addColorStop(0,rgba(spec.accent2||spec.accent,0.34*(1-f)));
         grad.addColorStop(1,rgba(spec.accent,0));
         ctx.fillStyle=grad;
         ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,(e.r||4)*TILE*(0.35+f*0.55),0,Math.PI*2); ctx.fill();
+      }else if(['solarAwaken','solarPulse','solarDeath','victoryForge','cinderCrown'].includes(e.type)){
+        const death=e.type==='solarDeath', victory=e.type==='victoryForge';
+        const R=(e.r||18)*TILE*(death?(0.18+f*0.92):(0.28+f*0.62));
+        const grad=ctx.createRadialGradient(e.x*TILE,e.y*TILE,2,e.x*TILE,e.y*TILE,R);
+        grad.addColorStop(0,'rgba(255,255,226,'+(0.78*(1-f)).toFixed(3)+')');
+        grad.addColorStop(0.18,'rgba(255,202,62,'+(0.52*(1-f)).toFixed(3)+')');
+        grad.addColorStop(0.62,'rgba(255,67,18,'+(0.26*(1-f)).toFixed(3)+')');
+        grad.addColorStop(1,'rgba(255,45,10,0)');
+        ctx.fillStyle=grad; ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,R,0,Math.PI*2); ctx.fill();
+        const rays=death?28:(victory?20:16);
+        ctx.strokeStyle='rgba(255,226,127,'+((death?0.82:0.55)*(1-f)).toFixed(3)+')';
+        ctx.lineWidth=Math.max(1,TILE*(death?0.22:0.13)*(1-f));
+        for(let i=0;i<rays;i++){
+          const a=i*Math.PI*2/rays+e.x*0.007;
+          const r0=R*(0.18+(i%3)*0.04), r1=R*(0.72+(i%5)*0.06);
+          ctx.beginPath();
+          ctx.moveTo(e.x*TILE+Math.cos(a)*r0,e.y*TILE+Math.sin(a)*r0);
+          ctx.lineTo(e.x*TILE+Math.cos(a)*r1,e.y*TILE+Math.sin(a)*r1);
+          ctx.stroke();
+        }
+        if(victory){
+          ctx.strokeStyle='rgba(255,255,220,'+(0.85*(1-f)).toFixed(3)+')';
+          ctx.lineWidth=Math.max(1,TILE*0.18);
+          for(let i=0;i<3;i++){
+            ctx.beginPath(); ctx.arc(e.x*TILE,e.y*TILE,R*(0.22+i*0.18),0,Math.PI*2); ctx.stroke();
+          }
+        }
+      }else if(e.type==='houndDeath' || e.type==='oracleDeath'){
+        const hound=e.type==='houndDeath';
+        const pieces=hound?11:14;
+        for(let i=0;i<pieces;i++){
+          const a=i*2.399+e.x*0.03;
+          const rr=(e.r||6)*TILE*f*(0.35+(i%5)*0.13);
+          const px=e.x*TILE+Math.cos(a)*rr, py=e.y*TILE+Math.sin(a)*rr-(!hound?f*TILE*1.2:0);
+          ctx.fillStyle=i%3===0?'rgba(255,244,177,'+(1-f).toFixed(3)+')':rgba(i%2?spec.accent:spec.accent2,1-f);
+          if(hound) ctx.fillRect(px-TILE*0.16,py-TILE*0.16,TILE*0.32,TILE*0.32);
+          else { ctx.beginPath(); ctx.arc(px,py,TILE*(0.12+(i%3)*0.06),0,Math.PI*2); ctx.fill(); }
+        }
       }
       ctx.strokeStyle=rgba(spec.accent,0.75*(1-f));
       ctx.lineWidth=Math.max(1,(1-f)*4);
@@ -2186,29 +3599,54 @@ const guardianLairs = (function(){
       ctx.fillStyle=aura;
       ctx.beginPath(); ctx.arc(x,y,TILE*4.2,0,Math.PI*2); ctx.fill();
       ctx.globalAlpha=0.84;
-      ctx.fillStyle=rgba(spec.accent2||spec.accent,0.78);
-      ctx.beginPath();
-      ctx.moveTo(x,y-TILE*1.35);
-      ctx.lineTo(x+TILE*0.95,y-TILE*0.25);
-      ctx.lineTo(x+TILE*0.55,y+TILE*1.05);
-      ctx.lineTo(x,y+TILE*1.42);
-      ctx.lineTo(x-TILE*0.55,y+TILE*1.05);
-      ctx.lineTo(x-TILE*0.95,y-TILE*0.25);
-      ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle='rgba(255,255,255,0.72)';
-      ctx.lineWidth=1.4;
-      ctx.stroke();
-      ctx.fillStyle='rgba(255,255,255,0.82)';
-      ctx.fillRect(x-TILE*0.35,y-TILE*0.2,TILE*0.18,TILE*0.18);
-      ctx.fillRect(x+TILE*0.17,y-TILE*0.2,TILE*0.18,TILE*0.18);
+      if(g.kind==='fire' && g.form==='human'){
+        ctx.globalCompositeOperation='source-over';
+        ctx.fillStyle='rgba(31,20,25,0.70)';
+        ctx.beginPath(); ctx.moveTo(x-TILE*0.52,y-TILE*0.35); ctx.lineTo(x-TILE*0.62,y+TILE*1.1); ctx.lineTo(x+TILE*0.62,y+TILE*1.1); ctx.lineTo(x+TILE*0.52,y-TILE*0.35); ctx.closePath(); ctx.fill();
+        ctx.globalCompositeOperation='lighter';
+        ctx.fillStyle='rgba(255,222,170,0.78)';
+        ctx.beginPath(); ctx.ellipse(x,y-TILE*1.0,TILE*0.31,TILE*0.39,0,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle='rgba(255,153,68,0.78)'; ctx.lineWidth=Math.max(1,TILE*0.11); ctx.lineCap='round';
+        ctx.beginPath(); ctx.moveTo(x+TILE*0.27,y-TILE*0.25); ctx.lineTo(x+TILE*0.92,y-TILE*0.76); ctx.stroke();
+        ctx.strokeStyle='rgba(81,47,31,0.86)'; ctx.lineWidth=Math.max(1,TILE*0.14);
+        ctx.beginPath(); ctx.moveTo(x+TILE*0.9,y-TILE*0.42); ctx.lineTo(x+TILE*1.04,y-TILE*1.22); ctx.stroke();
+        ctx.fillStyle='rgba(255,194,76,0.82)';
+        ctx.beginPath(); ctx.moveTo(x+TILE*1.03,y-TILE*1.28); ctx.quadraticCurveTo(x+TILE*1.45,y-TILE*1.72,x+TILE*1.02,y-TILE*2.06); ctx.quadraticCurveTo(x+TILE*0.72,y-TILE*1.66,x+TILE*1.03,y-TILE*1.28); ctx.fill();
+      }else if(g.kind==='ice' && g.form==='choir'){
+        ctx.globalCompositeOperation='source-over';
+        ctx.fillStyle='rgba(23,61,86,0.76)';
+        ctx.beginPath(); ctx.moveTo(x,y-TILE*0.82); ctx.bezierCurveTo(x+TILE*0.62,y-TILE*0.22,x+TILE*0.38,y+TILE*0.74,x,y+TILE*0.92); ctx.bezierCurveTo(x-TILE*0.38,y+TILE*0.74,x-TILE*0.62,y-TILE*0.22,x,y-TILE*0.82); ctx.fill();
+        ctx.globalCompositeOperation='lighter';
+        for(let i=0;i<5;i++){
+          const a=now*0.38+i*Math.PI*2/5, fx=x+Math.cos(a)*TILE*1.35, fy=y+Math.sin(a)*TILE*0.72;
+          ctx.fillStyle=i%2?'rgba(220,254,255,0.72)':'rgba(138,207,255,0.72)';
+          ctx.save(); ctx.translate(fx,fy); ctx.rotate(a); ctx.beginPath(); ctx.moveTo(0,-TILE*0.48); ctx.lineTo(TILE*0.24,0); ctx.lineTo(0,TILE*0.48); ctx.lineTo(-TILE*0.24,0); ctx.closePath(); ctx.fill(); ctx.restore();
+        }
+      }else{
+        ctx.fillStyle=rgba(spec.accent2||spec.accent,0.78);
+        ctx.beginPath();
+        ctx.moveTo(x,y-TILE*1.35);
+        ctx.lineTo(x+TILE*0.95,y-TILE*0.25);
+        ctx.lineTo(x+TILE*0.55,y+TILE*1.05);
+        ctx.lineTo(x,y+TILE*1.42);
+        ctx.lineTo(x-TILE*0.55,y+TILE*1.05);
+        ctx.lineTo(x-TILE*0.95,y-TILE*0.25);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle='rgba(255,255,255,0.72)';
+        ctx.lineWidth=1.4;
+        ctx.stroke();
+        ctx.fillStyle='rgba(255,255,255,0.82)';
+        ctx.fillRect(x-TILE*0.35,y-TILE*0.2,TILE*0.18,TILE*0.18);
+        ctx.fillRect(x+TILE*0.17,y-TILE*0.2,TILE*0.18,TILE*0.18);
+      }
       for(let i=0;i<5;i++){
         const a=now*1.7+i*1.26+g.x*0.03;
         ctx.fillStyle=rgba(i%2?spec.accent:spec.accent2,0.42);
         ctx.fillRect(x+Math.cos(a)*TILE*1.8-1.5,y+Math.sin(a*1.2)*TILE*1.1-1.5,3,3);
       }
       ctx.restore();
-      if((g.talkT||0)>0) drawGhostBubble(ctx,x,y-TILE*2.0,ghostSpeech(g.kind));
+      if((g.talkT||0)>0) drawGhostBubble(ctx,x,y-TILE*2.0,ghostCurrentSpeech(g));
     }
   }
   function draw(ctx,TILE,canDrawTile,camX,camY,W,H,zoom){
@@ -2253,7 +3691,7 @@ const guardianLairs = (function(){
   // lair. Same contract as the invasion/weapon planes: the HOST streams a
   // compact cosmetic mirror, the watcher rebuilds inert puppets — no AI, no
   // damage, no tile writes — and only glides/ages them between packets.
-  const GHOST_HAZ_TYPES=['projectile','skyLightning','stormMeteor','impact','beam','ring','blizzard'];
+  const GHOST_HAZ_TYPES=['projectile','skyLightning','stormMeteor','impact','beam','torchJet','ring','blizzard'];
   function ghostMirrorState(){
     if(!entities.length && !hazards.length && !effects.length) return null;
     const round2=v=>+(Number(v)||0).toFixed(2);
@@ -2261,7 +3699,9 @@ const guardianLairs = (function(){
       ents: entities.filter(e=>e && !e.dead).slice(0,10).map(e=>({
         id:Number(e.id)||0, k:e.kind, r:e.role, x:round2(e.x), y:round2(e.y),
         hp:round2(e.hp), mhp:Math.max(1,Number(e.maxHp)||1),
-        hf:e.hitFlash>0?round2(e.hitFlash):0, ph:Number.isFinite(e.phase)?round2(e.phase):0
+        hf:e.hitFlash>0?round2(e.hitFlash):0, ph:Number.isFinite(e.phase)?round2(e.phase):0,
+        tl:e.torchLit===false?0:1, fm:round2(e.frostMeter), vt:round2(e.vulnerableT),
+        sl:e.sealed===false?0:1, qt:round2(e.quietT), qn:round2(e.quietNeed), lt:round2(e.listeningT)
       })),
       haz: hazards.slice(0,48).map(h=>({
         t:h.type, k:h.kind, x:round2(h.x), y:round2(h.y),
@@ -2269,6 +3709,7 @@ const guardianLairs = (function(){
         vx:round2(h.vx), vy:round2(h.vy),
         r:round2(h.r), r0:round2(h.r0), r1:round2(h.r1),
         tt:round2(h.t), d:round2(h.delay), l:round2(h.life),
+        v:typeof h.variant==='string'?h.variant.slice(0,16):'',
         br:Array.isArray(h.branches)?h.branches.slice(0,6).map(b=>[round2(b.x1),round2(b.y1),round2(b.x2),round2(b.y2)]):0,
         tr:Array.isArray(h.trail)?h.trail.slice(-6).map(p=>[round2(p.x),round2(p.y)]):0
       })),
@@ -2302,6 +3743,17 @@ const guardianLairs = (function(){
       e.hp=Math.max(0, Math.min(e.maxHp, fin(w.hp, e.hp)));
       e.hitFlash=Math.max(0, Math.min(1, fin(w.hf,0)));
       e.phase=fin(w.ph,0);
+      if(isTrueSelf(e)){
+        e.torchLit=fin(w.tl,1)!==0;
+        e.frostMeter=Math.max(0,Math.min(e.frostNeed||72,fin(w.fm,0)));
+        e.vulnerableT=Math.max(0,Math.min(10,fin(w.vt,0)));
+      }
+      if(isIceChoir(e)){
+        e.sealed=fin(w.sl,1)!==0;
+        e.quietNeed=Math.max(1,Math.min(8,fin(w.qn,e.quietNeed||2.65)));
+        e.quietT=Math.max(0,Math.min(e.quietNeed,fin(w.qt,0)));
+        e.listeningT=Math.max(0,Math.min(12,fin(w.lt,0)));
+      }
       e.dead=false;
       nextEnts.push(e);
     }
@@ -2316,6 +3768,7 @@ const guardianLairs = (function(){
         vx:Math.max(-60,Math.min(60,fin(w.vx,0))), vy:Math.max(-60,Math.min(60,fin(w.vy,0))),
         r:Math.max(0.05,Math.min(40,fin(w.r,0.5))), r0:Math.max(0,Math.min(40,fin(w.r0,0))), r1:Math.max(0,Math.min(60,fin(w.r1,0))),
         t:Math.max(0,Math.min(60,fin(w.tt,0))), delay:Math.max(0,Math.min(30,fin(w.d,0))), life:Math.max(0.01,Math.min(30,fin(w.l,1))),
+        variant:typeof w.v==='string'?w.v.slice(0,16):'',
         branches:Array.isArray(w.br)?w.br.slice(0,6).map(b=>({x1:fin(b&&b[0],x),y1:fin(b&&b[1],y),x2:fin(b&&b[2],x),y2:fin(b&&b[3],y)})):null,
         trail:Array.isArray(w.tr)?w.tr.slice(0,6).map(p=>({x:fin(p&&p[0],x),y:fin(p&&p[1],y)})):null,
         dmg:0, source:0 // a puppet hazard hurts nobody — the watcher never runs update()
@@ -2370,7 +3823,10 @@ const guardianLairs = (function(){
       talkT:+Math.max(0,Number(g.talkT)||0).toFixed(2),
       rewarded:!!g.rewarded,
       rewardId:typeof g.rewardId==='string' ? g.rewardId.slice(0,64) : null,
-      seen:!!g.seen
+      seen:!!g.seen,
+      form:g.form==='human'?'human':(g.form==='choir'?'choir':'guardian'),
+      lineIndex:Math.max(0,Math.min(32,Number(g.lineIndex)||0)),
+      lineT:+Math.max(0,Number(g.lineT)||0).toFixed(2)
     };
   }
   function restoreGhost(kind,src){
@@ -2384,7 +3840,10 @@ const guardianLairs = (function(){
       talkT:clamp(Number(src.talkT)||0,0,18),
       rewarded:!!src.rewarded,
       rewardId:typeof src.rewardId==='string' ? src.rewardId.slice(0,64) : null,
-      seen:!!src.seen
+      seen:!!src.seen,
+      form:kind==='fire'?'human':(kind==='ice' && (src.form==='choir' || state.avatarBroken.ice)?'choir':'guardian'),
+      lineIndex:Math.max(0,Math.min(32,Number(src.lineIndex)||0)),
+      lineT:clamp(Number(src.lineT)||0,0,60)
     };
   }
   function cleanUndergroundSnapshot(){
@@ -2416,7 +3875,9 @@ const guardianLairs = (function(){
       y:g.y,
       rewarded:!!g.rewarded,
       rewardId:g.rewardId||null,
-      text:ghostSpeech(kind)
+      form:g.form||'guardian',
+      name:SPEC[kind].trueName || SPEC[kind].bossName,
+      text:ghostCurrentSpeech(g)
     };
   }
   function undergroundStatus(){
@@ -2433,6 +3894,7 @@ const guardianLairs = (function(){
   function reset(){
     entities=[]; hazards.length=0; effects.length=0;
     state.defeated.fire=false; state.defeated.ice=false;
+    state.avatarBroken.fire=false; state.avatarBroken.ice=false;
     state.awakened.fire=false; state.awakened.ice=false;
     state.ambientCd.fire=28; state.ambientCd.ice=34;
     state.ghosts.fire=null; state.ghosts.ice=null;
@@ -2443,8 +3905,9 @@ const guardianLairs = (function(){
   function clearActive(){ entities=[]; hazards.length=0; effects.length=0; state.awakened.fire=false; state.awakened.ice=false; resetStorm('fire'); resetStorm('ice'); resetWeather('fire'); resetWeather('ice'); }
   function snapshot(){
     return {
-      v:2,
+      v:4,
       defeated:{fire:!!state.defeated.fire, ice:!!state.defeated.ice},
+      avatarBroken:{fire:!!state.avatarBroken.fire, ice:!!state.avatarBroken.ice},
       awakened:{fire:!!state.awakened.fire, ice:!!state.awakened.ice},
       ambientCd:{fire:+state.ambientCd.fire.toFixed(2), ice:+state.ambientCd.ice.toFixed(2)},
       ghosts:{fire:cleanGhostSnapshot('fire'), ice:cleanGhostSnapshot('ice')},
@@ -2453,20 +3916,27 @@ const guardianLairs = (function(){
   }
   function restore(d){
     clearActive();
+    state.defeated.fire=false; state.defeated.ice=false;
+    state.avatarBroken.fire=false; state.avatarBroken.ice=false;
+    state.ambientCd.fire=28; state.ambientCd.ice=34;
     state.ghosts.fire=null; state.ghosts.ice=null;
     resetUnderground();
     if(!d || typeof d!=='object') return false;
     state.defeated.fire=!!(d.defeated && d.defeated.fire);
     state.defeated.ice=!!(d.defeated && d.defeated.ice);
+    state.avatarBroken.fire=!!(d.avatarBroken && d.avatarBroken.fire) || state.defeated.fire;
+    state.avatarBroken.ice=!!(d.avatarBroken && d.avatarBroken.ice) || state.defeated.ice;
     state.awakened.fire=!!(d.awakened && d.awakened.fire);
     state.awakened.ice=!!(d.awakened && d.awakened.ice);
     if(d.ambientCd){
       state.ambientCd.fire=clamp(Number(d.ambientCd.fire)||28,1,300);
       state.ambientCd.ice=clamp(Number(d.ambientCd.ice)||34,1,300);
     }
-    const hearts=progressHearts();
-    if(hearts.fire) state.defeated.fire=true;
-    if(hearts.ice) state.defeated.ice=true;
+    // Progress restores later than guardians in main.js. Reading the live
+    // progress singleton here would leak the previously loaded save's hearts
+    // into this snapshot. The next update reconciles freshly restored progress.
+    if(state.defeated.fire){ state.avatarBroken.fire=true; state.awakened.fire=false; }
+    if(state.defeated.ice){ state.avatarBroken.ice=true; state.awakened.ice=false; }
     if(d.ghosts){
       restoreGhost('fire',d.ghosts.fire);
       restoreGhost('ice',d.ghosts.ice);
@@ -2477,6 +3947,7 @@ const guardianLairs = (function(){
   function markDefeated(kind){
     if(!SPEC[kind]) return false;
     state.defeated[kind]=true;
+    state.avatarBroken[kind]=true;
     state.awakened[kind]=false;
     resetStorm(kind);
     resetWeather(kind);
@@ -2484,30 +3955,38 @@ const guardianLairs = (function(){
     return true;
   }
   function forceAwaken(kind){
-    return awaken(kind,{debug:true,force:true});
+    return awaken(kind,{debug:true,force:true,restartArc:true});
   }
   function status(){
+    const fb=activeBoss('fire'), ib=activeBoss('ice');
+    const fw=isWyrmBoss(fb) ? fb : null;
     return {
       defeated:{fire:isDefeated('fire'), ice:isDefeated('ice')},
+      stages:{fire:isDefeated('fire')?'complete':(state.avatarBroken.fire?'human':'ignivar'),ice:isDefeated('ice')?'complete':(state.avatarBroken.ice?'choir':'aurex')},
       lairs:{fire:layoutFor('fire'), ice:layoutFor('ice')},
-      entities:entities.map(e=>({id:e.id,kind:e.kind,role:e.role,name:e.name,hp:e.hp,maxHp:e.maxHp,x:e.x,y:e.y,boss:e.boss})),
+      entities:entities.filter(e=>!e.dead).map(e=>({id:e.id,kind:e.kind,role:e.role,name:e.name,hp:e.hp,maxHp:e.maxHp,x:e.x,y:e.y,boss:e.boss,torchLit:e.torchLit,frostMeter:e.frostMeter,vulnerableT:e.vulnerableT,sealed:e.sealed,quietT:e.quietT,quietNeed:e.quietNeed,listeningT:e.listeningT})),
       ghosts:{fire:ghostStatus('fire'), ice:ghostStatus('ice')},
       underground:undergroundStatus(),
       hazards:hazards.length,
-      storm:{fire:!!(activeBoss('fire') && activeBoss('fire').hp/activeBoss('fire').maxHp<0.5), ice:!!(activeBoss('ice') && activeBoss('ice').hp/activeBoss('ice').maxHp<0.5)},
-      lightning:{fire:!!(activeBoss('fire') && activeBoss('fire').hp/activeBoss('fire').maxHp<CFG.LIGHTNING_THRESHOLD), ice:!!(activeBoss('ice') && activeBoss('ice').hp/activeBoss('ice').maxHp<CFG.LIGHTNING_THRESHOLD)}
+      storm:{fire:!!(fw && fw.hp/fw.maxHp<0.5), ice:!!(isRimeBoss(ib) && ib.hp/ib.maxHp<0.5)},
+      lightning:{fire:!!(fw && fw.hp/fw.maxHp<CFG.LIGHTNING_THRESHOLD), ice:!!(isRimeBoss(ib) && ib.hp/ib.maxHp<CFG.LIGHTNING_THRESHOLD)}
     };
   }
   function metrics(){
-    const fb=activeBoss('fire'), ib=activeBoss('ice');
+    const fireActive=activeBoss('fire'), fb=isWyrmBoss(fireActive)?fireActive:null, iceActive=activeBoss('ice'), ib=isRimeBoss(iceActive)?iceActive:null;
     let bosses=0, sidekicks=0, stormMeteors=0, lightningBolts=0;
-    for(const e of entities){ if(e.boss) bosses++; else sidekicks++; }
+    let alive=0;
+    for(const e of entities){
+      if(!e || e.dead) continue;
+      alive++;
+      if(e.boss) bosses++; else sidekicks++;
+    }
     for(const h of hazards){
       if(h.type==='stormMeteor') stormMeteors++;
       else if(h.type==='skyLightning') lightningBolts++;
     }
     return {
-      alive:entities.length, bosses, sidekicks,
+      alive, bosses, sidekicks,
       hazards:hazards.length, stormMeteors, lightningBolts,
       storm:{fire:!!(fb && fb.hp/fb.maxHp<0.5), ice:!!(ib && ib.hp/ib.maxHp<0.5)},
       stormNextIn:{

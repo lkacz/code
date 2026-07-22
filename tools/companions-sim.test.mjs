@@ -1197,6 +1197,7 @@ assert.match(companionSource, /function drawMeatGolem/, 'companion renderer has 
 assert.match(companionSource, /KIND_FRIED_MEAT_GOLEM/, 'companion system has a fried meat golem ally state');
 assert.match(companionSource, /FRIED_MEAT_GOLEM_HEAL_RATIO = 0\.20/, 'fried meat golem eating heals up to twenty percent of hero max HP');
 assert.match(companionSource, /MM\.undergroundBoss && MM\.undergroundBoss\.nearestForTurret/, 'companions can target the underground boss');
+assert.match(companionSource, /guardianLairs\.damageAt\(t\.tx,t\.ty,dmg,\{source:'companion',kind:'companion_laser',element:'electric'\}\)/, 'companion guardian lasers preserve their autonomous elemental source');
 assert.match(companionSource, /guardHero:debugGuardHero/, 'companion debug API exposes golem guard testing');
 assert.match(companionSource, /nearestHostileLiving/, 'companions target hostile animals through the mob hostility API');
 assert.match(companionSource, /hostileOnly:true,source:'companion'/, 'companion area attacks are limited to hostile mobs');

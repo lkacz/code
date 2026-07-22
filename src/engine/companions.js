@@ -2823,7 +2823,7 @@ const companions = (function(){
     let hit=false;
     try{
       if(t.kind==='mob' && MM.mobs && MM.mobs.damageAt) hit=!!MM.mobs.damageAt(t.tx,t.ty,dmg,{source:'companion'});
-      else if(t.kind==='guardian' && MM.guardianLairs && MM.guardianLairs.damageAt) hit=!!MM.guardianLairs.damageAt(t.tx,t.ty,dmg);
+      else if(t.kind==='guardian' && MM.guardianLairs && MM.guardianLairs.damageAt) hit=!!MM.guardianLairs.damageAt(t.tx,t.ty,dmg,{source:'companion',kind:'companion_laser',element:'electric'});
       else if(t.kind==='underground' && MM.undergroundBoss && MM.undergroundBoss.damageAt) hit=!!MM.undergroundBoss.damageAt(t.tx,t.ty,dmg,{source:'companion'});
       else if(t.kind==='boss' && MM.bosses && MM.bosses.damageAt) hit=!!MM.bosses.damageAt(t.tx,t.ty,dmg);
       else if(t.kind==='ufo' && MM.ufo && MM.ufo.damageAt) hit=!!MM.ufo.damageAt(t.tx,t.ty,dmg);
