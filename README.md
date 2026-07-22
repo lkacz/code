@@ -4,14 +4,19 @@ Procedural 2D tile world with advanced water simulation and emerging gameplay fe
 
 ## Development
 
-No build step — vanilla ES modules served statically.
+The runtime is vanilla ES modules. Development uses a dependency-free,
+loopback-only server, and Pages deployment stages an explicit runtime allowlist.
 
 ```bash
-npm install          # dev tooling only (ESLint)
-npm start            # serve the game at http://localhost:8123
+npm ci               # install the exact locked dev toolchain
+npm start            # serve only index.html + src/ at http://127.0.0.1:8123
+npm run start:qa     # isolated :8124 origin that also exposes tools/ QA harnesses
 npm run lint         # correctness-focused ESLint pass over src/
 npm run check:modules # static ES-module graph check (catches missing exports)
 npm run check        # lint + module graph + water/clouds/bosses sim tests
+npm run audit:deps   # fail on high/critical dependency advisories
+npm run build:pages  # stage the allowlisted runtime in .pages-artifact/
+npm run smoke:browser # real Chrome/Edge smoke test of that staged artifact
 ```
 
 **Live preview** — launch the real game in a real browser, poke it, and screenshot it:
@@ -31,7 +36,9 @@ features look broken (a software-rasterized 1600×900 window starves the simulat
 background tabs freeze rAF and throttle timers to ~1 Hz; a page that threw during boot
 still screenshots as a calm, plausible, empty page).
 
-`npm run check` runs in CI on every push/PR (see `.github/workflows/ci.yml`).
+`npm run check`, the dependency audit, and the staged-artifact browser smoke test
+run in CI on every push/PR (see `.github/workflows/ci.yml`). Pages publishes only
+`.pages-artifact/`, excluding repository metadata, logs, docs, and QA tooling.
 The module-graph check exists because a single missing ESM export silently
 blanks the whole game — exactly what happened during the 2025 ESM migration
 (`water.js` published to `MM.water` but exported nothing, killing `main.js`).
@@ -385,8 +392,9 @@ reversed damage → mutual fall → epilogue, snapshot/restore) and
   tunnel the player through tiles; tiles below `WORLD_H` act as bedrock.
 * Game hotkeys ignore keystrokes targeted at inputs/sliders/selects; all keys release on
   window blur. Saves triggered by tile edits are debounced (2.5 s) and flushed on pagehide.
-* Regression tests: `f:\_DEV\tools\webdebug\interactions.mjs` (runs at deviceScaleFactor 2 to
-  guard the DPR pointing bug) and `physics-stress.mjs` (tunneling + bedrock).
+* Input/build/physics regressions live in-repo: `tools/input-mode-sim.test.mjs`,
+  `tools/touch-joystick-sim.test.mjs`, `tools/build-stroke-sim.test.mjs`, and
+  `tools/falling-sand-sim.test.mjs`. Use `tools/free-play-qa.mjs` for browser QA.
 
 ## Water Simulation Features
 * Multi-cell vertical falling (fast settling)

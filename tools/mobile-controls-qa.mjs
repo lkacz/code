@@ -51,7 +51,7 @@ const PROBE = `(()=>{
 		gridRight:'#touchGridRight', gridUp:'#touchGridUp', gridReset:'#touchGridReset',
 		weaponBar:'#weaponBar', craft:'#craft', craftTracker:'#craftTracker',
 		messages:'#messages', worldStatus:'#worldStatusPanel', atomicWinter:'#atomicWinterTimerPanel',
-		task:'#taskPanel', fps:'#fpsPanel', menu:'#menuWrap', cornerCards:'#cornerCards'
+		task:'#taskPanel', taskList:'#taskListPanel', fps:'#fpsPanel', menu:'#menuWrap', cornerCards:'#cornerCards'
 	};
 	const rects=Object.fromEntries(Object.entries(selectors).map(([name,selector])=>[name,r(selector)]));
 	rects.vitals=(window.MM&&MM.vitalsHud&&MM.vitalsHud.bounds)?(()=>{ const b=MM.vitalsHud.bounds(); return b?[Math.round(b.x),Math.round(b.y),Math.round(b.x+b.width),Math.round(b.y+b.height)]:null; })():null;
@@ -168,6 +168,15 @@ async function main(){
 			}
 			return bad.join(',');
 		};
+		const safePanelIssues = (p,insets) => {
+			const bad=[];
+			for(const name of ['craft','taskList']){
+				const b=p.rects[name];
+				if(!b){ bad.push(name+' hidden'); continue; }
+				if(b[0]<insets.left-1 || b[1]<insets.top-1 || b[2]>p.viewport[0]-insets.right+1 || b[3]>p.viewport[1]-insets.bottom+1) bad.push(name+' crosses safe area');
+			}
+			return bad.join(',');
+		};
 
 		await send(ws, 'Page.enable');
 		await send(ws, 'Runtime.enable');
@@ -214,6 +223,25 @@ async function main(){
 		check('B craft panel boots collapsed on touch', p.craftOpen === false, 'open=' + p.craftOpen);
 		check('B portrait interface does not overlap or clip', layoutIssues(p) === '', layoutIssues(p));
 		await shot(outB);
+		await evalJson(`(()=>{
+			document.documentElement.style.setProperty('--safe-top','34px');
+			document.documentElement.style.setProperty('--safe-bottom','20px');
+			document.documentElement.style.setProperty('--safe-left','18px');
+			document.documentElement.style.setProperty('--safe-right','12px');
+			const atomic=document.getElementById('atomicWinterTimerPanel'); if(atomic) atomic.hidden=false;
+			const craft=document.getElementById('craft'); if(craft){ craft.dataset.collapsed='false'; const body=document.getElementById('craftBody'); if(body) body.hidden=false; }
+			const tasks=document.getElementById('taskListPanel'); if(tasks) tasks.hidden=false;
+			return true;
+		})()`);
+		p=await probe();
+		check('B expanded panels respect every safe-area inset', safePanelIssues(p,{top:34,bottom:20,left:18,right:12})==='', safePanelIssues(p,{top:34,bottom:20,left:18,right:12}));
+		await evalJson(`(()=>{
+			const atomic=document.getElementById('atomicWinterTimerPanel'); if(atomic) atomic.hidden=true;
+			const craft=document.getElementById('craft'); if(craft){ craft.dataset.collapsed='true'; const body=document.getElementById('craftBody'); if(body) body.hidden=true; }
+			const tasks=document.getElementById('taskListPanel'); if(tasks) tasks.hidden=true;
+			for(const key of ['--safe-top','--safe-bottom','--safe-left','--safe-right']) document.documentElement.style.removeProperty(key);
+			return true;
+		})()`);
 		const rightRect=p.rects.gridRight;
 		await tap((rightRect[0]+rightRect[2])/2,(rightRect[1]+rightRect[3])/2);
 		await sleep(120);
@@ -247,11 +275,25 @@ async function main(){
 		await sleep(900); // clear the ghost-mouse grace window
 		await click(60, 180);
 		await sleep(250);
+		await evalJson(`(()=>{
+			// Exercise the crowded state too: a pinned recipe used to share the
+			// weapon bar's lower anchor. Non-zero safe areas model a notched phone.
+			document.documentElement.style.setProperty('--safe-top','24px');
+			document.documentElement.style.setProperty('--safe-bottom','34px');
+			const t=document.getElementById('craftTracker');
+			if(t){
+				t.hidden=false;
+				t.innerHTML='<div class="craftTrackerHead"><button class="craftTrackerName">Kilof testowy</button><button class="craftTrackerClose">×</button></div><div class="craftTrackerChips"><span>kamień 10/10</span><span>drewno 4/4</span></div><div class="craftTrackerBar"><i style="width:100%"></i></div><button class="craftTrackerCraft">Wytwórz</button>';
+			}
+			return true;
+		})()`);
 		p = await probe();
 		console.log('C probe:', JSON.stringify(p));
 		check('C mouse press flips to pc mode', p.mode === 'pc', p.mode);
 		check('C touch UI hidden after mouse press', allUi(p, 'hidden') === '', allUi(p, 'hidden'));
+		check('C narrow pc interface does not overlap or clip', layoutIssues(p) === '', layoutIssues(p));
 		await shot(outC);
+		await evalJson(`(()=>{ const t=document.getElementById('craftTracker'); if(t) t.hidden=true; document.documentElement.style.removeProperty('--safe-top'); document.documentElement.style.removeProperty('--safe-bottom'); return true; })()`);
 		await tap(60, 180);
 		await sleep(250);
 		p = await probe();

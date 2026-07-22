@@ -336,5 +336,17 @@ assert.match(mainSrc, /function keepFailedUndo\(e\)[\s\S]*undoStack\.push\(e\)/,
 assert.match(mainSrc, /function undoDropsAvailable\(drops\)[\s\S]*\(inv\[key\]\|\|0\)<n/,
   'undo refuses to recreate mined infrastructure or backgrounds after their recorded drops were spent');
 assert.doesNotMatch(mainSrc, /if\(t===T\.WATER_PIPE\)\{[\s\S]{0,360}PUMPS\.drawPipeTile\(cctx/, 'chunk cache no longer bakes water pipes before water');
+assert.match(worldSrc, /snapshotConstructionBackground\(\)[\s\S]{0,900}const complete=clean\.length<=CONSTRUCTION_BACKGROUND_SAVE_CAP;[\s\S]{0,260}truncated:/,
+  'background snapshots publish explicit completeness instead of silently slicing');
+
+// Crossing the real production cap must be observable by the save layer. This
+// is intentionally behavioral: a source-only assertion would miss a future
+// refactor that computes completeness after truncation.
+reset();
+for(let x=0;x<=20000;x++) setOverlay(x,80,T.COPPER_WIRE);
+const cappedInfrastructure=world.snapshotInfrastructure();
+assert.equal(cappedInfrastructure.list.length,20000,'infrastructure snapshot remains bounded at its production cap');
+assert.equal(cappedInfrastructure.complete,false,'cap+1 infrastructure is marked incomplete');
+assert.equal(cappedInfrastructure.truncated.records,1,'snapshot reports the exact number of omitted records');
 
 console.log('infrastructure-overlay-sim: all assertions passed');

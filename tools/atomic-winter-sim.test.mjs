@@ -150,7 +150,7 @@ assert.match(indexSrc, /id="atomicWinterTimerPanel"[^>]*role="timer"[^>]*hidden/
 assert.match(indexSrc, /id="atomicWinterTimerValue">0:00:00</, 'timer uses a fixed hours-minutes-seconds layout');
 assert.match(indexSrc, /#atomicWinterTimerPanel\[hidden\]\{ display:none !important; \}/, 'hidden timer does not reserve HUD space');
 assert.match(indexSrc, /#hud:has\(#atomicWinterTimerPanel:not\(\[hidden\]\)\) #taskPanel\{ grid-row:3; \}/, 'mobile task HUD moves below an active winter timer');
-assert.match(indexSrc, /#hud:has\(#atomicWinterTimerPanel:not\(\[hidden\]\)\)[^}]*~ #craft\{ top:96px;/, 'mobile crafting moves below an active winter timer');
+assert.match(indexSrc, /#hud:has\(#atomicWinterTimerPanel:not\(\[hidden\]\)\)[^}]*~ #craft\{ top:calc\(var\(--safe-top\) \+ 96px\);/, 'mobile crafting moves below an active winter timer and the top safe area');
 assert.match(mainSrc, /function formatSeasonCalendarLabel\(sm\)/, 'main exposes a calendar formatter for atomic winter');
 assert.ok(mainSrc.includes("return '☢️ ❄️ '+label;"), 'calendar label shows the nuclear sign plus winter icon during atomic winter');
 assert.match(mainSrc, /atomicWinterCalendarActive\(\) && sm\.season==='winter'/, 'calendar only decorates active winter fallout');

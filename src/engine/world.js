@@ -2334,9 +2334,9 @@ window.MM = window.MM || {};
     }
     const clean=list
       .filter(o=>isInfrastructureTile(o.t) && isFinite(o.x) && isFinite(o.y) && worldYInBounds(o.y))
-      .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t))
-      .slice(0,INFRASTRUCTURE_SAVE_CAP);
-    return {v:2,list:clean};
+      .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t));
+    const complete=clean.length<=INFRASTRUCTURE_SAVE_CAP;
+    return {v:2,complete,truncated:complete?undefined:{records:clean.length-INFRASTRUCTURE_SAVE_CAP},list:clean.slice(0,INFRASTRUCTURE_SAVE_CAP)};
   }
   function restoreInfrastructure(data){
     infrastructure.clear();
@@ -2366,9 +2366,9 @@ window.MM = window.MM || {};
     }
     const clean=list
       .filter(o=>(o.t===0 || isConstructionBackgroundTile(o.t)) && isFinite(o.x) && isFinite(o.y) && worldYInBounds(o.y))
-      .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t))
-      .slice(0,CONSTRUCTION_BACKGROUND_SAVE_CAP);
-    return {v:1,list:clean};
+      .sort((a,b)=>(a.x-b.x)||(a.y-b.y)||(a.t-b.t));
+    const complete=clean.length<=CONSTRUCTION_BACKGROUND_SAVE_CAP;
+    return {v:1,complete,truncated:complete?undefined:{records:clean.length-CONSTRUCTION_BACKGROUND_SAVE_CAP},list:clean.slice(0,CONSTRUCTION_BACKGROUND_SAVE_CAP)};
   }
   function restoreConstructionBackground(data){
     constructionBackground.clear();

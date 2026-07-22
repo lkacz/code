@@ -273,6 +273,37 @@ window.MM = window.MM || {};
     storm.active=false; storm.tLeft=0; storm.max=0; storm.intensity=0; storm.source=null; storm.ownerId=null;
     airborne=0; liftedTiles=0; depositedTiles=0; tickAcc=0; liftAcc=0; dropAcc=0; simT=0; lastNatural=0;
   }
+  // Sandstorms intentionally do not persist across worlds, but a failed
+  // transactional load must be able to put the current session back exactly.
+  function captureRuntime(){
+    return {
+      storm:Object.assign({},storm), airborne, liftedTiles, depositedTiles,
+      tickAcc, liftAcc, dropAcc, simT, lastNatural
+    };
+  }
+  function restoreRuntime(src){
+    if(!src || typeof src!=='object' || !src.storm || typeof src.storm!=='object') return false;
+    const numeric=['airborne','liftedTiles','depositedTiles','tickAcc','liftAcc','dropAcc','simT','lastNatural'];
+    if(numeric.some(key=>!Number.isFinite(Number(src[key])))) return false;
+    const ss=src.storm;
+    if(!Number.isFinite(Number(ss.tLeft)) || !Number.isFinite(Number(ss.max)) || !Number.isFinite(Number(ss.intensity))) return false;
+    reset();
+    storm.active=!!ss.active;
+    storm.tLeft=Math.max(0,Number(ss.tLeft));
+    storm.max=Math.max(0,Number(ss.max));
+    storm.intensity=clamp(Number(ss.intensity),0,1);
+    storm.source=ss.source==null?null:String(ss.source).slice(0,32);
+    storm.ownerId=ss.ownerId==null?null:String(ss.ownerId).slice(0,64);
+    airborne=clamp(Number(src.airborne),0,CFG.AIRBORNE_CAP);
+    liftedTiles=Math.max(0,Math.floor(Number(src.liftedTiles)));
+    depositedTiles=Math.max(0,Math.floor(Number(src.depositedTiles)));
+    tickAcc=Math.max(0,Number(src.tickAcc));
+    liftAcc=Math.max(0,Number(src.liftAcc));
+    dropAcc=Math.max(0,Number(src.dropAcc));
+    simT=Math.max(0,Number(src.simT));
+    lastNatural=clamp(Number(src.lastNatural),0,1);
+    return true;
+  }
   function metrics(){
     return {
       intensity:+intensity().toFixed(3),
@@ -285,7 +316,7 @@ window.MM = window.MM || {};
     };
   }
 
-  MM.sandstorm={update, draw, reset, metrics, startStorm, stopStorm, isActive, intensityAt, config:CFG,
+  MM.sandstorm={update, draw, reset, captureRuntime, restoreRuntime, metrics, startStorm, stopStorm, isActive, intensityAt, config:CFG,
     _debug:{storm, tryLiftAt, depositSandUnit, surfaceCell, duneDepthAt, naturalIntensity, bodyBlocksSandAt, heroBlocksSandAt:bodyBlocksSandAt}};
 })();
 

@@ -55,6 +55,7 @@ const titleScreen = (function(){
   const state = {
     open: false,
     el: null,
+    lastFocus: null,
     splashEl: null,
     splashTimer: null,
     splashIdx: -1,
@@ -102,6 +103,9 @@ const titleScreen = (function(){
   function build(){
     if(state.el || typeof document === 'undefined') return state.el;
     const el = node('div'); el.id = 'titleScreen';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.setAttribute('aria-labelledby', 'titleScreenTitle');
     const inner = node('div', 'tsInner');
     const closed = closedLayers();
     // veterans get greeted by the epithet their LAST layer earned (finale.js
@@ -114,7 +118,8 @@ const titleScreen = (function(){
       if(lv && lv.title) kick += ' · ostatni werdykt: ' + lv.title;
     }catch(e){ /* the kicker survives without it */ }
     inner.appendChild(node('div', 'tsKicker', kick));
-    inner.appendChild(node('h1', 'tsTitle', 'MINI MINER'));
+    const title = node('h1', 'tsTitle', 'MINI MINER'); title.id = 'titleScreenTitle';
+    inner.appendChild(title);
     inner.appendChild(node('div', 'tsSub', '· Warstwy Symulacji ·'));
     state.splashEl = node('div', 'tsSplash', pickSplash());
     inner.appendChild(state.splashEl);
@@ -148,19 +153,40 @@ const titleScreen = (function(){
   // Capture-phase: the title owns the keyboard while open, so gameplay
   // handlers (movement, inventory E, pause B…) never fire under the menu.
   // Browser/system combos (F-keys, Ctrl/Meta chords) pass through untouched.
+  function focusableButtons(){
+    if(!state.el) return [];
+    return [...state.el.querySelectorAll('button:not([disabled])')].filter(b=>b.getClientRects().length>0);
+  }
+  function moveFocus(backward){
+    const buttons=focusableButtons();
+    if(!buttons.length) return;
+    const at=buttons.indexOf(document.activeElement);
+    const next=at<0 ? (backward?buttons.length-1:0) : (at+(backward?-1:1)+buttons.length)%buttons.length;
+    buttons[next].focus();
+  }
   function onKeyDown(e){
     if(!state.open) return;
     if(e.ctrlKey || e.metaKey || e.altKey || /^F\d+$/.test(e.key)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     if(e.repeat) return;
-    if(e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') dismiss('key');
+    if(e.key === 'Tab'){ moveFocus(e.shiftKey); return; }
+    if(e.key === 'Escape'){ dismiss('key'); return; }
+    if(e.key === 'Enter' || e.key === ' '){
+      const active=document.activeElement;
+      if(active && state.el && state.el.contains(active) && active.tagName==='BUTTON') active.click();
+      else {
+        const primary=state.el && state.el.querySelector('.tsPrimary');
+        if(primary) primary.click();
+      }
+    }
   }
 
   function show(){
     if(state.open || typeof document === 'undefined') return false;
     build();
     if(!state.el) return false;
+    state.lastFocus = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
     state.open = true;
     state.el.classList.add('show');
     try{ document.body.classList.add('mmTitleOpen'); }catch(e){} // hides the HUD under the ceremony
@@ -170,6 +196,8 @@ const titleScreen = (function(){
         if(state.splashEl) state.splashEl.textContent = pickSplash();
       }, 6000);
     }
+    const focusPrimary=()=>{ try{ if(!state.open) return; const b=state.el && state.el.querySelector('.tsPrimary'); if(b) b.focus({preventScroll:true}); }catch(e){} };
+    if(typeof root.requestAnimationFrame === 'function') root.requestAnimationFrame(focusPrimary); else focusPrimary();
     return true;
   }
   function dismiss(reason){
@@ -185,6 +213,8 @@ const titleScreen = (function(){
       else { try{ el.remove(); }catch(e){} }
       state.el = null; state.splashEl = null;
     }
+    try{ if(state.lastFocus && state.lastFocus.isConnected && state.lastFocus.focus) state.lastFocus.focus({preventScroll:true}); }catch(e){}
+    state.lastFocus = null;
     // the dismissing click/keypress is the first user gesture: the rising sting
     // is literally the first sound the simulation makes
     try{ if(MM.audio && MM.audio.play) MM.audio.play('titleStart'); }catch(e){}

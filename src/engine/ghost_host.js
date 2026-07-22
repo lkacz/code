@@ -44,9 +44,11 @@ const PEER_ACCEPT_WINDOW_MS = 2000, PEER_ACCEPT_MAX = 48;
 const IDENTITY_MAX = 256;
 const SNAP_REQ_MIN_MS = 5000; // per-peer floor for needSnap re-sends
 const SNAP_CACHE_MS = 3000; // one save serialization serves every join/resync inside the window
+const JOIN_PLANE_CACHE_MS = 1000; // amortize staggered resyncs; every plane/body mutation invalidates it
 const MOBS_REQ_MIN_MS = 1000; // needMobs costs a full mob serialize — per-peer floor
 const PEER_MSG_WINDOW_MS = 2000, PEER_MSG_MAX = 240; // ~120 msg/s ceiling; a legit ghost sends ~5/s
 const MODE_MEMORY_MS = 10 * 60 * 1000; // a transport blip must not demote a player mid-session
+const MODE_MEMORY_MAX = MAX_GHOSTS * 2; // bounded reconnect windows; durable bodies remain proof-bound on disk
 const HOST_ROOM_TAB_KEY = 'mm_ghost_host_room_v1'; // same host tab/reload may resume its room; sibling tabs stay isolated
 const BUFF_FX = { cheer: { tier: 'rare', sound: 'milestone' }, bless: { tier: 'epic', sound: 'heal' }, energy: { tier: 'epic', sound: 'charge' } };
 
@@ -71,7 +73,7 @@ const ghostHost = (function(){
 			room,
 			name: String(opts.name || 'Gospodarz').slice(0, 24),
 			peers: new Map(),
-			banned: new Set(),
+			banned: new Set(), // current session's blocked gid identities, not people or invite holders
 			watchers: 0,
 			ledger: NET.createCooldownLedger(),
 			pendingTiles: new Map(),
@@ -80,6 +82,9 @@ const ghostHost = (function(){
 			snapCacheAt: 0,
 			sinceCache: [],
 			lastSnapAt: 0,
+			joinPlaneCache: null,
+			joinPlaneCacheAt: 0,
+			joinPlaneCacheTimer: null,
 			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0, pwat: 0, drift: 0, story: 0, npc: 0 },
 			auraOwners: [],
 			lastMobSig: null,
@@ -127,7 +132,7 @@ const ghostHost = (function(){
 		if(MMR && typeof MMR.onTileRenderChanged === 'function'){
 			s.prevRenderHook = MMR.onTileRenderChanged;
 			MMR.onTileRenderChanged = function(tx, ty, old, next){
-				if(old === next) s.infraDirty = true;
+				if(old === next){ s.infraDirty = true; invalidateJoinPlaneCache(s); }
 				return s.prevRenderHook.call(this, tx, ty, old, next);
 			};
 		}
@@ -162,6 +167,7 @@ const ghostHost = (function(){
 		closeSayBox();
 		hostChat = null;
 		if(ending.pump) clearInterval(ending.pump);
+		if(ending.joinPlaneCacheTimer) clearTimeout(ending.joinPlaneCacheTimer);
 		try{ ending.listen.stop(); }catch(e){ /* fine */ }
 		if(MMR){
 			MMR.ghostHostTile = null;
@@ -219,6 +225,10 @@ const ghostHost = (function(){
 			bodies: session ? entries().filter(e => e.body).map(e => ({ gid: e.gid, x: +e.body.x.toFixed(2), y: +e.body.y.toFixed(2), hp: +e.body.hp.toFixed(1), mhp: e.body.maxHp, dead: !!e.body.dead, look: e.look || null, pouch: Object.assign({}, e.body.pouch) })) : [],
 			aura: (MMR && MMR.ghostAura) ? MMR.ghostAura.spirits.length : 0,
 			banned: session ? session.banned.size : 0,
+			blockedIdentities: session ? session.banned.size : 0,
+			identityCache: session ? session.tokens.size : 0,
+			resumeWindows: session ? session.modeMemory.size : 0,
+			infraDirty: session ? !!session.infraDirty : false,
 			boost: (MMR && MMR.socialBoost) ? Object.assign({}, MMR.socialBoost) : null,
 			transports: session ? session.listen.transports : null,
 			approval: approvalMode,
@@ -367,6 +377,9 @@ const ghostHost = (function(){
 					dropPeer(s, entry, true);
 					return;
 				}
+				// Admission also sweeps expired reconnect state. Otherwise a burst of
+				// embodied identities could fill the token table until the next slow reap.
+				pruneReconnectMemory(s, t);
 				// gid ownership: a gid is PUBLIC (it rides presence, pb rows, duels), so
 				// trusting hello.gid alone lets anyone who saw it claim the seat, evict the
 				// owner and inherit its rung/body. Session memory is bound to s.tokens; a
@@ -476,6 +489,7 @@ const ghostHost = (function(){
 							return;
 						}
 					}
+					invalidateJoinPlaneCache(s); // pwat/drift windows now include the restored body
 					s.modeMemory.delete(entry.gid);
 					entry.peer.send({ t: 'perm', mode: kept.mode });
 					if(entry.body) sendVitals(s, entry); // fresh tabs enter embodied mode on perm first
@@ -623,8 +637,29 @@ const ghostHost = (function(){
 		for(const other of s.peers.values()) if(other.hello && other.gid === gid) return;
 		s.tokens.delete(gid);
 	}
+	function pruneReconnectMemory(s, t){
+		if(!s || !s.modeMemory) return;
+		const removed = [];
+		for(const [gid, kept] of s.modeMemory){
+			if(!kept || t - kept.ts >= MODE_MEMORY_MS){
+				s.modeMemory.delete(gid);
+				removed.push(gid);
+			}
+		}
+		if(s.modeMemory.size > MODE_MEMORY_MAX){
+			const oldest = Array.from(s.modeMemory.entries()).sort((a, b) => (a[1]?.ts || 0) - (b[1]?.ts || 0));
+			for(let i = 0; s.modeMemory.size > MODE_MEMORY_MAX && i < oldest.length; i++){
+				s.modeMemory.delete(oldest[i][0]);
+				removed.push(oldest[i][0]);
+			}
+		}
+		// The durable body store remains separately bounded and proof-bound. Once a
+		// fast reconnect window is gone, its in-memory token no longer needs a slot.
+		for(const gid of removed) pruneStatelessToken(s, gid);
+	}
 	function dropPeer(s, entry, silent){
 		if(!s.peers.has(entry.peer)) return;
+		const hadBody = !!entry.body;
 		// Centralized body teardown: a mid-fight disconnect must never leave dangling
 		// authority. Settle the duel (the partner's duelWith is cleared), eject from any
 		// mech cab (a serialized guestGid would be a phantom rider stealing the host's
@@ -637,11 +672,13 @@ const ghostHost = (function(){
 			keepBody(entry);
 			if(entry.hello && (entry.mode === 'play' || entry.mode === 'hero') && s.modeMemory){
 				s.modeMemory.set(entry.gid, { mode: entry.mode, ts: now(), body: entry.body });
+				pruneReconnectMemory(s, now());
 			}
 		}
 		entry.body = null;
 		entry.bodyLike = null;
 		s.peers.delete(entry.peer);
+		if(hadBody) invalidateJoinPlaneCache(s); // pwat/drift windows lost an embodied area
 		if(entry.hello){
 			s.watchers = Math.max(0, s.watchers - 1);
 			pruneStatelessToken(s, entry.gid);
@@ -669,6 +706,34 @@ const ghostHost = (function(){
 			try{ entry.peer.send(pl); }catch(e){ /* dead channel — reaped shortly */ }
 		}
 	}
+	// Current planes can outgrow the RTC control-frame ceiling (notably full
+	// infrastructure/background and vehicle/graffiti snapshots). Encode once, then
+	// either fan out the direct packet or the existing byte-bounded chunk envelope.
+	function encodeCurrentPlane(packet){
+		let json = null;
+		try{ json = JSON.stringify(packet); }catch(e){ return null; }
+		if(typeof json !== 'string') return null;
+		const bytes = NET.utf8Len(json);
+		if(bytes > NET.WIRE_LIMITS.ASSEMBLED_MAX) return null;
+		return bytes > NET.WIRE_LIMITS.JSON_MAX
+			? { chunks: NET.chunkPayload('plane', json) }
+			: { packet };
+	}
+	function sendEncodedPlane(peer, frame){
+		if(!peer || !frame) return;
+		if(frame.packet) peer.send(frame.packet);
+		else for(const env of frame.chunks) peer.send(env);
+	}
+	function broadcastCurrentPlane(packet){
+		if(!session) return false;
+		const frame = encodeCurrentPlane(packet);
+		if(!frame) return false;
+		for(const entry of session.peers.values()){
+			if(!entry.hello) continue;
+			try{ sendEncodedPlane(entry.peer, frame); }catch(e){ /* dead channel — reaped shortly */ }
+		}
+		return true;
+	}
 
 	// --- join snapshot -----------------------------------------------------------
 	// The serialized world is cached for SNAP_CACHE_MS: buildSave is save-grade
@@ -690,6 +755,11 @@ const ghostHost = (function(){
 		}
 		for(const env of NET.chunkPayload('snap', s.snapCache)) peer.send(env);
 		if(s.sinceCache.length) peer.send({ t: 'tiles', d: s.sinceCache.slice() });
+		// A cached save is only the durable base. These independently streamed
+		// planes may have advanced (or cleared) since it was serialized, so every
+		// joining/resyncing peer receives their current truth directly. Do not touch
+		// the broadcast sigs: adding viewer B must not resend all planes to viewer A.
+		sendJoinPlanes(s, peer);
 		// a (possibly CACHED) snapshot may carry plane states older than the last
 		// sig-skipped broadcast — and a plane whose state then never changes would
 		// leave the (re)joined guest stale FOREVER. Reset the slow planes' sigs so
@@ -900,12 +970,22 @@ const ghostHost = (function(){
 			broadcast({ t: 'story', data });
 		}catch(e){ /* skip tick */ }
 	}
+	function buildInfraPacket(){
+		const data = bridge.snapshotInfra ? bridge.snapshotInfra() : null;
+		const bg = bridge.snapshotConstructionBackground ? bridge.snapshotConstructionBackground() : null;
+		// World snapshot caps report truncation explicitly. Never stream that prefix
+		// as authoritative truth: the client would clear its complete replica first.
+		if((data && data.complete === false) || (bg && bg.complete === false)) throw new Error('incomplete infrastructure plane');
+		return { t: 'infra', data, bg };
+	}
 	function infraTick(s, t){
 		s.last.infra = t;
-		s.infraDirty = false;
 		try{
-			broadcast({ t: 'infra', data: bridge.snapshotInfra ? bridge.snapshotInfra() : null, bg: bridge.snapshotConstructionBackground ? bridge.snapshotConstructionBackground() : null });
-		}catch(e){ /* skip tick */ }
+			const packet = buildInfraPacket();
+			invalidateJoinPlaneCache(s);
+			if(!broadcastCurrentPlane(packet)) return;
+			s.infraDirty = false;
+		}catch(e){ /* skip tick; dirty stays armed for a retry */ }
 	}
 	function presenceTick(s, t){
 		s.last.presence = t;
@@ -924,10 +1004,9 @@ const ghostHost = (function(){
 	// so watchers rendered every replicated water cell as a full block (a swimming
 	// guest visibly diverged). Stream small windows of the partial ledger around the
 	// host hero and each body; a clearing packet follows the last wet one (latch).
-	function pwatTick(s, t){
-		s.last.pwat = t;
+	function buildPwatPacket(s){
 		const W = MMR && MMR.water;
-		if(!W || !W.ghostPartialsIn) return;
+		if(!W || !W.ghostPartialsIn) return null;
 		const wins = [];
 		const p = bridge.player;
 		if(p && Number.isFinite(p.x) && Number.isFinite(p.y)) wins.push([Math.floor(p.x) - 10, Math.floor(p.y) - 6, Math.floor(p.x) + 10, Math.floor(p.y) + 6]);
@@ -943,22 +1022,28 @@ const ghostHost = (function(){
 			if(rows.length) any = true;
 			payload.push([w[0], w[1], w[2], w[3], rows]);
 		}
+		return { packet: { t: 'pwat', w: payload }, any, sig: JSON.stringify(payload) };
+	}
+	function pwatTick(s, t){
+		s.last.pwat = t;
+		const built = buildPwatPacket(s);
+		if(!built) return;
+		const any = built.any, sig = built.sig;
 		if(!any && !s.pwatWas) return;
-		const sig = JSON.stringify(payload);
 		if(any && sig === s.lastPwatSig) return;
+		invalidateJoinPlaneCache(s);
+		if(!broadcastCurrentPlane(built.packet)) return;
 		s.lastPwatSig = sig;
 		s.pwatWas = any;
-		broadcast({ t: 'pwat', w: payload });
 	}
 	// Soft-drift windows (engine/soft_drifts.js): sub-tile snow fluff / leaf
 	// litter / soot levels are cosmetic and deliberately unsaved, so — exactly
 	// like pwat — the watcher would never see them without a plane. Same window
 	// shape, same latch (a clearing packet follows the last dusty one), same
 	// sig-skip; the client side infers burst poofs from cleared cells.
-	function driftTick(s, t){
-		s.last.drift = t;
+	function buildDriftPacket(s){
 		const D = MMR && MMR.softDrifts;
-		if(!D || !D.ghostLevelsIn) return;
+		if(!D || !D.ghostLevelsIn) return null;
 		const wins = [];
 		const p = bridge.player;
 		if(p && Number.isFinite(p.x) && Number.isFinite(p.y)) wins.push([Math.floor(p.x) - 12, Math.floor(p.y) - 7, Math.floor(p.x) + 12, Math.floor(p.y) + 7]);
@@ -997,61 +1082,132 @@ const ghostHost = (function(){
 		let gale = null;
 		try{ gale = D.ghostStormOut ? D.ghostStormOut() : null; }catch(e){ gale = null; }
 		if(gale) any = true;
-		if(!any && !s.driftWas) return;
 		const sig = JSON.stringify([payload, printsPayload, icePayload, gale]);
-		if(any && sig === s.lastDriftSig) return;
-		s.lastDriftSig = sig;
-		s.driftWas = any;
 		const packet = { t: 'drift', w: payload, p: printsPayload, i: icePayload };
 		if(gale) packet.s = gale;
-		broadcast(packet);
+		return { packet, any, sig };
+	}
+	function driftTick(s, t){
+		s.last.drift = t;
+		const built = buildDriftPacket(s);
+		if(!built) return;
+		const any = built.any, sig = built.sig;
+		if(!any && !s.driftWas) return;
+		if(any && sig === s.lastDriftSig) return;
+		invalidateJoinPlaneCache(s);
+		if(!broadcastCurrentPlane(built.packet)) return;
+		s.lastDriftSig = sig;
+		s.driftWas = any;
 	}
 	// Soot-graffiti plane: the full (bounded) mark list at low Hz, sig-skipped
 	// by the store's version counter — an untouched wall costs zero packets.
-	function gfxTick(s, t){
-		s.last.gfx = t;
+	function buildGfxPacket(){
 		const G = MMR && MMR.graffiti;
-		if(!G || !G.ghostVersion) return;
+		if(!G || !G.ghostVersion) return null;
 		let v = 0;
-		try{ v = G.ghostVersion() | 0; }catch(e){ return; }
-		if(v === s.lastGfxVersion) return;
+		try{ v = G.ghostVersion() | 0; }catch(e){ return null; }
 		let rows = null;
 		try{ rows = G.ghostOut ? G.ghostOut() : null; }catch(e){ rows = null; }
-		if(!Array.isArray(rows)) return;
+		if(!Array.isArray(rows)) return null;
+		return { packet: { t: 'gfx', m: rows }, version: v };
+	}
+	function gfxTick(s, t){
+		s.last.gfx = t;
+		const built = buildGfxPacket();
+		if(!built) return;
+		const v = built.version;
+		if(v === s.lastGfxVersion) return;
+		invalidateJoinPlaneCache(s);
+		if(!broadcastCurrentPlane(built.packet)) return;
 		s.lastGfxVersion = v;
-		broadcast({ t: 'gfx', m: rows });
 	}
 	// Vehicles ride their own low-Hz plane: boats and mechs are save-codec state
 	// (the join snapshot already carries them), but between joins they used to
 	// stand frozen wherever the save caught them. Same sig-skip contract as the
 	// drops plane — silence while nothing moves, one packet per real change.
+	function buildMachPacket(){
+		const B = MMR && MMR.boats, M = MMR && MMR.mechs;
+		const hasBoats = !!(B && B.snapshot), hasMechs = !!(M && M.snapshot);
+		if(!hasBoats && !hasMechs) return null;
+		let fast = false, boats = null, mechs = null;
+		try{ fast = !!(M && M.anyGuestDriven && M.anyGuestDriven()); }catch(e){ fast = false; }
+		try{ boats = hasBoats ? B.snapshot() : null; }catch(e){ boats = null; }
+		try{ mechs = hasMechs ? M.snapshot() : null; }catch(e){ mechs = null; }
+		const data = { b: boats, m: mechs };
+		return { packet: { t: 'mach', data }, data, fast, any: !!(data.b || data.m), sig: JSON.stringify(data) };
+	}
 	function machTick(s, t){
 		s.last.mach = t;
 		try{
-			const B = MMR && MMR.boats, M = MMR && MMR.mechs;
-			s.machFast = !!(M && M.anyGuestDriven && M.anyGuestDriven());
-			const data = {
-				b: (B && B.snapshot) ? B.snapshot() : null,
-				m: (M && M.snapshot) ? M.snapshot() : null
-			};
-			if(!data.b && !data.m) return;
-			const sig = JSON.stringify(data);
+			const built = buildMachPacket();
+			if(!built) return;
+			s.machFast = built.fast;
+			const data = built.data, sig = built.sig;
+			if(!built.any && !s.machWas) return;
 			if(sig === s.lastMachSig) return;
+			invalidateJoinPlaneCache(s);
+			if(!broadcastCurrentPlane({ t: 'mach', data })) return;
 			s.lastMachSig = sig;
-			broadcast({ t: 'mach', data });
+			s.machWas = built.any;
 		}catch(e){ /* codec hiccup — next tick retries */ }
+	}
+	function invalidateJoinPlaneCache(s){
+		if(!s) return;
+		s.joinPlaneCache = null;
+		s.joinPlaneCacheAt = 0;
+		if(s.joinPlaneCacheTimer){ clearTimeout(s.joinPlaneCacheTimer); s.joinPlaneCacheTimer = null; }
+	}
+	function buildJoinPlaneFrames(s){
+		// Each builder reads current host truth. Failures are isolated so one optional
+		// subsystem cannot suppress the other late-join corrections.
+		const builders = [
+			() => buildInfraPacket(),
+			// pwat/drift are immediate client planes with a normal 200 ms cadence
+			// floor. Mark snapshot corrections so the locked client may consume one
+			// bounded bypass after the snapshot it just applied.
+			() => { const v = buildPwatPacket(s); return v && Object.assign({}, v.packet, { sync: 1 }); },
+			() => { const v = buildDriftPacket(s); return v && Object.assign({}, v.packet, { sync: 1 }); },
+			() => { const v = buildGfxPacket(); return v && v.packet; },
+			() => { const v = buildMachPacket(); return v && v.packet; }
+		];
+		const frames = [];
+		let complete = true;
+		for(const make of builders){
+			try{
+				const packet = make();
+				if(!packet) continue;
+				const frame = encodeCurrentPlane(packet);
+				if(!frame){ complete = false; continue; }
+				frames.push(frame);
+			}catch(e){ complete = false; /* optional plane retries on the next build/live tick */ }
+		}
+		return { frames, complete };
+	}
+	function sendJoinPlanes(s, peer){
+		const t = now();
+		let cached = s.joinPlaneCache;
+		if(!cached || t - s.joinPlaneCacheAt > JOIN_PLANE_CACHE_MS){
+			const built = buildJoinPlaneFrames(s);
+			cached = built.frames;
+			if(built.complete){
+				invalidateJoinPlaneCache(s);
+				s.joinPlaneCache = cached;
+				s.joinPlaneCacheAt = t;
+				s.joinPlaneCacheTimer = setTimeout(() => {
+					if(s.joinPlaneCache === cached) invalidateJoinPlaneCache(s);
+				}, JOIN_PLANE_CACHE_MS + 10);
+			}
+		}
+		for(const frame of cached){
+			try{ sendEncodedPlane(peer, frame); }catch(e){ /* dead peer; other planes remain independent */ }
+		}
 	}
 	function reap(s, t){
 		s.last.reap = t;
 		for(const entry of Array.from(s.peers.values())){
 			if((!entry.hello && t > entry.helloDeadline) || t - entry.lastSeen > 15000) dropPeer(s, entry, true);
 		}
-		for(const [gid, kept] of s.modeMemory){
-			if(!kept || t - kept.ts >= MODE_MEMORY_MS){
-				s.modeMemory.delete(gid);
-				pruneStatelessToken(s, gid);
-			}
-		}
+		pruneReconnectMemory(s, t);
 		keepAllBodies(s); // slow-cadence flush: mined loot survives even a host crash
 	}
 
@@ -1327,6 +1483,7 @@ const ghostHost = (function(){
 		if(relocateEmbeddedBody(entry.body) < 0){ entry.body = null; entry.bodyLike = null; return false; }
 		if(restored) keepBody(entry); // refresh and rewrite the validated row canonically
 		entry.cam = { x: entry.body.x, y: entry.body.y };
+		invalidateJoinPlaneCache(s);
 		sendVitals(s, entry);
 		try{ bridge.msg('🎮 ' + (entry.name || 'Duch') + ' wciela się w twoją warstwę!'); }catch(e){ /* fine */ }
 		updateUi();
@@ -1362,6 +1519,7 @@ const ghostHost = (function(){
 		keepBody(entry); // demote/leave: the pouch and earned arsenal await this gid's return
 		entry.body = null;
 		entry.bodyLike = null;
+		invalidateJoinPlaneCache(s);
 		updateUi();
 	}
 	function sendVitals(s, entry){
@@ -2265,13 +2423,19 @@ const ghostHost = (function(){
 	}
 	function banViewer(gid){
 		if(!session || typeof gid !== 'string') return false;
-		session.banned.add(gid);
-		for(const entry of Array.from(session.peers.values())){
+		const s = session;
+		s.banned.add(gid);
+		for(const entry of Array.from(s.peers.values())){
 			if(entry.gid !== gid) continue;
 			try{ entry.peer.send({ t: 'banned' }); }catch(e){ /* fine */ }
-			dropPeer(session, entry, true);
+			dropPeer(s, entry, true);
 		}
-		try{ bridge.msg('🚫 Duch zablokowany'); }catch(e){ /* fine */ }
+		// A session block applies to this gid identity only. It is terminal for that
+		// identity, so keeping its fast reconnect state/token would waste cache slots.
+		s.modeMemory.delete(gid);
+		s.tokens.delete(gid);
+		s.hiddenGids.delete(gid);
+		try{ bridge.msg('🚫 Bieżąca tożsamość widza zablokowana'); }catch(e){ /* fine */ }
 		updateSocialBoost();
 		updateUi();
 		return true;
@@ -2681,8 +2845,8 @@ const ghostHost = (function(){
 			+ '<div id="ghostPanelInfo" style="line-height:1.45;color:#b9c9dc;">Wyślij link, a znajomi wejdą do twojego świata jako DUCHY: oglądają grę na żywo, płoszą stwory i wzmacniają cię samą obecnością — ale nie ruszą ani jednego kafla.</div>'
 			+ '<div id="ghostPanelBenefits" role="note" style="line-height:1.45;color:#9fd6ae;font-size:10.5px;padding:7px 8px;border-radius:9px;border:1px solid rgba(92,190,123,.28);background:rgba(42,111,71,.14);">'
 			+ '<b>✓ Korzyści</b><br>Połączenie i strumień są szyfrowane, świat pozostaje pod kontrolą gospodarza, a tryby oglądania, czatu i „gra (sakwa)” ograniczają wpływ znajomego. Nie potrzeba konta ani osobnego serwera zapisów.</div>'
-			+ '<div id="ghostPanelSafety" role="alert" style="line-height:1.45;color:#f0c879;font-size:10.5px;padding:7px 8px;border-radius:9px;border:1px solid rgba(230,189,114,.34);background:rgba(104,72,20,.18);">'
-			+ '<b>⚠ Tryb tylko dla znajomych</b><br>Link jest wspólnym kluczem dostępu — nie publikuj go i nie traktuj go jak konta użytkownika. Każdy, kto go otrzyma, może próbować dołączyć, a posiadacze tego samego linku są w jednej strefie zaufania i mogą próbować podszyć się podczas łączenia. „Gra (sakwa)” ma zasoby i działania kontrolowane przez gospodarza; „pełny bohater” ufa lokalnej postaci, ekwipunkowi i statystykom znajomego, więc dawaj go tylko osobie, której naprawdę ufasz. Zatrzymaj i uruchom transmisję ponownie, aby unieważnić stary link.</div>'
+			+ '<div id="ghostPanelSafety" role="note" style="line-height:1.45;color:#f0c879;font-size:10.5px;padding:7px 8px;border-radius:9px;border:1px solid rgba(230,189,114,.34);background:rgba(104,72,20,.18);">'
+			+ '<b>⚠ Tryb tylko dla znajomych</b><br>Link jest wspólnym kluczem dostępu — nie publikuj go i nie traktuj go jak konta użytkownika. Każdy, kto go otrzyma, może próbować dołączyć, a posiadacze tego samego linku są w jednej strefie zaufania i mogą próbować podszyć się podczas łączenia. Strumień wysyła widzowi dane świata; zmodyfikowany klient może je technicznie zachować również bez zgody na wbudowany przycisk rozwidlenia. „Gra (sakwa)” ma zasoby i działania kontrolowane przez gospodarza; „pełny bohater” ufa lokalnej postaci, ekwipunkowi i statystykom znajomego, więc dawaj go tylko osobie, której naprawdę ufasz. Zatrzymaj i uruchom transmisję ponownie, aby unieważnić stary link.</div>'
 			+ '<div id="ghostPanelLinkRow" style="display:none;gap:6px;"><input id="ghostPanelLink" readonly aria-label="Link dla widzów" style="flex:1;min-width:0;background:rgba(20,26,36,.9);border:1px solid rgba(255,255,255,.2);border-radius:8px;color:#d5e6ff;padding:6px 8px;font-size:11px;">'
 			+ '<button id="ghostPanelCopy" style="border:none;border-radius:8px;background:#2c7ef8;color:#fff;font-weight:700;padding:6px 10px;cursor:pointer;">Kopiuj</button>'
 			+ '<button id="ghostPanelShare" style="display:none;border:none;border-radius:8px;background:rgba(255,255,255,.14);color:#fff;font-weight:700;padding:6px 10px;cursor:pointer;">Wyślij</button></div>'
@@ -2789,14 +2953,15 @@ const ghostHost = (function(){
 		mute.title = hid ? 'Ukryty u ciebie — kliknij, by znów widzieć awatar i wiadomości tego widza'
 			: 'Ukryj awatar i wiadomości tego widza (tylko na twoim ekranie; jego wpływ na grę zostaje)';
 		mute.addEventListener('click', () => setViewerHidden(entry.gid, !hid));
-		const ban = styledButton('Banuj', 'border:none;border-radius:6px;background:rgba(196,50,50,.5);color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;');
-		ban.title = 'Wyrzuć i zablokuj tego widza do końca sesji';
+		const ban = styledButton('Wyrzuć ID', 'border:none;border-radius:6px;background:rgba(196,50,50,.5);color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;');
+		ban.title = 'Wyrzuć i zablokuj tylko tę bieżącą tożsamość do końca sesji. Posiadacz wspólnego linku może wrócić z nową; ponownie uruchom transmisję, aby odwołać cały link.';
 		ban.addEventListener('click', () => banViewer(entry.gid));
 		row.append(dot, nm, badge, sel, asst, mute, ban);
-		// world fork (owner consent): this viewer may take the CURRENT moment home
-		// as its own solo save — a one-way copy, nothing ever syncs back
+		// Built-in world fork: owner consent unlocks the standard client's save UX.
+		// It is not a confidentiality boundary: rendering already requires streamed
+		// world data, which a modified client can technically retain.
 		const fork = styledButton('🌱', 'border:none;border-radius:6px;background:rgba(90,160,220,.4);color:#fff;font-size:10px;font-weight:700;padding:3px 7px;cursor:pointer;');
-		fork.title = 'Rozwidlenie świata: pozwól temu widzowi zapisać TĘ chwilę jako własny, osobny świat (odłączy się; nic nie wraca do ciebie)';
+		fork.title = 'Wbudowane rozwidlenie: pozwól zapisać TĘ chwilę jako osobny świat. Dane świata są już strumieniowane i zmodyfikowany klient może je zachować niezależnie od tej zgody.';
 		fork.addEventListener('click', () => forkGrant(entry.gid));
 		row.append(fork);
 		// gifting (owner ruling: host gifts only) — the host hands ITS OWN resources
@@ -2816,10 +2981,10 @@ const ghostHost = (function(){
 		}
 		return row;
 	}
-	// World fork (owner consent): the host authorizes ONE guest to take the shared
-	// moment home. CONSENT ONLY — the packet carries no state; the guest commits
-	// the replica it is already rendering through main.js's audited seam, then
-	// leaves. The host world is untouched and nothing ever syncs back.
+	// Built-in world fork: the host grant carries no state; it only unlocks the
+	// standard client's save workflow for the replica already being rendered.
+	// Streamed world data is technically copyable by a modified client regardless
+	// of this convenience/consent gate. Nothing ever syncs back to the host.
 	function forkGrant(gid){
 		const s = session;
 		if(!s) return false;

@@ -495,7 +495,7 @@ water.restore({v:1, active:[[1,2]], ripples:[{L:0,R:5,y:60,ttl:300}]}); // legac
 water.restore(null);
 assert.deepEqual(water._debug().active,[],'missing water payload clears state inherited from the previous world');
 water.restore('garbage');
-water.restore({
+const malformedRestore=water.restore({
   v:2,
   active:[[1,2],[NaN,3],[4,Infinity],'bad','-3,5'],
   lateral:[[1,2],[Infinity,1],[2,-5],[3,99]],
@@ -505,20 +505,25 @@ water.restore({
   lateralAcc:-4
 });
 const clean=water._debug();
-assert.deepEqual(new Set(clean.active), new Set(['1,2','-3,5']), 'water restore drops malformed active cells but keeps valid negative-x cells');
-assert.deepEqual(clean.cooldown, [[1,2],[3,5]], 'water restore sanitizes malformed and oversized lateral cooldowns');
-assert.equal(clean.pressureIntervalCurrent, 0.9, 'water restore clamps pressure interval');
+assert.equal(malformedRestore.ok,false,'water restore rejects a mixed valid/malformed snapshot atomically');
+assert.deepEqual(clean.active, [], 'rejected water snapshots leave no partially restored active cells');
+assert.deepEqual(clean.cooldown, [], 'rejected water snapshots leave no partial cooldown state');
+assert.equal(clean.pressureIntervalCurrent, 0.4, 'rejected water snapshots retain the reset pressure interval');
 assert.equal(clean.pressureAcc, 0, 'water restore rejects invalid pressure accumulator');
 {
   const cap=clean.restoreCaps.active;
   const oversized=new Array(cap+1).fill(null);
   oversized[cap]=[7,60];
-  water.restore({v:3,active:oversized});
-  assert.deepEqual(water._debug().active,[],'water restore bounds scanned rows even when every preceding entry is malformed');
+  const result=water.restore({v:3,active:oversized});
+  assert.equal(result.ok,false,'water restore explicitly rejects an over-cap snapshot');
+  assert.deepEqual(water._debug().active,[],'over-cap rejection leaves no partial water state');
 }
-water.restore({v:3, levels:[[5,60,4],[6,60,'x'],[7,60,0],[8,60,15],[9,'y',3]]});
+const badLevels=water.restore({v:3, levels:[[5,60,4],[6,60,'x'],[7,60,0],[8,60,15],[9,'y',3]]});
 const levClean=water._debug().levels;
-assert.deepEqual(levClean, [[5,60,4]], 'water restore drops malformed sub-tile levels but keeps valid ones');
+assert.equal(badLevels.ok,false,'water restore reports malformed sub-tile levels');
+assert.deepEqual(levClean, [], 'malformed sub-tile data is rejected without a partial restore');
+assert.equal(water.restore({v:3,complete:true,active:[[1,2],[-3,5]],levels:[[5,60,4]]}).ok,true,'valid bounded water snapshots restore successfully');
+assert.deepEqual(new Set(water._debug().active),new Set(['1,2','-3,5']),'valid negative-x active water cells remain supported');
 water.reset();
 const afterReset=water._debug();
 assert.equal(afterReset.pressureAcc, 0, 'water reset clears inherited pressure accumulator');

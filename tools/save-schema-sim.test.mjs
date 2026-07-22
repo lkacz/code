@@ -68,16 +68,27 @@ assert.match(src, /function restoreHotbar\(src\)/, 'load code defines a hotbar r
 assert.match(src, /function snapshotEquipment\(\)/, 'save code defines an equipment snapshot helper');
 assert.match(src, /function restoreEquipment\(src\)/, 'load code defines an equipment restore helper');
 assert.match(src, /const CRITICAL_SAVE_KEY='mm_save_critical_v1'/, 'save code has a dedicated fast critical-state recovery key');
+assert.match(src, /const CRITICAL_SAVE_SCHEMA_VERSION=3/, 'critical recovery rejects capsules from the earlier unbound schema');
+assert.match(src, /function criticalStateIntegritySignature\(state\)[\s\S]{0,600}savedAt:state && state\.savedAt[\s\S]{0,300}baseManifestHash:state && state\.baseManifestHash[\s\S]{0,160}baseRevision:state && state\.baseRevision/, 'critical recovery integrity covers freshness and base-manifest metadata separately from deduplication');
+assert.match(src, /state\.stateHash=computeHash\(criticalStateIntegritySignature\(state\)\)/, 'critical recovery signs metadata and payload together');
+assert.match(src, /state\.v!==CRITICAL_SAVE_SCHEMA_VERSION[\s\S]{0,420}computeHash\(criticalStateIntegritySignature\(state\)\)!==state\.stateHash/, 'legacy or metadata-tampered critical capsules are rejected before freshness comparison');
 assert.match(src, /function snapshotPlayerState\(\)[\s\S]*hp:saveNumber\(player\.hp,2\)[\s\S]*energy:saveNumber\(player\.energy,2\)/, 'player snapshot persists health and energy in one shared helper');
 assert.match(src, /function restorePlayerHealth\(src\)/, 'load code restores saved hero health after max-HP progression is applied');
 assert.match(src, /function snapshotCriticalState\(reason\)[\s\S]*player:snapshotPlayerState\(\)[\s\S]*inv:snapshotInventory\(\)[\s\S]*hotbar:snapshotHotbar\(\)[\s\S]*equipment:snapshotEquipment\(\)/, 'critical recovery snapshot includes player state, inventory, hotbar, and gear');
-assert.match(src, /function loadCriticalStateForSave\(data,opts\)[\s\S]*opts\.ignoreCritical[\s\S]*criticalTime>saveTime/, 'critical recovery is newer-than-main and can be disabled for exact slot loads');
+assert.match(src, /function loadCriticalStateForSave\(data,opts\)[\s\S]*opts\.ignoreCritical[\s\S]*state\.baseManifestHash\.toLowerCase\(\)!==saveManifestHash[\s\S]*state\.revision!==state\.baseRevision[\s\S]*criticalTime>saveTime/, 'critical recovery must be newer, tied to the exact main manifest, and free of unsaved world changes');
 assert.match(src, /const criticalState=loadCriticalStateForSave\(data,opts\)/, 'load path checks for a newer critical recovery capsule');
 assert.match(src, /const criticalApplied=restoreCriticalState\(criticalState\)/, 'load path overlays a valid critical recovery capsule after the main save');
 assert.match(src, /setInterval\(\(\)=>\{ saveCriticalState\('heartbeat'\); \},CRITICAL_SAVE_INTERVAL_MS\)/, 'critical recovery state is refreshed by a cheap heartbeat');
 assert.match(src, /function saveState\(\)\{[\s\S]*saveCriticalState\('dirty'\)/, 'dirty save scheduling also refreshes the critical recovery state');
 assert.match(src, /saveCriticalState\('flush',true\)/, 'pagehide and unload force-write critical recovery before heavy serialization');
-assert.match(src, /loadGame\(\{ignoreCritical:true\}\)/, 'named save-slot loads ignore newer critical recovery data');
+assert.match(src, /localStorage\.setItem\(SAVE_KEY,json\);\s*rememberCommittedSave\(withHash,snapshotRevision\)/, 'full saves advance the critical-state base only after the main manifest write succeeds');
+assert.match(src, /function finishIncrementalAutoSave\(\)[\s\S]{0,420}!incrementalAutoSaveJobIsCurrent\(job\)/, 'incremental saves refuse to publish a stale multi-batch snapshot');
+assert.match(src, /job\.versions\.set\(ref\.key,worldChunkVersion\(ref\)\)/, 'incremental jobs remember the exact version of every encoded chunk');
+assert.match(src, /function finishIncrementalAutoSave\(\)[\s\S]*cleanupAutosaveChunks\(referencedAutosaveKeys\(\),job\.oldRefs\)/, 'incremental cleanup preserves blobs still reachable from named or fork slots');
+assert.match(src, /function flushPendingSave\(\)[\s\S]{0,600}cancelPendingSaveWork\(\);[\s\S]{0,180}saveCriticalState\('flush',true\)/, 'flush cleans unpublished chunk blobs before writing a synchronous replacement');
+assert.match(src, /loadSaveCandidate\(raw,\{ignoreCritical:true,transactional:true,persistAsMain:true\}\)/, 'named save-slot loads validate and apply transactionally without newer critical recovery data');
+assert.match(src, /function portableSaveJson\(raw,storage\)[\s\S]*portable\.world=\{modified\}[\s\S]*attachHash\(portable\)/, 'exports materialize external autosave chunks into a self-contained rehashed manifest');
+assert.match(src, /const portable=portableSaveJson\(raw,localStorage\); const blob=new Blob\(\[portable\]/, 'save-slot export always downloads the portable manifest');
 assert.match(src, /infrastructure:\s*timedSavePart\('infrastructure',[^\n]*WORLD && WORLD\.snapshotInfrastructure/, 'save payload includes pipe and cable overlays');
 assert.match(src, /background:\s*timedSavePart\('background',[^\n]*BACKGROUND && BACKGROUND\.snapshot/, 'save payload includes day-night background state');
 assert.match(src, /constructionBackground:\s*timedSavePart\('constructionBackground',[^\n]*WORLD && WORLD\.snapshotConstructionBackground/, 'save payload includes background construction support tiles');
@@ -85,14 +96,14 @@ assert.match(src, /gases:\s*timedSavePart\('gases',[^\n]*GASES && GASES\.snapsho
 assert.match(src, /smoke:\s*timedSavePart\('smoke',[^\n]*SMOKE && SMOKE\.snapshot/, 'save payload includes the independent black-smoke density layer');
 assert.match(src, /fire:\s*timedSavePart\('fire',[^\n]*FIRE && FIRE\.snapshot/, 'save payload includes active burning fire state');
 assert.match(src, /boats:\s*timedSavePart\('boats',[^\n]*BOATS && BOATS\.snapshot/, 'save payload includes floating wooden rafts');
-assert.match(src, /BOATS && BOATS\.restore\) BOATS\.restore\(data\.boats\)/, 'load code restores floating wooden rafts');
+assert.match(src, /BOATS && BOATS\.restore\) return BOATS\.restore\(data\.boats\)/, 'load code propagates floating-raft restore rejection');
 assert.match(src, /wind:\s*timedSavePart\('wind',[^\n]*WIND && WIND\.snapshot/, 'save payload includes weather wind state');
 assert.match(src, /seasons:\s*timedSavePart\('seasons',[^\n]*SEASONS && SEASONS\.snapshot/, 'save payload includes season clock state');
 assert.match(src, /clouds:\s*timedSavePart\('clouds',[^\n]*CLOUDS && CLOUDS\.snapshot/, 'save payload includes cloud and storm weather state');
 assert.match(src, /dynamo:\s*timedSavePart\('dynamo',[^\n]*DYNAMO && DYNAMO\.snapshot/, 'save payload includes dynamo machine state');
 assert.match(src, /solar:\s*timedSavePart\('solar',[^\n]*SOLAR && SOLAR\.snapshot/, 'save payload includes solar panel battery state');
 assert.match(src, /furnishingsPower:\s*timedSavePart\('furnishingsPower',[^\n]*FURNISHINGS && FURNISHINGS\.snapshotPower/, 'save payload includes remote household electrical loads');
-assert.match(src, /FURNISHINGS && FURNISHINGS\.restorePower\) FURNISHINGS\.restorePower\(data\.furnishingsPower,getTile\)/, 'load path restores remote household electrical loads');
+assert.match(src, /FURNISHINGS && FURNISHINGS\.restorePower\) return FURNISHINGS\.restorePower\(data\.furnishingsPower,getTile\)/, 'load path propagates remote household restore rejection');
 assert.match(src, /teleporters:\s*timedSavePart\('teleporters',[^\n]*TELEPORTERS && TELEPORTERS\.snapshot/, 'save payload includes teleporter machine state');
 assert.match(src, /pumps:\s*timedSavePart\('pumps',[^\n]*PUMPS && PUMPS\.snapshot/, 'save payload includes water pump machine state');
 assert.match(src, /turrets:\s*timedSavePart\('turrets',[^\n]*TURRETS && TURRETS\.snapshot/, 'save payload includes turret battery state');
@@ -214,11 +225,12 @@ assert.match(src, /const SAVE_CHUNK_RESTORE_CAP=4096;/, 'save restore caps the n
 assert.match(src, /function validSavedChunkRef\(cx,sy\)/, 'chunk restore validates coordinates and vertical section bounds before decoding');
 assert.match(src, /function decodeSavedChunk\(data,rle,size\)/, 'chunk restore validates encoded and decoded payload sizes');
 assert.match(src, /if\(!\(arr instanceof Uint8Array\) \|\| arr\.length!==expected\) return;/, 'terrain restore rejects malformed chunk array dimensions');
-assert.match(src, /for\(const ch of list\.slice\(0,SAVE_CHUNK_RESTORE_CAP\)\)/, 'inline chunk restore has a processed-record cap');
-assert.match(src, /for\(const saved of refs\.slice\(0,SAVE_CHUNK_RESTORE_CAP\)\)/, 'referenced chunk restore has a processed-record cap');
+assert.match(src, /assertSaveChunkCapacity\(list,'inline restore'\);\s*for\(const ch of list\)/, 'inline chunk restore rejects over-cap data instead of truncating it');
+assert.match(src, /assertSaveChunkCapacity\(refs,'referenced restore'\);\s*for\(const saved of refs\)/, 'referenced chunk restore rejects over-cap data instead of truncating it');
 assert.match(src, /f\.size>IMPORT_SAVE_BYTE_CAP/, 'save-file import rejects oversized payloads before FileReader allocation');
-assert.match(src, /const ver=Number\.isFinite\(data\.v\) \? data\.v : 5;/, 'runtime load rejects non-finite save versions');
-assert.match(src, /const incomingSeed=Number\.isFinite\(data\.seed\) \? data\.seed : WORLDGEN\.worldSeed;/, 'runtime load rejects non-finite world seeds');
+assert.match(src, /SAVE_SUPPORTED_VERSIONS=Object\.freeze\(\[6,7\]\)/, 'runtime load has an explicit supported-version set');
+assert.match(src, /!Number\.isInteger\(version\) \|\| !SAVE_SUPPORTED_VERSIONS\.includes\(version\)/, 'runtime preflight rejects non-integral and unsupported save versions');
+assert.match(src, /typeof input\.seed!=='number' \|\| normalizeWorldSeed\(input\.seed\)===null/, 'runtime preflight requires a canonical numeric world seed');
 assert.match(src, /stripTransientTerrainTiles\(arr\);\s*migrateLegacyInfrastructureTerrain\(cx,arr,ref\.base\?null:ref\.sy\);/, 'terrain restore strips transient tiles before migrating legacy base infrastructure overlays');
 assert.match(src, /const auditChunkIds=baseChunkIdsForAudits\(saveChunkIds\)/, 'full save filters vertical-section refs before legacy chunk auditors run');
 assert.match(src, /timedSavePart\('falling\.audit',[^\n]*FALLING\.auditChunks\(auditChunkIds,\{force:true,immediate:true\}\)/, 'full save audits base modified chunks through falling physics before settling terrain');
@@ -318,6 +330,9 @@ assert.match(src, /search\.addEventListener\('input',\(\)=>\{ craftQuery=search\
 assert.match(src, /respawnTotems: timedSavePart\('respawnTotems',\(\)=>snapshotRespawnTotems\(\),perf\)/, 'save file persists placed respawn totem indexes');
 assert.match(src, /healingShelters: timedSavePart\('healingShelters',\(\)=>snapshotHealingShelters\(\),perf\)/, 'save file persists healing shelter respawn indexes');
 assert.match(src, /grave: timedSavePart\('grave',\(\)=>snapshotGrave\(\),perf\)/, 'save file scopes unrecovered grave resources to the saved world snapshot');
+assert.match(src, /water: timedSavePart\('water',\(\)=>snapshotWaterForSave\(\),perf\)/, 'save payload includes the bounded water solver snapshot');
+assert.match(src, /WATER\.restore\(data\.water\)/, 'load path restores sub-tile water, toxicity, and material timers after terrain');
+assert.match(src, /snapshot\.complete===false|WATER\.validateSnapshot/, 'water snapshot completeness is checked before committing a save');
 assert.match(src, /const sameLiveSeed=incomingSeed===WORLDGEN\.worldSeed;[\s\S]*respawnTotems:!hasOwn\('respawnTotems'\) && sameLiveSeed \? snapshotRespawnTotems\(\) : null,[\s\S]*healingShelters:!hasOwn\('healingShelters'\) && sameLiveSeed \? snapshotHealingShelters\(\) : null,[\s\S]*grave:!hasOwn\('grave'\) && sameLiveSeed \? snapshotGrave\(\) : null/, 'sparse legacy saves may migrate side-store markers only from the exact incoming seed');
 assert.match(src, /restoreRespawnTotems\(hasOwn\('respawnTotems'\) \? data\.respawnTotems : \(legacyWorldMarkers\.respawnTotems \|\| \{seed:WORLDGEN\.worldSeed,list:\[\]\}\)\)/, 'totem restore prefers snapshot data and otherwise uses the guarded legacy migration');
 assert.match(src, /restoreHealingShelters\(hasOwn\('healingShelters'\) \? data\.healingShelters : \(legacyWorldMarkers\.healingShelters \|\| \{seed:WORLDGEN\.worldSeed,list:\[\]\}\)\)/, 'shelter restore prefers snapshot data and otherwise uses the guarded legacy migration');
@@ -338,9 +353,269 @@ assert.match(indexSrc, /id="taskListPanel"[^>]*role="dialog"/, 'task tracker ope
 assert.match(indexSrc, /id="taskList"/, 'task tracker has a dedicated host for every active task');
 assert.match(indexSrc, /czerwona strzałka prowadzi właśnie do niego/, 'task list explains priority pointer behavior');
 assert.match(src, /TASKS\.setContext\(\{onChange:saveState\}\)/, 'task priority and discard choices request save persistence');
+assert.match(src, /function resetWorldTransitionRuntime\(\)[\s\S]*undoStack\.length=0;[\s\S]*HERO_STATUS\.clearAll\(\)[\s\S]*FISHING\.reset\(\)[\s\S]*SANDSTORM\.reset\(\)/, 'one world-transition boundary clears undo, hero status, fishing, and sandstorm state');
+assert.match(src, /SURVIVAL\.resetDrowning\(drowningState\)[\s\S]*SURVIVAL\.resetWaterPressure\(waterPressureState\)[\s\S]*SURVIVAL\.resetThermal\(thermalState\)/, 'world transitions clear accumulated survival damage and exposure');
+assert.match(src, /loadSaveCandidate\(raw,\{ignoreCritical:true,transactional:true,persistAsMain:true\}\)/, 'named and continue loads use the transactional candidate path');
+assert.doesNotMatch(src, /localStorage\.setItem\(SAVE_KEY,raw\);\s*const ok=loadGame/, 'slot candidates never overwrite the active manifest before validation and restore');
+assert.match(src, /if\(typeof opts\.commit==='function'\) opts\.commit\(\)/, 'active-save commit runs only after the runtime restore completes');
+assert.match(src, /function saveRestoreRejected\(value\)\{[\s\S]*value===false[\s\S]*value\.ok===false/, 'every explicit subsystem restore rejection is fatal');
+assert.match(src, /if\(saveRestoreRejected\(value\)\)/, 'required-section restore delegates to the shared rejection contract');
+assert.match(src, /function saveCriticalState\(reason,force\)\{[\s\S]{0,180}if\(_saveWritesBlocked\) return false;/, 'critical heartbeat cannot overwrite rejected-save recovery state');
+assert.match(src, /function saveState\(\)\{[\s\S]{0,180}if\(_saveWritesBlocked\) return;/, 'dirty autosave scheduling is fail-closed after main-save rejection');
+assert.match(src, /function flushPendingSave\(\)[\s\S]{0,500}if\(_saveWritesBlocked\)\{ cancelPendingSaveWork\(\); return; \}/, 'pagehide cannot bypass the rejected-save write lock');
+assert.match(src, /function performNamedSave\(forcePrompt\)\{ if\(_saveWritesBlocked\)\{[^}]*return false; \} const slots=loadSlots\(\)/, 'named saves fail closed before prompting, snapshotting, or overwriting a recovery slot');
+assert.match(src, /const schedulerState=transactional \? suspendSaveSchedulerForLoad\(\) : null;/, 'transactional loads fence any in-flight incremental save before mutation');
+assert.match(src, /settleSaveSchedulerAfterLoad\(schedulerState,false\)/, 'failed loads resume only fresh dirty scheduling after rollback');
+assert.match(src, /function snapshotWorldSectionForSave[\s\S]{0,500}snapshot\.complete===false/, 'lossy infrastructure snapshots fail the save instead of truncating silently');
+assert.match(src, /function recordSaveFailure\(e,manual\)[\s\S]{0,700}SaveCapacityError[\s\S]{0,180}showPersistentSaveFailure/, 'capacity and repeated autosave failures raise a persistent player warning');
 assert.match(chestsSrc, /function openFromWeaponHitAt\(x,y,opts\)/, 'chest engine exposes one shared weapon-impact opener');
 assert.match(src, /CHESTS\.setWeaponHitHandler\(\(tx,ty,opts\)=>tryOpenChestAt\(tx,ty,opts\)\)/, 'weapon impacts retain the full chest UI, effects and save path');
 assert.match(chestsSrc, /const wx=Number\(x\), wy=Number\(y\);[\s\S]*chestAtPoint\(wx,wy[\s\S]*const tx=Math\.floor\(wx\), ty=Math\.floor\(wy\)[\s\S]*weaponHitHandler\(tx,ty/, 'weapon chest impacts check physical coordinates before the legacy tile fallback');
 assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown projectiles route chest collisions through the opener');
+
+// Exercise the real critical-capsule admission logic. A newer player/inventory
+// payload is useful only while it is based on the exact manifest and no dirty
+// save revision (mine/place/pickup) occurred after that manifest.
+{
+  const start=src.indexOf('function criticalStateComparable(state)');
+  const end=src.indexOf('function restoreCriticalState(state)',start);
+  assert.ok(start>=0 && end>start,'critical recovery source block is discoverable');
+  const storage=new Map();
+  const stable=value=>{
+    if(value===null || typeof value!=='object') return JSON.stringify(value);
+    if(Array.isArray(value)) return '['+value.map(stable).join(',')+']';
+    return '{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+stable(value[key])).join(',')+'}';
+  };
+  const hash=text=>{
+    let h=0x811c9dc5;
+    for(let i=0;i<text.length;i++){ h^=text.charCodeAt(i); h=(h>>>0)*0x01000193; h>>>0; }
+    return ('00000000'+(h>>>0).toString(16)).slice(-8);
+  };
+  const sandbox={
+    CRITICAL_SAVE_SCHEMA_VERSION:3,
+    CRITICAL_SAVE_KEY:'mm_save_critical_v1',
+    CRITICAL_SAVE_INTERVAL_MS:2500,
+    WORLDGEN:{worldSeed:42},
+    MM:{ghostMode:false},
+    localStorage:{getItem(key){ return storage.get(key)||null; },setItem(key,value){ storage.set(key,value); }},
+    stableStringify:stable,
+    computeHash:hash,
+    console:{warn(){}},
+    Date
+  };
+  runInNewContext(src.slice(start,end)+';globalThis.criticalApi={integrity:criticalStateIntegritySignature,load:loadCriticalStateForSave};',sandbox);
+  const main={v:7,seed:42,h:'1234abcd',savedAt:100};
+  const capsule=(overrides={})=>{
+    const state=Object.assign({
+      v:3,seed:42,savedAt:200,revision:7,baseManifestHash:main.h,baseRevision:7,reason:'heartbeat',
+      player:{x:1,y:2,hp:100},inv:{stone:1},hotbar:{selected:0},equipment:{}
+    },overrides);
+    state.stateHash=hash(sandbox.criticalApi.integrity(state));
+    return state;
+  };
+  const store=state=>storage.set('mm_save_critical_v1',JSON.stringify(state));
+
+  store(capsule());
+  assert.ok(sandbox.criticalApi.load(main,{}),'matching clean capsule overlays its exact newer main manifest');
+  store(capsule({revision:8}));
+  assert.equal(sandbox.criticalApi.load(main,{}),null,'a mine/place revision after the base rejects the partial inventory overlay');
+  store(capsule({baseManifestHash:'deadbeef'}));
+  assert.equal(sandbox.criticalApi.load(main,{}),null,'a capsule for another main manifest is rejected');
+  const tampered=capsule(); tampered.baseRevision=6; store(tampered);
+  assert.equal(sandbox.criticalApi.load(main,{}),null,'tampering with base revision without recomputing integrity is rejected');
+}
+
+// The guard in the real nested named-save handler must return before it can
+// inspect or mutate any recovery slot.
+{
+  const start=src.indexOf('\tfunction performNamedSave(forcePrompt)');
+  const end=src.indexOf('\n\n\t// Continue button logic',start);
+  assert.ok(start>=0 && end>start,'named-save handler source block is discoverable');
+  let calls=0;
+  const existing='byte-for-byte-good-slot';
+  const sandbox={
+    _saveWritesBlocked:true,
+    msg(){},
+    loadSlots(){ calls++; throw new Error('blocked handler reached loadSlots'); },
+    prompt(){ calls++; throw new Error('blocked handler reached prompt'); },
+    buildSaveObject(){ calls++; throw new Error('blocked handler reached snapshot'); },
+    writeSaveSlot(){ calls++; throw new Error('blocked handler reached slot write'); }
+  };
+  runInNewContext(src.slice(start,end)+';globalThis.performNamedSave=performNamedSave;',sandbox);
+  assert.equal(sandbox.performNamedSave(false),false,'blocked named save reports refusal');
+  assert.equal(calls,0,'blocked named save performs no read, prompt, snapshot, or write work');
+  assert.equal(existing,'byte-for-byte-good-slot','the existing recovery slot remains unchanged');
+}
+
+// The real flush + cancellation helpers remove only unpublished refs; chunks
+// referenced by the last committed manifest stay untouched.
+{
+  const cancelStart=src.indexOf('function cancelPendingSaveWork()');
+  const cancelEnd=src.indexOf('function blockSaveWrites(reason)',cancelStart);
+  const flushStart=src.indexOf('function flushPendingSave()');
+  const flushEnd=src.indexOf("window.addEventListener('pagehide'",flushStart);
+  assert.ok(cancelStart>=0 && cancelEnd>cancelStart && flushStart>=0 && flushEnd>flushStart,'flush cleanup source blocks are discoverable');
+  const blobs=new Set(['committed','orphan-a','orphan-b']);
+  const sandbox={
+    _saveStateT:1,_autoSaveWorkT:2,_autoSaveJob:{refs:[{key:'orphan-a'},{key:'orphan-b'}]},
+    _startingNewGame:false,_saveWritesBlocked:false,_saveDirty:false,
+    clearTimeout(){},
+    cleanupAutosaveChunks(keep,refs){ for(const ref of refs||[]) if(!keep.has(ref.key)) blobs.delete(ref.key); },
+    saveCriticalState(){ return true; },
+    saveGame(){ return true; },
+    clearActiveGameStorage(){ throw new Error('not a new-game flush'); },
+    localStorage:{}
+  };
+  runInNewContext(src.slice(cancelStart,cancelEnd)+src.slice(flushStart,flushEnd)+';globalThis.flush=flushPendingSave;',sandbox);
+  sandbox.flush();
+  assert.deepEqual([...blobs],['committed'],'flush deletes abandoned incremental blobs but preserves committed data');
+}
+
+// Multi-batch snapshots are valid only while their revision, modified-chunk set,
+// and every already-encoded chunk version still match the live world.
+{
+  const start=src.indexOf('function incrementalAutoSaveJobIsCurrent(job)');
+  const end=src.indexOf('function finishIncrementalAutoSave()',start);
+  assert.ok(start>=0 && end>start,'incremental freshness helpers are discoverable');
+  const cleaned=[];
+  const sandbox={
+    _saveRevision:5,
+    _autoSaveJob:null,
+    currentChunks:['c1','c2'],
+    liveVersions:new Map([['c1',11],['c2',22]]),
+    normalizeWorldChunkRef(raw){ const key=typeof raw==='string'?raw:raw&&raw.key; return key?{key}:null; },
+    modifiedChunkIds(){ return sandbox.currentChunks.slice(); },
+    worldChunkVersion(ref){ return sandbox.liveVersions.get(ref.key)||0; },
+    cleanupAutosaveChunks(keep,refs){ cleaned.push(...refs.map(ref=>ref.key)); },
+    Set,
+    Map
+  };
+  runInNewContext(src.slice(start,end)+';globalThis.incrementalApi={current:incrementalAutoSaveJobIsCurrent,abandon:abandonIncrementalAutoSave};globalThis.job={revision:5,chunks:["c1","c2"],versions:new Map([["c1",11]]),refs:[{key:"orphan"}]};',sandbox);
+  sandbox._autoSaveJob=sandbox.job;
+  assert.equal(sandbox.incrementalApi.current(sandbox.job),true,'unchanged incremental job remains publishable');
+  sandbox._saveRevision=6;
+  assert.equal(sandbox.incrementalApi.current(sandbox.job),false,'a newer save revision invalidates the job');
+  sandbox._saveRevision=5; sandbox.liveVersions.set('c1',12);
+  assert.equal(sandbox.incrementalApi.current(sandbox.job),false,'a simulation-side chunk version change invalidates the job');
+  sandbox.liveVersions.set('c1',11); sandbox.currentChunks.push('c3');
+  assert.equal(sandbox.incrementalApi.current(sandbox.job),false,'a newly modified chunk invalidates the frozen manifest set');
+  sandbox.incrementalApi.abandon(sandbox.job);
+  assert.deepEqual(cleaned,['orphan'],'invalidated job removes its unpublished blobs');
+}
+
+// Exercise the real transaction wrapper with a tiny fake runtime. A failed core
+// restore and a failed persistence commit must both put runtime A back, while a
+// successful load commits B only after B has applied.
+{
+  const start=src.indexOf('function applyGameData(data,opts)');
+  const end=src.indexOf('// Applies a parsed save object to the LIVE session',start);
+  assert.ok(start>=0 && end>start,'transaction wrapper source block is discoverable');
+  const runtime={id:'A'};
+  let stored='A';
+  const order=[];
+  const sandbox={
+    localStorage:{},
+    preflightSaveData(){ throw new Error('preflightResult should be reused'); },
+    loadFailureSummary(){ return 'invalid'; },
+    publishLoadReport(report){ sandbox.lastReport=report; return report; },
+    saveErrorText(e){ return String(e && (e.message||e.name)||'error'); },
+    buildSaveObject(){ order.push('snapshot:'+runtime.id); return {id:runtime.id}; },
+    captureWorldTransitionRuntime(){ return {id:runtime.id}; },
+    restoreWorldTransitionRuntimeSnapshot(){ return true; },
+    suspendSaveSchedulerForLoad(){ return {dirty:false}; },
+    settleSaveSchedulerAfterLoad(){},
+    applyGameDataCore(data){ order.push('apply:'+data.id); runtime.id=data.id; if(data.fail) throw new Error('restore boom'); if(data.reject) return false; return true; },
+    saveCriticalState(){ order.push('critical'); return true; },
+    console:{warn(){},error(){}},
+    Date
+  };
+  runInNewContext(src.slice(start,end)+';globalThis.txApply=applyGameData;',sandbox);
+  const preflight=data=>({ok:true,data,version:7,migratedFrom:null,warnings:[],errors:[]});
+
+  assert.equal(sandbox.txApply({id:'B',fail:true},{preflightResult:preflight({id:'B',fail:true}),transactional:true,commit(){ stored='B'; }}),false,'failed restore reports failure');
+  assert.equal(runtime.id,'A','failed restore rolls the live runtime back');
+  assert.equal(stored,'A','failed restore does not commit SAVE_KEY');
+  assert.equal(sandbox.lastReport.rolledBack,true,'failed restore publishes successful rollback state');
+
+  runtime.id='A'; stored='A'; order.length=0;
+  assert.equal(sandbox.txApply({id:'B',reject:true},{preflightResult:preflight({id:'B',reject:true}),transactional:true,commit(){ stored='B'; }}),false,'an explicit subsystem rejection fails the transaction');
+  assert.equal(runtime.id,'A','an explicit subsystem rejection rolls the live runtime back');
+  assert.equal(stored,'A','an explicit subsystem rejection cannot commit SAVE_KEY');
+
+  order.length=0;
+  assert.equal(sandbox.txApply({id:'B'},{preflightResult:preflight({id:'B'}),transactional:true,commit(){ order.push('commit'); stored='B'; }}),true,'valid candidate commits');
+  assert.equal(runtime.id,'B','successful transaction leaves candidate runtime active');
+  assert.equal(stored,'B','successful transaction commits candidate persistence');
+  assert.deepEqual(order.slice(0,3),['snapshot:A','apply:B','commit'],'commit occurs after snapshot and runtime apply');
+
+  runtime.id='A'; stored='A'; order.length=0;
+  assert.equal(sandbox.txApply({id:'B'},{preflightResult:preflight({id:'B'}),transactional:true,commit(){ order.push('commit'); throw new Error('quota'); }}),false,'failed commit reports failure');
+  assert.equal(runtime.id,'A','failed commit rolls the candidate runtime back');
+  assert.equal(stored,'A','failed commit preserves the previous active manifest');
+}
+
+// The centralized envelope preflight is exercised independently from the DOM app.
+// This pins the version/hash/seed/position/cap policy that runs before mutation.
+{
+  const start=src.indexOf('function isSaveRecord(v)');
+  const end=src.indexOf('function savePerfNow()',start);
+  assert.ok(start>=0 && end>start,'save preflight source block is discoverable');
+  const sandbox={
+    SAVE_SCHEMA_VERSION:7,
+    SAVE_SUPPORTED_VERSIONS:Object.freeze([6,7]),
+    SAVE_CHUNK_RESTORE_CAP:4096,
+    SAVE_INFRASTRUCTURE_RESTORE_CAP:20000,
+    SAVE_CONSTRUCTION_BACKGROUND_RESTORE_CAP:40000,
+    BEDROCK_PICK_MAX_DURABILITY:10,
+    IMPORT_SAVE_BYTE_CAP:24*1024*1024,
+    AUTOSAVE_CHUNK_PREFIX:'mm_save_v7_chunk_',
+    CHUNK_W:32,
+    WORLD_H:140,
+    WATER:{validateSnapshot(value){ return value && value.bad ? {ok:false,errors:['bad water']} : {ok:true,errors:[]}; }},
+    WORLD:{isInfrastructureTile(value){ return value===101; },isConstructionBackgroundTile(value){ return value===201; }},
+    normalizeWorldSeed(value){ return Number.isInteger(value) && value>0 && value<1000000000 ? value : null; },
+    verifyHash(value){ return {ok:value.h==='12345678'}; },
+    validSavedChunkRef(cx,sy){ return Number.isInteger(cx) && sy==null ? {cx,sy:null,base:true,key:'c'+cx} : null; },
+    decodeSavedChunk(value,rle,size){ return value==='encoded' ? new Uint8Array(size) : null; },
+    worldSectionHeight(){ return 280; },
+    worldCellInBounds(x,y){ return Number.isFinite(x) && Math.abs(x)<=30000000 && Number.isFinite(y) && y>=-896 && y<1036; },
+    computeHash(value){ return value==='encoded' ? 'feedbeef' : '12345678'; },
+    attachHash(value){ return {object:Object.assign({},value,{h:'12345678'}),hash:'12345678'}; },
+    assertSaveChunkCapacity(records){ return records; },
+    loadFailureSummary(preflight){ return preflight.errors[0]?.detail||'invalid'; },
+    localStorage:{getItem(){ return null; }}
+  };
+  const portableStart=src.indexOf('function portableSaveJson(raw,storage)');
+  const portableEnd=src.indexOf('function loadSaveCandidate(raw,opts)',portableStart);
+  assert.ok(portableStart>=0 && portableEnd>portableStart,'portable export helper source block is discoverable');
+  runInNewContext(src.slice(start,end)+src.slice(portableStart,portableEnd)+';globalThis.preflight=preflightSaveData;globalThis.portable=portableSaveJson;',sandbox);
+  const make=(overrides={})=>Object.assign({
+    v:7,seed:42,h:'12345678',world:{modified:[]},player:{x:1,y:2},inv:{tools:{}}
+  },overrides);
+  assert.equal(sandbox.preflight(make(),{requireHash:true,storage:sandbox.localStorage}).ok,true,'canonical v7 envelope passes strict preflight');
+  assert.equal(sandbox.preflight(make({h:undefined}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'hashless v7 is rejected');
+  assert.equal(sandbox.preflight(make({h:'deadbeef'}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'hash mismatch is rejected');
+  const legacy=sandbox.preflight({v:6,seed:42,world:{modified:[]},player:{x:1,y:2,xp:4},savedAt:123,h:undefined},{requireHash:true,storage:sandbox.localStorage});
+  assert.equal(legacy.ok,true,'hashless v6 remains an explicit migration input');
+  assert.equal(legacy.migratedFrom,6,'legacy v6 reports its migration source');
+  assert.equal(legacy.data.v,7,'legacy v6 is promoted before the mutating core');
+  assert.equal(JSON.stringify(legacy.data.inv.tools),JSON.stringify({stone:false,meteor:false,diamond:false,bedrock:false,bedrockDurability:0}),'historical v6 without inventory receives a canonical empty v7 inventory');
+  assert.equal(sandbox.preflight(make({v:8}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'future unsupported save versions are rejected');
+  assert.equal(sandbox.preflight(make({seed:0}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'non-canonical seeds are rejected');
+  assert.equal(sandbox.preflight(make({player:{x:30000001,y:2}}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'out-of-world player positions are rejected');
+  assert.equal(sandbox.preflight(make({inv:{tools:{bedrock:'yes',bedrockDurability:999}}}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'tool ownership and durability require canonical types and bounds');
+  assert.equal(sandbox.preflight(make({world:{modified:new Array(4097).fill(null)}}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'over-cap chunk manifests fail rather than truncate');
+  assert.equal(sandbox.preflight(make({water:{bad:true}}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'invalid bounded water state rejects the whole save');
+  assert.equal(sandbox.preflight(make({infrastructure:{v:2,complete:false,list:[]}}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'a truncated infrastructure snapshot rejects the whole save');
+  assert.equal(sandbox.preflight(make({constructionBackground:{v:1,complete:true,list:[{x:1,y:2,t:201}]}}),{requireHash:true,storage:sandbox.localStorage}).ok,true,'a canonical complete construction-background snapshot passes');
+  const externalKey='mm_save_v7_chunk_42_1_job';
+  const external=make({savedAt:123,world:{external:true,chunkRefs:[{cx:1,key:externalKey,rle:true,h:'feedbeef'}]}});
+  const sourceStorage={getItem(key){ return key===externalKey?'encoded':null; }};
+  const exported=sandbox.portable(JSON.stringify(external),sourceStorage);
+  const portableData=JSON.parse(exported);
+  assert.equal(Array.isArray(portableData.world.modified),true,'fork export embeds referenced chunks inline');
+  assert.equal(Object.hasOwn(portableData.world,'chunkRefs'),false,'fork export contains no localStorage-only references');
+  assert.equal(sandbox.preflight(portableData,{requireHash:true,storage:{getItem(){ return null; }}}).ok,true,'portable fork export validates with empty destination storage');
+}
 
 console.log('save-schema-sim: all assertions passed');

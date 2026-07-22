@@ -68,6 +68,8 @@ const finale = (function(){
     bannerT: -1,     // countdown to the banner (s of sim time), -1 = off
     autoT: -1,       // countdown to the one-time auto-open
     el: null,
+    lastFocus: null,
+    parentModalState: null,
     bannerEl: null,
     onNewGame: null,
     // ceremony runtime (DOM sessions only; Node stays on the flags above)
@@ -529,12 +531,15 @@ const finale = (function(){
   }
   function syncMenuButton(){
     if(typeof document === 'undefined') return;
-    const btn = document.getElementById('openFinale');
-    if(!btn) return;
-    btn.hidden = !state.unlocked;
-    if(!btn.dataset.finaleWired){
-      btn.dataset.finaleWired = '1';
-      btn.addEventListener('click', ()=>open());
+    const buttons = document.querySelectorAll('#openFinale,[data-finale-trigger]');
+    for(const btn of buttons){
+      btn.hidden = !state.unlocked;
+      const row = btn.closest && btn.closest('[data-finale-row]');
+      if(row) row.hidden = !state.unlocked;
+      if(!btn.dataset.finaleWired){
+        btn.dataset.finaleWired = '1';
+        btn.addEventListener('click', ()=>open());
+      }
     }
   }
 
@@ -565,6 +570,10 @@ const finale = (function(){
     const r = report();
     const v = verdict(r);
     const el = node('div'); el.id = 'finaleScreen';
+    el.tabIndex = -1;
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.setAttribute('aria-labelledby', 'finaleScreenTitle');
     if(staged) el.classList.add('staged');
     const dom = state.dom = {gRows: [], gMarks: [], credRows: []};
     state.fx = createFx(el, staged);
@@ -573,6 +582,7 @@ const finale = (function(){
     dom.kicker = node('div', 'fnKicker', staged ? '' : KICKER_TEXT);
     card.appendChild(dom.kicker);
     dom.title = node('h1', 'fnTitle', 'KONIEC WARSTWY');
+    dom.title.id = 'finaleScreenTitle';
     card.appendChild(dom.title);
     dom.sub = node('div', 'fnSub fnAct', 'Raport zamknięcia — Warstwy Symulacji');
     card.appendChild(dom.sub);
@@ -675,7 +685,9 @@ const finale = (function(){
     el.addEventListener('pointerdown', ()=>{
       if(state.mode === 'staged' && !state.done) finishCeremony(false);
     });
-    (document.getElementById('ui') || document.body).appendChild(el);
+    // Keep the report outside #ui's stacking context so sibling modals (notably
+    // the inventory overlay) cannot render above or intercept it.
+    document.body.appendChild(el);
     return el;
   }
 
@@ -813,6 +825,46 @@ const finale = (function(){
     state.metaLiveOn = false; state.metaAcc = 0;
   }
 
+  function focusableButtons(){
+    if(!state.el) return [];
+    return [...state.el.querySelectorAll('button:not([disabled])')].filter(b=>b.getClientRects().length>0);
+  }
+  function focusReportButton(){
+    try{ const first=focusableButtons()[0]; if(first) first.focus({preventScroll:true}); }catch(e){}
+  }
+  function moveFocus(backward){
+    const buttons=focusableButtons();
+    if(!buttons.length) return;
+    const at=buttons.indexOf(document.activeElement);
+    const next=at<0 ? (backward?buttons.length-1:0) : (at+(backward?-1:1)+buttons.length)%buttons.length;
+    buttons[next].focus();
+  }
+  function visibleParentModal(){
+    const focused=document.activeElement && document.activeElement.closest ? document.activeElement.closest('[aria-modal="true"]') : null;
+    if(focused && focused!==state.el) return focused;
+    const all=[...document.querySelectorAll('[aria-modal="true"]')];
+    for(let i=all.length-1;i>=0;i--){
+      const el=all[i];
+      if(el===state.el || el.hidden || el.getAttribute('aria-hidden')==='true' || (el.style && el.style.display==='none')) continue;
+      return el;
+    }
+    return null;
+  }
+  function isolateParentModal(){
+    const el=visibleParentModal();
+    if(!el){ state.parentModalState=null; return; }
+    state.parentModalState={el,ariaHidden:el.getAttribute('aria-hidden'),inert:!!el.inert};
+    el.setAttribute('aria-hidden','true');
+    el.inert=true;
+  }
+  function restoreParentModal(){
+    const saved=state.parentModalState;
+    state.parentModalState=null;
+    if(!saved || !saved.el || !saved.el.isConnected) return;
+    if(saved.ariaHidden==null) saved.el.removeAttribute('aria-hidden');
+    else saved.el.setAttribute('aria-hidden',saved.ariaHidden);
+    saved.el.inert=saved.inert;
+  }
   function onKeyDown(e){
     if(!state.open) return;
     if(e.ctrlKey || e.metaKey || e.altKey || /^F\d+$/.test(e.key)) return;
@@ -821,8 +873,14 @@ const finale = (function(){
     if(e.repeat) return;
     // first press mid-play fast-forwards the ceremony; a finished ceremony
     // closes on Esc/Enter like every other overlay
-    if(state.mode === 'staged' && !state.done){ finishCeremony(false); return; }
-    if(e.key === 'Escape' || e.key === 'Enter') close();
+    if(state.mode === 'staged' && !state.done){ finishCeremony(false); focusReportButton(); return; }
+    if(e.key === 'Tab'){ moveFocus(e.shiftKey); return; }
+    if(e.key === 'Escape'){ close(); return; }
+    if(e.key === 'Enter' || e.key === ' '){
+      const active=document.activeElement;
+      if(active && state.el && state.el.contains(active) && active.tagName==='BUTTON') active.click();
+      else if(e.key === 'Enter') close();
+    }
   }
 
   function open(){
@@ -830,7 +888,6 @@ const finale = (function(){
     state.open = true;
     state.autoT = -1;
     hideBanner();
-    if(!state.seen){ state.seen = true; persist(); }
     const hasDom = (typeof document !== 'undefined');
     state.mode = (!hasDom || shouldInstant(ceremonyEnv())) ? 'instant' : 'staged';
     state.done = state.mode === 'instant';
@@ -839,14 +896,21 @@ const finale = (function(){
     state.metaLiveOn = state.mode === 'instant';
     state.pointer.moved = false;
     if(hasDom){
+      state.lastFocus = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+      isolateParentModal();
       if(state.el){ try{ state.el.remove(); }catch(e){} state.el = null; stopLoop(); clearCeremony(); }
       state.el = build();
-      if(state.el) state.el.classList.add('show');
+      if(!state.el){ restoreParentModal(); state.lastFocus=null; state.open=false; return false; }
+      state.el.classList.add('show');
       if(state.mode === 'staged') scheduleActs();
       try{ document.body.classList.add('mmFinaleOpen'); }catch(e){} // hides the HUD under the ceremony
       root.addEventListener('keydown', onKeyDown, true);
       startLoop();
+      const focusEntry=()=>{ try{ if(!state.open) return; if(state.mode==='instant') focusReportButton(); else if(state.el) state.el.focus({preventScroll:true}); }catch(e){} };
+      if(typeof root.requestAnimationFrame === 'function') root.requestAnimationFrame(focusEntry); else focusEntry();
     }
+    // "seen" means the report was actually presented, not merely scheduled.
+    if(!state.seen){ state.seen = true; persist(); }
     if(state.mode === 'instant') play('finaleFanfare');
     return true;
   }
@@ -856,6 +920,9 @@ const finale = (function(){
     state.open = false;
     try{ if(typeof document !== 'undefined') document.body.classList.remove('mmFinaleOpen'); }catch(e){}
     root.removeEventListener('keydown', onKeyDown, true);
+    try{ restoreParentModal(); }catch(e){}
+    try{ if(state.lastFocus && state.lastFocus.isConnected && state.lastFocus.focus) state.lastFocus.focus({preventScroll:true}); }catch(e){}
+    state.lastFocus = null;
     if(state.el){
       const el = state.el;
       el.classList.add('leaving');

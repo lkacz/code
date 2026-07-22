@@ -4,6 +4,7 @@
 // touches and neutral pen input. DOM stamping/CSS gating is exercised by
 // tools/mobile-controls-qa.mjs (CDP); this covers the state machine.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 const { createInputModeModel } = await import('../src/engine/input_mode.js');
@@ -65,6 +66,31 @@ const KIOSK = { coarse: false, hover: false, fine: true, hasTouch: true }; // fi
 	assert.equal(m.note('mouse', 9000), true, 'a real mouse still beats the guess');
 	assert.equal(m.setCapabilities(DESKTOP), false, 'caps agreeing with current mode change nothing');
 	assert.equal(m.capabilities().coarse, false, 'capabilities snapshot tracks the update');
+}
+
+// --- 6. narrow hybrid layout keeps desktop controls clear of canvas vitals
+{
+	const html=readFileSync(new URL('../index.html', import.meta.url),'utf8');
+	assert.match(html, /@media \(orientation:portrait\) and \(max-width:560px\)[\s\S]*data-input-mode='pc'[\s\S]*#weaponBar[\s\S]*bottom:calc\(var\(--safe-bottom\) \+ 170px\)/,
+		'narrow pc mode lifts the weapon bar above the vitals');
+	assert.match(html, /data-input-mode='pc'\] #hotbarWrap\{[^}]*bottom:calc\(var\(--safe-bottom\) \+ 112px\)/,
+		'narrow pc mode lifts the hotbar above the vitals');
+	assert.match(html, /data-input-mode='pc'\] #craftTracker\{[^}]*bottom:calc\(var\(--safe-bottom\) \+ 232px\)/,
+		'a pinned recipe stays above the narrow pc weapon bar and respects the bottom inset');
+	assert.match(html, /@media \(max-width:760px\)\{ #cornerCards\{[^}]*top:calc\(var\(--safe-top\) \+ 150px\)/,
+		'narrow corner cards respect the notch inset');
+	assert.match(html, /#craft\{[^}]*left:calc\(var\(--safe-left\) \+ 8px\)[^}]*top:calc\(var\(--safe-top\) \+ 54px\)[^}]*var\(--safe-right\)[^}]*var\(--safe-bottom\)/,
+		'the expanded crafting panel respects all four safe-area insets');
+	assert.match(html, /#taskListPanel\{[^}]*left:calc\(var\(--safe-left\) \+ 8px\)[^}]*top:calc\(var\(--safe-top\) \+ 50px\)[^}]*var\(--safe-right\)[^}]*var\(--safe-bottom\)/,
+		'the expanded task list respects all four safe-area insets');
+	assert.match(html, /canvas\{[^}]*touch-action:none/, 'the game canvas retains ownership of its custom two-pointer camera pinch');
+	const qa=readFileSync(new URL('./mobile-controls-qa.mjs', import.meta.url),'utf8');
+	assert.match(qa, /C narrow pc interface does not overlap or clip[^\n]*layoutIssues\(p\)/,
+		'the live hybrid stage checks layout, not just mode switching');
+	assert.match(qa, /--safe-top','24px'[\s\S]*--safe-bottom','34px'[\s\S]*getElementById\('craftTracker'\)/,
+		'the live hybrid stage includes a pinned recipe and non-zero safe areas');
+	assert.match(qa, /expanded panels respect every safe-area inset[\s\S]*safePanelIssues/,
+		'the live phone stage opens both large panels under non-zero safe-area insets');
 }
 
 console.log('input-mode-sim: OK');

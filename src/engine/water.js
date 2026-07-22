@@ -1861,8 +1861,21 @@ window.MM = window.MM || {};
         if(!validRestoreCoord(x,y)) continue;
         toxic.push([x,y,clampFinite(ttl,0,dayLengthSeconds()*2,dayLengthSeconds())]);
       }
+      const truncated={
+        active:active.size>RESTORE_ACTIVE_CAP,
+        levels:partial.size>RESTORE_LEVELS_CAP,
+        toxic:toxicWater.size>RESTORE_TOXIC_WATER_CAP,
+        lateral:lateralCooldown.size>RESTORE_LATERAL_CAP,
+        wet:wetSand.size>RESTORE_MATERIAL_CAP,
+        clayWet:wetClay.size>RESTORE_MATERIAL_CAP,
+        dry:dryMud.size>RESTORE_MATERIAL_CAP,
+        clayDry:dryClay.size>RESTORE_MATERIAL_CAP
+      };
+      const complete=!Object.values(truncated).some(Boolean);
       return {
         v:3,
+        complete,
+        truncated:complete?undefined:truncated,
         active:activeList,
         levels,
         toxic,
@@ -1881,10 +1894,75 @@ window.MM = window.MM || {};
       };
     }catch(e){ return null; }
   }
+  function validateSnapshot(s){
+    const errors=[];
+    if(!s || typeof s!=='object' || Array.isArray(s)) return {ok:false,errors:['water must be an object']};
+    const issue=(detail)=>{ if(errors.length<32) errors.push(detail); };
+    if(s.v!=null && (!Number.isInteger(s.v) || s.v<1 || s.v>3)) errors.push('unsupported water version');
+    if(s.complete===false) errors.push('water snapshot was truncated');
+    const bounded=[
+      ['active',RESTORE_ACTIVE_CAP],['ripples',RESTORE_ACTIVE_CAP],
+      ['levels',RESTORE_LEVELS_CAP],['toxic',RESTORE_TOXIC_WATER_CAP],
+      ['lateral',RESTORE_LATERAL_CAP],['wet',RESTORE_MATERIAL_CAP],
+      ['clayWet',RESTORE_MATERIAL_CAP],['dry',RESTORE_MATERIAL_CAP],
+      ['clayDry',RESTORE_MATERIAL_CAP]
+    ];
+    for(const [key,cap] of bounded){
+      if(s[key]!=null && !Array.isArray(s[key])) issue(key+' must be an array');
+      else if(Array.isArray(s[key]) && s[key].length>cap) issue(key+' exceeds '+cap);
+    }
+    const seen=new Set();
+    for(let i=0;i<(Array.isArray(s.active)?s.active.length:0);i++){
+      const raw=s.active[i];
+      const canonical=Array.isArray(raw)
+        ? raw.length===2 && Number.isInteger(Number(raw[0])) && Number.isInteger(Number(raw[1]))
+        : typeof raw==='string' && /^-?\d+,-?\d+$/.test(raw);
+      const kk=canonical?parseRestoreKey(raw):null;
+      if(!kk) issue('active.'+i+' has invalid coordinates');
+      else if(seen.has('a:'+kk)) issue('active.'+i+' duplicates '+kk);
+      else seen.add('a:'+kk);
+    }
+    for(let i=0;i<(Array.isArray(s.ripples)?s.ripples.length:0);i++){
+      const row=s.ripples[i];
+      if(!row || !Number.isFinite(row.L) || !Number.isFinite(row.R)) issue('ripples.'+i+' is invalid');
+    }
+    const validateCellRows=(key,minLength,validateValue)=>{
+      const rows=Array.isArray(s[key])?s[key]:[];
+      for(let i=0;i<rows.length;i++){
+        const row=rows[i];
+        if(!Array.isArray(row) || row.length<minLength){ issue(key+'.'+i+' is malformed'); continue; }
+        const x=Number(row[0]), y=Number(row[1]);
+        if(!Number.isInteger(x) || !Number.isInteger(y) || !validRestoreCoord(x,y)){ issue(key+'.'+i+' has invalid coordinates'); continue; }
+        const cell=Math.floor(x)+','+Math.floor(y);
+        if(seen.has(key+':'+cell)){ issue(key+'.'+i+' duplicates '+cell); continue; }
+        seen.add(key+':'+cell);
+        if(validateValue && !validateValue(row)) issue(key+'.'+i+' has an invalid value');
+      }
+    };
+    validateCellRows('levels',3,row=>Number.isInteger(Number(row[2])) && Number(row[2])>=1 && Number(row[2])<UNITS);
+    validateCellRows('toxic',2,row=>row[2]==null || (Number.isFinite(Number(row[2])) && Number(row[2])>=0));
+    validateCellRows('wet',2,row=>row[2]==null || Number.isFinite(Number(row[2])));
+    validateCellRows('clayWet',2,row=>row[2]==null || Number.isFinite(Number(row[2])));
+    validateCellRows('dry',2,row=>row[2]==null || Number.isFinite(Number(row[2])));
+    validateCellRows('clayDry',2,row=>row[2]==null || Number.isFinite(Number(row[2])));
+    for(let i=0;i<(Array.isArray(s.lateral)?s.lateral.length:0);i++){
+      const row=s.lateral[i];
+      if(!Array.isArray(row) || row.length<2 || !Number.isInteger(Number(row[0])) || Math.abs(Number(row[0]))>=10000000 || !Number.isFinite(Number(row[1])) || Number(row[1])<=0) issue('lateral.'+i+' is invalid');
+    }
+    for(const key of ['passiveScanOffset','passiveScanAcc','pressureIntervalCurrent','pressureAcc','lateralAcc','materialScanOffset','materialScanAcc']){
+      if(s[key]!=null && !Number.isFinite(Number(s[key]))) issue(key+' must be finite');
+    }
+    return {ok:errors.length===0,errors};
+  }
   function boundedRestoreLimit(rows,cap){
     return Array.isArray(rows) ? Math.min(rows.length,Math.max(0,Math.floor(cap)||0)) : 0;
   }
-  function restore(s){ reset(); if(!s||typeof s!=='object') return; try{
+  function restore(s){
+    reset();
+    if(s==null) return {ok:true,empty:true};
+    const validation=validateSnapshot(s);
+    if(!validation.ok) return validation;
+    try{
     if(Array.isArray(s.active)){
       const limit=boundedRestoreLimit(s.active,RESTORE_ACTIVE_CAP);
       for(let i=0;i<limit;i++){
@@ -1978,7 +2056,12 @@ window.MM = window.MM || {};
     if(Number.isFinite(s.lateralAcc)) lateralAcc=clampFinite(s.lateralAcc,0,5,0);
     if(Number.isFinite(s.materialScanOffset)) materialScanOffset=Math.max(0,Math.floor(s.materialScanOffset));
     if(Number.isFinite(s.materialScanAcc)) materialScanAcc=clampFinite(s.materialScanAcc,0,MATERIAL_SCAN_INTERVAL*3,0);
-  }catch(e){} }
+      return {ok:true};
+    }catch(e){
+      reset();
+      return {ok:false,errors:[String(e && (e.message||e.name) || 'water restore failed')]};
+    }
+  }
 
   // ---- Hydrostatic equalization (true communicating vessels) ----
   // For each seeded body: flood-fill the connected loaded water body (or a bounded
@@ -2424,7 +2507,7 @@ window.MM = window.MM || {};
     return n;
   }
 
-  MM.water = {update, addSource, drawOverlay, onTileChanged, onTilesChangedBatch, displaceAt, solidifyAt, disturb, noteChunkGenerated, reset, snapshot, restore, metrics, levelAt, polluteAt, isToxicAt, UNITS, ghostPartialsIn, ghostApplyPartialsWindow, _debug};
+  MM.water = {update, addSource, drawOverlay, onTileChanged, onTilesChangedBatch, displaceAt, solidifyAt, disturb, noteChunkGenerated, reset, snapshot, validateSnapshot, restore, metrics, levelAt, polluteAt, isToxicAt, UNITS, ghostPartialsIn, ghostApplyPartialsWindow, _debug};
 })();
 // ESM export (progressive migration)
 export const water = (typeof window!=='undefined' && window.MM) ? window.MM.water : undefined;

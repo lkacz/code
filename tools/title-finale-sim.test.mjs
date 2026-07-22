@@ -179,11 +179,43 @@ const htmlSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 assert.ok(/<title>Mini Miner – Warstwy Symulacji<\/title>/.test(htmlSrc), 'the page carries the real game title');
 assert.ok(/id="openFinale"[^>]*hidden/.test(htmlSrc), 'the menu ships a hidden Zakończenie entry');
 assert.ok(/#titleScreen\{[^}]*z-index:200/.test(htmlSrc), 'title screen styles installed above the HUD');
-assert.ok(/#finaleScreen\{[^}]*z-index:200/.test(htmlSrc), 'finale styles installed above the HUD');
+assert.ok(/#finaleScreen\{[^}]*position:fixed[^}]*z-index:10000/.test(htmlSrc), 'finale is a body-level top modal above sibling overlays');
 assert.ok(/#finaleBanner\{[^}]*z-index:90/.test(htmlSrc), 'the finale banner sits under the overlays');
 assert.ok(/#finaleScreen\.staged \.fnAct\{/.test(htmlSrc), 'staged acts start hidden (instant mode shows all by default)');
 assert.ok(/\.fnVerdict\{/.test(htmlSrc) && /\.fnMeta\{/.test(htmlSrc), 'the verdict seal and the upper-layer transmission are styled');
 assert.ok(/@keyframes fnGlitch\{/.test(htmlSrc), 'the glitch beat has its keyframes');
 assert.ok(/prefers-reduced-motion/.test(htmlSrc), 'reduced motion silences the ceremony animations');
+
+// --- accessibility contract: bookends and settings are real keyboard modals
+const titleSrc = readFileSync(new URL('../src/engine/title_screen.js', import.meta.url), 'utf8');
+const finaleSrc = readFileSync(new URL('../src/engine/finale.js', import.meta.url), 'utf8');
+const uiSrc = readFileSync(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
+const watchdogSrc = readFileSync(new URL('../src/boot_watchdog.js', import.meta.url), 'utf8');
+assert.ok(/aria-modal', 'true'/.test(titleSrc) && /titleScreenTitle/.test(titleSrc), 'title exposes modal semantics and a label');
+assert.ok(/e\.key === 'Tab'\)\{ moveFocus\(e\.shiftKey\)/.test(titleSrc), 'title traps Tab instead of dismissing');
+assert.ok(/focusPrimary/.test(titleSrc), 'title gives keyboard users an initial target');
+assert.ok(/focusPrimary=.*!state\.open/.test(titleSrc), 'a deferred title focus cannot steal focus after dismissal');
+assert.ok(/aria-modal', 'true'/.test(finaleSrc) && /finaleScreenTitle/.test(finaleSrc), 'finale exposes modal semantics and a label');
+assert.ok(/document\.body\.appendChild\(el\)/.test(finaleSrc), 'finale escapes the UI stacking context');
+assert.ok(/el\.inert=true/.test(finaleSrc) && /restoreParentModal\(\)/.test(finaleSrc), 'finale isolates and restores an already-open parent modal');
+assert.ok(/e\.key === 'Tab'\)\{ moveFocus\(e\.shiftKey\)/.test(finaleSrc), 'finale traps Tab across all report actions');
+assert.ok(/focusEntry=.*!state\.open/.test(finaleSrc), 'a deferred finale focus cannot steal focus after close');
+assert.ok(/\[data-finale-trigger\]/.test(finaleSrc) && /dataset\.finaleTrigger='1'/.test(mainSrc), 'the unlocked finale remains reachable from the player pause menu');
+assert.ok(/trapWorldSettingsFocus/.test(uiSrc) && /lab\.htmlFor=id/.test(uiSrc), 'world settings trap focus and associate range labels');
+assert.ok(/function pauseFocusableItems\(\)/.test(mainSrc) && /e\.key==='Tab'[\s\S]{0,500}items\[next\]\.focus\(\)/.test(mainSrc), 'the pause dialog traps forward and reverse Tab navigation');
+assert.ok(/FINALE && FINALE\.isOpen && FINALE\.isOpen\(\)\) return;/.test(mainSrc), 'the topmost finale modal owns the keyboard above pause');
+assert.ok(/keybindPanel\.setAttribute\('role','dialog'\)[\s\S]{0,240}aria-labelledby','keybindPanelTitle'/.test(mainSrc), 'the keybind editor exposes labelled modal semantics');
+assert.ok(/function keybindFocusableItems\(\)/.test(mainSrc) && /if\(k==='tab'\)[\s\S]{0,500}items\[next\]\.focus\(\)/.test(mainSrc), 'the keybind editor owns cyclic Tab navigation');
+assert.ok(/keybindLastFocus=document\.activeElement/.test(mainSrc) && /const target=keybindLastFocus[\s\S]{0,360}keybindLastFocus=null/.test(mainSrc), 'the keybind editor restores focus to its visible opener');
+assert.ok(/function keybindTrapKeydown\(e\)\{[\s\S]{0,180}FINALE && FINALE\.isOpen/.test(mainSrc)
+  && /function trapWorldSettingsFocus\(e,wsOverlay\)[\s\S]{0,260}MM\.finale\.isOpen/.test(uiSrc), 'nested settings traps yield to an asynchronously opened finale');
+assert.ok(/row\.dataset\.labelId=label\.id/.test(mainSrc) && /control\.setAttribute\('aria-labelledby',labelId\)/.test(mainSrc), 'pause inputs reuse their visible row labels');
+assert.ok(/id="messages" role="status" aria-live="polite"/.test(htmlSrc), 'game messages are announced');
+assert.ok(/touch-action:pinch-zoom/.test(htmlSrc), 'the page permits browser pinch zoom');
+assert.ok(/\*,\*::before,\*::after\{ animation-duration:\.01ms !important/.test(htmlSrc), 'reduced-motion applies globally');
+assert.ok(/guardPublicFrame/.test(watchdogSrc) && /window\.top === window\.self/.test(watchdogSrc)
+  && /if \(window\.__mmPublicFrameBlocked\) return;/.test(watchdogSrc)
+  && /if\(window\.__mmPublicFrameBlocked\) throw/.test(mainSrc), 'public framing is a terminal state before the live simulation starts');
+assert.ok(/host === '\[::1\]'/.test(watchdogSrc) && /\^127\(\?:\\\.\\d\{1,3\}\)\{3\}\$/.test(watchdogSrc), 'the local-frame exception accepts IPv6 loopback without trusting public 127-prefixed hostnames');
 
 console.log('title-finale-sim: all assertions passed');

@@ -11,6 +11,31 @@
 // heartbeat appears — even after the panel is shown — the watchdog disarms
 // and cleans up after itself.
 (function(){
+	// GitHub Pages cannot emit frame-ancestors/X-Frame-Options. Refuse public
+	// framing here as defense-in-depth: this also prevents accidentally deployed
+	// same-origin QA harnesses from driving a player's real storage. Localhost and
+	// file:// remain embeddable for the repository's isolated visual harnesses.
+	(function guardPublicFrame(){
+		var host = String(location.hostname || '').toLowerCase();
+		var local = location.protocol === 'file:' || host === 'localhost' || host === '::1' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host);
+		if (local || window.top === window.self) return;
+		// main.js checks this before creating the live simulation. Keep the flag set
+		// even while a permitted top-navigation is pending so no framed instance can
+		// reach save/state side effects in the meantime.
+		window.__mmPublicFrameBlocked = true;
+		try{ window.top.location = window.self.location.href; }
+		catch(e){
+			document.documentElement.style.display = 'none';
+			window.addEventListener('DOMContentLoaded', function(){
+				document.body.textContent = 'Ta gra działa wyłącznie jako strona najwyższego poziomu.';
+				document.documentElement.style.display = '';
+			}, {once:true});
+		}
+	})();
+	// The frame refusal is a terminal, intentional state. Its dedicated message
+	// must not be replaced by the generic failed-module timeout fifteen seconds
+	// later.
+	if (window.__mmPublicFrameBlocked) return;
 	var BOOT_TIMEOUT_MS = 15000; // slow connections still beat this; a dead one never will
 	var POLL_MS = 500;
 	var overlay = null;

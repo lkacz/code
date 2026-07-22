@@ -1,11 +1,17 @@
 // Simple UI utilities: message toast and top button label helpers (ESM + global)
 import { worldGen as WORLDGEN } from './worldgen.js';
 import { mobs as MOBS } from './mobs.js';
+try{
+  const host=String(window.location && window.location.hostname || '').toLowerCase();
+  const local=window.location && window.location.protocol==='file:' || host==='localhost' || host==='::1' || host==='[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  if(local) document.documentElement.dataset.devTools='1';
+}catch(e){ /* production stays fail-closed: developer controls remain hidden */ }
 window.MM = window.MM || {};
 MM.ui = (function(){
   let msgEl = null;
   let msgTimer = null;
   let _menu = { btn: null, panel: null };
+  let worldSettingsLastFocus = null;
   const DEBUG_SETTINGS_KEY='mm_debug_menu_settings_v1';
   const DEBUG_DEFAULTS={
     time:{active:false,value:0},
@@ -100,14 +106,54 @@ MM.ui = (function(){
     const wsBody=document.getElementById('worldSettingsBody');
     if(!wsOverlay || !wsBody) return false;
     if(!wsBody.__injected){ injectWorldSettings(wsBody); wsBody.__injected=true; }
+    worldSettingsLastFocus=document.activeElement && document.activeElement!==document.body ? document.activeElement : null;
     wsOverlay.style.display='block';
+    wsOverlay.setAttribute('aria-hidden','false');
+    const pause=document.getElementById('pausePanel');
+    if(pause && !pause.hidden){ pause.setAttribute('aria-hidden','true'); wsOverlay.dataset.pauseWasModal='1'; }
     try{ api.closeMenu(); }catch(e){}
+    try{ const first=wsOverlay.querySelector('#worldSettingsClose,button,input,select,textarea,[href],[tabindex]:not([tabindex="-1"])'); if(first) first.focus({preventScroll:true}); }catch(e){}
     return true;
   }
   function closeWorldSettings(){
     const wsOverlay=document.getElementById('worldSettingsOverlay');
     if(!wsOverlay) return false;
     wsOverlay.style.display='none';
+    wsOverlay.setAttribute('aria-hidden','true');
+    if(wsOverlay.dataset.pauseWasModal){
+      const pause=document.getElementById('pausePanel');
+      if(pause && !pause.hidden) pause.setAttribute('aria-hidden','false');
+      delete wsOverlay.dataset.pauseWasModal;
+    }
+    try{
+      let target=worldSettingsLastFocus && worldSettingsLastFocus.isConnected ? worldSettingsLastFocus : null;
+      if(target && target.getClientRects && target.getClientRects().length===0) target=null;
+      if(!target){
+        const candidates=[document.getElementById('debugMenuBtn'),document.getElementById('menuBtn')];
+        target=candidates.find(el=>el && el.isConnected && (!el.getClientRects || el.getClientRects().length>0)) || null;
+      }
+      if(target && target.focus) target.focus({preventScroll:true});
+    }catch(e){}
+    worldSettingsLastFocus=null;
+    return true;
+  }
+  function trapWorldSettingsFocus(e,wsOverlay){
+    const visible=wsOverlay && wsOverlay.style.display!=='none' && wsOverlay.style.display!=='';
+    if(!visible) return false;
+    if(window.MM && MM.finale && MM.finale.isOpen && MM.finale.isOpen()) return false;
+    if(e.ctrlKey || e.metaKey || e.altKey) return false;
+    if(e.key==='Escape'){
+      e.preventDefault(); e.stopImmediatePropagation(); closeWorldSettings(); return true;
+    }
+    if(e.key!=='Tab') return false;
+    const items=[...wsOverlay.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[href],[tabindex]:not([tabindex="-1"])')]
+      .filter(el=>el.getClientRects().length>0);
+    if(!items.length){ e.preventDefault(); return true; }
+    const at=items.indexOf(document.activeElement);
+    const next=at<0 ? (e.shiftKey?items.length-1:0) : (at+(e.shiftKey?-1:1)+items.length)%items.length;
+    e.preventDefault();
+    items[next].focus();
+    e.stopImmediatePropagation();
     return true;
   }
   function bindWorldSettings(){
@@ -119,11 +165,7 @@ MM.ui = (function(){
     if(wsOverlay && !wsOverlay.__mmWorldSettingsBound){
       wsOverlay.__mmWorldSettingsBound=true;
       wsOverlay.addEventListener('click',e=>{ if(e.target===wsOverlay) closeWorldSettings(); });
-      window.addEventListener('keydown',e=>{
-        if(e.key==='Escape' && wsOverlay.style.display!=='none' && wsOverlay.style.display!==''){
-          closeWorldSettings(); e.stopPropagation();
-        }
-      });
+      window.addEventListener('keydown',e=>{ trapWorldSettingsFocus(e,wsOverlay); },true);
     }
   }
   function initMenuToggle(){
@@ -176,6 +218,7 @@ MM.ui = (function(){
       lab.textContent=label+" "; lab.appendChild(span);
       const input=document.createElement('input'); input.type='range'; input.min=String(min); input.max=String(max); input.step=String(step); input.value=String(value);
       input.id=id; input.style.width='100%';
+      lab.htmlFor=id;
       input.addEventListener('input',()=>{ span.textContent = fmt? fmt(input.value): String(input.value); });
       wrap.appendChild(lab); wrap.appendChild(input); box.appendChild(wrap);
       return {input,span};

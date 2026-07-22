@@ -171,6 +171,29 @@ export function createClientTerminalTeardown(ops){
 		return true;
 	};
 }
+// Pure, tiny gate so the hostile protocol suite can prove that `sync:1` is not a
+// general rate-limit escape hatch. One successful snapshot arms one spend per
+// immediate plane; channel identity and the short deadline are checked atomically
+// with consumption on the single JS event loop.
+export function createSnapshotPlaneSyncGate(){
+	const slots = { pwat: 0, drift: 0, until: 0 };
+	return {
+		arm(t){
+			const at = Number(t);
+			if(!Number.isFinite(at)){ slots.pwat = 0; slots.drift = 0; slots.until = 0; return; }
+			slots.pwat = 1; slots.drift = 1; slots.until = at + 1000;
+		},
+		take(kind, sync, lockedChannel, t){
+			const at = Number(t);
+			if(sync !== 1 || !lockedChannel || !Number.isFinite(at) || at > slots.until || slots[kind] !== 1) return false;
+			slots[kind] = 0;
+			return true;
+		},
+		satisfy(kind){ if(kind === 'pwat' || kind === 'drift') slots[kind] = 0; },
+		clear(){ slots.pwat = 0; slots.drift = 0; slots.until = 0; },
+		pending(kind){ return slots[kind] === 1; }
+	};
+}
 const WATCH = consumeWatchInvite();
 if(WATCH && MMR){
 	MMR.ghostMode = true;
@@ -195,7 +218,10 @@ if(WATCH && MMR){
 			if(typeof window !== 'undefined' && this === window.localStorage && !allow.has(String(k))) return;
 			return origRemove.call(this, k);
 		};
-		// The world fork's ONE narrow exit: a host-granted fork commits the main
+		// This gate only constrains the standard client's storage/UI workflow; world
+		// state has already been streamed to the viewer and a modified client can
+		// technically retain that data. The world fork's ONE narrow built-in exit:
+		// a host-granted fork commits the main
 		// save (+ the challenge run marker + the pre-fork BACKUP: one named slot
 		// under the fork-scoped mm_slot_fork_ prefix and the slot index) through
 		// the ORIGINAL setItem. The allowlist above stays closed — this hatch only
@@ -311,6 +337,8 @@ const ghostClient = (function(){
 	let pump = null;
 	let lockedConn = null;
 	let syncSince = 0, lastSnapReq = 0;
+	const snapshotPlaneSync = createSnapshotPlaneSyncGate();
+	const chunkedPlaneTypes = new Set(['infra', 'pwat', 'drift', 'gfx', 'mach']);
 	let lastRafAt = 0;
 	let reconnecting = false, reconnects = 0, reconnectT = null;
 	let mode = 'full'; // host-granted permission ladder: watch | chat | full
@@ -871,6 +899,14 @@ const ghostClient = (function(){
 		showVeil('Opuściłeś warstwę.<br><a href="' + location.pathname + '" style="color:#8fc7ff;">Wróć do własnej gry</a>');
 	}
 
+	// A snapshot may land less than 200 ms after a normal pwat/drift packet and
+	// overwrite it. Only the locked host channel may spend the one-shot correction
+	// allowances armed by a successfully applied snapshot; `sync:1` is otherwise
+	// subject to the normal hostile-host cadence floor.
+	function takeSnapshotPlaneSync(kind, pl, c, t){
+		return snapshotPlaneSync.take(kind, pl.sync, !!lockedConn && c === lockedConn, t);
+	}
+
 	// --- messages ------------------------------------------------------------------
 	function onMessage(pl, c, api){
 		if(api !== conn) return; // a pre-welcome callback from a replaced joinRoom is stale
@@ -884,6 +920,7 @@ const ghostClient = (function(){
 			if(state === 'connect'){
 				state = 'sync';
 				syncSince = nowMs();
+				snapshotPlaneSync.clear();
 				hostName = String(pl.host || 'Gospodarz').slice(0, 24);
 				storeResumeToken(pl.rt); // the seat is ours to reclaim on reconnect/reload
 				if(NET.validPermissionMode(pl.mode)) mode = pl.mode;
@@ -903,7 +940,7 @@ const ghostClient = (function(){
 		}
 		if(pl.t === 'banned'){
 			finishTerminal({ clearInvite: true });
-			showVeil('Gospodarz zablokował twój dostęp do tej warstwy.');
+			showVeil('Gospodarz zablokował tę bieżącą tożsamość widza.<br>Wspólny link pozostaje aktywny do ponownego uruchomienia transmisji.');
 			return;
 		}
 		if(pl.t === 'incompatible'){
@@ -1030,32 +1067,34 @@ const ghostClient = (function(){
 			// DISPLAY-ONLY (water.js bounds and sanitizes; a watcher never runs the
 			// solver, so no volume invariant can fight the write). Rate-floored: a
 			// hostile host spamming windows must not buy thousands of map ops a frame.
-			const tW = nowMs();
-			if(tW - (timers.pwat || 0) < 200) return;
-			timers.pwat = tW;
 			const W = MMR && MMR.water;
-			if(W && W.ghostApplyPartialsWindow && Array.isArray(pl.w)){
-				for(const w of pl.w.slice(0, 6)){
-					if(Array.isArray(w) && w.length >= 5) W.ghostApplyPartialsWindow(+w[0], +w[1], +w[2], +w[3], w[4]);
-				}
-				stats.pwat = (stats.pwat || 0) + 1;
+			if(!W || !W.ghostApplyPartialsWindow || !Array.isArray(pl.w)) return;
+			const tW = nowMs();
+			const syncCorrection = takeSnapshotPlaneSync('pwat', pl, c, tW);
+			if(!syncCorrection && tW - (timers.pwat || 0) < 200) return;
+			timers.pwat = tW;
+			snapshotPlaneSync.satisfy('pwat'); // any accepted current packet satisfies this snapshot
+			for(const w of pl.w.slice(0, 6)){
+				if(Array.isArray(w) && w.length >= 5) W.ghostApplyPartialsWindow(+w[0], +w[1], +w[2], +w[3], w[4]);
 			}
+			stats.pwat = (stats.pwat || 0) + 1;
 			return;
 		}
 		if(pl.t === 'drift'){
 			// soft-drift windows (snow fluff / leaf litter / soot) — display-only
 			// like pwat: soft_drifts bounds and sanitizes, a watcher never runs the
 			// drift sim, and cleared cells poof into flakes locally. Rate-floored.
-			const tD = nowMs();
-			if(tD - (timers.drift || 0) < 200) return;
-			timers.drift = tD;
 			const D = MMR && MMR.softDrifts;
-			if(D && D.ghostApplyLevelsWindow && Array.isArray(pl.w)){
-				for(const w of pl.w.slice(0, 6)){
-					if(Array.isArray(w) && w.length >= 5) D.ghostApplyLevelsWindow(+w[0], +w[1], +w[2], +w[3], w[4]);
-				}
-				stats.drift = (stats.drift || 0) + 1;
+			if(!D || !D.ghostApplyLevelsWindow || !Array.isArray(pl.w)) return;
+			const tD = nowMs();
+			const syncCorrection = takeSnapshotPlaneSync('drift', pl, c, tD);
+			if(!syncCorrection && tD - (timers.drift || 0) < 200) return;
+			timers.drift = tD;
+			snapshotPlaneSync.satisfy('drift'); // any accepted current packet satisfies this snapshot
+			for(const w of pl.w.slice(0, 6)){
+				if(Array.isArray(w) && w.length >= 5) D.ghostApplyLevelsWindow(+w[0], +w[1], +w[2], +w[3], w[4]);
 			}
+			stats.drift = (stats.drift || 0) + 1;
 			// footprint windows (tracks of the host hero, party bodies and game
 			// animals) — display-only, window-authoritative like the levels
 			if(D && D.ghostApplyPrintsWindow && Array.isArray(pl.p)){
@@ -1197,6 +1236,14 @@ const ghostClient = (function(){
 		if(pl.t === 'chunk'){
 			const done = assembler.push(pl);
 			if(done && done.kind === 'snap') applySnapshot(done.data);
+			else if(done && done.kind === 'plane' && lockedConn && c === lockedConn){
+				// Large current planes use the same byte/chunk-bounded assembler as the
+				// save. Re-enter only the narrow plane whitelist on the same locked peer;
+				// normal payload validators and the one-shot sync allowance still apply.
+				let packet = null;
+				try{ packet = JSON.parse(done.data); }catch(e){ packet = null; }
+				if(packet && !Array.isArray(packet) && chunkedPlaneTypes.has(packet.t)) onMessage(packet, c, api);
+			}
 			return;
 		}
 		if(pl.t === 'hostGone'){
@@ -1284,12 +1331,20 @@ const ghostClient = (function(){
 		// overwrite inv/gear/XP with the HOST's save (the replica codec's job), so
 		// capture ours and put it back right after
 		const keepHero = (hero.on && bridge.ghostHeroCapture) ? bridge.ghostHeroCapture() : null;
+		// First join must start from clean transition runtime. An already-spawned hero
+		// resyncing the SAME streamed world keeps guest-owned status/survival/fishing/
+		// undo transients through the bridge's audited capture/restore option.
+		const preserveGuestRuntime = !!(hero.on && hero.spawned);
 		try{
-			const ok = bridge.applyGameData(data, { ignoreCritical: true });
+			const ok = bridge.applyGameData(data, { ignoreCritical: true, transactional: true, preserveGuestRuntime });
 			if(!ok){ showVeil('Świat gospodarza nie dał się wczytać.'); return; }
 		}catch(e){ console.warn('ghost snapshot apply failed', e); return; }
 		if(keep) Object.assign(bridge.player, keep);
 		if(keepHero && bridge.ghostHeroRestore) bridge.ghostHeroRestore(keepHero);
+		// Arm exactly one rate-floor bypass per immediate plane. The host's targeted
+		// `sync:1` corrections follow the snapshot chunks in transport order; if they
+		// are delayed beyond the floor, the short allowance simply expires unused.
+		snapshotPlaneSync.arm(nowMs());
 		stats.snapsApplied++;
 		heroTarget.has = false;
 		reconnects = 0; // a completed join proves the path — future blips get a fresh budget
@@ -1491,8 +1546,10 @@ const ghostClient = (function(){
 						showForkOffer();
 					}
 				} else if(pl.t === 'infra'){
-					if(pl.data) bridge.restoreInfra(pl.data);
-					if(pl.bg) bridge.restoreConstructionBackground(pl.bg);
+					// Explicit null is authoritative too: a cached snapshot may contain
+					// infrastructure that has since been completely removed.
+					if(Object.prototype.hasOwnProperty.call(pl, 'data') && bridge.restoreInfra) bridge.restoreInfra(pl.data);
+					if(Object.prototype.hasOwnProperty.call(pl, 'bg') && bridge.restoreConstructionBackground) bridge.restoreConstructionBackground(pl.bg);
 				} else if(pl.t === 'ghosts' && Array.isArray(pl.list)){
 					// the host self-reports a backgrounded tab (sim frozen, pump-only
 					// stream): show the "host inactive" banner instead of a frozen world

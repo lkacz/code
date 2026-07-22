@@ -15,6 +15,7 @@ globalThis.window = globalThis;
 globalThis.MM = {};
 
 const NET = (await import('../src/engine/ghost_net.js')).ghostNet;
+const { createSnapshotPlaneSyncGate } = await import('../src/engine/ghost_client.js');
 const { HERO_BODY_W, HERO_BODY_H } = await import('../src/constants.js');
 const { authoritativeBodyBlocksCell } = await import('../src/engine/body_footprint.js');
 assert.equal(NET.PLAY_RULES.BODY_W, HERO_BODY_W, 'host shadow width equals the real hero width');
@@ -35,6 +36,20 @@ assert.equal(NET.resumeTokenMatch(tokA, tokA), true, 'a token matches itself');
 assert.equal(NET.resumeTokenMatch(tokA, NET.mintResumeToken()), false, 'a different token never matches');
 assert.equal(NET.resumeTokenMatch(tokA, undefined), false, 'a missing token never matches');
 assert.equal(NET.resumeTokenMatch(tokA, 'deadbeef'), false, 'a wrong-shape token never matches');
+
+// A snapshot correction is a one-shot locked-channel allowance, never a hostile
+// host's reusable way around the client's 200 ms plane cadence floor.
+{
+	const gate = createSnapshotPlaneSyncGate();
+	gate.arm(1000);
+	assert.equal(gate.take('pwat', 1, false, 1001), false, 'sync correction is refused off the locked host channel');
+	assert.equal(gate.take('pwat', 1, true, 1001), true, 'one locked pwat correction consumes its snapshot allowance');
+	assert.equal(gate.take('pwat', 1, true, 1002), false, 'sync spam cannot spend the same pwat allowance twice');
+	assert.equal(gate.take('drift', 1, true, 1002), true, 'drift has its own single snapshot allowance');
+	assert.equal(gate.take('drift', 1, true, 1003), false, 'sync spam cannot spend the same drift allowance twice');
+	gate.arm(2000);
+	assert.equal(gate.take('pwat', 1, true, 3001), false, 'an unconsumed correction allowance expires after one second');
+}
 
 // --- wire size caps + UTF-8 byte counting (P0-5) --------------------------------------
 assert.equal(NET.utf8Len('abc'), 3, 'ascii bytes');
@@ -815,6 +830,9 @@ const bridge = {
 	ghostHeroPlaceAt: () => { heroPlaceCalls++; return heroPlaceOk ? { ok: true } : { ok: false, reason: 'write' }; },
 	ghostGiftTake: (key, n) => ({ ok: true, key, n, label: key })
 };
+// Install the render-change seam before host start so live infra tests can mark
+// the production dirty flag through the same sentinel callback as the game.
+MM.onTileRenderChanged = () => {};
 ghostHost.wire(bridge);
 const ROOM = 'HOSTLE';
 ghostHost.start({ room: ROOM, rtc: false });
@@ -870,6 +888,179 @@ async function bye(g){ g.send({ t: 'bye' }); await flush(); tickHost(); }
 
 try{
 	await warmup(); // advance now() past the first-action rate floors (as a browser session already has)
+
+	// A second viewer arriving inside SNAP_CACHE_MS reuses viewer A's serialized
+	// save, but must still receive every CURRENT independently streamed plane.
+	// The correction is targeted: viewer A must not be flooded again just because
+	// viewer B joined.
+	{
+		const old = {
+			buildSave: bridge.buildSave, infra: bridge.snapshotInfra, bg: bridge.snapshotConstructionBackground,
+			water: MM.water, drifts: MM.softDrifts, icicles: MM.icicles,
+			graffiti: MM.graffiti, boats: MM.boats, mechs: MM.mechs
+		};
+		let rev = 1, saveBuilds = 0;
+		const builds = { infra: 0, bg: 0, water: 0, drift: 0, prints: 0, ice: 0, gfx: 0, boats: 0, mechs: 0 };
+		const restore = (key, value) => { if(value === undefined) delete MM[key]; else MM[key] = value; };
+		try{
+			bridge.buildSave = () => { saveBuilds++; return { v: 1, world: 'cached-' + rev }; };
+			bridge.snapshotInfra = () => { builds.infra++; return { rev }; };
+			bridge.snapshotConstructionBackground = () => { builds.bg++; return { rev }; };
+			MM.water = { ghostPartialsIn: () => { builds.water++; return [[1, 2, rev]]; } };
+			MM.softDrifts = {
+				ghostLevelsIn: () => { builds.drift++; return [[1, 2, rev]]; },
+				ghostPrintsIn: () => { builds.prints++; return [[3, 4, rev]]; },
+				ghostStormOut: () => [rev]
+			};
+			MM.icicles = { ghostIciclesIn: () => { builds.ice++; return [[5, 6, rev]]; } };
+			MM.graffiti = { ghostVersion: () => rev, ghostOut: () => { builds.gfx++; return [[rev]]; } };
+			MM.boats = { snapshot: () => { builds.boats++; return { rev }; } };
+			MM.mechs = { snapshot: () => { builds.mechs++; return { rev }; }, anyGuestDriven: () => false };
+
+			const first = makeGuest('c-late-one'); first.hello('gid-late-one'); await flush();
+			check(first.last('infra')?.data?.rev === 1 && first.last('infra')?.bg?.rev === 1,
+				'first viewer receives current infrastructure planes after its snapshot');
+			rev = 2;
+			tickHost(); await flush(); // establish rev 2 as every sig-skipped plane's broadcast cursor
+			const planeTypes = ['infra', 'pwat', 'drift', 'gfx', 'mach'];
+			const firstCounts = Object.fromEntries(planeTypes.map(type => [type, first.all(type).length]));
+
+			const second = makeGuest('c-late-two'); second.hello('gid-late-two'); await flush();
+			const infra = second.last('infra'), pwat = second.last('pwat'), drift = second.last('drift');
+			const gfx = second.last('gfx'), mach = second.last('mach');
+			check(saveBuilds === 1, 'second viewer reuses the cached base snapshot');
+			check(infra?.data?.rev === 2 && infra?.bg?.rev === 2,
+				'second viewer receives current infrastructure despite the cached snapshot');
+			check(pwat?.w?.[0]?.[4]?.[0]?.[2] === 2,
+				'second viewer receives current partial-water windows despite the cached snapshot');
+			check(drift?.w?.[0]?.[4]?.[0]?.[2] === 2 && drift?.p?.[0]?.[4]?.[0]?.[2] === 2
+				&& drift?.i?.[0]?.[4]?.[0]?.[2] === 2 && drift?.s?.[0] === 2,
+				'second viewer receives current drift, footprint, icicle and gale planes');
+			check(gfx?.m?.[0]?.[0] === 2, 'second viewer receives current graffiti despite the cached snapshot');
+			check(mach?.data?.b?.rev === 2 && mach?.data?.m?.rev === 2,
+				'second viewer receives current boats and mechs despite the cached snapshot');
+			check(planeTypes.every(type => first.all(type).length === firstCounts[type]),
+				'second-viewer plane corrections are targeted and do not rebroadcast to the first viewer');
+
+			// A third spectator in the same short burst gets the same targeted frames,
+			// without rebuilding/sorting every full plane again.
+			const afterSecondBuilds = Object.assign({}, builds);
+			const third = makeGuest('c-late-three'); third.hello('gid-late-three'); await flush();
+			check(Object.keys(builds).every(k => builds[k] === afterSecondBuilds[k]),
+				'a burst third viewer reuses the bounded join-plane build cache');
+			check(third.last('infra')?.data?.rev === 2 && third.last('pwat')?.sync === 1
+				&& third.last('drift')?.sync === 1,
+				'coalesced join planes remain targeted snapshot corrections for the third viewer');
+			await bye(third); third.close();
+			const afterSpectatorDropBuilds = Object.assign({}, builds);
+			const fourth = makeGuest('c-late-four'); fourth.hello('gid-late-four'); await flush();
+			check(Object.keys(builds).every(k => builds[k] === afterSpectatorDropBuilds[k]),
+				'a watch-only disconnect does not defeat burst join-plane coalescing');
+			const beforeTtlExpiryBuilds = Object.assign({}, builds);
+			await new Promise(r => setTimeout(r, 1050));
+			const fifth = makeGuest('c-late-five'); fifth.hello('gid-late-five'); await flush();
+			check(builds.infra > beforeTtlExpiryBuilds.infra && builds.gfx > beforeTtlExpiryBuilds.gfx
+				&& builds.boats > beforeTtlExpiryBuilds.boats,
+				'the one-second join-plane cache expires and rebuilds current truth even without an invalidation event');
+
+			// Exact resync race: first accept ordinary live water/drift, then request a
+			// snapshot immediately. Its current corrections must follow the snapshot and
+			// carry the client's one-shot cadence-floor marker.
+			await new Promise(r => setTimeout(r, 4100)); // total wait now passes the host needSnap floor
+			rev = 3;
+			second.clear(); tickHost(); await flush();
+			check(second.last('pwat')?.sync !== 1 && second.last('drift')?.sync !== 1,
+				'the viewer accepts ordinary live water/drift immediately before resync');
+			second.clear(); second.send({ t: 'needSnap' }); await flush();
+			const lastSnapChunk = second.inbox.reduce((at, pl, i) => pl.t === 'chunk' && pl.k === 'snap' ? i : at, -1);
+			const syncWaterAt = second.inbox.findIndex(pl => pl.t === 'pwat' && pl.sync === 1);
+			const syncDriftAt = second.inbox.findIndex(pl => pl.t === 'drift' && pl.sync === 1);
+			check(lastSnapChunk >= 0 && syncWaterAt > lastSnapChunk && syncDriftAt > lastSnapChunk,
+				'needSnap sends one-shot water/drift corrections after the snapshot that overwrites those planes');
+			check(second.inbox[syncWaterAt]?.w?.[0]?.[4]?.[0]?.[2] === 3
+				&& second.inbox[syncDriftAt]?.w?.[0]?.[4]?.[0]?.[2] === 3,
+				'needSnap corrections carry current plane truth, not the just-replaced revision');
+
+			// Infra/background can exceed the RTC non-chunk ceiling. A cached base save
+			// must still be followed by a bounded chunked current plane rather than a
+			// silently dropped oversized JSON frame.
+			await new Promise(r => setTimeout(r, 1050)); // expire the bounded join-plane cache
+			const bigBlob = 'x'.repeat(NET.WIRE_LIMITS.JSON_MAX + 4096);
+			rev = 4;
+			bridge.snapshotInfra = () => ({ rev, blob: bigBlob });
+			bridge.snapshotConstructionBackground = () => null;
+			const bigGuest = makeGuest('c-late-big'); bigGuest.hello('gid-late-big'); await flush();
+			const bigChunks = bigGuest.inbox.filter(pl => pl.t === 'chunk' && pl.k === 'plane');
+			const planeAssembler = NET.createAssembler();
+			let assembledPlane = null;
+			for(const env of bigChunks) assembledPlane = planeAssembler.push(env) || assembledPlane;
+			let bigInfra = null;
+			try{ bigInfra = assembledPlane ? JSON.parse(assembledPlane.data) : null; }catch(e){ bigInfra = null; }
+			check(bigGuest.last('infra') === null && bigChunks.length > 1,
+				'an infra correction above JSON_MAX is emitted as bounded plane chunks, never one oversized frame');
+			check(bigInfra?.t === 'infra' && bigInfra?.data?.rev === 4 && bigInfra?.data?.blob?.length === bigBlob.length,
+				'the oversized current infra plane reassembles losslessly after a cached snapshot');
+
+			// The same oversized state must remain deliverable after a LIVE dirty event;
+			// live broadcasts previously bypassed the size-aware join path and RTC
+			// silently discarded their single >JSON_MAX frame.
+			rev = 5;
+			bigGuest.clear();
+			MM.onTileRenderChanged(9, 9, 7, 7); // production infra sentinel: old === next
+			tickHost(); await flush();
+			const liveChunks = bigGuest.inbox.filter(pl => pl.t === 'chunk' && pl.k === 'plane');
+			const liveAssembler = NET.createAssembler();
+			let liveInfra = null, completedPlanes = 0, restoreDispatches = 0;
+			for(const env of liveChunks){
+				const done = liveAssembler.push(env);
+				if(!done) continue;
+				completedPlanes++;
+				let packet = null; try{ packet = JSON.parse(done.data); }catch(e){ packet = null; }
+				if(packet?.t === 'infra'){ liveInfra = packet; restoreDispatches++; }
+			}
+			check(bigGuest.last('infra') === null && liveChunks.length > 1 && liveInfra?.data?.rev === 5,
+				'a >JSON_MAX live infrastructure broadcast uses the shared chunked plane path');
+			check(completedPlanes === 1 && restoreDispatches === 1,
+				'the client-side bounded assembler completes one live plane and dispatches one infra restore');
+
+			// Snapshot codecs expose an explicit `complete:false` when their safety cap
+			// truncated the world. Such a prefix is not authoritative: live streaming
+			// must send nothing and keep the dirty latch armed for a later full retry.
+			rev = 6;
+			bridge.snapshotInfra = () => ({ rev, complete: false, list: [[1, 2, 3]] });
+			bridge.snapshotConstructionBackground = () => ({ rev, complete: true, list: [] });
+			MM.onTileRenderChanged(10, 10, 8, 8);
+			await new Promise(r => setTimeout(r, 1550)); // pass the infrastructure cadence floor
+			bigGuest.clear(); tickHost(); await flush();
+			check(bigGuest.last('infra') === null
+				&& bigGuest.inbox.every(pl => !(pl.t === 'chunk' && pl.k === 'plane')),
+				'an incomplete live infrastructure plane emits neither a direct frame nor chunks');
+			check(ghostHost.metrics().infraDirty === true,
+				'an incomplete live infrastructure snapshot leaves the dirty retry latch armed');
+
+			// Exercise the independently capped construction-background half on join.
+			// The joining viewer may receive the other current planes, but never a
+			// truncated infrastructure authority frame in either wire form.
+			bridge.snapshotInfra = () => ({ rev, complete: true, list: [] });
+			bridge.snapshotConstructionBackground = () => ({ rev, complete: false, list: [[4, 5, 6]] });
+			const incompleteGuest = makeGuest('c-late-incomplete');
+			incompleteGuest.hello('gid-late-incomplete'); await flush();
+			check(incompleteGuest.last('infra') === null
+				&& incompleteGuest.inbox.every(pl => !(pl.t === 'chunk' && pl.k === 'plane')),
+				'a join sends no infrastructure plane when its construction background is incomplete');
+			check(ghostHost.metrics().infraDirty === true,
+				'a failed incomplete join build does not accidentally disarm the live retry latch');
+
+			await bye(first); await bye(second); await bye(fourth); await bye(fifth); await bye(bigGuest); await bye(incompleteGuest);
+			first.close(); second.close(); fourth.close(); fifth.close(); bigGuest.close(); incompleteGuest.close();
+		}finally{
+			bridge.buildSave = old.buildSave;
+			bridge.snapshotInfra = old.infra;
+			bridge.snapshotConstructionBackground = old.bg;
+			restore('water', old.water); restore('softDrifts', old.drifts); restore('icicles', old.icicles);
+			restore('graffiti', old.graffiti); restore('boats', old.boats); restore('mechs', old.mechs);
+		}
+	}
 
 	// --- P0-3: pre-hello messages do nothing; wrong protocol creates no viewer --------
 	{
@@ -1464,6 +1655,37 @@ try{
 			check(after.last('welcome') !== null && after.last('full') === null, 'more than 256 disconnected stateless gids cannot exhaust the identity table');
 			await bye(after);
 			after.close();
+		}finally{
+			if(ownNow) Object.defineProperty(performance, 'now', ownNow);
+			else delete performance.now;
+		}
+	}
+
+	// Embodied disconnects legitimately retain a short reconnect window, but an
+	// invite holder must not be able to accumulate unbounded windows/tokens by
+	// cycling fresh identities through play mode.
+	{
+		const ownNow = Object.getOwnPropertyDescriptor(performance, 'now');
+		let fakeNow = performance.now() + 2001;
+		try{
+			Object.defineProperty(performance, 'now', { configurable: true, value: () => fakeNow });
+			for(let i = 0; i < 30; i++){
+				fakeNow += 1;
+				const g = makeGuest('c-window-' + i);
+				g.hello('gid-window-' + i); await flush();
+				check(g.last('welcome') !== null, 'embodied reconnect-window churn remains admissible at gid ' + i);
+				ghostHost.setViewerMode('gid-window-' + i, 'play'); await flush();
+				await bye(g); g.close();
+			}
+			const bounded = ghostHost.metrics();
+			check(bounded.resumeWindows <= 24, 'embodied reconnect windows remain bounded to twice the live-seat cap');
+			check(bounded.identityCache <= 24, 'evicted reconnect windows release their in-memory identity tokens');
+			fakeNow += 2001;
+			const after = makeGuest('c-window-after');
+			after.hello('gid-window-after'); await flush();
+			check(after.last('welcome') !== null && after.last('full') === null,
+				'bounded embodied identity churn cannot exhaust admission for a later viewer');
+			await bye(after); after.close();
 		}finally{
 			if(ownNow) Object.defineProperty(performance, 'now', ownNow);
 			else delete performance.now;

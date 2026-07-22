@@ -18,7 +18,7 @@ const weaponsSrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.
 assert.equal(T.BEDROCK_LADDER,95,'bedrock ladder appends a save-stable tile id');
 assert.match(indexHtml, /id="hotSelectMenu"[^>]*max-height:min\(78vh,calc\(100vh - 86px\)\)[^>]*overflow:hidden/, 'hotbar picker is height-bounded instead of growing behind the viewport');
 assert.match(indexHtml, /id="hotSelectOptions"[^>]*flex:1 1 auto[^>]*min-height:0[^>]*overflow-y:auto/, 'hotbar picker options list owns vertical scrolling');
-assert.match(indexHtml, /#craft\{[^}]*width:min\(560px,calc\(100vw - 16px\)\)[^}]*overflow:hidden/, 'crafting recipe book is viewport-bounded');
+assert.match(indexHtml, /#craft\{[^}]*width:min\(560px,calc\(100vw - var\(--safe-left\) - var\(--safe-right\) - 16px\)\)[^}]*overflow:hidden/, 'crafting recipe book is viewport- and safe-area-bounded');
 assert.match(indexHtml, /#craftSearch\{[^}]*width:100%/, 'crafting recipe book exposes a full-width recipe search');
 assert.match(indexHtml, /#craft \.craftTabs\{[^}]*overflow-x:auto/, 'crafting recipe groups scroll horizontally when needed');
 assert.match(indexHtml, /#craft \.craftContent\{[^}]*grid-template-columns:minmax\(210px,1fr\) minmax\(190px,\.9fr\)/, 'crafting recipe book has a recipe list plus detail panel');

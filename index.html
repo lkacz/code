@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
   <!-- Defense-in-depth: no remote code; inline styles are used throughout the hand-built UI.
        connect-src allowlists ONLY the public MQTT-over-WSS brokers used for the ghost
        spectator WebRTC handshake (ghost_net.js) — gameplay traffic itself is P2P. -->
@@ -21,8 +22,10 @@
       --stick-knob:58px;
       --touch-button:52px;
     }
-    html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:none; user-select:none; overscroll-behavior:none; -webkit-tap-highlight-color:rgba(0,0,0,0); }
-    canvas{ display:block; width:100vw; height:100vh; }
+    html,body{ margin:0; padding:0; height:100%; background:#0b0f16; color:#e8e8e8; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,'Helvetica Neue',Arial,'Noto Sans',sans-serif; touch-action:pinch-zoom; user-select:none; overscroll-behavior:none; -webkit-tap-highlight-color:rgba(0,0,0,0); }
+    canvas{ display:block; width:100vw; height:100vh; touch-action:none; }
+    .srOnly{ position:absolute !important; width:1px !important; height:1px !important; padding:0 !important; margin:-1px !important; overflow:hidden !important; clip:rect(0,0,0,0) !important; white-space:nowrap !important; border:0 !important; }
+    :root:not([data-dev-tools='1']) .devOnly{ display:none !important; }
     #ui{ position:fixed; inset:0; pointer-events:none; }
     /* Top bar: three zones — world telemetry + objective on the LEFT (above the
        craft panel), transient toasts in the free CENTER, system cluster (fps,
@@ -46,7 +49,7 @@
     #taskStatus{ display:block; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#ffe3ac; }
     #taskChevron{ flex:none; color:#d9b866; font-size:10px; transition:transform .14s ease; }
     #taskPanel[aria-expanded="true"] #taskChevron{ transform:rotate(180deg); }
-    #taskListPanel{ position:fixed; left:8px; top:50px; z-index:115; width:min(460px,calc(100vw - 16px)); max-height:min(72vh,620px); display:flex; flex-direction:column; overflow:hidden; box-sizing:border-box; pointer-events:auto; color:#eef4fb; background:linear-gradient(160deg,rgba(17,21,29,.97),rgba(10,14,21,.97)); border:1px solid rgba(255,196,74,.28); border-radius:14px; box-shadow:0 18px 44px rgba(0,0,0,.58); backdrop-filter:blur(12px); }
+    #taskListPanel{ position:fixed; left:calc(var(--safe-left) + 8px); top:calc(var(--safe-top) + 50px); z-index:115; width:min(460px,calc(100vw - var(--safe-left) - var(--safe-right) - 16px)); max-height:min(calc(72vh - var(--safe-top) - var(--safe-bottom)),620px); display:flex; flex-direction:column; overflow:hidden; box-sizing:border-box; pointer-events:auto; color:#eef4fb; background:linear-gradient(160deg,rgba(17,21,29,.97),rgba(10,14,21,.97)); border:1px solid rgba(255,196,74,.28); border-radius:14px; box-shadow:0 18px 44px rgba(0,0,0,.58); backdrop-filter:blur(12px); }
     #taskListPanel[hidden]{ display:none !important; }
     #taskListHead{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 13px 10px; border-bottom:1px solid rgba(255,255,255,.08); }
     #taskListHeading{ display:flex; flex-direction:column; gap:2px; min-width:0; }
@@ -109,13 +112,13 @@
       #worldStatusPanel{ width:100%; max-width:none; box-sizing:border-box; }
       #hudSpacer{ display:none; }
       #taskPanel{ grid-column:1 / -1; grid-row:2; justify-self:start; max-width:min(520px,calc(100vw - 16px)); }
-      #taskListPanel{ top:92px; max-height:calc(100vh - 100px); }
+      #taskListPanel{ top:calc(var(--safe-top) + 92px); max-height:calc(100vh - var(--safe-top) - var(--safe-bottom) - 100px); }
       #atomicWinterTimerPanel{ grid-column:1 / -1; grid-row:2; justify-self:start; }
       #hud:has(#atomicWinterTimerPanel:not([hidden])) #taskPanel{ grid-row:3; }
-      #hud:has(#atomicWinterTimerPanel:not([hidden])) + #taskListPanel{ top:134px; max-height:calc(100vh - 142px); }
-      #hud:has(#atomicWinterTimerPanel:not([hidden])) ~ #cornerCards{ top:192px; }
-      #hud:has(#atomicWinterTimerPanel:not([hidden])) ~ #craft{ top:96px; max-height:calc(100vh - 134px); }
-      #hud:has(#atomicWinterTimerPanel:not([hidden])):has(#taskPanel:not([hidden])) ~ #craft{ top:138px; max-height:calc(100vh - 176px); }
+      #hud:has(#atomicWinterTimerPanel:not([hidden])) + #taskListPanel{ top:calc(var(--safe-top) + 134px); max-height:calc(100vh - var(--safe-top) - var(--safe-bottom) - 142px); }
+      #hud:has(#atomicWinterTimerPanel:not([hidden])) ~ #cornerCards{ top:calc(var(--safe-top) + 192px); }
+      #hud:has(#atomicWinterTimerPanel:not([hidden])) ~ #craft{ top:calc(var(--safe-top) + 96px); max-height:calc(100vh - var(--safe-top) - var(--safe-bottom) - 134px); }
+      #hud:has(#atomicWinterTimerPanel:not([hidden])):has(#taskPanel:not([hidden])) ~ #craft{ top:calc(var(--safe-top) + 138px); max-height:calc(100vh - var(--safe-top) - var(--safe-bottom) - 176px); }
     }
     @media (max-width:480px){
       .taskItem{ grid-template-columns:1fr; }
@@ -124,7 +127,7 @@
     }
     /* phones: the FPS readout is a diagnostic — give its width back to the status line */
     @media (max-width:560px){ #hud #fpsPanel{ display:none; } }
-    #craft{ position:absolute; left:8px; top:54px; pointer-events:auto; display:flex; flex-direction:column; gap:8px; width:min(560px,calc(100vw - 16px)); max-height:calc(100vh - 92px); overflow:hidden; overscroll-behavior:contain; color:#eef4fb; background:rgba(13,17,24,.9); border:1px solid rgba(255,255,255,.14); border-radius:14px; padding:9px; font-size:12px; box-shadow:0 12px 30px rgba(0,0,0,.45); backdrop-filter:blur(10px); }
+    #craft{ position:absolute; left:calc(var(--safe-left) + 8px); top:calc(var(--safe-top) + 54px); pointer-events:auto; display:flex; flex-direction:column; gap:8px; width:min(560px,calc(100vw - var(--safe-left) - var(--safe-right) - 16px)); max-height:calc(100vh - var(--safe-top) - var(--safe-bottom) - 92px); overflow:hidden; overscroll-behavior:contain; color:#eef4fb; background:rgba(13,17,24,.9); border:1px solid rgba(255,255,255,.14); border-radius:14px; padding:9px; font-size:12px; box-shadow:0 12px 30px rgba(0,0,0,.45); backdrop-filter:blur(10px); }
     #craft .craftHeader{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin:-9px -9px 0; padding:9px; background:rgba(8,11,17,.82); border-bottom:1px solid rgba(255,255,255,.08); }
     #craft .craftTitleWrap{ display:flex; align-items:baseline; gap:8px; min-width:0; }
     #craft .craftTitle{ font-size:13px; white-space:nowrap; }
@@ -485,7 +488,7 @@
     #craftTracker .craftTrackerCraft{ border:none; border-radius:8px; padding:6px 8px; background:#2c7ef8; color:#fff; font-weight:800; cursor:pointer; }
     #craftTracker .craftTrackerCraft:disabled{ opacity:.4; cursor:not-allowed; filter:grayscale(.4); }
     #craftTracker.ready .craftTrackerCraft{ background:#2fae63; box-shadow:0 0 12px rgba(74,222,128,.5); }
-    @media (max-width:680px){ #craft{ width:min(360px,calc(100vw - 16px)); } #craft .craftContent{ grid-template-columns:1fr; } #craft .craftList, #craft .craftDetail{ max-height:34vh; } #craftTracker{ top:auto; bottom:170px; } }
+    @media (max-width:680px){ #craft{ width:min(360px,calc(100vw - var(--safe-left) - var(--safe-right) - 16px)); } #craft .craftContent{ grid-template-columns:1fr; } #craft .craftList, #craft .craftDetail{ max-height:34vh; } #craftTracker{ top:auto; bottom:calc(var(--safe-bottom) + 170px); } }
     @media (max-width:420px){
       #craft .craftHomeHero{ grid-template-columns:70px minmax(0,1fr); min-height:76px; gap:8px; padding:7px; }
       #craft .craftHomeCanvas{ width:66px; height:66px; border-radius:9px; }
@@ -569,6 +572,17 @@
       :root[data-input-mode='touch'] #craftTracker{ top:calc(var(--safe-top) + 298px); bottom:auto; right:auto; left:calc(8px + var(--safe-left)); }
       :root[data-input-mode='touch'] #messages{ top:auto; bottom:calc(var(--safe-bottom) + var(--stick-zone) + 78px); }
     }
+    /* A narrow hybrid may switch to mouse/keyboard without becoming a desktop.
+       Keep the PC bars above the canvas vitals and move transient messages below
+       the two-row header instead of falling back to overlapping desktop anchors. */
+    @media (orientation:portrait) and (max-width:560px){
+      :root[data-input-mode='pc'] #weaponBar{ left:8px; right:8px; bottom:calc(var(--safe-bottom) + 170px); transform:none; justify-content:center; }
+      :root[data-input-mode='pc'] #weaponBar .wepSlot{ min-width:52px; max-width:66px; height:52px; padding-left:4px; padding-right:4px; }
+      :root[data-input-mode='pc'] #weaponBar .wname{ display:none; }
+      :root[data-input-mode='pc'] #hotbarWrap{ left:8px; right:8px; bottom:calc(var(--safe-bottom) + 112px); transform:none; justify-content:center; gap:4px; }
+      :root[data-input-mode='pc'] #craftTracker{ top:auto; bottom:calc(var(--safe-bottom) + 232px); }
+      :root[data-input-mode='pc'] #messages{ top:calc(var(--safe-top) + 112px); bottom:auto; max-width:calc(100vw - 24px); }
+    }
     /* Short landscape screens keep every target at least 48px. */
     @media (max-height:560px){
       :root{ --stick-zone:132px; --stick-size:100px; --stick-knob:56px; --touch-button:50px; }
@@ -593,8 +607,8 @@
   /* Corner-card column: right of the top bar, left of the minimap (W-232..W-12
      @ y 44..140) and the craft tracker (right:8 top:54) — the only top corner no
      persistent UI claims. Hosts the drop hover preview + stacked upgrade notices. */
-  #cornerCards{ position:absolute; right:244px; top:46px; display:flex; flex-direction:column; align-items:flex-end; gap:6px; pointer-events:none; }
-  @media (max-width:760px){ #cornerCards{ right:8px; top:150px; } }
+  #cornerCards{ position:absolute; right:244px; top:calc(var(--safe-top) + 46px); display:flex; flex-direction:column; align-items:flex-end; gap:6px; pointer-events:none; }
+  @media (max-width:760px){ #cornerCards{ right:8px; top:calc(var(--safe-top) + 150px); } }
   #houseComfortHud{
     --comfort:#e6bd78;
     --comfort-rgb:230,189,120;
@@ -767,7 +781,7 @@
   .tsFoot{ position:absolute; bottom:14px; left:0; right:0; text-align:center; font-size:11px; font-style:italic; color:#5f7189; }
   @keyframes tsRise{ from{ transform:translateY(16px); opacity:0; } to{ transform:none; opacity:1; } }
   @keyframes tsPulse{ 0%,100%{ opacity:.75; } 50%{ opacity:1; } }
-  #finaleScreen{ position:absolute; inset:0; z-index:200; pointer-events:auto; display:flex; align-items:center; justify-content:center; padding:16px; background:radial-gradient(ellipse at 50% 30%, rgba(20,18,31,.72) 0%, rgba(6,8,16,.9) 70%); opacity:0; transition:opacity .45s ease; }
+  #finaleScreen{ position:fixed; inset:0; z-index:10000; pointer-events:auto; display:flex; align-items:center; justify-content:center; padding:16px; background:radial-gradient(ellipse at 50% 30%, rgba(20,18,31,.72) 0%, rgba(6,8,16,.9) 70%); opacity:0; transition:opacity .45s ease; }
   #finaleScreen.show{ opacity:1; }
   #finaleScreen.leaving{ opacity:0; }
   .fnCard{ width:min(520px,94vw); max-height:92vh; overflow-y:auto; overscroll-behavior:contain; background:rgba(13,16,26,.94); border:1px solid rgba(155,140,255,.35); border-radius:18px; padding:22px 24px; text-align:center; box-shadow:0 12px 48px rgba(0,0,0,.6), 0 0 42px rgba(155,140,255,.18); animation:tsRise .7s ease both; }
@@ -1048,10 +1062,14 @@
   @keyframes kbPulse{ 0%,100%{ box-shadow:0 0 0 0 rgba(87,177,236,.4); } 50%{ box-shadow:0 0 0 5px rgba(87,177,236,.12); } }
   #keybindPanel .kbFoot{ margin-top:10px; display:flex; justify-content:flex-end; }
   #keybindPanel .kbFoot button{ background:rgba(255,255,255,.08); color:#cfd9e6; border:1px solid rgba(255,255,255,.16); border-radius:8px; padding:5px 10px; cursor:pointer; }
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{ animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; scroll-behavior:auto !important; }
+  }
   </style>
 </head>
 <body>
-  <canvas id="game" aria-label="Mini Miner"></canvas>
+  <canvas id="game" role="img" aria-label="Mini Miner" aria-describedby="gameA11yDescription"></canvas>
+  <div id="gameA11yDescription" class="srOnly">Proceduralna gra górnicza sterowana klawiaturą, myszą lub dotykiem. Bieżące komunikaty są ogłaszane przez czytnik ekranu; pełna lista sterowania jest dostępna w Pomocy.</div>
   <div id="ui">
     <div id="hud">
       <div class="panel" id="atomicWinterTimerPanel" role="timer" aria-live="off" aria-label="Zima nuklearna: pozostały czas" title="Pozostały czas zimy nuklearnej" hidden><span class="atomicWinterTimerIcon" aria-hidden="true">☢️</span><span class="atomicWinterTimerLabel">Zima nuklearna</span><strong id="atomicWinterTimerValue">0:00:00</strong></div>
@@ -1154,7 +1172,7 @@
       <button id="ultBtn" type="button" title="Ult – naładowany atak broni" aria-label="Ult – naładowany atak broni">💥</button>
       <button id="jumpBtn" type="button" title="Skok; stuknij ponownie, aby wykonać kolejny skok w powietrzu" aria-label="Skok, także kolejny skok w powietrzu"><span class="touchJumpIcon">↥</span><span class="touchJumpLabel">SKOK</span></button>
     </div>
-    <div id="messages"></div>
+    <div id="messages" role="status" aria-live="polite" aria-atomic="true"></div>
     <div id="hoverInfo" aria-hidden="true"></div>
     <div id="cornerCards">
       <section id="houseComfortHud" hidden role="status" aria-live="polite" aria-atomic="false" aria-labelledby="houseComfortTitle">
@@ -1445,7 +1463,7 @@
     </div>
   </div>
   <!-- World settings overlay -->
-  <div id="worldSettingsOverlay" role="dialog" aria-modal="true" aria-labelledby="worldSettingsTitle">
+  <div id="worldSettingsOverlay" role="dialog" aria-modal="true" aria-labelledby="worldSettingsTitle" aria-hidden="true">
     <div id="worldSettingsDialog">
       <div id="worldSettingsHeader"><h2 id="worldSettingsTitle" style="margin:0;font-size:18px;">Ustawienia świata</h2><button id="worldSettingsClose" aria-label="Zamknij">×</button></div>
       <div id="worldSettingsBody" aria-label="Ustawienia"></div>

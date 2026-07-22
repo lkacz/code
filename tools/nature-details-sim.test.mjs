@@ -558,7 +558,7 @@ const { softDrifts } = await import('../src/engine/soft_drifts.js');
   assert.match(mainSrc, /AVALANCHE\.disturb\(mineTx,mineTy,1\.2,getTile\)/, 'mining pokes the avalanche trigger');
   assert.match(mainSrc, /if\(tId===T\.THIN_ICE\)\{[\s\S]{0,400}setForegroundConfirmed\(mineTx,mineTy,T\.WATER\)/, 'mining thin ice reopens the lake');
   assert.match(mainSrc, /graffiti: timedSavePart\('graffiti'/, 'graffiti marks ride the save');
-  assert.match(mainSrc, /GRAFFITI\.restore\) GRAFFITI\.restore\(data\.graffiti\);/, 'and restore on load');
+  assert.match(mainSrc, /restoreRequired\('graffiti',data\.graffiti!=null,\(\)=>\{ if\(GRAFFITI && GRAFFITI\.restore\) return GRAFFITI\.restore\(data\.graffiti\)/, 'and restore on load with rejection propagation');
   assert.match(mainSrc, /function paintGraffitiAtCursor\(cycle\)/, 'the G-key paint helper exists');
   assert.match(mainSrc, /MM\.collectSoot=\(n\)=>/, 'ploughed thick soot pays out pigment');
   assert.match(mainSrc, /ghostHeroGraffiti:\(tx,ty,glyph,dir\)=>\{/, 'the hero-intent bridge seam re-validates backing');

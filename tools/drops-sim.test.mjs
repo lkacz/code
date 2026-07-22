@@ -670,7 +670,7 @@ assert.equal(drops.metrics().active, 0, 'malformed snapshot entries are dropped'
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const indexSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 assert.match(mainSrc, /drops:\s*timedSavePart\('drops',[^\n]*DROPS && DROPS\.snapshot/, 'save payload includes ground loot drops');
-assert.match(mainSrc, /if\(DROPS && DROPS\.restore\) DROPS\.restore\(data\.drops\)/, 'restore rehydrates ground loot drops');
+assert.match(mainSrc, /restoreRequired\('drops',data\.drops!=null,\(\)=>\{ if\(DROPS && DROPS\.restore\) return DROPS\.restore\(data\.drops\)/, 'restore rehydrates ground loot drops and propagates an explicit rejection');
 assert.match(mainSrc, /if\(DROPS && DROPS\.update\) DROPS\.update\(dt, player, getTile\)/, 'game step ticks the drop simulation');
 assert.match(mainSrc, /if\(DROPS && DROPS\.draw\) DROPS\.draw\(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,player\)/, 'draw pass renders drops under creatures');
 assert.match(mainSrc, /DROPS && DROPS\.pickupNearest && DROPS\.pickupNearest\(player\)/, 'E key collects the nearest drop');

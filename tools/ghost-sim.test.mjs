@@ -438,15 +438,16 @@ assert.ok(/m\.id==='ZLOTY'/.test(mobsSrc.slice(mobsSrc.indexOf('function ghostLi
 // --- source pins: main.js wiring ------------------------------------------------------------
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 assert.ok(/function applyGameData\(data,opts\)/.test(mainSrc), 'applyGameData extracted from loadGame');
-assert.ok(/return applyGameData\(data,opts\);/.test(mainSrc), 'loadGame routes through applyGameData');
-assert.ok(/function saveGameCore\(manual\)\{\s*if\(MM\.ghostMode\) return false;/.test(mainSrc), 'ghost guard on saveGameCore');
-assert.ok(/function saveState\(\)\{\s*if\(_startingNewGame\) return;\s*if\(MM\.ghostMode\) return;/.test(mainSrc), 'ghost guard on saveState');
-assert.ok(/function saveCriticalState\(reason,force\)\{\s*if\(_startingNewGame\) return false;\s*if\(MM\.ghostMode\) return false;/.test(mainSrc), 'ghost guard on saveCriticalState');
+assert.ok(/const applied=applyGameData\(preflight\.data,Object\.assign\(\{\},opts,\{preflightResult:preflight,transactional:true(?:,rememberCommitted:true)?\}\)\);/.test(mainSrc),
+	'loadGame routes the validated preflight payload through applyGameData');
+assert.ok(/function saveGameCore\(manual\)\{[\s\S]{0,260}if\(MM\.ghostMode\) return false;/.test(mainSrc), 'ghost guard on saveGameCore');
+assert.ok(/function saveState\(\)\{[\s\S]{0,240}if\(MM\.ghostMode\) return;/.test(mainSrc), 'ghost guard on saveState');
+assert.ok(/function saveCriticalState\(reason,force\)\{[\s\S]{0,240}if\(MM\.ghostMode\) return false;/.test(mainSrc), 'ghost guard on saveCriticalState');
 assert.ok(/const ghostHold=!!MM\.ghostMode;/.test(mainSrc), 'loop derives the ghost hold');
 assert.ok(/if\(!paused && !overlayHold && !ghostHold\)\{/.test(mainSrc), 'sim branch respects the ghost hold');
 assert.ok(/else if\(ghostHold && GHOST_CLIENT && GHOST_CLIENT\.frame\)\{/.test(mainSrc), 'watcher frame replaces the sim');
 assert.ok(/if\(GHOST_HOST && GHOST_HOST\.active\(\)\) GHOST_HOST\.frame\(simulationDt,ts\);/.test(mainSrc), 'host streams from inside the scaled sim branch');
-assert.ok(/const loaded=MM\.ghostMode \? false : loadGame\(\);/.test(mainSrc), 'watchers skip the local save at boot');
+assert.ok(/const loadResult=MM\.ghostMode \? null : loadGame\(\);/.test(mainSrc), 'watchers skip the local save at boot');
 assert.ok(/if\(!MM\.ghostMode\) TITLE_SCREEN\.boot\(/.test(mainSrc), 'watchers skip the title screen');
 assert.ok(/MM\.ghostBridge=\{/.test(mainSrc), 'ghost bridge published');
 for(const key of ['applyGameData:', 'buildSave:', 'snapshotDrops:', 'restoreDrops:', 'snapshotSeasons:', 'restoreSeasons:', 'snapshotInfra:', 'restoreInfra:', 'snapshotConstructionBackground:', 'restoreConstructionBackground:', 'healHero:', 'addHeroEnergy:', 'nudgeZoom:', 'setCamCenter:', 'snapCameraToPlayer:', 'revealAround:', 'stepCosmetics:']){
@@ -621,7 +622,9 @@ for(const packet of ['full', 'banned', 'incompatible', 'unavailable', 'taken', '
 	assert.ok(new RegExp("pl\\.t === '" + packet + "'[\\s\\S]{0,420}finishTerminal\\(").test(clientSrc),
 		packet + ' is a terminal packet that tears down its transport');
 }
-assert.ok(/applyGameData\(data, \{ ignoreCritical: true \}\)/.test(clientSrc), 'snapshot apply ignores local critical-state remnants');
+assert.ok(/const preserveGuestRuntime = !!\(hero\.on && hero\.spawned\)/.test(clientSrc)
+	&& /applyGameData\(data, \{ ignoreCritical: true, transactional: true, preserveGuestRuntime \}\)/.test(clientSrc),
+	'ghost snapshots are transactional and only an already-spawned hero requests guest-runtime preservation');
 
 // --- source pins: ghost_host stream planes ------------------------------------------------------------
 const hostSrc = readFileSync(new URL('../src/engine/ghost_host.js', import.meta.url), 'utf8');
@@ -643,6 +646,48 @@ assert.ok(/SNAP_CACHE_MS/.test(hostSrc) && /s\.sinceCache/.test(hostSrc) && /pee
 	'snapshot cache exists AND replays post-cache tile diffs to late joiners (coherence)');
 assert.ok(/s\.sinceCache\.length \+ d\.length > 9000\)\{ s\.snapCache = null;/.test(hostSrc),
 	'replay-buffer overflow invalidates the cache instead of dropping diffs');
+const snapshotSlice = hostSrc.slice(hostSrc.indexOf('function sendSnapshot'), hostSrc.indexOf('function sendMobsFull'));
+const encodePlaneSlice = hostSrc.slice(hostSrc.indexOf('function encodeCurrentPlane'), hostSrc.indexOf('function sendEncodedPlane'));
+const infraBuildSlice = hostSrc.slice(hostSrc.indexOf('function buildInfraPacket'), hostSrc.indexOf('function infraTick'));
+const infraTickSlice = hostSrc.slice(hostSrc.indexOf('function infraTick'), hostSrc.indexOf('function presenceTick'));
+const joinBuildSlice = hostSrc.slice(hostSrc.indexOf('function buildJoinPlaneFrames'), hostSrc.indexOf('function sendJoinPlanes'));
+const joinPlanesSlice = hostSrc.slice(hostSrc.indexOf('function sendJoinPlanes'), hostSrc.indexOf('function reap'));
+assert.ok(/sendJoinPlanes\(s, peer\);/.test(snapshotSlice),
+	'every cached or fresh snapshot is followed by current independently streamed planes');
+for(const builder of ['buildInfraPacket', 'buildPwatPacket', 'buildDriftPacket', 'buildGfxPacket', 'buildMachPacket']){
+	assert.ok(new RegExp(builder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\(').test(joinBuildSlice),
+		'late-join correction includes ' + builder);
+}
+assert.ok(/sendEncodedPlane\(peer, frame\)/.test(joinPlanesSlice) && !/broadcast\(/.test(joinPlanesSlice),
+	'late-join plane corrections target only the joining peer');
+assert.ok(/JOIN_PLANE_CACHE_MS = 1000/.test(hostSrc) && /s\.joinPlaneCache = cached/.test(joinPlanesSlice)
+	&& /invalidateJoinPlaneCache\(s\)/.test(hostSrc),
+	'burst joins coalesce expensive plane builders in a short invalidatable cache');
+assert.ok(/bytes > NET\.WIRE_LIMITS\.ASSEMBLED_MAX/.test(encodePlaneSlice)
+	&& /bytes > NET\.WIRE_LIMITS\.JSON_MAX[\s\S]{0,100}NET\.chunkPayload\('plane', json\)/.test(encodePlaneSlice)
+	&& /done\.kind === 'plane' && lockedConn && c === lockedConn/.test(clientSrc)
+	&& /chunkedPlaneTypes\.has\(packet\.t\)/.test(clientSrc),
+	'oversized current planes use the bounded chunk assembler and a locked-channel plane whitelist');
+assert.ok(/function broadcastCurrentPlane\(packet\)/.test(hostSrc)
+	&& /function infraTick[\s\S]{0,260}broadcastCurrentPlane\(packet\)/.test(hostSrc)
+	&& /function gfxTick[\s\S]{0,300}broadcastCurrentPlane\(built\.packet\)/.test(hostSrc)
+	&& /function machTick[\s\S]{0,500}broadcastCurrentPlane\(\{ t: 'mach', data \}\)/.test(hostSrc),
+	'live infrastructure, graffiti and vehicle planes share the size-aware broadcast path');
+assert.ok(/data && data\.complete === false/.test(infraBuildSlice)
+	&& /bg && bg\.complete === false/.test(infraBuildSlice)
+	&& /throw new Error\('incomplete infrastructure plane'\)/.test(infraBuildSlice),
+	'incomplete infrastructure or construction-background snapshots fail closed before encoding');
+assert.ok(/if\(!broadcastCurrentPlane\(packet\)\) return;[\s\S]{0,80}s\.infraDirty = false;/.test(infraTickSlice)
+	&& /infraDirty: session \? !!session\.infraDirty : false/.test(hostSrc),
+	'the infrastructure dirty latch clears only after a successful size-aware send and remains observable in tests');
+assert.ok(/createSnapshotPlaneSyncGate/.test(clientSrc)
+	&& /snapshotPlaneSync\.arm\(nowMs\(\)\)/.test(clientSrc)
+	&& /!syncCorrection && tW - \(timers\.pwat \|\| 0\) < 200/.test(clientSrc)
+	&& /!syncCorrection && tD - \(timers\.drift \|\| 0\) < 200/.test(clientSrc),
+	'snapshot sync bypasses are one-shot gate spends while ordinary cadence floors remain armed');
+assert.ok(/hasOwnProperty\.call\(pl, 'data'\)[\s\S]{0,100}restoreInfra\(pl\.data\)/.test(clientSrc)
+	&& /hasOwnProperty\.call\(pl, 'bg'\)[\s\S]{0,120}restoreConstructionBackground\(pl\.bg\)/.test(clientSrc),
+	'explicit null infrastructure planes clear stale state restored from a cached snapshot');
 // signaling failover must wrap around with a delay instead of dying silently
 const netSrc = readFileSync(new URL('../src/engine/ghost_net.js', import.meta.url), 'utf8');
 assert.ok(/MQTT_BROKERS\.length \* 3/.test(netSrc) && /setTimeout\(connect, 1500\)/.test(netSrc),
@@ -878,6 +923,12 @@ assert.ok(/#ghostMeter\{/.test(html) && /#ghostMeter\.idle\{/.test(html),
 // --- moderation pins ---------------------------------------------------------------------------
 assert.ok(/s\.banned\.has\(entry\.gid\)/.test(hostSrc) && /function banViewer\(gid\)/.test(hostSrc),
 	'banned ghosts are rejected at hello and evictable live');
+assert.ok(/MODE_MEMORY_MAX = MAX_GHOSTS \* 2/.test(hostSrc) && /function pruneReconnectMemory\(s, t\)/.test(hostSrc)
+	&& /s\.modeMemory\.size > MODE_MEMORY_MAX/.test(hostSrc) && /pruneStatelessToken\(s, gid\)/.test(hostSrc),
+	'embodied reconnect identity memory is bounded and evictions release token slots');
+assert.ok(/blockedIdentities: session \? session\.banned\.size : 0/.test(hostSrc)
+	&& /styledButton\('Wyrzuć ID'/.test(hostSrc) && /tylko tę bieżącą tożsamość/.test(hostSrc),
+	'viewer removal UI and metrics describe a session-scoped identity block, not a person/account ban');
 assert.ok(/!NET\.modeAllows\(entry\.mode, 'full'\)\)\{ entry\.peer\.send\(\{ t: 'buffAck', kind: pl\.kind, ok: false, waitMs: 0, reason: 'perm' \}\)/.test(hostSrc),
 	'buffs require at least the full permission mode (inclusive: play qualifies too)');
 assert.ok(/!NET\.modeAllows\(entry\.mode, 'chat'\)\) return;/.test(hostSrc), 'chat requires at least the chat mode');
@@ -1105,7 +1156,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	// the vehicles plane: boats and mechs stream live between joins (same save
 	// codec a reload uses; sig-skip = silence while nothing moves)
 	assert.ok(/function machTick\(s, t\)/.test(hostSrc) && /if\(sig === s\.lastMachSig\) return;/.test(hostSrc)
-		&& /broadcast\(\{ t: 'mach', data \}\);/.test(hostSrc),
+		&& /broadcastCurrentPlane\(\{ t: 'mach', data \}\)/.test(hostSrc),
 		'the mach plane broadcasts vehicle snapshots on change only');
 	assert.ok(/pl\.t === 'mach'/.test(clientSrc) && /bridge\.restoreBoats\(pl\.data\.b\);/.test(clientSrc)
 		&& /bridge\.restoreMechs\(pl\.data\.m\);/.test(clientSrc),
@@ -1337,6 +1388,12 @@ function CADHasStory(src){ return /story: \d+/.test(src.slice(src.indexOf('const
 	assert.ok(/te\.peer\.send\(\{ t: 'forkGrant' \}\)/.test(grantSlice), 'the host grant sends consent and nothing else');
 	assert.ok(/lastForkGrantAt/.test(grantSlice), 'the grant is deduped per viewer');
 	assert.ok(!/setTile|buildSave|\binv\b|pouch/.test(grantSlice), 'the grant moves no state — consent only');
+	assert.ok(/Strumień wysyła widzowi dane świata/.test(hostSrc)
+		&& /zmodyfikowany klient może je technicznie zachować/.test(hostSrc)
+		&& /state has already been streamed to the viewer/.test(clientSrc),
+		'the host UI and client comments state that streamed world data is technically copyable');
+	assert.ok(/id="ghostPanelSafety" role="note"/.test(hostSrc) && !/id="ghostPanelSafety" role="alert"/.test(hostSrc),
+		'the long static safety disclosure is advisory, not a repeatedly announced live alert');
 	// exactly one site arms the hatch, and it is the host-granted branch
 	assert.equal([...clientSrc.matchAll(/MMR\.ghostForkArmed = true/g)].length, 1, 'exactly one site arms the fork hatch');
 	assert.ok(/pl\.t === 'forkGrant'/.test(clientSrc), 'and it is the forkGrant dispatcher branch (locked host connection only)');

@@ -118,6 +118,9 @@ import './engine/party_hud.js'; // co-op roster + off-screen teammate arrows (MM
 import { createRenderHealth, blitProbe as renderBlitProbe, HINTS as RENDER_HINTS } from './engine/render_health.js';
 import './engine/ui.js';
 import './inventory_ui.js';
+// boot_watchdog marks non-local framed production loads before this module runs.
+// Stop the game body before it can read, mutate, or autosave the player's profile.
+if(window.__mmPublicFrameBlocked) throw new Error('Mini Miner refuses to run inside a public iframe');
 // Bind global MM into a module-scoped constant for convenience
 const MM = window.MM;
 const TREASURE_SCANNER=TREASURE_COMPASS.create();
@@ -3212,8 +3215,13 @@ const SAVE_KEY='mm_save_v7';
 const OLD_SAVE_KEYS=['mm_save_v6','mm_save_v5','mm_save_v4','mm_save_v3','mm_save_v2'];
 const AUTOSAVE_CHUNK_PREFIX='mm_save_v7_chunk_';
 const CRITICAL_SAVE_KEY='mm_save_critical_v1';
+const CRITICAL_SAVE_SCHEMA_VERSION=3;
 const CRITICAL_SAVE_INTERVAL_MS=2500;
+const SAVE_SCHEMA_VERSION=7;
+const SAVE_SUPPORTED_VERSIONS=Object.freeze([6,7]);
 const SAVE_CHUNK_RESTORE_CAP=4096;
+const SAVE_INFRASTRUCTURE_RESTORE_CAP=20000;
+const SAVE_CONSTRUCTION_BACKGROUND_RESTORE_CAP=40000;
 const IMPORT_SAVE_BYTE_CAP=24*1024*1024;
 // --- Compression helpers (RLE + base64) ---
 function _b64FromBytes(bytes){ let bin=''; for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]); return btoa(bin); }
@@ -3331,6 +3339,180 @@ function computeHash(str){ // FNV-1a 32-bit
  let h=0x811c9dc5; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h = (h>>>0) * 0x01000193; h>>>0; } return ('00000000'+(h>>>0).toString(16)).slice(-8); }
 function attachHash(obj){ const clone=JSON.parse(JSON.stringify(obj)); const core=stableStringify(clone); const hash=computeHash(core); clone.h=hash; return {object:clone, hash}; }
 function verifyHash(obj){ if(!obj || typeof obj!=='object' || !obj.h) return {ok:true, reason:!obj?'no-object':'no-hash'}; const h=obj.h; const tmp=Object.assign({}, obj); delete tmp.h; const core=stableStringify(tmp); const calc=computeHash(core); return {ok: h===calc, expected: h, got: calc}; }
+function isSaveRecord(v){ return !!v && typeof v==='object' && !Array.isArray(v); }
+function saveValidationIssue(list,code,path,detail){
+	if(list.length>=32) return;
+	list.push({code:String(code),path:String(path||''),detail:String(detail||code)});
+}
+function migrateSupportedSave(data,version){
+	if(version!==6) return data;
+	// v6 used the same terrain model and inline chunk codec. Promote it in memory;
+	// absent post-v6 subsystem snapshots intentionally retain their reset defaults.
+	// The historical v6 envelope did not persist inventory at all, so seed an
+	// explicit empty canonical inventory before applying v7's required fields.
+	const migrated=Object.assign({},data,{v:SAVE_SCHEMA_VERSION});
+	if(!isSaveRecord(migrated.inv)) migrated.inv={tools:{stone:false,meteor:false,diamond:false,bedrock:false,bedrockDurability:0}};
+	delete migrated.h; // the source hash was verified before migration
+	return migrated;
+}
+function validateSaveChunkPayloads(data,world,storage,errors){
+	const inline=Array.isArray(world.modified) ? world.modified : null;
+	const refs=Array.isArray(world.chunkRefs) ? world.chunkRefs : null;
+	const seen=new Set();
+	if(inline){
+		for(let i=0;i<inline.length;i++){
+			const ch=inline[i];
+			if(!isSaveRecord(ch)){ saveValidationIssue(errors,'chunk-shape','world.modified.'+i,'chunk must be an object'); continue; }
+			const ref=validSavedChunkRef(ch.cx,ch.sy);
+			if(!ref){ saveValidationIssue(errors,'chunk-coordinate','world.modified.'+i,'invalid chunk coordinate'); continue; }
+			if(typeof ch.cx!=='number' || !Number.isInteger(ch.cx) || (ch.sy!=null && (typeof ch.sy!=='number' || !Number.isInteger(ch.sy)))) saveValidationIssue(errors,'chunk-coordinate-type','world.modified.'+i,'chunk coordinates must be integers');
+			if(ch.rle!=null && typeof ch.rle!=='boolean') saveValidationIssue(errors,'chunk-codec','world.modified.'+i+'.rle','chunk codec flag must be boolean');
+			if(seen.has(ref.key)){ saveValidationIssue(errors,'chunk-duplicate','world.modified.'+i,'duplicate chunk '+ref.key); continue; }
+			seen.add(ref.key);
+			const size=CHUNK_W*(ref.base?WORLD_H:worldSectionHeight());
+			if(!decodeSavedChunk(ch.data,!!ch.rle,size)) saveValidationIssue(errors,'chunk-data','world.modified.'+i+'.data','invalid encoded chunk payload');
+		}
+	}
+	if(refs){
+		for(let i=0;i<refs.length;i++){
+			const saved=refs[i];
+			if(!isSaveRecord(saved)){ saveValidationIssue(errors,'chunk-ref-shape','world.chunkRefs.'+i,'chunk reference must be an object'); continue; }
+			const ref=validSavedChunkRef(saved.cx,saved.sy);
+			if(!ref){ saveValidationIssue(errors,'chunk-ref-coordinate','world.chunkRefs.'+i,'invalid chunk reference coordinate'); continue; }
+			if(typeof saved.cx!=='number' || !Number.isInteger(saved.cx) || (saved.sy!=null && (typeof saved.sy!=='number' || !Number.isInteger(saved.sy)))) saveValidationIssue(errors,'chunk-ref-coordinate-type','world.chunkRefs.'+i,'chunk coordinates must be integers');
+			if(saved.rle!=null && typeof saved.rle!=='boolean') saveValidationIssue(errors,'chunk-ref-codec','world.chunkRefs.'+i+'.rle','chunk codec flag must be boolean');
+			if(seen.has(ref.key)){ saveValidationIssue(errors,'chunk-ref-duplicate','world.chunkRefs.'+i,'duplicate chunk '+ref.key); continue; }
+			seen.add(ref.key);
+			const expectedPrefix=AUTOSAVE_CHUNK_PREFIX+data.seed+'_'+ref.cx+(ref.base?'':('_s'+ref.sy));
+			if(typeof saved.key!=='string' || saved.key.length>180 || !saved.key.startsWith(expectedPrefix+'_')){
+				saveValidationIssue(errors,'chunk-ref-key','world.chunkRefs.'+i+'.key','chunk key does not match its save seed and coordinate');
+				continue;
+			}
+			if(typeof saved.h!=='string' || !/^[0-9a-f]{8}$/i.test(saved.h)){
+				saveValidationIssue(errors,'chunk-ref-hash','world.chunkRefs.'+i+'.h','external chunk requires an 8-digit hash');
+				continue;
+			}
+			if(!storage || typeof storage.getItem!=='function'){
+				saveValidationIssue(errors,'chunk-ref-storage','world.chunkRefs.'+i,'external chunk storage is unavailable');
+				continue;
+			}
+			let encoded=null;
+			try{ encoded=storage.getItem(saved.key); }catch(e){ encoded=null; }
+			const size=CHUNK_W*(ref.base?WORLD_H:worldSectionHeight());
+			if(typeof encoded!=='string' || encoded.length>size*4+64){
+				saveValidationIssue(errors,'chunk-ref-missing','world.chunkRefs.'+i,'external chunk is missing or oversized');
+				continue;
+			}
+			if(computeHash(encoded)!==saved.h){
+				saveValidationIssue(errors,'chunk-ref-hash-mismatch','world.chunkRefs.'+i,'external chunk hash mismatch');
+				continue;
+			}
+			if(!decodeSavedChunk(encoded,saved.rle!==false,size)) saveValidationIssue(errors,'chunk-ref-data','world.chunkRefs.'+i,'invalid external chunk payload');
+		}
+	}
+}
+function preflightSaveData(input,opts){
+	opts=opts||{};
+	const errors=[], warnings=[];
+	if(!isSaveRecord(input)){
+		saveValidationIssue(errors,'root-shape','save','save must be an object');
+		return {ok:false,data:null,errors,warnings,version:null,migratedFrom:null,needsRehash:false};
+	}
+	const version=input.v;
+	if(!Number.isInteger(version) || !SAVE_SUPPORTED_VERSIONS.includes(version)) saveValidationIssue(errors,'version','v','supported save versions are '+SAVE_SUPPORTED_VERSIONS.join(', '));
+	if(typeof input.seed!=='number' || normalizeWorldSeed(input.seed)===null) saveValidationIssue(errors,'seed','seed','seed must be a canonical integer from 1 to 999999999');
+	const requireHash=opts.requireHash!==false;
+	if(input.h==null){
+		if(requireHash && version===SAVE_SCHEMA_VERSION) saveValidationIssue(errors,'hash-missing','h','current saves require an integrity hash');
+		else warnings.push({code:'hash-missing',path:'h',detail:requireHash?'legacy v6 save will be signed after migration':'trusted in-memory save has no hash'});
+	}else if(typeof input.h!=='string' || !/^[0-9a-f]{8}$/i.test(input.h)){
+		saveValidationIssue(errors,'hash-format','h','save hash must contain 8 hexadecimal digits');
+	}else{
+		const hashInfo=verifyHash(input);
+		if(!hashInfo.ok) saveValidationIssue(errors,'hash-mismatch','h','save integrity hash mismatch');
+	}
+	// Hash validation always covers the original envelope. Structural validation
+	// then runs against the migrated shape so a real minimal v6 save can acquire
+	// only the fields that did not exist in that schema.
+	const candidate=migrateSupportedSave(input,version);
+	const world=candidate.world;
+	if(!isSaveRecord(world)) saveValidationIssue(errors,'world-shape','world','world snapshot is required');
+	else{
+		const hasInline=Array.isArray(world.modified), hasRefs=Array.isArray(world.chunkRefs);
+		if(world.modified!=null && !hasInline) saveValidationIssue(errors,'world-inline-shape','world.modified','modified chunks must be an array');
+		if(world.chunkRefs!=null && !hasRefs) saveValidationIssue(errors,'world-refs-shape','world.chunkRefs','chunk references must be an array');
+		if(hasInline===hasRefs) saveValidationIssue(errors,'world-mode','world','world must contain exactly one chunk storage mode');
+		if(hasRefs && world.external!==true) saveValidationIssue(errors,'world-external','world.external','external chunk saves must declare external=true');
+		if(hasInline && world.external===true) saveValidationIssue(errors,'world-external','world.external','inline chunk saves cannot declare external=true');
+		const records=hasInline?world.modified:(hasRefs?world.chunkRefs:null);
+		if(records && records.length>SAVE_CHUNK_RESTORE_CAP) saveValidationIssue(errors,'chunk-cap','world','chunk count exceeds '+SAVE_CHUNK_RESTORE_CAP+'; refusing a lossy restore');
+		else if(records) validateSaveChunkPayloads(candidate,world,opts.storage||((typeof localStorage!=='undefined')?localStorage:null),errors);
+	}
+	if(!isSaveRecord(candidate.player)) saveValidationIssue(errors,'player-shape','player','player snapshot is required');
+	else{
+		const x=candidate.player.x, y=candidate.player.y;
+		if(typeof x!=='number' || typeof y!=='number' || !worldCellInBounds(x,y)) saveValidationIssue(errors,'player-position','player','player position is outside world bounds');
+		for(const key of ['xp','hp','maxHp','energy','soot']){
+			if(candidate.player[key]!=null && (typeof candidate.player[key]!=='number' || !Number.isFinite(candidate.player[key]))) saveValidationIssue(errors,'player-number','player.'+key,key+' must be finite');
+		}
+	}
+	if(!isSaveRecord(candidate.inv)) saveValidationIssue(errors,'inventory-shape','inv','inventory snapshot is required');
+	else{
+		for(const [key,value] of Object.entries(candidate.inv)){
+			if(key==='tools'){
+				if(!isSaveRecord(value)) saveValidationIssue(errors,'inventory-tools','inv.tools','tool inventory must be an object');
+				else{
+					const allowed=new Set(['stone','meteor','diamond','bedrock','bedrockDurability']);
+					for(const toolKey of Object.keys(value)) if(!allowed.has(toolKey)) saveValidationIssue(errors,'inventory-tool-key','inv.tools.'+toolKey,'unknown tool inventory field');
+					for(const toolKey of ['stone','meteor','diamond','bedrock']){
+						if(value[toolKey]!=null && typeof value[toolKey]!=='boolean') saveValidationIssue(errors,'inventory-tool-flag','inv.tools.'+toolKey,'tool ownership flags must be boolean');
+					}
+					if(value.bedrockDurability!=null && (typeof value.bedrockDurability!=='number' || !Number.isInteger(value.bedrockDurability) || value.bedrockDurability<0 || value.bedrockDurability>BEDROCK_PICK_MAX_DURABILITY)) saveValidationIssue(errors,'inventory-tool-durability','inv.tools.bedrockDurability','bedrock durability is outside its valid range');
+				}
+				continue;
+			}
+			if(typeof value!=='number' || !Number.isFinite(value) || value<0 || value>2147483647) saveValidationIssue(errors,'inventory-count','inv.'+key,'inventory counts must be finite non-negative 32-bit values');
+		}
+	}
+	for(const [key,cap] of [['infrastructure',SAVE_INFRASTRUCTURE_RESTORE_CAP],['constructionBackground',SAVE_CONSTRUCTION_BACKGROUND_RESTORE_CAP]]){
+		const section=candidate[key];
+		if(section==null) continue;
+		if(!isSaveRecord(section) || !Array.isArray(section.list)) saveValidationIssue(errors,'section-shape',key,key+' must contain a list array');
+		else if(section.list.length>cap) saveValidationIssue(errors,'section-cap',key+'.list',key+' exceeds '+cap+' records');
+		else{
+			if(section.complete!=null && typeof section.complete!=='boolean') saveValidationIssue(errors,'section-complete-type',key+'.complete','complete must be boolean');
+			if(section.complete===false) saveValidationIssue(errors,'section-truncated',key,key+' snapshot was truncated');
+			const seen=new Set();
+			for(let i=0;i<section.list.length && errors.length<32;i++){
+				const row=section.list[i];
+				if(!isSaveRecord(row) || typeof row.x!=='number' || typeof row.y!=='number' || !Number.isInteger(row.x) || !Number.isInteger(row.y) || !worldCellInBounds(row.x,row.y)){
+					saveValidationIssue(errors,'section-coordinate',key+'.list.'+i,'record must have canonical in-bounds integer coordinates');
+					continue;
+				}
+				const tileOk=key==='infrastructure'
+					? !!(WORLD && WORLD.isInfrastructureTile && WORLD.isInfrastructureTile(row.t))
+					: row.t===0 || !!(WORLD && WORLD.isConstructionBackgroundTile && WORLD.isConstructionBackgroundTile(row.t));
+				if(!tileOk){ saveValidationIssue(errors,'section-tile',key+'.list.'+i,'record has an invalid tile'); continue; }
+				const recordKey=row.x+','+row.y+(key==='infrastructure'?(','+row.t):'');
+				if(seen.has(recordKey)) saveValidationIssue(errors,'section-duplicate',key+'.list.'+i,'duplicate record '+recordKey);
+				else seen.add(recordKey);
+			}
+		}
+	}
+	if(candidate.water!=null){
+		const waterValidation=(WATER && typeof WATER.validateSnapshot==='function') ? WATER.validateSnapshot(candidate.water) : {ok:isSaveRecord(candidate.water),errors:['water validator unavailable']};
+		if(!waterValidation.ok) for(const detail of (waterValidation.errors||['invalid water snapshot'])) saveValidationIssue(errors,'water', 'water', detail);
+	}
+	const ok=errors.length===0;
+	const migrated=ok ? candidate : null;
+	return {ok,data:migrated,errors,warnings,version,migratedFrom:ok&&version!==SAVE_SCHEMA_VERSION?version:null,needsRehash:ok&&requireHash&&version===6&&input.h==null};
+}
+function parseSaveCandidate(raw,opts){
+	if(typeof raw!=='string') return {ok:false,data:null,errors:[{code:'raw-shape',path:'save',detail:'save payload must be text'}],warnings:[]};
+	if(raw.length>IMPORT_SAVE_BYTE_CAP) return {ok:false,data:null,errors:[{code:'raw-cap',path:'save',detail:'save payload exceeds '+IMPORT_SAVE_BYTE_CAP+' bytes'}],warnings:[]};
+	try{ return preflightSaveData(JSON.parse(raw),opts); }
+	catch(e){ return {ok:false,data:null,errors:[{code:'json',path:'save',detail:'invalid save JSON'}],warnings:[]}; }
+}
 function savePerfNow(){ return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); }
 function timedSavePart(label,fn,perf){
 	const t=savePerfNow();
@@ -3358,13 +3540,79 @@ function publishSavePerf(perf){
 // Save scheduler state is declared before saveGame(): customization events can
 // request a save before later DOM setup code has finished running.
 let _saveStateT=null, _autoSaveWorkT=null, _autoSaveJob=null, _lastAutoSaveAt=Date.now(), _saveDirty=false, _lastSaveActivityAt=Date.now(), _saveRevision=0, _saveFailureCount=0, _nextAutoSaveRetryAt=0, _lastSaveError='';
-let _lastCriticalSaveAt=0, _lastCriticalSaveSignature='', _criticalSaveFailureCount=0;
-let _startingNewGame=false;
+let _lastCriticalSaveAt=0, _lastCriticalSaveSignature='', _criticalSaveFailureCount=0, _committedSaveIdentity=null;
+let _startingNewGame=false, _saveWritesBlocked=false, _saveWriteBlockReason='';
 const AUTO_SAVE_IDLE_CHECK_MS=3000;
 const AUTO_SAVE_IDLE_REQUIRED_MS=12000;
 const AUTO_SAVE_MIN_GAP_MS=90000;
 const AUTO_SAVE_CHUNK_BATCH_MS=5;
+function renderSaveWriteBlockWarning(){
+	try{
+		if(typeof document==='undefined' || !document.body) return;
+		let el=document.getElementById('saveRecoveryWarning');
+		if(!el){
+			el=document.createElement('div'); el.id='saveRecoveryWarning'; el.setAttribute('role','alert'); el.setAttribute('aria-live','assertive');
+			el.style.cssText='position:fixed;z-index:30000;top:calc(env(safe-area-inset-top,0px) + 10px);left:50%;transform:translateX(-50%);width:min(680px,calc(100vw - 24px));box-sizing:border-box;padding:10px 14px;border:1px solid #ff9f43;border-radius:10px;background:rgba(55,25,12,.96);color:#fff3dc;font:600 13px/1.4 system-ui,sans-serif;text-align:center;pointer-events:none;';
+			document.body.appendChild(el);
+		}
+		el.textContent='Nie udało się bezpiecznie wczytać głównego zapisu. Oryginał pozostaje nienaruszony, a zapis automatyczny jest zablokowany. Wczytaj poprawny zapis ręczny albo świadomie rozpocznij nową warstwę.';
+		const primary=document.querySelector('#titleScreen .tsPrimary');
+		if(primary) primary.textContent='⚠ Tryb odzyskiwania';
+		const hint=document.querySelector('#titleScreen .tsHint');
+		if(hint) hint.textContent='Uszkodzony zapis nie zostanie nadpisany · użyj listy zapisów albo rozpocznij nową warstwę';
+	}catch(e){}
+}
+function cancelPendingSaveWork(){
+	if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; }
+	if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; }
+	const refs=_autoSaveJob && Array.isArray(_autoSaveJob.refs) ? _autoSaveJob.refs.slice() : [];
+	_autoSaveJob=null;
+	if(refs.length) cleanupAutosaveChunks(new Set(),refs);
+}
+function blockSaveWrites(reason){
+	_saveWritesBlocked=true;
+	_saveWriteBlockReason=String(reason||'main save rejected').slice(0,240);
+	_saveDirty=false;
+	cancelPendingSaveWork();
+	try{ window.__saveWritesBlocked=true; window.__saveWriteBlockReason=_saveWriteBlockReason; const warning=document.getElementById('saveFailureWarning'); if(warning) warning.remove(); for(const id of ['saveGameBtn','saveAsBtn']){ const button=document.getElementById(id); if(button) button.disabled=true; } }catch(e){}
+	renderSaveWriteBlockWarning();
+}
+function clearSaveWriteBlock(){
+	_saveWritesBlocked=false; _saveWriteBlockReason='';
+	try{ window.__saveWritesBlocked=false; window.__saveWriteBlockReason=''; const el=document.getElementById('saveRecoveryWarning'); if(el) el.remove(); for(const id of ['saveGameBtn','saveAsBtn']){ const button=document.getElementById(id); if(button) button.disabled=false; } }catch(e){}
+}
+function suspendSaveSchedulerForLoad(){
+	const state={dirty:_saveDirty,lastAutoSaveAt:_lastAutoSaveAt,nextRetryAt:_nextAutoSaveRetryAt};
+	cancelPendingSaveWork();
+	_saveDirty=false;
+	_saveRevision++;
+	return state;
+}
+function settleSaveSchedulerAfterLoad(state,success){
+	if(success){
+		_saveDirty=false; _lastAutoSaveAt=Date.now(); recordSaveSuccess();
+		return;
+	}
+	_saveDirty=!!(state && state.dirty);
+	if(state && Number.isFinite(state.lastAutoSaveAt)) _lastAutoSaveAt=state.lastAutoSaveAt;
+	if(state && Number.isFinite(state.nextRetryAt)) _nextAutoSaveRetryAt=state.nextRetryAt;
+	if(_saveDirty && !_saveWritesBlocked) scheduleDirtySave(AUTO_SAVE_IDLE_CHECK_MS);
+}
 function noteSaveActivity(){ _lastSaveActivityAt=Date.now(); }
+function rememberCommittedSave(data,revision){
+	if(!isSaveRecord(data)) return false;
+	let manifestHash=typeof data.h==='string' && /^[0-9a-f]{8}$/i.test(data.h) ? data.h.toLowerCase() : '';
+	if(!manifestHash){
+		try{ manifestHash=attachHash(data).hash; }catch(e){ return false; }
+	}
+	const cleanRevision=Number(revision);
+	if(!Number.isSafeInteger(cleanRevision) || cleanRevision<0) return false;
+	_committedSaveIdentity={manifestHash,revision:cleanRevision};
+	// A payload-only dedupe signature from the previous base must never suppress
+	// the first capsule tied to the newly committed manifest.
+	_lastCriticalSaveSignature='';
+	return true;
+}
 function modifiedChunkIds(){ if(WORLD && typeof WORLD.modifiedChunkIds==='function') return WORLD.modifiedChunkIds(); const out=[]; const worldMap=WORLD._world; if(!worldMap) return out; for(const [k] of worldMap.entries()){ const ref=normalizeWorldChunkRef(k); if(!ref) continue; const ver=WORLD._versions.get(ref.key)||0; if(ver!==0) out.push(ref.base?ref.cx:{cx:ref.cx,sy:ref.sy}); } return out; }
 function gatherModifiedChunks(ids){
 	const out=[]; const worldMap=WORLD._world; if(!worldMap) return out;
@@ -3372,11 +3620,12 @@ function gatherModifiedChunks(ids){
 	const seen=new Set();
 	for(const raw of rawList){
 		const ref=normalizeWorldChunkRef(raw);
-		if(!ref || seen.has(ref.key)) continue;
+		if(!ref) throw new Error('Modified chunk list contains an invalid reference');
+		if(seen.has(ref.key)) continue;
 		seen.add(ref.key);
 		const arr=worldChunkArrayFor(ref,false);
 		const ver=worldChunkVersion(ref);
-		if(!arr || ver===0) continue;
+		if(!arr || ver===0) throw new Error('Modified chunk '+ref.key+' is unavailable for save');
 		const item={cx:ref.cx,data:encodeRLE(chunkForTerrainSave(arr)),rle:true};
 		if(!ref.base){ item.sy=ref.sy; item.sectionH=ref.h||worldSectionHeight(); }
 		out.push(item);
@@ -3405,7 +3654,8 @@ function markWorldChunkModified(cx){
 function restoreModifiedChunks(list){
 	const restored=[];
 	if(!Array.isArray(list)) return restored;
-	for(const ch of list.slice(0,SAVE_CHUNK_RESTORE_CAP)){
+	assertSaveChunkCapacity(list,'inline restore');
+	for(const ch of list){
 		if(!ch || typeof ch.data!=='string') continue;
 		const ref=validSavedChunkRef(ch.cx,ch.sy);
 		if(!ref) continue;
@@ -3456,6 +3706,22 @@ function saveErrorText(e){ return (e && (e.name || e.message)) ? String(e.name |
 function recordSaveSuccess(){
 	_saveFailureCount=0; _nextAutoSaveRetryAt=0; _lastSaveError='';
 	try{ window.__lastSaveError=''; window.__lastSaveFailures=0; window.__nextSaveRetryAt=0; }catch(e){}
+	try{ const warning=document.getElementById('saveFailureWarning'); if(warning) warning.remove(); }catch(e){}
+}
+function showPersistentSaveFailure(error,quota){
+	try{
+		if(typeof document==='undefined' || !document.body) return;
+		let el=document.getElementById('saveFailureWarning');
+		if(!el){
+			el=document.createElement('div'); el.id='saveFailureWarning'; el.setAttribute('role','alert'); el.setAttribute('aria-live','assertive');
+			el.style.cssText='position:fixed;z-index:29000;top:calc(env(safe-area-inset-top,0px) + 10px);left:50%;transform:translateX(-50%);width:min(680px,calc(100vw - 24px));box-sizing:border-box;padding:10px 14px;border:1px solid #ff6b6b;border-radius:10px;background:rgba(58,15,20,.96);color:#ffe9ec;font:600 13px/1.4 system-ui,sans-serif;text-align:center;pointer-events:none;';
+			document.body.appendChild(el);
+		}
+		const capacity=error && error.name==='SaveCapacityError';
+		el.textContent=capacity
+			?'Nie zapisano bieżących zmian: świat przekroczył bezpieczną pojemność pełnego zapisu. Ostatni poprawny zapis pozostał bez zmian; zmniejsz liczbę konstrukcji lub edytowanych obszarów i spróbuj ponownie.'
+			:(quota?'Nie zapisano bieżących zmian: pamięć przeglądarki jest pełna. Ostatni poprawny zapis pozostał bez zmian; zwolnij miejsce i spróbuj ponownie.':'Nie udało się zapisać bieżących zmian. Ostatni poprawny zapis pozostał bez zmian; nie zamykaj karty i spróbuj zapisać ponownie.');
+	}catch(e){}
 }
 function recordSaveFailure(e,manual){
 	const quota=isQuotaSaveError(e);
@@ -3465,12 +3731,14 @@ function recordSaveFailure(e,manual){
 	_nextAutoSaveRetryAt=Date.now()+backoff;
 	_lastSaveError=saveErrorText(e)+(reclaimed?(' cleaned '+reclaimed):'');
 	try{ window.__lastSaveError=_lastSaveError; window.__lastSaveFailures=_saveFailureCount; window.__nextSaveRetryAt=_nextAutoSaveRetryAt; }catch(err){}
+	if(quota || (e && e.name==='SaveCapacityError') || _saveFailureCount>=2) showPersistentSaveFailure(e,quota);
 	if(manual) msg(quota?'Blad zapisu - brak miejsca?':'Blad zapisu');
 }
 function restoreReferencedChunks(refs){
 	const restored=[];
 	if(!Array.isArray(refs)) return restored;
-	for(const saved of refs.slice(0,SAVE_CHUNK_RESTORE_CAP)){
+	assertSaveChunkCapacity(refs,'referenced restore');
+	for(const saved of refs){
 		if(!saved || typeof saved.key!=='string' || saved.key.length>180 || !saved.key.startsWith(AUTOSAVE_CHUNK_PREFIX)) continue;
 		const ref=validSavedChunkRef(saved.cx,saved.sy);
 		if(!ref) continue;
@@ -3589,11 +3857,14 @@ function restorePlayerHealth(src){
 	return true;
 }
 function snapshotCriticalState(reason){
+	const base=_committedSaveIdentity;
 	return {
-		v:1,
+		v:CRITICAL_SAVE_SCHEMA_VERSION,
 		seed:WORLDGEN.worldSeed,
 		savedAt:Date.now(),
-		revision:_saveRevision|0,
+		revision:_saveRevision,
+		baseManifestHash:base ? base.manifestHash : '',
+		baseRevision:base ? base.revision : -1,
 		reason:String(reason||'').slice(0,32),
 		player:snapshotPlayerState(),
 		inv:snapshotInventory(),
@@ -3613,16 +3884,30 @@ function criticalStateComparable(state){
 function criticalStateSignature(state){
 	return stableStringify(criticalStateComparable(state));
 }
+function criticalStateIntegritySignature(state){
+	return stableStringify({
+		v:state && state.v,
+		seed:state && state.seed,
+		savedAt:state && state.savedAt,
+		revision:state && state.revision,
+		baseManifestHash:state && state.baseManifestHash,
+		baseRevision:state && state.baseRevision,
+		reason:state && state.reason,
+		state:criticalStateComparable(state)
+	});
+}
 function saveCriticalState(reason,force){
 	if(_startingNewGame) return false;
+	if(_saveWritesBlocked) return false;
 	if(MM.ghostMode) return false; // watchers replicate a foreign world — never persist it
+	if(!_committedSaveIdentity) return false; // there is no complete world manifest this capsule can safely overlay
 	try{
 		const now=Date.now();
 		if(!force && now-_lastCriticalSaveAt<CRITICAL_SAVE_INTERVAL_MS) return false;
 		const state=snapshotCriticalState(reason);
 		const sig=criticalStateSignature(state);
 		if(!force && sig===_lastCriticalSaveSignature){ _lastCriticalSaveAt=now; return false; }
-		state.stateHash=computeHash(sig);
+		state.stateHash=computeHash(criticalStateIntegritySignature(state));
 		const json=JSON.stringify(state);
 		localStorage.setItem(CRITICAL_SAVE_KEY,json);
 		_lastCriticalSaveAt=now;
@@ -3643,17 +3928,24 @@ function loadCriticalStateForSave(data,opts){
 		const raw=localStorage.getItem(CRITICAL_SAVE_KEY);
 		if(!raw) return null;
 		const state=JSON.parse(raw);
-		if(!state || state.v!==1 || typeof state!=='object') return null;
-		const saveSeed=Number.isFinite(Number(data && data.seed)) ? Number(data.seed) : WORLDGEN.worldSeed;
-		const criticalSeed=Number(state.seed);
-		if(!Number.isFinite(criticalSeed) || criticalSeed!==saveSeed) return null;
-		const saveTime=Number(data && data.savedAt)||0;
-		const criticalTime=Number(state.savedAt)||0;
-		if(!(criticalTime>saveTime)) return null;
-		if(state.stateHash && computeHash(criticalStateSignature(state))!==state.stateHash){
+		if(!state || state.v!==CRITICAL_SAVE_SCHEMA_VERSION || typeof state!=='object') return null;
+		if(typeof state.stateHash!=='string' || !/^[0-9a-f]{8}$/i.test(state.stateHash) || computeHash(criticalStateIntegritySignature(state))!==state.stateHash){
 			console.warn('Critical save hash mismatch');
 			return null;
 		}
+		if(!Number.isSafeInteger(state.revision) || state.revision<0 || !Number.isSafeInteger(state.baseRevision) || state.baseRevision<0 || !Number.isFinite(state.savedAt) || state.savedAt<=0) return null;
+		if(typeof state.baseManifestHash!=='string' || !/^[0-9a-f]{8}$/i.test(state.baseManifestHash)) return null;
+		const saveSeed=Number.isFinite(Number(data && data.seed)) ? Number(data.seed) : WORLDGEN.worldSeed;
+		const criticalSeed=Number(state.seed);
+		if(!Number.isFinite(criticalSeed) || criticalSeed!==saveSeed) return null;
+		const saveManifestHash=data && typeof data.h==='string' ? data.h.toLowerCase() : '';
+		if(!saveManifestHash || state.baseManifestHash.toLowerCase()!==saveManifestHash) return null;
+		// Any saveState() since the base manifest may represent a terrain/inventory
+		// exchange. A partial critical overlay would then duplicate or lose items.
+		if(state.revision!==state.baseRevision) return null;
+		const saveTime=Number(data && data.savedAt)||0;
+		const criticalTime=Number(state.savedAt)||0;
+		if(!(criticalTime>saveTime)) return null;
 		return state;
 	}catch(e){ return null; }
 }
@@ -3678,6 +3970,38 @@ function restoreCriticalState(state){
 	}
 	return applied;
 }
+function assertSaveChunkCapacity(records,label){
+	const count=Array.isArray(records)?records.length:0;
+	if(count>SAVE_CHUNK_RESTORE_CAP){
+		const e=new Error((label||'save')+' contains '+count+' chunks; limit is '+SAVE_CHUNK_RESTORE_CAP);
+		e.name='SaveCapacityError';
+		throw e;
+	}
+	return records;
+}
+function snapshotWaterForSave(){
+	if(!WATER || typeof WATER.snapshot!=='function') return null;
+	const snapshot=WATER.snapshot();
+	if(!snapshot) throw new Error('Water snapshot failed');
+	const validation=(typeof WATER.validateSnapshot==='function') ? WATER.validateSnapshot(snapshot) : {ok:snapshot.complete!==false,errors:['water snapshot incomplete']};
+	if(!validation.ok){
+		const e=new Error('Water snapshot is incomplete: '+(validation.errors||[]).join(', '));
+		e.name='SaveCapacityError';
+		throw e;
+	}
+	return snapshot;
+}
+function snapshotWorldSectionForSave(label,snapshotter){
+	if(typeof snapshotter!=='function') return null;
+	const snapshot=snapshotter();
+	if(!snapshot || typeof snapshot!=='object') throw new Error(label+' snapshot failed');
+	if(snapshot.complete===false){
+		const e=new Error(label+' snapshot exceeds its lossless save capacity');
+		e.name='SaveCapacityError';
+		throw e;
+	}
+	return snapshot;
+}
 function buildSaveObject(opts){
  opts=opts||{};
  const perf=opts.perf||null;
@@ -3692,6 +4016,7 @@ function buildSaveObject(opts){
 	 saveChunkIds=timedSavePart('world.modified2',()=>modifiedChunkIds(),perf);
  }
  if(saveChunkIds==null) saveChunkIds = Array.isArray(opts.chunkRefs) ? [] : timedSavePart('world.modified',()=>modifiedChunkIds(),perf);
+ assertSaveChunkCapacity(Array.isArray(opts.chunkRefs)?opts.chunkRefs:saveChunkIds,Array.isArray(opts.chunkRefs)?'external save':'world save');
  const saveAuditChunkIds=baseChunkIdsForAudits(saveChunkIds);
  timedSavePart('meat.audit',()=>{ try{ if(saveAuditChunkIds.length && MEAT && MEAT.auditChunks) MEAT.auditChunks(saveAuditChunkIds,getTile); }catch(e){} },perf);
  timedSavePart('gases.audit',()=>{ try{ if(saveAuditChunkIds.length && GASES && GASES.auditChunks) GASES.auditChunks(saveAuditChunkIds,getTile); }catch(e){} },perf);
@@ -3699,17 +4024,18 @@ function buildSaveObject(opts){
 	Array.isArray(opts.chunkRefs) ? {chunkRefs:opts.chunkRefs, external:true} : {modified: gatherModifiedChunks(saveChunkIds)}
  ),perf);
 	return {
-	v:7,
+	v:SAVE_SCHEMA_VERSION,
 	seed: WORLDGEN.worldSeed,
 	world:worldData,
 	respawnTotems: timedSavePart('respawnTotems',()=>snapshotRespawnTotems(),perf),
 	healingShelters: timedSavePart('healingShelters',()=>snapshotHealingShelters(),perf),
 	grave: timedSavePart('grave',()=>snapshotGrave(),perf),
+	water: timedSavePart('water',()=>snapshotWaterForSave(),perf),
 	fog: timedSavePart('fog',()=>((FOG && FOG.exportSeen) ? {v:2,revealAll:!!(FOG.getRevealAll && FOG.getRevealAll()),seen:FOG.exportSeen()} : null),perf),
-	infrastructure: timedSavePart('infrastructure',()=>((WORLD && WORLD.snapshotInfrastructure) ? WORLD.snapshotInfrastructure() : null),perf),
+	infrastructure: timedSavePart('infrastructure',()=>snapshotWorldSectionForSave('Infrastructure',(WORLD && WORLD.snapshotInfrastructure) ? ()=>WORLD.snapshotInfrastructure() : null),perf),
 	background: timedSavePart('background',()=>((BACKGROUND && BACKGROUND.snapshot) ? BACKGROUND.snapshot() : ((BACKGROUND && BACKGROUND.exportState) ? BACKGROUND.exportState() : null)),perf),
 	trees: timedSavePart('trees',()=>((TREES && TREES.snapshot) ? TREES.snapshot() : null),perf),
-	constructionBackground: timedSavePart('constructionBackground',()=>((WORLD && WORLD.snapshotConstructionBackground) ? WORLD.snapshotConstructionBackground() : null),perf),
+	constructionBackground: timedSavePart('constructionBackground',()=>snapshotWorldSectionForSave('Construction background',(WORLD && WORLD.snapshotConstructionBackground) ? ()=>WORLD.snapshotConstructionBackground() : null),perf),
 	falling: timedSavePart('falling',()=>((FALLING && FALLING.snapshot) ? FALLING.snapshot() : null),perf),
 	meat: timedSavePart('meat',()=>((MEAT && MEAT.snapshot) ? MEAT.snapshot() : null),perf),
 	drops: timedSavePart('drops',()=>((DROPS && DROPS.snapshot) ? DROPS.snapshot() : null),perf),
@@ -3758,17 +4084,20 @@ function buildSaveObject(opts){
 	savedAt: Date.now()
 }; }
 function saveGameCore(manual){
+	if(_saveWritesBlocked){ if(manual) msg('Zapis zablokowany: najpierw odzyskaj zapis lub rozpocznij nową warstwę'); return false; }
 	if(MM.ghostMode) return false; // ghost sessions never write saves
 	try{
 		const t0=savePerfNow();
 		const perf={parts:[]};
 		const oldRefs=currentAutosaveRefs();
+		const snapshotRevision=_saveRevision;
 		const data=buildSaveObject({perf});
 		const mods=(data.world && data.world.modified)? data.world.modified.length:0;
 		const {object:withHash} = timedSavePart('hash',()=>attachHash(data),perf);
 		const json=timedSavePart('json',()=>JSON.stringify(withHash),perf);
 		const writeT=savePerfNow();
 		localStorage.setItem(SAVE_KEY,json);
+		rememberCommittedSave(withHash,snapshotRevision);
 		const writeMs=savePerfNow()-writeT;
 		addSavePerfPart(perf,'storage.write',writeMs);
 		timedSavePart('storage.cleanup',()=>cleanupAutosaveChunks(referencedAutosaveKeys(),oldRefs),perf);
@@ -3788,36 +4117,188 @@ function showAutoSaveHint(sizeKB){ try{ let el=document.getElementById('autoSave
  const now=new Date(); const t=now.toLocaleTimeString(); el.textContent='Auto-zapis '+t+' ('+sizeKB+' KB)'; el.style.opacity='1'; clearTimeout(showAutoSaveHint._t); showAutoSaveHint._t=setTimeout(()=>{ el.style.opacity='0'; },2800); }catch(e){} }
 // Wrapper adds the autosave hint on non-manual saves
 function saveGame(manual){ saveCriticalState(manual?'manual-attempt':'full-attempt',true); const ok=saveGameCore(manual); if(ok){ saveCriticalState(manual?'manual':'full',true); _saveDirty=false; _lastAutoSaveAt=Date.now(); _autoSaveJob=null; if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; } if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; } } if(ok && !manual){ try{ const raw=localStorage.getItem(SAVE_KEY); if(raw) showAutoSaveHint((raw.length/1024)|0); }catch(e){} } return ok; }
+function publishLoadReport(report){
+	const clean=Object.assign({at:Date.now()},report||{});
+	try{ window.__lastLoadReport=clean; }catch(e){}
+	return clean;
+}
+function saveRestoreRejected(value){
+	return value===false || !!(value && value.ok===false);
+}
+function loadFailureSummary(preflight){
+	const first=preflight && Array.isArray(preflight.errors) ? preflight.errors[0] : null;
+	return first ? (first.path+': '+first.detail) : 'invalid save';
+}
+function migratedSaveJson(preflight,raw){
+	if(!preflight || (!preflight.migratedFrom && !preflight.needsRehash)) return raw;
+	return JSON.stringify(attachHash(preflight.data).object);
+}
+function portableSaveJson(raw,storage){
+	const preflight=parseSaveCandidate(raw,{storage,requireHash:true});
+	if(!preflight.ok) throw new Error(loadFailureSummary(preflight));
+	const refs=preflight.data && preflight.data.world && preflight.data.world.chunkRefs;
+	if(!Array.isArray(refs)) return migratedSaveJson(preflight,raw);
+	assertSaveChunkCapacity(refs,'save export');
+	const modified=[];
+	for(const saved of refs){
+		const ref=validSavedChunkRef(saved.cx,saved.sy);
+		if(!ref) throw new Error('Invalid external chunk reference during export');
+		const encoded=storage && typeof storage.getItem==='function' ? storage.getItem(saved.key) : null;
+		const size=CHUNK_W*(ref.base?WORLD_H:worldSectionHeight());
+		if(typeof encoded!=='string' || computeHash(encoded)!==saved.h || !decodeSavedChunk(encoded,saved.rle!==false,size)) throw new Error('External save chunk is unavailable during export');
+		const row={cx:ref.cx,data:encoded,rle:saved.rle!==false};
+		if(!ref.base){ row.sy=ref.sy; row.sectionH=ref.h||worldSectionHeight(); }
+		modified.push(row);
+	}
+	const portable=JSON.parse(JSON.stringify(preflight.data));
+	delete portable.h;
+	portable.world={modified};
+	const json=JSON.stringify(attachHash(portable).object);
+	const bytes=typeof TextEncoder==='function' ? new TextEncoder().encode(json).length : json.length;
+	if(bytes>IMPORT_SAVE_BYTE_CAP) throw new Error('Portable save exceeds the import size limit');
+	return json;
+}
+function loadSaveCandidate(raw,opts){
+	opts=opts||{};
+	const preflight=parseSaveCandidate(raw,{storage:localStorage,requireHash:opts.requireHash!==false});
+	if(!preflight.ok){
+		const summary=loadFailureSummary(preflight);
+		publishLoadReport({ok:false,stage:'preflight',errors:preflight.errors||[],warnings:preflight.warnings||[],summary});
+		console.warn('Save preflight failed',preflight.errors);
+		return false;
+	}
+	const committed=migratedSaveJson(preflight,raw);
+	const applyOpts=Object.assign({},opts,{preflightResult:preflight,transactional:opts.transactional!==false});
+	delete applyOpts.requireHash;
+	applyOpts.rememberCommitted=opts.persistAsMain!==false;
+	if(opts.persistAsMain!==false) applyOpts.commit=()=>localStorage.setItem(SAVE_KEY,committed);
+	delete applyOpts.persistAsMain;
+	const applied=applyGameData(preflight.data,applyOpts);
+	if(applied && opts.persistAsMain!==false){
+		clearSaveWriteBlock();
+		saveCriticalState('load-recovered',true);
+	}
+	return applied;
+}
 function loadGame(opts){
  opts=opts||{};
  try{
-	let raw=localStorage.getItem(SAVE_KEY);
-	if(!raw){ for(const k of OLD_SAVE_KEYS){ raw=localStorage.getItem(k); if(raw) break; } }
-	if(!raw){ return false; }
-	const data=JSON.parse(raw);
-	if(!data|| typeof data!=='object') return false;
-	const hashInfo=verifyHash(data); if(!hashInfo.ok){ msg('UWAGA: uszkodzony zapis (hash)'); console.warn('Hash mismatch',hashInfo); }
-	return applyGameData(data,opts);
- }catch(e){ console.warn('Load failed',e); return false; }
+	let sourceKey=SAVE_KEY;
+	let raw=localStorage.getItem(sourceKey);
+	if(!raw){ for(const k of OLD_SAVE_KEYS){ raw=localStorage.getItem(k); if(raw){ sourceKey=k; break; } } }
+	if(!raw){ return null; }
+	if(sourceKey!==SAVE_KEY){
+		const migrated=loadSaveCandidate(raw,Object.assign({},opts,{transactional:true,persistAsMain:true}));
+		if(!migrated) blockSaveWrites('legacy save rejected');
+		return migrated;
+	}
+	const preflight=parseSaveCandidate(raw,{storage:localStorage,requireHash:true});
+	if(!preflight.ok){
+		const summary=loadFailureSummary(preflight);
+		publishLoadReport({ok:false,stage:'preflight',errors:preflight.errors||[],warnings:preflight.warnings||[],summary});
+		console.warn('Load preflight failed',preflight.errors);
+		blockSaveWrites(summary);
+		return false;
+	}
+	if(preflight.migratedFrom || preflight.needsRehash){
+		const migrated=loadSaveCandidate(raw,Object.assign({},opts,{transactional:true,persistAsMain:true}));
+		if(!migrated) blockSaveWrites('save migration failed');
+		return migrated;
+	}
+	const applied=applyGameData(preflight.data,Object.assign({},opts,{preflightResult:preflight,transactional:true,rememberCommitted:true}));
+	if(applied){ clearSaveWriteBlock(); saveCriticalState('load',true); }
+	else blockSaveWrites('main save restore failed');
+	return applied;
+ }catch(e){ console.warn('Load failed',e); blockSaveWrites(saveErrorText(e)); return false; }
+}
+function applyGameData(data,opts){
+	opts=opts||{};
+	const preflight=opts.preflightResult || preflightSaveData(data,{storage:localStorage,requireHash:false});
+	if(!preflight.ok){
+		const summary=loadFailureSummary(preflight);
+		publishLoadReport({ok:false,stage:'preflight',errors:preflight.errors||[],warnings:preflight.warnings||[],summary});
+		return false;
+	}
+	const transactional=opts.transactional===true || opts.preserveGuestRuntime===true;
+	const schedulerState=transactional ? suspendSaveSchedulerForLoad() : null;
+	let rollbackData=null;
+	let rollbackRuntime=null;
+	if(transactional){
+		try{
+			rollbackRuntime=captureWorldTransitionRuntime();
+			rollbackData=buildSaveObject({lightweight:true,perf:{parts:[]}});
+		}
+		catch(e){
+			settleSaveSchedulerAfterLoad(schedulerState,false);
+			publishLoadReport({ok:false,stage:'snapshot-current',errors:[{code:'rollback-snapshot',path:'runtime',detail:saveErrorText(e)}],summary:'could not snapshot current world before load'});
+			console.warn('Transactional load could not snapshot current world',e);
+			return false;
+		}
+	}
+	try{
+		const coreOpts=Object.assign({},opts,{deferCriticalSave:transactional});
+		delete coreOpts.preflightResult; delete coreOpts.transactional; delete coreOpts.commit; delete coreOpts.preserveGuestRuntime; delete coreOpts.rememberCommitted;
+		if(applyGameDataCore(preflight.data,coreOpts)!==true) throw new Error('Save restore did not complete');
+		if(opts.preserveGuestRuntime===true && rollbackRuntime && restoreWorldTransitionRuntimeSnapshot(rollbackRuntime)!==true) throw new Error('Guest runtime could not be preserved');
+		if(typeof opts.commit==='function') opts.commit();
+		if(opts.rememberCommitted===true) rememberCommittedSave(preflight.data,_saveRevision);
+		if(transactional) saveCriticalState('load',true);
+		settleSaveSchedulerAfterLoad(schedulerState,true);
+		publishLoadReport({ok:true,stage:'complete',version:preflight.version,migratedFrom:preflight.migratedFrom||null,warnings:preflight.warnings||[],restored:true});
+		return true;
+	}catch(e){
+		let rolledBack=false;
+		let rollbackError=null;
+		if(transactional && rollbackData){
+			try{
+				applyGameDataCore(rollbackData,{ignoreCritical:true,deferCriticalSave:true,rollback:true});
+				if(rollbackRuntime && restoreWorldTransitionRuntimeSnapshot(rollbackRuntime)!==true) throw new Error('Transient runtime rollback failed');
+				rolledBack=true;
+			}
+			catch(err){ rollbackError=err; console.error('Load rollback failed',err); }
+		}
+		settleSaveSchedulerAfterLoad(schedulerState,false);
+		const failures=Array.isArray(e && e.failures) ? e.failures : [{code:'restore',path:'runtime',detail:saveErrorText(e)}];
+		publishLoadReport({ok:false,stage:'restore',errors:failures,summary:saveErrorText(e),rolledBack,rollbackError:rollbackError?saveErrorText(rollbackError):null});
+		console.warn('Load failed',e);
+		return false;
+	}
 }
 // Applies a parsed save object to the LIVE session: resets volatile systems,
 // swaps the seed if needed and restores every snapshot part. Shared by
 // loadGame (localStorage) and the ghost spectator join (the host's save object
 // streamed over ghost_net) — the wire format IS the save format.
-function applyGameData(data,opts){
+function applyGameDataCore(data,opts){
  opts=opts||{};
  try{
-	if(!data|| typeof data!=='object') return false;
-	const ver=Number.isFinite(data.v) ? data.v : 5; // proceed even if hash mismatch
+	const restoreFailures=[];
+	function restoreRequired(path,present,fn){
+		if(!present) return null;
+		try{
+			const value=fn();
+			// Restore APIs use an explicit false (or {ok:false}) to reject malformed
+			// input. Never reinterpret that as a successful empty snapshot: most of
+			// them reset first, so doing so would silently commit data loss.
+			if(saveRestoreRejected(value)){
+				const detail=value && Array.isArray(value.errors) ? value.errors.join(', ') : 'restore rejected required data';
+				throw new Error(detail);
+			}
+			return value;
+		}catch(e){
+			restoreFailures.push({code:'restore-required',path,detail:String(e && (e.message||e.name) || 'restore failed').slice(0,160)});
+			return null;
+		}
+	}
+	if(!isSaveRecord(data)) throw new Error('Save core requires a validated object');
+	const ver=data.v;
 	const criticalState=loadCriticalStateForSave(data,opts);
-	// Saves older than v6 store chunks from the previous (inverted) terrain model;
-	// pasting them into a v2 world corrupts it — start fresh instead
-	if(ver<6){ console.warn('Save version',ver,'predates terrain v2 — starting a new world'); return false; }
+	// Only the centralized preflight/migration layer may feed the mutating core.
+	if(ver!==SAVE_SCHEMA_VERSION) throw new Error('Save core requires migrated schema v'+SAVE_SCHEMA_VERSION);
 	// Marker fields were added over time. Preserve an old side-store only for a
 	// sparse save targeting the exact live seed; after chunk restore each record
 	// is still validated against the loaded snapshot. Cross-seed state is never
 	// eligible for this one-time compatibility path.
-	const incomingSeed=Number.isFinite(data.seed) ? data.seed : WORLDGEN.worldSeed;
+	const incomingSeed=data.seed;
 	const sameLiveSeed=incomingSeed===WORLDGEN.worldSeed;
 	const hasOwn=(key)=>Object.prototype.hasOwnProperty.call(data,key);
 	const legacyWorldMarkers={
@@ -3902,74 +4383,115 @@ function applyGameData(data,opts){
 	}
 	if(WORLD && WORLD.clear) WORLD.clear();
 	dropWorldBoundMarkers(); // totem/grave from another world must not apply here
-	try{ if(BACKGROUND && BACKGROUND.restore) BACKGROUND.restore(data.background); else if(BACKGROUND && BACKGROUND.importState) BACKGROUND.importState(data.background); }catch(e){}
+	restoreRequired('background',data.background!=null,()=>{
+		if(BACKGROUND && BACKGROUND.restore) return BACKGROUND.restore(data.background);
+		if(BACKGROUND && BACKGROUND.importState) return BACKGROUND.importState(data.background);
+		throw new Error('background restorer unavailable');
+	});
 
 	// Restore modified blocks and player position. v6 saves are self-contained;
 	// v7 autosaves may reference separately stored chunk blobs.
-	const restoredChunks=restoreWorldChunks(data.world);
+	const expectedChunks=Array.isArray(data.world && data.world.modified) ? data.world.modified.length : (Array.isArray(data.world && data.world.chunkRefs) ? data.world.chunkRefs.length : 0);
+	const restoredChunks=restoreRequired('world',true,()=>restoreWorldChunks(data.world)) || [];
+	if(restoredChunks.length!==expectedChunks) restoreFailures.push({code:'restore-incomplete',path:'world',detail:'restored '+restoredChunks.length+' of '+expectedChunks+' chunks'});
+	restoreRequired('water',data.water!=null,()=>{
+		if(!WATER || typeof WATER.restore!=='function') throw new Error('water restorer unavailable');
+		return WATER.restore(data.water);
+	});
 	restoreRespawnTotems(hasOwn('respawnTotems') ? data.respawnTotems : (legacyWorldMarkers.respawnTotems || {seed:WORLDGEN.worldSeed,list:[]}));
 	validRespawnTotemCells();
 	restoreGrave(hasOwn('grave') ? data.grave : legacyWorldMarkers.grave);
 	const restoredBaseChunks=baseChunkIdsForAudits(restoredChunks);
-	try{ if(WORLD && WORLD.restoreInfrastructure) WORLD.restoreInfrastructure(data.infrastructure); }catch(e){}
-	try{ if(WORLD && WORLD.restoreConstructionBackground) WORLD.restoreConstructionBackground(data.constructionBackground); }catch(e){}
+	restoreRequired('infrastructure',data.infrastructure!=null,()=>{
+		if(!WORLD || typeof WORLD.restoreInfrastructure!=='function') throw new Error('infrastructure restorer unavailable');
+		return WORLD.restoreInfrastructure(data.infrastructure);
+	});
+	restoreRequired('constructionBackground',data.constructionBackground!=null,()=>{
+		if(!WORLD || typeof WORLD.restoreConstructionBackground!=='function') throw new Error('construction background restorer unavailable');
+		return WORLD.restoreConstructionBackground(data.constructionBackground);
+	});
 	restoreHealingShelters(hasOwn('healingShelters') ? data.healingShelters : (legacyWorldMarkers.healingShelters || {seed:WORLDGEN.worldSeed,list:[]}));
 	validHealingShelterRecords();
-	try{ if(TREES && TREES.restore) TREES.restore(data.trees,getTile); }catch(e){}
+	restoreRequired('trees',data.trees!=null,()=>{ if(TREES && TREES.restore) return TREES.restore(data.trees,getTile); throw new Error('trees restorer unavailable'); });
 	try{ if(TREES && TREES.auditChunks) TREES.auditChunks(restoredBaseChunks,getTile); }catch(e){}
-	try{ if(FALLING && FALLING.restore) FALLING.restore(data.falling); }catch(e){}
+	restoreRequired('falling',data.falling!=null,()=>{ if(FALLING && FALLING.restore) return FALLING.restore(data.falling); throw new Error('falling restorer unavailable'); });
 	try{ if(FALLING && FALLING.auditChunks) FALLING.auditChunks(restoredBaseChunks,{force:true}); }catch(e){}
-	try{ if(MEAT && MEAT.restore) MEAT.restore(data.meat,getTile); }catch(e){}
-	try{ if(DROPS && DROPS.restore) DROPS.restore(data.drops); }catch(e){}
-	try{ if(GASES && GASES.restore) GASES.restore(data.gases,getTile,setTile); }catch(e){}
+	restoreRequired('meat',data.meat!=null,()=>{ if(MEAT && MEAT.restore) return MEAT.restore(data.meat,getTile); throw new Error('meat restorer unavailable'); });
+	restoreRequired('drops',data.drops!=null,()=>{ if(DROPS && DROPS.restore) return DROPS.restore(data.drops); throw new Error('drops restorer unavailable'); });
+	restoreRequired('gases',data.gases!=null,()=>{ if(GASES && GASES.restore) return GASES.restore(data.gases,getTile,setTile); throw new Error('gases restorer unavailable'); });
 	try{ if(GASES && GASES.auditChunks) GASES.auditChunks(restoredBaseChunks,getTile); }catch(e){}
-	try{ if(SMOKE && SMOKE.restore) SMOKE.restore(data.smoke,getTile); }catch(e){}
-	try{ if(FIRE && FIRE.restore) FIRE.restore(data.fire,getTile); }catch(e){}
-	try{ if(BOATS && BOATS.restore) BOATS.restore(data.boats); }catch(e){}
-	try{ if(MECHS && MECHS.restore) MECHS.restore(data.mechs,getTile); }catch(e){}
-	try{ if(WIND && WIND.restore) WIND.restore(data.wind); }catch(e){}
-	try{ if(SEASONS && SEASONS.restore) SEASONS.restore(data.seasons); }catch(e){}
-	try{ if(CLOUDS && CLOUDS.restore) CLOUDS.restore(data.clouds); }catch(e){}
-	try{ if(DYNAMO && DYNAMO.restore) DYNAMO.restore(data.dynamo,getTile); }catch(e){}
-	try{ if(SOLAR && SOLAR.restore) SOLAR.restore(data.solar,getTile); }catch(e){}
-	try{ if(FURNISHINGS && FURNISHINGS.restorePower) FURNISHINGS.restorePower(data.furnishingsPower,getTile); }catch(e){}
-	try{ if(TELEPORTERS && TELEPORTERS.restore) TELEPORTERS.restore(data.teleporters,getTile); }catch(e){}
-	try{ if(PUMPS && PUMPS.restore) PUMPS.restore(data.pumps,getTile); }catch(e){}
-	try{ if(STEAM_MACHINES && STEAM_MACHINES.restore) STEAM_MACHINES.restore(data.steamMachines,getTile); }catch(e){}
-	try{ if(TURRETS && TURRETS.restore) TURRETS.restore(data.turrets,getTile); }catch(e){}
-	try{ if(SPRING_PLATFORMS && SPRING_PLATFORMS.restore) SPRING_PLATFORMS.restore(data.springPlatforms,getTile); }catch(e){}
-	try{ if(VENDING && VENDING.restore) VENDING.restore(data.vending,getTile); }catch(e){}
-	try{ if(VOLCANO && VOLCANO.restore) VOLCANO.restore(data.volcano,getTile); }catch(e){}
-	try{ if(ATOMIC_WINTER && ATOMIC_WINTER.restore) ATOMIC_WINTER.restore(data.atomicWinter); }catch(e){}
-	try{ if(GUARDIANS && GUARDIANS.restore) GUARDIANS.restore(data.guardians); }catch(e){}
-	try{ if(UNDERGROUND && UNDERGROUND.restore) UNDERGROUND.restore(data.undergroundBoss); }catch(e){}
-	try{ if(SKY_GUARDIAN && SKY_GUARDIAN.restore) SKY_GUARDIAN.restore(data.skyGuardian); }catch(e){}
-	try{ if(AFTERMATH && AFTERMATH.restore) AFTERMATH.restore(data.guardianAftermath); }catch(e){}
-	try{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.restore) CENTER_GUARDIAN.restore(data.centerGuardian); }catch(e){}
-	try{ if(STORY_PROGRESSION && STORY_PROGRESSION.restore) STORY_PROGRESSION.restore(data.storyProgression); }catch(e){}
-	try{ if(FOG && data.fog){ if(FOG.importSeen) FOG.importSeen(Array.isArray(data.fog) ? data.fog : data.fog.seen); if(FOG.setRevealAll) FOG.setRevealAll(!!data.fog.revealAll); } }catch(e){}
-	try{ if(METEORITES && METEORITES.restore) METEORITES.restore(data.meteorites); }catch(e){}
-	try{ if(MOBS && MOBS.deserialize && data.mobs) MOBS.deserialize(data.mobs); }catch(e){}
-	try{ if(COMPANIONS && COMPANIONS.restore) COMPANIONS.restore(data.companions,getTile); }catch(e){}
-	try{ if(GENERATED_NPCS && GENERATED_NPCS.restore) GENERATED_NPCS.restore(data.generatedNpcs); }catch(e){}
-	try{ if(NPCS && NPCS.restore && data.npcs) NPCS.restore(data.npcs); }catch(e){}
-	try{ if(!data.npcs && TUTORIAL_NPC && TUTORIAL_NPC.restore && data.tutorialNpc) TUTORIAL_NPC.restore(data.tutorialNpc); }catch(e){}
-	try{ if(UFO && UFO.restore && data.ufo) UFO.restore(data.ufo); }catch(e){}
-	try{ if(TASKS && TASKS.restore) TASKS.restore(data.tasks); }catch(e){}
-	try{ if(INVASIONS && INVASIONS.restore && data.invasions) INVASIONS.restore(data.invasions,getTile,setTile); }catch(e){}
-	try{ if(PROGRESS && PROGRESS.restore && data.progress) PROGRESS.restore(data.progress); }catch(e){}
-	try{ if(PLANTS && PLANTS.restore && data.plants) PLANTS.restore(data.plants); }catch(e){}
-	try{ if(GRAFFITI && GRAFFITI.restore) GRAFFITI.restore(data.graffiti); }catch(e){}
-	restoreInventory(data.inv);
+	restoreRequired('smoke',data.smoke!=null,()=>{ if(SMOKE && SMOKE.restore) return SMOKE.restore(data.smoke,getTile); throw new Error('smoke restorer unavailable'); });
+	restoreRequired('fire',data.fire!=null,()=>{ if(FIRE && FIRE.restore) return FIRE.restore(data.fire,getTile); throw new Error('fire restorer unavailable'); });
+	restoreRequired('boats',data.boats!=null,()=>{ if(BOATS && BOATS.restore) return BOATS.restore(data.boats); throw new Error('boats restorer unavailable'); });
+	restoreRequired('mechs',data.mechs!=null,()=>{ if(MECHS && MECHS.restore) return MECHS.restore(data.mechs,getTile); throw new Error('mechs restorer unavailable'); });
+	restoreRequired('wind',data.wind!=null,()=>{ if(WIND && WIND.restore) return WIND.restore(data.wind); throw new Error('wind restorer unavailable'); });
+	restoreRequired('seasons',data.seasons!=null,()=>{ if(SEASONS && SEASONS.restore) return SEASONS.restore(data.seasons); throw new Error('seasons restorer unavailable'); });
+	restoreRequired('clouds',data.clouds!=null,()=>{ if(CLOUDS && CLOUDS.restore) return CLOUDS.restore(data.clouds); throw new Error('clouds restorer unavailable'); });
+	restoreRequired('dynamo',data.dynamo!=null,()=>{ if(DYNAMO && DYNAMO.restore) return DYNAMO.restore(data.dynamo,getTile); throw new Error('dynamo restorer unavailable'); });
+	restoreRequired('solar',data.solar!=null,()=>{ if(SOLAR && SOLAR.restore) return SOLAR.restore(data.solar,getTile); throw new Error('solar restorer unavailable'); });
+	restoreRequired('furnishingsPower',data.furnishingsPower!=null,()=>{ if(FURNISHINGS && FURNISHINGS.restorePower) return FURNISHINGS.restorePower(data.furnishingsPower,getTile); throw new Error('furnishings power restorer unavailable'); });
+	restoreRequired('teleporters',data.teleporters!=null,()=>{ if(TELEPORTERS && TELEPORTERS.restore) return TELEPORTERS.restore(data.teleporters,getTile); throw new Error('teleporter restorer unavailable'); });
+	restoreRequired('pumps',data.pumps!=null,()=>{ if(PUMPS && PUMPS.restore) return PUMPS.restore(data.pumps,getTile); throw new Error('pump restorer unavailable'); });
+	restoreRequired('steamMachines',data.steamMachines!=null,()=>{ if(STEAM_MACHINES && STEAM_MACHINES.restore) return STEAM_MACHINES.restore(data.steamMachines,getTile); throw new Error('steam machine restorer unavailable'); });
+	restoreRequired('turrets',data.turrets!=null,()=>{ if(TURRETS && TURRETS.restore) return TURRETS.restore(data.turrets,getTile); throw new Error('turret restorer unavailable'); });
+	restoreRequired('springPlatforms',data.springPlatforms!=null,()=>{ if(SPRING_PLATFORMS && SPRING_PLATFORMS.restore) return SPRING_PLATFORMS.restore(data.springPlatforms,getTile); throw new Error('spring platform restorer unavailable'); });
+	restoreRequired('vending',data.vending!=null,()=>{ if(VENDING && VENDING.restore) return VENDING.restore(data.vending,getTile); throw new Error('vending restorer unavailable'); });
+	restoreRequired('volcano',data.volcano!=null,()=>{ if(VOLCANO && VOLCANO.restore) return VOLCANO.restore(data.volcano,getTile); throw new Error('volcano restorer unavailable'); });
+	restoreRequired('atomicWinter',data.atomicWinter!=null,()=>{ if(ATOMIC_WINTER && ATOMIC_WINTER.restore) return ATOMIC_WINTER.restore(data.atomicWinter); throw new Error('atomic winter restorer unavailable'); });
+	restoreRequired('guardians',data.guardians!=null,()=>{ if(GUARDIANS && GUARDIANS.restore) return GUARDIANS.restore(data.guardians); throw new Error('guardian restorer unavailable'); });
+	restoreRequired('undergroundBoss',data.undergroundBoss!=null,()=>{ if(UNDERGROUND && UNDERGROUND.restore) return UNDERGROUND.restore(data.undergroundBoss); throw new Error('underground boss restorer unavailable'); });
+	restoreRequired('skyGuardian',data.skyGuardian!=null,()=>{ if(SKY_GUARDIAN && SKY_GUARDIAN.restore) return SKY_GUARDIAN.restore(data.skyGuardian); throw new Error('sky guardian restorer unavailable'); });
+	restoreRequired('guardianAftermath',data.guardianAftermath!=null,()=>{ if(AFTERMATH && AFTERMATH.restore) return AFTERMATH.restore(data.guardianAftermath); throw new Error('aftermath restorer unavailable'); });
+	restoreRequired('centerGuardian',data.centerGuardian!=null,()=>{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.restore) return CENTER_GUARDIAN.restore(data.centerGuardian); throw new Error('center guardian restorer unavailable'); });
+	restoreRequired('storyProgression',data.storyProgression!=null,()=>{ if(STORY_PROGRESSION && STORY_PROGRESSION.restore) return STORY_PROGRESSION.restore(data.storyProgression); throw new Error('story progression restorer unavailable'); });
+	restoreRequired('meteorites',data.meteorites!=null,()=>{ if(METEORITES && METEORITES.restore) return METEORITES.restore(data.meteorites); throw new Error('meteorite restorer unavailable'); });
+	restoreRequired('companions',data.companions!=null,()=>{ if(COMPANIONS && COMPANIONS.restore) return COMPANIONS.restore(data.companions,getTile); throw new Error('companion restorer unavailable'); });
+	restoreRequired('generatedNpcs',data.generatedNpcs!=null,()=>{ if(GENERATED_NPCS && GENERATED_NPCS.restore) return GENERATED_NPCS.restore(data.generatedNpcs); throw new Error('generated NPC restorer unavailable'); });
+	restoreRequired('tasks',data.tasks!=null,()=>{ if(TASKS && TASKS.restore) return TASKS.restore(data.tasks); throw new Error('task restorer unavailable'); });
+	restoreRequired('progress',data.progress!=null,()=>{ if(PROGRESS && PROGRESS.restore) return PROGRESS.restore(data.progress); throw new Error('progress restorer unavailable'); });
+	restoreRequired('plants',data.plants!=null,()=>{ if(PLANTS && PLANTS.restore) return PLANTS.restore(data.plants); throw new Error('plant restorer unavailable'); });
+	restoreRequired('graffiti',data.graffiti!=null,()=>{ if(GRAFFITI && GRAFFITI.restore) return GRAFFITI.restore(data.graffiti); throw new Error('graffiti restorer unavailable'); });
+	restoreRequired('fog',data.fog!=null,()=>{
+		if(!FOG || typeof FOG.importSeen!=='function') throw new Error('fog restorer unavailable');
+		FOG.importSeen(Array.isArray(data.fog) ? data.fog : data.fog.seen);
+		if(FOG.setRevealAll) FOG.setRevealAll(!!data.fog.revealAll);
+	});
+	restoreRequired('mobs',data.mobs!=null,()=>{
+		if(!MOBS || typeof MOBS.deserialize!=='function') throw new Error('mob restorer unavailable');
+		return MOBS.deserialize(data.mobs);
+	});
+	restoreRequired('npcs',data.npcs!=null,()=>{
+		if(!NPCS || typeof NPCS.restore!=='function') throw new Error('NPC restorer unavailable');
+		return NPCS.restore(data.npcs);
+	});
+	restoreRequired('tutorialNpc',data.npcs==null && data.tutorialNpc!=null,()=>{
+		if(!TUTORIAL_NPC || typeof TUTORIAL_NPC.restore!=='function') throw new Error('tutorial NPC restorer unavailable');
+		return TUTORIAL_NPC.restore(data.tutorialNpc);
+	});
+	restoreRequired('ufo',data.ufo!=null,()=>{
+		if(!UFO || typeof UFO.restore!=='function') throw new Error('UFO restorer unavailable');
+		return UFO.restore(data.ufo);
+	});
+	restoreRequired('invasions',data.invasions!=null,()=>{
+		if(!INVASIONS || typeof INVASIONS.restore!=='function') throw new Error('invasion restorer unavailable');
+		return INVASIONS.restore(data.invasions,getTile,setTile);
+	});
+	restoreRequired('inv',true,()=>restoreInventory(data.inv));
 	restoreCraftingAvailability(data.crafting);
 	restoreHotbar(data.hotbar || (data.player && {tool:data.player.tool}));
-	restoreEquipment(data.equipment);
-	const hasSavedPlayerPos=restorePlayerState(data.player);
+	restoreRequired('equipment',data.equipment!=null,()=>restoreEquipment(data.equipment));
+	const hasSavedPlayerPos=!!restoreRequired('player',true,()=>restorePlayerState(data.player));
 	applyProgressHp();
 	applyHeroEnergyCapacity();
 	restorePlayerHealth(data.player);
 	const criticalApplied=restoreCriticalState(criticalState);
 	const hasCriticalPlayerPos=!!(criticalApplied && criticalState && criticalState.player && Number.isFinite(Number(criticalState.player.x)) && Number.isFinite(Number(criticalState.player.y)));
+	if(restoreFailures.length){
+		const failure=new Error('Required save data could not be restored');
+		failure.name='SaveRestoreError';
+		failure.failures=restoreFailures;
+		throw failure;
+	}
 
 	// Recenter camera or place player if needed
 	if(hasCriticalPlayerPos || hasSavedPlayerPos) { centerOnPlayer(); } else { placePlayer(true); }
@@ -3982,9 +4504,9 @@ function applyGameData(data,opts){
 		updateHotbarSel();
 		updateWeaponBar();
 	}catch(e){}
-	saveCriticalState(criticalApplied?'load-critical':'load',true);
+	if(!opts.deferCriticalSave) saveCriticalState(criticalApplied?'load-critical':'load',true);
 	return true;
- }catch(e){ console.warn('Load failed',e); return false; }
+ }catch(e){ console.warn('Load core failed',e); throw e; }
 }
 // Auto-save heartbeat: it only asks the dirty scheduler to try saving. The heavy
 // serialization itself is delayed until gameplay is idle, so the heartbeat cannot
@@ -4000,6 +4522,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	const loadBtn=document.createElement('button'); loadBtn.id='loadGameBtn'; loadBtn.textContent='Wczytaj';
 	const saveAsBtn=document.createElement('button'); saveAsBtn.id='saveAsBtn'; saveAsBtn.textContent='Zapisz jako';
 	[continueBtn,saveBtn,loadBtn,saveAsBtn].forEach(b=>{ b.style.minWidth='72px'; b.style.flex='1'; });
+	saveBtn.disabled=_saveWritesBlocked; saveAsBtn.disabled=_saveWritesBlocked;
 	row.appendChild(continueBtn); row.appendChild(saveBtn); row.appendChild(loadBtn); row.appendChild(saveAsBtn); group.appendChild(row);
 	// Save browser
 	const browser=document.createElement('div'); browser.id='saveBrowser'; browser.style.cssText='display:none; flex-direction:column; gap:4px; background:rgba(0,0,0,0.35); padding:8px; border:1px solid rgba(255,255,255,0.1); border-radius:8px; max-height:220px; overflow:auto;';
@@ -4030,8 +4553,8 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 			const nameB=document.createElement('b'); nameB.textContent=nameDisp+(isCur?' *':'');
 			const meta=document.createElement('span'); meta.style.cssText='font-size:10px; opacity:.65;'; meta.textContent=new Date(s.time).toLocaleString()+' • '+sizeKB+' KB • '+hashState+' • seed '+(s.seed??'-');
 			info.textContent=''; info.appendChild(nameB); info.appendChild(document.createElement('br')); info.appendChild(meta);
-			const loadB=document.createElement('button'); loadB.textContent='Wczytaj'; loadB.style.fontSize='11px'; loadB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(raw){ try{ localStorage.setItem(SAVE_KEY,raw); const ok=loadGame({ignoreCritical:true}); if(ok){ currentSlotId=s.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Wczytano '+nameDisp); refreshList(); } else msg('Błąd wczyt.'); }catch(e){ msg('Błąd wczyt.'); } } });
-			const exportB=document.createElement('button'); exportB.textContent='Eksport'; exportB.style.fontSize='11px'; exportB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(!raw){ msg('Brak danych'); return; } try{ const blob=new Blob([raw],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); const safe=nameDisp.replace(/[^a-z0-9_-]+/gi,'_'); a.download='save_'+safe+'.json'; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0); msg('Wyeksportowano'); }catch(e){ msg('Błąd eksportu'); } });
+			const loadB=document.createElement('button'); loadB.textContent='Wczytaj'; loadB.style.fontSize='11px'; loadB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(raw){ try{ const ok=loadSaveCandidate(raw,{ignoreCritical:true,transactional:true,persistAsMain:true}); if(ok){ currentSlotId=s.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Wczytano '+nameDisp); refreshList(); } else msg('Błąd wczyt.'); }catch(e){ msg('Błąd wczyt.'); } } });
+			const exportB=document.createElement('button'); exportB.textContent='Eksport'; exportB.style.fontSize='11px'; exportB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(!raw){ msg('Brak danych'); return; } try{ const portable=portableSaveJson(raw,localStorage); const blob=new Blob([portable],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); const safe=nameDisp.replace(/[^a-z0-9_-]+/gi,'_'); a.download='save_'+safe+'.json'; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0); msg('Wyeksportowano'); }catch(e){ console.warn('Save export failed',e); msg('Błąd eksportu'); } });
 			const renameB=document.createElement('button'); renameB.textContent='Nazwa'; renameB.style.fontSize='11px'; renameB.addEventListener('click',()=>{ const nn=prompt('Nowa nazwa zapisu:', s.name||''); if(nn!=null){ s.name=nn.trim(); storeSlots(slots); refreshList(); }});
 			const delB=document.createElement('button'); 
 			delB.textContent='Usuń'; 
@@ -4054,7 +4577,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 		// Enable/disable Continue button visibility
 		continueBtn.style.display = slots.length? 'block':'none';
 	}
-	function performNamedSave(forcePrompt){ const slots=loadSlots(); let initial=''; if(!forcePrompt && currentSlotId){ const cur=slots.find(s=>s.id===currentSlotId); if(cur) initial=cur.name||''; } const name=prompt('Nazwa zapisu:', initial); if(name==null) return; const trimmed=name.trim(); let target=null; if(currentSlotId) target=slots.find(s=>s.id===currentSlotId && (trimmed==='' || s.name===trimmed)); if(!target && trimmed) target=slots.find(s=>s.name===trimmed); const perf={parts:[]}; const rawCore=buildSaveObject({perf}); const {object:withHash} = timedSavePart('hash',()=>attachHash(rawCore),perf); const data=timedSavePart('json',()=>JSON.stringify(withHash),perf); if(target){ try{ writeSaveSlot(slotKey(target.id), data, perf); target.time=Date.now(); if(trimmed) target.name=trimmed; target.seed=WORLDGEN.worldSeed; storeSlots(slots); currentSlotId=target.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Nadpisano '+(target.name||target.id)); refreshList(); }catch(e){ msg('Błąd zapisu'); } } else { const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); try{ writeSaveSlot(slotKey(id), data, perf); slots.push({id,name:trimmed||null,time:Date.now(),seed:WORLDGEN.worldSeed}); storeSlots(slots); currentSlotId=id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Zapisano '+(trimmed||id)); browser.style.display='flex'; refreshList(); }catch(e){ msg('Błąd – brak miejsca?'); } } }
+	function performNamedSave(forcePrompt){ if(_saveWritesBlocked){ msg('Zapis zablokowany: najpierw wczytaj poprawny zapis lub rozpocznij nową warstwę'); return false; } const slots=loadSlots(); let initial=''; if(!forcePrompt && currentSlotId){ const cur=slots.find(s=>s.id===currentSlotId); if(cur) initial=cur.name||''; } const name=prompt('Nazwa zapisu:', initial); if(name==null) return false; const trimmed=name.trim(); let target=null; if(currentSlotId) target=slots.find(s=>s.id===currentSlotId && (trimmed==='' || s.name===trimmed)); if(!target && trimmed) target=slots.find(s=>s.name===trimmed); const perf={parts:[]}; let data; try{ const rawCore=buildSaveObject({perf}); const {object:withHash} = timedSavePart('hash',()=>attachHash(rawCore),perf); data=timedSavePart('json',()=>JSON.stringify(withHash),perf); }catch(e){ console.warn('Named save failed',e); msg('Błąd zapisu'); return false; } if(target){ try{ writeSaveSlot(slotKey(target.id), data, perf); target.time=Date.now(); if(trimmed) target.name=trimmed; target.seed=WORLDGEN.worldSeed; storeSlots(slots); currentSlotId=target.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Nadpisano '+(target.name||target.id)); refreshList(); return true; }catch(e){ msg('Błąd zapisu'); return false; } } else { const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); try{ writeSaveSlot(slotKey(id), data, perf); slots.push({id,name:trimmed||null,time:Date.now(),seed:WORLDGEN.worldSeed}); storeSlots(slots); currentSlotId=id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Zapisano '+(trimmed||id)); browser.style.display='flex'; refreshList(); return true; }catch(e){ msg('Błąd – brak miejsca?'); return false; } } }
 
 	// Continue button logic
 	continueBtn.addEventListener('click',()=>{
@@ -4062,27 +4585,21 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 		let targetId=currentSlotId || localStorage.getItem(LAST_SLOT_KEY);
 		if(!targetId){ targetId = slots.sort((a,b)=>b.time-a.time)[0].id; }
 		const raw=localStorage.getItem(slotKey(targetId)); if(!raw){ msg('Brak danych'); return; }
-		try{ localStorage.setItem(SAVE_KEY,raw); const ok=loadGame({ignoreCritical:true}); if(ok){ currentSlotId=targetId; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Kontynuowano'); refreshList(); } else msg('Błąd'); }catch(e){ msg('Błąd'); }
+		try{ const ok=loadSaveCandidate(raw,{ignoreCritical:true,transactional:true,persistAsMain:true}); if(ok){ currentSlotId=targetId; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Kontynuowano'); refreshList(); } else msg('Błąd'); }catch(e){ msg('Błąd'); }
 	});
 
 	// Global import (adds as new slot)
 	const importBtn=document.createElement('button'); importBtn.textContent='Importuj plik'; importBtn.style.cssText='margin-top:4px;';
 	const fileInput=document.createElement('input'); fileInput.type='file'; fileInput.accept='.json,application/json'; fileInput.style.display='none';
-	fileInput.addEventListener('change',e=>{ const f=fileInput.files&&fileInput.files[0]; if(!f){ return; } if(!Number.isFinite(f.size) || f.size>IMPORT_SAVE_BYTE_CAP){ msg('Plik zapisu jest zbyt duzy'); fileInput.value=''; return; } const reader=new FileReader(); reader.onload=()=>{ try{ const txt=String(reader.result); const obj=JSON.parse(txt);
-		// Validate shape before trusting anything from the file (seed reaches worldgen and slot metadata)
-		const valid = obj && typeof obj==='object' && Number.isFinite(obj.v)
-			&& (obj.seed==null || Number.isFinite(obj.seed))
-			&& (obj.world==null || (typeof obj.world==='object'
-				&& (obj.world.modified==null || (Array.isArray(obj.world.modified) && obj.world.modified.length<=SAVE_CHUNK_RESTORE_CAP))
-				&& (obj.world.chunkRefs==null || (Array.isArray(obj.world.chunkRefs) && obj.world.chunkRefs.length<=SAVE_CHUNK_RESTORE_CAP))))
-			&& (obj.player==null || typeof obj.player==='object');
-		if(!valid){ msg('Niepoprawny plik'); return; }
-		const slots=loadSlots(); const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); localStorage.setItem(slotKey(id), txt); slots.push({id,name:(f.name||'import').replace(/\.json$/i,'')||null,time:Date.now(),seed:(typeof obj.seed==='number'? obj.seed:null)}); storeSlots(slots); msg('Zaimportowano'); refreshList(); }catch(err){ msg('Błąd importu'); } fileInput.value=''; };
+	fileInput.addEventListener('change',e=>{ const f=fileInput.files&&fileInput.files[0]; if(!f){ return; } if(!Number.isFinite(f.size) || f.size>IMPORT_SAVE_BYTE_CAP){ msg('Plik zapisu jest zbyt duzy'); fileInput.value=''; return; } const reader=new FileReader(); reader.onload=()=>{ try{ const txt=String(reader.result); const preflight=parseSaveCandidate(txt,{storage:localStorage,requireHash:true});
+		if(!preflight.ok){ console.warn('Imported save rejected',preflight.errors); msg('Niepoprawny plik: '+loadFailureSummary(preflight)); return; }
+		const stored=migratedSaveJson(preflight,txt);
+		const slots=loadSlots(); const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); localStorage.setItem(slotKey(id), stored); slots.push({id,name:(f.name||'import').replace(/\.json$/i,'')||null,time:Date.now(),seed:preflight.data.seed}); storeSlots(slots); msg('Zaimportowano'); refreshList(); }catch(err){ msg('Błąd importu'); } fileInput.value=''; };
 	reader.readAsText(f); });
 	importBtn.addEventListener('click',()=>fileInput.click());
 	group.appendChild(importBtn); group.appendChild(fileInput);
 	saveBtn.addEventListener('click',()=>{ performNamedSave(false); });
-	loadBtn.addEventListener('click',()=>{ const ok=loadGame(); msg(ok?'Wczytano zapis główny':'Brak głównego zapisu'); });
+	loadBtn.addEventListener('click',()=>{ const result=loadGame(); msg(result===true?'Wczytano zapis główny':(result===null?'Brak głównego zapisu':'Główny zapis odrzucony — autozapis pozostaje zablokowany')); });
 	saveAsBtn.addEventListener('click',()=>{ performNamedSave(true); });
 	const openBrowserBtn=document.createElement('button'); openBrowserBtn.textContent='Lista zapisów'; openBrowserBtn.style.cssText='margin-top:4px;'; openBrowserBtn.addEventListener('click',()=>{ browser.style.display= browser.style.display==='flex' ? 'none':'flex'; if(browser.style.display==='flex') refreshList(); });
 	group.appendChild(openBrowserBtn); group.appendChild(browser);
@@ -4107,14 +4624,42 @@ function canRunIdleAutoSave(){
 	return true;
 }
 function scheduleAutoSaveWork(delay){
-	if(_autoSaveWorkT || !_saveDirty) return;
+	if(_saveWritesBlocked || _autoSaveWorkT || !_saveDirty) return;
 	_autoSaveWorkT=setTimeout(runAutoSaveWork, Math.max(0, delay||0));
 }
 function createAutoSaveJob(){
-	return {id:Date.now().toString(36)+'_'+(_saveRevision|0).toString(36), chunks:modifiedChunkIds(), index:0, refs:[], oldRefs:currentAutosaveRefs(), revision:_saveRevision, t0:savePerfNow(), bytes:0, encodeMs:0, chunkWriteMs:0, auditMs:0};
+	const chunks=modifiedChunkIds();
+	assertSaveChunkCapacity(chunks,'incremental autosave');
+	return {id:Date.now().toString(36)+'_'+(_saveRevision|0).toString(36), chunks, index:0, refs:[], versions:new Map(), oldRefs:currentAutosaveRefs(), revision:_saveRevision, t0:savePerfNow(), bytes:0, encodeMs:0, chunkWriteMs:0, auditMs:0};
+}
+function incrementalAutoSaveJobIsCurrent(job){
+	if(!job || _saveRevision!==job.revision) return false;
+	const expected=new Set();
+	for(const raw of job.chunks){ const ref=normalizeWorldChunkRef(raw); if(!ref) return false; expected.add(ref.key); }
+	const current=new Set();
+	for(const raw of modifiedChunkIds()){ const ref=normalizeWorldChunkRef(raw); if(!ref) return false; current.add(ref.key); }
+	if(current.size!==expected.size) return false;
+	for(const key of expected) if(!current.has(key)) return false;
+	if(!(job.versions instanceof Map)) return false;
+	for(const [key,version] of job.versions){
+		const ref=normalizeWorldChunkRef(key);
+		if(!ref || worldChunkVersion(ref)!==version) return false;
+	}
+	return true;
+}
+function abandonIncrementalAutoSave(job){
+	if(job && Array.isArray(job.refs)) cleanupAutosaveChunks(new Set(),job.refs);
+	if(_autoSaveJob===job) _autoSaveJob=null;
+	return false;
 }
 function finishIncrementalAutoSave(){
+	if(_saveWritesBlocked){ cancelPendingSaveWork(); return false; }
 	const job=_autoSaveJob; if(!job) return false;
+	if(!incrementalAutoSaveJobIsCurrent(job)){
+		// Gameplay changed while chunks were being encoded. Never publish a manifest
+		// that combines those older chunks with a newer inventory/player snapshot.
+		return abandonIncrementalAutoSave(job);
+	}
 	const t0=savePerfNow();
 	const perf={parts:[]};
 	addSavePerfPart(perf,'chunks.encode',job.encodeMs||0);
@@ -4126,9 +4671,12 @@ function finishIncrementalAutoSave(){
 		const json=timedSavePart('json',()=>JSON.stringify(withHash),perf);
 		const writeT=savePerfNow();
 		localStorage.setItem(SAVE_KEY,json);
+		rememberCommittedSave(withHash,job.revision);
 		const writeMs=savePerfNow()-writeT;
 		addSavePerfPart(perf,'storage.write',writeMs);
-		timedSavePart('storage.cleanup',()=>cleanupAutosaveChunks(new Set(job.refs.map(r=>r.key)),job.oldRefs),perf);
+		// Named/fork slots may still reference blobs from the previous main save.
+		// Re-scan every persisted manifest before deleting any old external chunk.
+		timedSavePart('storage.cleanup',()=>cleanupAutosaveChunks(referencedAutosaveKeys(),job.oldRefs),perf);
 		const elapsed=(savePerfNow()-job.t0);
 		const finalMs=(savePerfNow()-t0);
 		const totalKB=((json.length+job.bytes)/1024)|0;
@@ -4152,25 +4700,30 @@ function finishIncrementalAutoSave(){
 }
 function runAutoSaveWork(){
 	_autoSaveWorkT=null;
+	if(_saveWritesBlocked){ cancelPendingSaveWork(); return; }
 	if(!_saveDirty) return;
 	if(!canRunIdleAutoSave()){ scheduleDirtySave(AUTO_SAVE_IDLE_CHECK_MS); return; }
 	try{
 		if(!_autoSaveJob) _autoSaveJob=createAutoSaveJob();
 		const job=_autoSaveJob;
+		if(!incrementalAutoSaveJobIsCurrent(job)){
+			abandonIncrementalAutoSave(job);
+			scheduleDirtySave(AUTO_SAVE_IDLE_CHECK_MS);
+			return;
+		}
 		const t0=savePerfNow();
 		const worldMap=WORLD._world;
 		let processed=0;
 		while(job.index<job.chunks.length){
 			const rawRef=job.chunks[job.index++];
 			const ref=normalizeWorldChunkRef(rawRef);
-			if(!ref) continue;
+			if(!ref) throw new Error('Autosave chunk list contains an invalid reference');
 			const cx=ref.cx;
 			// parked (cold-stored) modified chunks are not in the live map — read them
 			// through the parked-aware accessor or they would silently drop from saves
 			const live=!!(worldMap && worldMap.has(ref.key));
 			const arr=live ? worldMap.get(ref.key) : worldChunkArrayFor(ref,false);
-			const ver=worldChunkVersion(ref);
-			if(!arr || ver===0) continue;
+			if(!arr || worldChunkVersion(ref)===0) throw new Error('Autosave chunk '+ref.key+' is unavailable');
 			const auditT=savePerfNow();
 			// audits touch tiles via getTile and would rehydrate every parked chunk;
 			// a parked chunk has been untouched since it was audited and parked
@@ -4183,6 +4736,7 @@ function runAutoSaveWork(){
 			const encT=savePerfNow();
 			const data=encodeRLE(chunkForTerrainSave(arr));
 			job.encodeMs += savePerfNow()-encT;
+			job.versions.set(ref.key,worldChunkVersion(ref));
 			const saveRef={cx,key:ref.base?autosaveChunkKey(cx,job.id):autosaveChunkKey(cx,job.id,ref.sy),rle:true,h:computeHash(data)};
 			if(!ref.base){ saveRef.sy=ref.sy; saveRef.sectionH=ref.h||worldSectionHeight(); }
 			const writeT=savePerfNow();
@@ -4204,7 +4758,7 @@ function runAutoSaveWork(){
 	}
 }
 function scheduleDirtySave(delay){
-	if(_saveStateT || _autoSaveWorkT || !_saveDirty) return;
+	if(_saveWritesBlocked || _saveStateT || _autoSaveWorkT || !_saveDirty) return;
 	const retryDelay=_nextAutoSaveRetryAt ? Math.max(0,_nextAutoSaveRetryAt-Date.now()) : 0;
 	const baseDelay=delay==null ? AUTO_SAVE_IDLE_CHECK_MS : delay;
 	_saveStateT=setTimeout(()=>{
@@ -4216,6 +4770,7 @@ function scheduleDirtySave(delay){
 }
 function saveState(){
 	if(_startingNewGame) return;
+	if(_saveWritesBlocked) return;
 	if(MM.ghostMode) return; // ghost sessions never write saves
 	_saveDirty=true;
 	_saveRevision++;
@@ -4241,9 +4796,10 @@ function flushPendingSave(){
 		try{ clearActiveGameStorage(localStorage); }catch(e){}
 		return;
 	}
-	if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; }
-	if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; }
-	_autoSaveJob=null;
+	if(_saveWritesBlocked){ cancelPendingSaveWork(); return; }
+	// This also removes any chunk blobs written by an incremental job that has
+	// not published its manifest yet; otherwise repeated tab hides leak quota.
+	cancelPendingSaveWork();
 	saveCriticalState('flush',true);
 	if(_saveDirty){ if(saveGame(false)) _saveDirty=false; }
 }
@@ -4256,9 +4812,8 @@ function startNewGame(requestedSeed){
 	_startingNewGame=true;
 	paused=true;
 	_saveDirty=false;
-	if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; }
-	if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; }
-	_autoSaveJob=null;
+	cancelPendingSaveWork();
+	_committedSaveIdentity=null;
 	try{
 		if(PLANTS && PLANTS.reset) PLANTS.reset();
 		clearActiveGameStorage(localStorage);
@@ -9166,7 +9721,7 @@ try{ if(LIGHTING && localStorage.getItem(LIGHTING_OFF_KEY)==='1') LIGHTING.confi
 try{ if(localStorage.getItem(MINIMAP_OFF_KEY)==='1') showMinimap=false; }catch(e){}
 // Pause panel: B freezes the simulation and raises a settings card — resume,
 // volume, minimap, cave lighting, help. DOM is built lazily on first pause.
-let pausePanel=null;
+let pausePanel=null, pauseLastFocus=null, pauseRowLabelSeq=0;
 function pausePanelVisible(){ return !!(pausePanel && !pausePanel.hidden); }
 // Fullscreen: permanent HUD control, pause-panel button, and rebindable key
 // (default U). requestFullscreen
@@ -9217,7 +9772,7 @@ MM.fullscreen={active:fullscreenActive,supported:fullscreenSupported,toggle:togg
 syncFullscreenControls();
 function buildPauseRow(labelText){
 	const row=document.createElement('div'); row.className='pauseRow';
-	const label=document.createElement('span'); label.textContent=labelText; row.appendChild(label);
+	const label=document.createElement('span'); label.id='pauseRowLabel'+(++pauseRowLabelSeq); label.textContent=labelText; row.dataset.labelId=label.id; row.appendChild(label);
 	return row;
 }
 function buildPauseSection(labelText){
@@ -9227,7 +9782,7 @@ function buildPauseSection(labelText){
 function ensurePausePanel(){
 	if(pausePanel) return pausePanel;
 	pausePanel=document.createElement('div'); pausePanel.id='pausePanel'; pausePanel.hidden=true;
-	pausePanel.setAttribute('role','dialog'); pausePanel.setAttribute('aria-modal','true'); pausePanel.setAttribute('aria-labelledby','pauseMenuTitle');
+	pausePanel.setAttribute('role','dialog'); pausePanel.setAttribute('aria-modal','true'); pausePanel.setAttribute('aria-labelledby','pauseMenuTitle'); pausePanel.setAttribute('aria-hidden','true');
 	const head=document.createElement('div'); head.className='pauseHead';
 	const titleWrap=document.createElement('div'); titleWrap.className='pauseTitle';
 	const title=document.createElement('strong'); title.id='pauseMenuTitle'; title.textContent='☰ Menu gry';
@@ -9301,6 +9856,9 @@ function ensurePausePanel(){
 	const help=document.createElement('button'); help.type='button'; help.textContent='Pomoc (H)';
 	help.addEventListener('click',()=>{ setPaused(false); try{ toggleHelp(); }catch(e){} });
 	helpRow.appendChild(help); pausePanel.appendChild(helpRow);
+	const finaleRow=buildPauseRow('🎬 Zakończenie'); finaleRow.dataset.finaleRow='1';
+	const finaleButton=document.createElement('button'); finaleButton.type='button'; finaleButton.dataset.finaleTrigger='1'; finaleButton.textContent='Otwórz raport…';
+	finaleRow.appendChild(finaleButton); pausePanel.appendChild(finaleRow);
 	pausePanel.appendChild(buildPauseSection('Zapisy'));
 	const saveMount=document.createElement('div'); saveMount.id='playerSaveMenu'; saveMount.className='pauseSaveMount';
 	pausePanel.appendChild(saveMount);
@@ -9373,20 +9931,49 @@ function ensurePausePanel(){
 	const foot=document.createElement('div'); foot.className='pauseFoot';
 	foot.textContent='Świat stoi w miejscu, dopóki panel jest otwarty.';
 	pausePanel.appendChild(foot);
+	// Inputs do not derive an accessible name from an adjacent span. Reuse each
+	// visible row label without changing the hand-built layout.
+	pausePanel.querySelectorAll('.pauseRow').forEach(row=>{
+		const labelId=row.dataset.labelId;
+		if(!labelId) return;
+		row.querySelectorAll('input,select,textarea').forEach(control=>{
+			if(!control.hasAttribute('aria-label') && !control.hasAttribute('aria-labelledby')) control.setAttribute('aria-labelledby',labelId);
+		});
+	});
 	(document.getElementById('ui')||document.body).appendChild(pausePanel);
+	try{ if(FINALE && FINALE.wire) FINALE.wire(); }catch(e){}
 	return pausePanel;
+}
+function pauseFocusableItems(){
+	if(!pausePanel) return [];
+	return [...pausePanel.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[href],[tabindex]:not([tabindex="-1"])')]
+		.filter(el=>!el.hidden && el.getClientRects().length>0);
 }
 function pauseTrapKeydown(e){
 	if(!pausePanelVisible()) return;
+	// The finale is a modal stacked above the pause card. Its capture listener
+	// must own Tab/Escape while open; otherwise this older listener can consume
+	// the event first and move focus through controls hidden behind the report.
+	if(FINALE && FINALE.isOpen && FINALE.isOpen()) return;
 	const worldSettingsOverlay=document.getElementById('worldSettingsOverlay');
 	if(worldSettingsOverlay && worldSettingsOverlay.style.display==='block'){
 		if(e.key==='Escape'){ e.preventDefault(); e.stopImmediatePropagation(); if(MM.ui && MM.ui.closeWorldSettings) MM.ui.closeWorldSettings(); }
 		return;
 	}
 	if(keybindPanelVisible()) return; // the keybind panel owns the keyboard while open
+	if(e.ctrlKey || e.metaKey || e.altKey) return;
+	if(e.key==='Tab'){
+		const items=pauseFocusableItems();
+		if(!items.length){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+		const at=items.indexOf(document.activeElement);
+		const next=at<0 ? (e.shiftKey?items.length-1:0) : (at+(e.shiftKey?-1:1)+items.length)%items.length;
+		e.preventDefault(); e.stopImmediatePropagation(); items[next].focus(); return;
+	}
 	if(e.key==='Escape'){ e.preventDefault(); e.stopImmediatePropagation(); setPaused(false); }
 }
 function setPaused(v){
+	const wasPaused=paused;
+	if(!wasPaused && v) pauseLastFocus=document.activeElement && document.activeElement!==document.body ? document.activeElement : null;
 	paused=!!v;
 	const panel=ensurePausePanel();
 	if(paused){
@@ -9420,15 +10007,20 @@ function setPaused(v){
 		}catch(e){}
 		try{ if(window.__injectSaveButtons) window.__injectSaveButtons(); }catch(e){}
 		panel.hidden=false;
+		panel.setAttribute('aria-hidden','false');
 		try{ const resumeBtn=panel.querySelector('.pauseResume'); if(resumeBtn && resumeBtn.focus) resumeBtn.focus({preventScroll:true}); }catch(e){}
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('uiOpen'); }catch(e){}
 		window.addEventListener('keydown',pauseTrapKeydown,true);
 	}else{
 		panel.hidden=true;
+		panel.setAttribute('aria-hidden','true');
 		try{
 			const playerMenuBtn=document.getElementById('menuBtn');
-			if(playerMenuBtn){ playerMenuBtn.setAttribute('aria-expanded','false'); if(playerMenuBtn.focus) playerMenuBtn.focus({preventScroll:true}); }
+			if(playerMenuBtn) playerMenuBtn.setAttribute('aria-expanded','false');
+			const target=pauseLastFocus && pauseLastFocus.isConnected ? pauseLastFocus : playerMenuBtn;
+			if(target && target.focus) target.focus({preventScroll:true});
 		}catch(e){}
+		pauseLastFocus=null;
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('uiClose'); }catch(e){}
 		window.removeEventListener('keydown',pauseTrapKeydown,true);
 		if(keybindPanelVisible()) closeKeybindPanel();
@@ -9439,7 +10031,7 @@ function setPaused(v){
 // binding (Esc cancels), conflicts swap keys (keybinds.js model). While the
 // panel is open a capture-phase trap owns the whole keyboard so no game or
 // pause shortcut can fire mid-rebind.
-let keybindPanel=null, keybindCapture=null, keybindNote=null;
+let keybindPanel=null, keybindCapture=null, keybindNote=null, keybindLastFocus=null;
 const KEYBIND_HINT='Kliknij przycisk klawisza i naciśnij nowy. Esc anuluje. Konflikt zamienia klawisze miejscami.';
 function keybindPanelVisible(){ return !!(keybindPanel && !keybindPanel.hidden); }
 function setKeybindNote(text){ if(keybindNote) keybindNote.textContent=text; }
@@ -9455,8 +10047,9 @@ function refreshKeybindRows(){
 function ensureKeybindPanel(){
 	if(keybindPanel) return keybindPanel;
 	keybindPanel=document.createElement('div'); keybindPanel.id='keybindPanel'; keybindPanel.hidden=true;
+	keybindPanel.setAttribute('role','dialog'); keybindPanel.setAttribute('aria-modal','true'); keybindPanel.setAttribute('aria-labelledby','keybindPanelTitle'); keybindPanel.setAttribute('aria-hidden','true');
 	const head=document.createElement('div'); head.className='kbHead';
-	const title=document.createElement('strong'); title.textContent='⌨ Klawisze sterowania';
+	const title=document.createElement('strong'); title.id='keybindPanelTitle'; title.textContent='⌨ Klawisze sterowania';
 	const close=document.createElement('button'); close.type='button'; close.className='kbClose'; close.textContent='✕ Zamknij';
 	close.addEventListener('click',()=>closeKeybindPanel());
 	head.appendChild(title); head.appendChild(close); keybindPanel.appendChild(head);
@@ -9496,8 +10089,14 @@ function ensureKeybindPanel(){
 	(document.getElementById('ui')||document.body).appendChild(keybindPanel);
 	return keybindPanel;
 }
+function keybindFocusableItems(){
+	if(!keybindPanel) return [];
+	return [...keybindPanel.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[href],[tabindex]:not([tabindex="-1"])')]
+		.filter(el=>!el.hidden && el.getClientRects().length>0);
+}
 function keybindTrapKeydown(e){
 	if(!keybindPanelVisible()) return;
+	if(FINALE && FINALE.isOpen && FINALE.isOpen()) return;
 	const k=e.key.toLowerCase();
 	if(keybindCapture){
 		e.preventDefault(); e.stopImmediatePropagation();
@@ -9510,24 +10109,42 @@ function keybindTrapKeydown(e){
 		return;
 	}
 	if(k==='escape'){ e.preventDefault(); e.stopImmediatePropagation(); closeKeybindPanel(); return; }
-	// swallow listener-driven shortcuts (game/pause) but keep browser defaults
-	// (Tab/Enter/Space) so the panel stays keyboard-navigable
+	if(k==='tab'){
+		const items=keybindFocusableItems();
+		if(!items.length){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+		const at=items.indexOf(document.activeElement);
+		const next=at<0 ? (e.shiftKey?items.length-1:0) : (at+(e.shiftKey?-1:1)+items.length)%items.length;
+		e.preventDefault(); e.stopImmediatePropagation(); items[next].focus(); return;
+	}
+	// Swallow listener-driven game/pause shortcuts. Native Enter/Space button
+	// activation still runs on the focused control.
 	e.stopImmediatePropagation();
 }
 function openKeybindPanel(){
 	const panel=ensureKeybindPanel();
+	keybindLastFocus=document.activeElement && document.activeElement!==document.body ? document.activeElement : null;
 	keybindCapture=null;
 	setKeybindNote(KEYBIND_HINT);
 	refreshKeybindRows();
 	panel.hidden=false;
+	panel.setAttribute('aria-hidden','false');
+	if(pausePanelVisible()) pausePanel.setAttribute('aria-hidden','true');
+	try{ const first=panel.querySelector('.kbClose,.kbKey,button'); if(first) first.focus({preventScroll:true}); }catch(e){}
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('uiOpen'); }catch(e){}
 	window.addEventListener('keydown',keybindTrapKeydown,true);
 }
 function closeKeybindPanel(){
 	if(!keybindPanel) return;
 	keybindPanel.hidden=true;
+	keybindPanel.setAttribute('aria-hidden','true');
+	if(pausePanelVisible()) pausePanel.setAttribute('aria-hidden','false');
 	keybindCapture=null;
 	window.removeEventListener('keydown',keybindTrapKeydown,true);
+	try{
+		const target=keybindLastFocus && keybindLastFocus.isConnected && (!keybindLastFocus.getClientRects || keybindLastFocus.getClientRects().length>0) ? keybindLastFocus : null;
+		if(target && target.focus) target.focus({preventScroll:true});
+	}catch(e){}
+	keybindLastFocus=null;
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('uiClose'); }catch(e){}
 	// rebinding may have moved the pause/fullscreen keys — refresh their labels
 	try{
@@ -10567,10 +11184,85 @@ function resetHouseHealingRuntimeState(){
 	houseHealMsgAt=0;
 	updateHouseComfortHud(null);
 }
+function cloneTransitionRuntimeValue(value){
+	if(value==null) return value;
+	if(typeof structuredClone==='function') return structuredClone(value);
+	return JSON.parse(JSON.stringify(value));
+}
+function replaceTransitionRuntimeState(target,source){
+	if(!target || !source || typeof source!=='object') return;
+	for(const key of Object.keys(target)) delete target[key];
+	Object.assign(target,cloneTransitionRuntimeValue(source));
+}
+function captureWorldTransitionRuntime(){
+	const fishingState=FISHING && FISHING._state ? FISHING._state() : null;
+	return {
+		undo:cloneTransitionRuntimeValue(undoStack),
+		heroStatus:cloneTransitionRuntimeValue(HERO_STATUS && HERO_STATUS._state),
+		fishing:cloneTransitionRuntimeValue(fishingState),
+		sandstorm:(SANDSTORM && SANDSTORM.captureRuntime) ? SANDSTORM.captureRuntime() : null,
+		drowning:cloneTransitionRuntimeValue(drowningState),
+		underwaterEnergy:cloneTransitionRuntimeValue(underwaterEnergyState),
+		swimChill:cloneTransitionRuntimeValue(swimChillState),
+		waterPressure:cloneTransitionRuntimeValue(waterPressureState),
+		thermal:cloneTransitionRuntimeValue(thermalState),
+		houseHealing:cloneTransitionRuntimeValue(houseHealingState),
+		deathTravelFx:cloneTransitionRuntimeValue(deathTravelFx),
+		player:{vx:player.vx,vy:player.vy,onGround:!!player.onGround,jumpCount:player.jumpCount,hpInvul:player.hpInvul,hurtFlashUntil:player.hurtFlashUntil},
+		scalars:{heroDeathSlowMotionStart,heroDeathSlowMotionUntil,jumpPrev,swimBuoySmooth,wasInWater,bubbleAcc,swimWakeAcc,jumpBufferT,coyoteT,ladderReleaseT,trapdoorDropBufferT,thermalEnvAcc,thermalModeCached,heroWarmthCached,heroRainWetCached,sandSlowActive,sandMsgAt,waterPressureMsgAt,houseHealMsgAt}
+	};
+}
+function restoreWorldTransitionRuntimeSnapshot(snapshot){
+	if(!snapshot || typeof snapshot!=='object') return false;
+	undoStack.length=0;
+	if(Array.isArray(snapshot.undo)) undoStack.push(...cloneTransitionRuntimeValue(snapshot.undo).slice(-UNDO_LIMIT));
+	if(HERO_STATUS && HERO_STATUS._state) replaceTransitionRuntimeState(HERO_STATUS._state,snapshot.heroStatus);
+	const fishingState=FISHING && FISHING._state ? FISHING._state() : null;
+	if(fishingState) replaceTransitionRuntimeState(fishingState,snapshot.fishing);
+	if(snapshot.sandstorm && SANDSTORM && SANDSTORM.restoreRuntime && SANDSTORM.restoreRuntime(snapshot.sandstorm)!==true) return false;
+	replaceTransitionRuntimeState(drowningState,snapshot.drowning);
+	replaceTransitionRuntimeState(underwaterEnergyState,snapshot.underwaterEnergy);
+	replaceTransitionRuntimeState(swimChillState,snapshot.swimChill);
+	replaceTransitionRuntimeState(waterPressureState,snapshot.waterPressure);
+	replaceTransitionRuntimeState(thermalState,snapshot.thermal);
+	replaceTransitionRuntimeState(houseHealingState,snapshot.houseHealing);
+	deathTravelFx=cloneTransitionRuntimeValue(snapshot.deathTravelFx);
+	if(snapshot.player && typeof snapshot.player==='object') Object.assign(player,snapshot.player);
+	const s=snapshot.scalars||{};
+	heroDeathSlowMotionStart=s.heroDeathSlowMotionStart; heroDeathSlowMotionUntil=s.heroDeathSlowMotionUntil;
+	jumpPrev=!!s.jumpPrev; swimBuoySmooth=s.swimBuoySmooth; wasInWater=!!s.wasInWater; bubbleAcc=s.bubbleAcc; swimWakeAcc=s.swimWakeAcc;
+	jumpBufferT=s.jumpBufferT; coyoteT=s.coyoteT; ladderReleaseT=s.ladderReleaseT; trapdoorDropBufferT=s.trapdoorDropBufferT;
+	thermalEnvAcc=s.thermalEnvAcc; thermalModeCached=s.thermalModeCached; heroWarmthCached=!!s.heroWarmthCached; heroRainWetCached=!!s.heroRainWetCached;
+	sandSlowActive=!!s.sandSlowActive; sandMsgAt=s.sandMsgAt; waterPressureMsgAt=s.waterPressureMsgAt; houseHealMsgAt=s.houseHealMsgAt;
+	houseComfortHudSignature='';
+	return true;
+}
 function resetWorldTransitionRuntime(){
 	deathTravelFx=null;
 	heroDeathSlowMotionStart=0;
 	heroDeathSlowMotionUntil=0;
+	// This is the single cross-world boundary for player-local transient state.
+	// A load/regeneration must never inherit an undo refund, a status timer, or
+	// accumulated survival damage from the world it replaces.
+	undoStack.length=0;
+	if(HERO_STATUS && HERO_STATUS.clearAll) HERO_STATUS.clearAll();
+	if(FISHING && FISHING.reset){
+		FISHING.reset();
+		const fishingState=FISHING._state && FISHING._state();
+		if(fishingState) fishingState.anim=null;
+	}
+	if(SANDSTORM && SANDSTORM.reset) SANDSTORM.reset();
+	if(SURVIVAL){
+		if(SURVIVAL.resetDrowning) SURVIVAL.resetDrowning(drowningState);
+		if(SURVIVAL.resetUnderwaterEnergyShock) SURVIVAL.resetUnderwaterEnergyShock(underwaterEnergyState);
+		if(SURVIVAL.resetSwimChill) SURVIVAL.resetSwimChill(swimChillState);
+		if(SURVIVAL.resetWaterPressure) SURVIVAL.resetWaterPressure(waterPressureState);
+		if(SURVIVAL.resetThermal) SURVIVAL.resetThermal(thermalState);
+	}
+	jumpPrev=false; swimBuoySmooth=0; wasInWater=false; bubbleAcc=0; swimWakeAcc=0;
+	jumpBufferT=0; coyoteT=0; ladderReleaseT=0; trapdoorDropBufferT=0;
+	thermalEnvAcc=1; thermalModeCached='none'; heroWarmthCached=false; heroRainWetCached=false;
+	sandSlowActive=false; sandMsgAt=0; waterPressureMsgAt=0;
 	resetHouseHealingRuntimeState();
 	if(FURNISHINGS && FURNISHINGS.resetRuntimeCaches) FURNISHINGS.resetRuntimeCaches();
 	if(AUDIO && AUDIO.clearRadioSource) AUDIO.clearRadioSource();
@@ -17521,13 +18213,15 @@ function debugNpcMetrics(){
 }
 window.teleportHeroToNextNpc = function(dir){ return jumpDebugNpc(dir); };
 window.teleportHeroToNearestNpc = function(){ return jumpDebugNearestNpc(); };
-const loaded=MM.ghostMode ? false : loadGame(); // watchers boot blank and stream the host's world instead
+const loadResult=MM.ghostMode ? null : loadGame(); // watchers boot blank and stream the host's world instead
+const loaded=loadResult===true;
+const loadRejected=loadResult===false;
 if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
 // Fresh-world starter kit (owner ruling): the hero wakes armed with the stick
 // and enough improvised ammo to actually USE the always-known techniques —
 // sand for the blinding throw, water for spit. Watchers/hero guests never get
 // it (their inventory is streamed or guest-local).
-if(!loaded && !MM.ghostMode){
+if(!loaded && !loadRejected && !MM.ghostMode){
 	try{
 		if(MM.inventory && MM.inventory.equip && !(MM.inventory.equippedId && MM.inventory.equippedId('weapon'))) MM.inventory.equip('stick');
 		inv.sand=Math.max(inv.sand|0,20);
@@ -17537,6 +18231,7 @@ if(!loaded && !MM.ghostMode){
 updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); normalizeLegacyHelpDebugCopy();
 if(MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch()) setTouchActionMode(touchActionMode,{announce:false,remember:false});
 if(MM.ghostMode){ /* the ghost veil owns the first paint */ }
+else if(loadRejected){ msg('Nie wczytano głównego zapisu. Oryginał zachowano, a autozapis zablokowano do czasu odzyskania lub nowej warstwy.'); }
 else if(!loaded){
 	const touchWelcome=MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch();
 	msg(touchWelcome

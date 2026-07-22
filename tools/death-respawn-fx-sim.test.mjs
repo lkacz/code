@@ -163,7 +163,7 @@ for(const fromSection of [-2,-1,0,1,2,3]){
 
 assert.match(mainSource, /function resetWorldTransitionRuntime\(\)[\s\S]*deathTravelFx=null;[\s\S]*resetHouseHealingRuntimeState\(\)[\s\S]*player\.hpInvul=0;[\s\S]*player\.hurtFlashUntil=0;[\s\S]*releaseGameplayInput\(\)/, 'world replacement cancels death travel, healing state, invulnerability and held input together');
 assert.match(mainSource, /function resetHouseHealingRuntimeState\(\)[\s\S]*HOUSE_HEALING\.createState[\s\S]*Object\.assign\(houseHealingState,fresh\)[\s\S]*houseHealMsgAt=0;/, 'world replacement recreates the full house-healing runtime state');
-assert.match(mainSource, /function applyGameData\(data,opts\)[\s\S]*if\(ver<6\)[^\n]*[\s\S]*const legacyWorldMarkers=[\s\S]*resetWorldTransitionRuntime\(\);[\s\S]*if\(WORLD && WORLD\.clear\) WORLD\.clear\(\)/, 'snapshot loading captures guarded legacy markers, then cancels transient respawn state before replacing chunks');
+assert.match(mainSource, /function applyGameDataCore\(data,opts\)[\s\S]*if\(ver!==SAVE_SCHEMA_VERSION\)[^\n]*[\s\S]*const legacyWorldMarkers=[\s\S]*resetWorldTransitionRuntime\(\);[\s\S]*if\(WORLD && WORLD\.clear\) WORLD\.clear\(\)/, 'preflight-migrated snapshot loading captures guarded legacy markers, then cancels transient respawn state before replacing chunks');
 assert.match(mainSource, /function regenWorld\(\)\{\s*resetWorldTransitionRuntime\(\);[\s\S]*WORLD\.clear\(\)/, 'new-seed regeneration cancels transient respawn state before clearing the world');
 assert.match(mainSource, /window\.regenWorldSameSeed = function\(\)\{ try\{ resetWorldTransitionRuntime\(\);[\s\S]*WORLD && WORLD\.clear/, 'same-seed regeneration cancels transient respawn state before clearing the world');
 
