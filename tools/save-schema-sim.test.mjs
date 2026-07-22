@@ -21,7 +21,7 @@ const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.ur
   const end=src.indexOf('function isTransientTerrainTile');
   assert.ok(start>=0 && end>start,'save codec source block is discoverable');
   const sandbox={Uint8Array,btoa,atob};
-  runInNewContext(src.slice(start,end)+';globalThis.codec={encodeRLE,decodeRLE,decodeRaw};',sandbox);
+  runInNewContext(src.slice(start,end)+';globalThis.codec={encodeRLE,decodeRLE,decodeRaw,decodeSavedChunk,validateSavedChunkEncoding};',sandbox);
   for(const n of [1,2,17,255,256,4480,8960]){
     const input=new Uint8Array(n);
     let seed=(n*2654435761)>>>0;
@@ -35,6 +35,48 @@ const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.ur
   assert.equal(sandbox.codec.decodeRLE(btoa(String.fromCharCode(7,0)),1),null,'RLE rejects a zero-length run');
   assert.equal(sandbox.codec.decodeRLE(btoa(String.fromCharCode(7,2)),1),null,'RLE rejects a run exceeding the declared chunk');
   assert.equal(sandbox.codec.decodeRLE(btoa(String.fromCharCode(7)),1),null,'RLE rejects a truncated pair');
+  const encodedCases=[
+    {data:btoa(String.fromCharCode(7,3)),rle:true,size:3},
+    {data:btoa(String.fromCharCode(7,0)),rle:true,size:1},
+    {data:btoa(String.fromCharCode(7,2)),rle:true,size:1},
+    {data:btoa(String.fromCharCode(7)),rle:true,size:1},
+    {data:btoa(String.fromCharCode(1,2,3)),rle:false,size:3},
+    {data:btoa(String.fromCharCode(1,2,3)),rle:false,size:4},
+    {data:'not base64!',rle:true,size:8}
+  ];
+  for(const sample of encodedCases){
+    const decoded=!!sandbox.codec.decodeSavedChunk(sample.data,sample.rle,sample.size);
+    assert.equal(sandbox.codec.validateSavedChunkEncoding(sample.data,sample.rle,sample.size),decoded,'allocation-light validation matches materializing decode acceptance');
+  }
+}
+
+// Hashed serialization must remain byte-for-byte equivalent to the canonical
+// clone/hash/stringify pipeline while avoiding its final full object traversal.
+{
+  const start=src.indexOf('function stableStringify(v)');
+  const end=src.indexOf('function isSaveRecord(v)',start);
+  assert.ok(start>=0 && end>start,'save integrity helper source block is discoverable');
+  const sandbox={};
+  runInNewContext(src.slice(start,end)+';globalThis.hashApi={stableStringify,computeHash,serializeHashedSave,verifyHash};',sandbox);
+  const sparse=[]; sparse[0]='first'; sparse[3]=undefined;
+  const corpus=[
+    {},
+    {unicode:'Zażółć 😀',missing:undefined,nan:NaN,nested:{z:true,'10':'ten','2':'two'}},
+    {array:[1,undefined,NaN,{deep:'✓'}],sparse},
+    {h:'legacy-hash-position',seed:17,nested:{ok:true}},
+    {seed:42,world:{modified:[{cx:-2,data:'AA==',rle:false}]},player:{x:1.25,y:-3.5}}
+  ];
+  for(const sample of corpus){
+    const clone=JSON.parse(JSON.stringify(sample));
+    delete clone.h;
+    const hash=sandbox.hashApi.computeHash(sandbox.hashApi.stableStringify(clone));
+    clone.h=hash;
+    const expected=JSON.stringify(clone);
+    const actual=sandbox.hashApi.serializeHashedSave(sample);
+    assert.equal(actual.json,expected,'one-pass hashed serialization preserves legacy bytes');
+    assert.equal(actual.hash,hash,'one-pass hashed serialization preserves the manifest hash');
+    assert.equal(sandbox.hashApi.verifyHash(JSON.parse(actual.json)).ok,true,'serialized manifest verifies');
+  }
 }
 
 assert.match(src, /function snapshotInventory\(\)/, 'save code defines an inventory snapshot helper');
@@ -81,14 +123,19 @@ assert.match(src, /const criticalApplied=restoreCriticalState\(criticalState\)/,
 assert.match(src, /setInterval\(\(\)=>\{ saveCriticalState\('heartbeat'\); \},CRITICAL_SAVE_INTERVAL_MS\)/, 'critical recovery state is refreshed by a cheap heartbeat');
 assert.match(src, /function saveState\(\)\{[\s\S]*saveCriticalState\('dirty'\)/, 'dirty save scheduling also refreshes the critical recovery state');
 assert.match(src, /saveCriticalState\('flush',true\)/, 'pagehide and unload force-write critical recovery before heavy serialization');
-assert.match(src, /localStorage\.setItem\(SAVE_KEY,json\);\s*rememberCommittedSave\(withHash,snapshotRevision\)/, 'full saves advance the critical-state base only after the main manifest write succeeds');
+assert.match(src, /localStorage\.setItem\(SAVE_KEY,json\);\s*rememberCommittedSave\(serialized\.object,snapshotRevision\)/, 'full saves advance the critical-state base only after the main manifest write succeeds');
 assert.match(src, /function finishIncrementalAutoSave\(\)[\s\S]{0,420}!incrementalAutoSaveJobIsCurrent\(job\)/, 'incremental saves refuse to publish a stale multi-batch snapshot');
+assert.match(src, /function runAutoSaveWork\(\)[\s\S]{0,700}!incrementalAutoSaveJobRevisionMatches\(job\)/, 'incremental batches use the constant-time revision guard');
+assert.match(src, /setInterval\(\(\)=>\{ requestAutoSaveHeartbeat\(\); \},60000\)/, 'autosave heartbeat does not manufacture a new revision for dirty work');
+assert.match(src, /validateSaveChunkPayloads[\s\S]*validateSavedChunkEncoding\(ch\.data,!!ch\.rle,size\)[\s\S]*validateSavedChunkEncoding\(encoded,saved\.rle!==false,size\)/, 'save preflight validates chunk encodings without materializing restore arrays');
 assert.match(src, /job\.versions\.set\(ref\.key,worldChunkVersion\(ref\)\)/, 'incremental jobs remember the exact version of every encoded chunk');
 assert.match(src, /function finishIncrementalAutoSave\(\)[\s\S]*cleanupAutosaveChunks\(referencedAutosaveKeys\(\),job\.oldRefs\)/, 'incremental cleanup preserves blobs still reachable from named or fork slots');
 assert.match(src, /function flushPendingSave\(\)[\s\S]{0,600}cancelPendingSaveWork\(\);[\s\S]{0,180}saveCriticalState\('flush',true\)/, 'flush cleans unpublished chunk blobs before writing a synchronous replacement');
 assert.match(src, /loadSaveCandidate\(raw,\{ignoreCritical:true,transactional:true,persistAsMain:true\}\)/, 'named save-slot loads validate and apply transactionally without newer critical recovery data');
-assert.match(src, /function portableSaveJson\(raw,storage\)[\s\S]*portable\.world=\{modified\}[\s\S]*attachHash\(portable\)/, 'exports materialize external autosave chunks into a self-contained rehashed manifest');
+assert.match(src, /function portableSaveJson\(raw,storage\)[\s\S]*portable\.world=\{modified\}[\s\S]*serializeHashedSave\(portable\)\.json/, 'exports materialize external autosave chunks into a self-contained rehashed manifest');
 assert.match(src, /const portable=portableSaveJson\(raw,localStorage\); const blob=new Blob\(\[portable\]/, 'save-slot export always downloads the portable manifest');
+assert.match(src, /function saveGame\(manual\)[^\n]*showAutoSaveHint\(_lastFullSaveSizeKB\)/, 'full autosave hints reuse the size already measured during serialization');
+assert.match(src, /target\.bytes=data\.length; target\.hash=saveHash/, 'named saves persist display metadata while the payload is already available');
 assert.match(src, /infrastructure:\s*timedSavePart\('infrastructure',[^\n]*WORLD && WORLD\.snapshotInfrastructure/, 'save payload includes pipe and cable overlays');
 assert.match(src, /background:\s*timedSavePart\('background',[^\n]*BACKGROUND && BACKGROUND\.snapshot/, 'save payload includes day-night background state');
 assert.match(src, /constructionBackground:\s*timedSavePart\('constructionBackground',[^\n]*WORLD && WORLD\.snapshotConstructionBackground/, 'save payload includes background construction support tiles');
@@ -471,10 +518,10 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   assert.deepEqual([...blobs],['committed'],'flush deletes abandoned incremental blobs but preserves committed data');
 }
 
-// Multi-batch snapshots are valid only while their revision, modified-chunk set,
-// and every already-encoded chunk version still match the live world.
+// Batches use an O(1) revision guard. Publication still requires the complete
+// modified-chunk set and every encoded version to match the live world.
 {
-  const start=src.indexOf('function incrementalAutoSaveJobIsCurrent(job)');
+  const start=src.indexOf('function incrementalAutoSaveJobRevisionMatches(job)');
   const end=src.indexOf('function finishIncrementalAutoSave()',start);
   assert.ok(start>=0 && end>start,'incremental freshness helpers are discoverable');
   const cleaned=[];
@@ -484,15 +531,19 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
     currentChunks:['c1','c2'],
     liveVersions:new Map([['c1',11],['c2',22]]),
     normalizeWorldChunkRef(raw){ const key=typeof raw==='string'?raw:raw&&raw.key; return key?{key}:null; },
-    modifiedChunkIds(){ return sandbox.currentChunks.slice(); },
+    modifiedChunkCalls:0,
+    modifiedChunkIds(){ sandbox.modifiedChunkCalls++; return sandbox.currentChunks.slice(); },
     worldChunkVersion(ref){ return sandbox.liveVersions.get(ref.key)||0; },
     cleanupAutosaveChunks(keep,refs){ cleaned.push(...refs.map(ref=>ref.key)); },
     Set,
     Map
   };
-  runInNewContext(src.slice(start,end)+';globalThis.incrementalApi={current:incrementalAutoSaveJobIsCurrent,abandon:abandonIncrementalAutoSave};globalThis.job={revision:5,chunks:["c1","c2"],versions:new Map([["c1",11]]),refs:[{key:"orphan"}]};',sandbox);
+  runInNewContext(src.slice(start,end)+';globalThis.incrementalApi={revisionMatches:incrementalAutoSaveJobRevisionMatches,current:incrementalAutoSaveJobIsCurrent,abandon:abandonIncrementalAutoSave};globalThis.job={revision:5,chunks:["c1","c2"],versions:new Map([["c1",11]]),refs:[{key:"orphan"}]};',sandbox);
   sandbox._autoSaveJob=sandbox.job;
+  assert.equal(sandbox.incrementalApi.revisionMatches(sandbox.job),true,'unchanged batch revision remains current');
+  assert.equal(sandbox.modifiedChunkCalls,0,'batch revision guard does not enumerate modified chunks');
   assert.equal(sandbox.incrementalApi.current(sandbox.job),true,'unchanged incremental job remains publishable');
+  assert.equal(sandbox.modifiedChunkCalls,1,'publication audit enumerates modified chunks once');
   sandbox._saveRevision=6;
   assert.equal(sandbox.incrementalApi.current(sandbox.job),false,'a newer save revision invalidates the job');
   sandbox._saveRevision=5; sandbox.liveVersions.set('c1',12);
@@ -501,6 +552,61 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   assert.equal(sandbox.incrementalApi.current(sandbox.job),false,'a newly modified chunk invalidates the frozen manifest set');
   sandbox.incrementalApi.abandon(sandbox.job);
   assert.deepEqual(cleaned,['orphan'],'invalidated job removes its unpublished blobs');
+}
+
+// The periodic request starts a clean save, but must not invalidate dirty or
+// already-running work merely because another minute elapsed.
+{
+  const start=src.indexOf('function saveState()');
+  const end=src.indexOf('window.__mmMarkWorldChanged',start);
+  assert.ok(start>=0 && end>start,'autosave heartbeat source block is discoverable');
+  const sandbox={
+    _startingNewGame:false,_saveWritesBlocked:false,_saveDirty:true,_autoSaveJob:{revision:7},_saveRevision:7,
+    MM:{ghostMode:false},scheduled:0,critical:0,
+    saveCriticalState(){ sandbox.critical++; },
+    scheduleDirtySave(){ sandbox.scheduled++; }
+  };
+  runInNewContext(src.slice(start,end)+';globalThis.autosaveApi={saveState,heartbeat:requestAutoSaveHeartbeat};',sandbox);
+  sandbox.autosaveApi.heartbeat();
+  assert.equal(sandbox._saveRevision,7,'dirty heartbeat preserves the in-flight revision');
+  assert.equal(sandbox.scheduled,1,'dirty heartbeat only ensures work remains scheduled');
+  sandbox._saveDirty=false; sandbox._autoSaveJob=null;
+  sandbox.autosaveApi.heartbeat();
+  assert.equal(sandbox._saveRevision,8,'clean heartbeat requests a fresh save revision');
+  assert.equal(sandbox._saveDirty,true,'clean heartbeat marks the save dirty');
+}
+
+// Autosave-blob cleanup skips ordinary inline slot payloads, but JSON Unicode
+// escapes cannot hide a live external reference from the cleanup audit.
+{
+  const start=src.indexOf('function scanAutosaveRefs(raw,keep)');
+  const end=src.indexOf('function referencedAutosaveKeys()',start);
+  assert.ok(start>=0 && end>start,'autosave reference scanner source block is discoverable');
+  let parses=0;
+  const sandbox={
+    AUTOSAVE_CHUNK_PREFIX:'mm_save_v7_chunk_',
+    JSON:{parse(raw){ parses++; return JSON.parse(raw); }}
+  };
+  runInNewContext(src.slice(start,end)+';globalThis.scan=scanAutosaveRefs;',sandbox);
+  const keep=new Set();
+  sandbox.scan('{"world":{"modified":[{"data":"large-inline"}]}}',keep);
+  assert.equal(parses,0,'inline slot without an external prefix skips JSON parsing');
+  sandbox.scan('{"world":{"chunkRefs":[{"key":"mm_save_v7_chunk_42_1_job"}]}}',keep);
+  assert.equal(parses,1,'ordinary external slot is parsed');
+  const escaped=String.raw`{"world":{"chunkRefs":[{"key":"mm_save_v7_\u0063hunk_42_2_job"}]}}`;
+  sandbox.scan(escaped,keep);
+  assert.equal(parses,2,'Unicode-escaped external prefix still forces parsing');
+  assert.equal(keep.has('mm_save_v7_chunk_42_2_job'),true,'escaped live blob reference remains protected');
+}
+
+{
+  const start=src.indexOf('function refreshList()');
+  const end=src.indexOf('function performNamedSave(forcePrompt)',start);
+  assert.ok(start>=0 && end>start,'save-browser refresh source block is discoverable');
+  const refreshSource=src.slice(start,end);
+  assert.doesNotMatch(refreshSource,/verifyHash\(/,'opening the save browser does not rehash every slot payload');
+  assert.match(refreshSource,/const slotBytes=new Map\(/,'save browser estimates slot usage from write-time metadata');
+  assert.match(refreshSource,/Number\.isSafeInteger\(s\.bytes\)/,'save rows render cached payload size metadata');
 }
 
 // Exercise the real transaction wrapper with a tiny fake runtime. A failed core
@@ -577,10 +683,12 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
     verifyHash(value){ return {ok:value.h==='12345678'}; },
     validSavedChunkRef(cx,sy){ return Number.isInteger(cx) && sy==null ? {cx,sy:null,base:true,key:'c'+cx} : null; },
     decodeSavedChunk(value,rle,size){ return value==='encoded' ? new Uint8Array(size) : null; },
+    validateSavedChunkEncoding(value){ return value==='encoded'; },
     worldSectionHeight(){ return 280; },
     worldCellInBounds(x,y){ return Number.isFinite(x) && Math.abs(x)<=30000000 && Number.isFinite(y) && y>=-896 && y<1036; },
     computeHash(value){ return value==='encoded' ? 'feedbeef' : '12345678'; },
     attachHash(value){ return {object:Object.assign({},value,{h:'12345678'}),hash:'12345678'}; },
+    serializeHashedSave(value){ const object=Object.assign({},value,{h:'12345678'}); return {object,hash:'12345678',json:JSON.stringify(object)}; },
     assertSaveChunkCapacity(records){ return records; },
     loadFailureSummary(preflight){ return preflight.errors[0]?.detail||'invalid'; },
     localStorage:{getItem(){ return null; }}

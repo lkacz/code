@@ -154,13 +154,10 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
       }
       return true;
     };
-    const surfaceCache=new Map();
-    const surfaceAt=(x)=>{
-      if(!WGen) return -Infinity;
-      let s=surfaceCache.get(x);
-      if(s===undefined){ s=WGen.surfaceHeight(x); surfaceCache.set(x,s); }
-      return s;
-    };
+    const surfaceHeights=WGen ? new Array(Math.max(0,xEnd-x0)) : null;
+    if(surfaceHeights){
+      for(let x=x0;x<xEnd;x++) surfaceHeights[x-x0]=WGen.surfaceHeight(x);
+    }
     const drawRect=(r)=>{
       ctx.fillStyle=r.style;
       const x=(r.x0-originX)*TILE, y=(r.y0-originY)*TILE;
@@ -176,8 +173,8 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
       if(!worldYInBounds(y)) return null;
       if(hasVisible(x,y)) return null;
       const t=getTile(x,y);
-      const underground = WGen? (y>surfaceAt(x)) : false;
-      const openGas = isGasTile(t) && gasSkyExposed(x,y);
+      const underground = WGen ? y>surfaceHeights[x-x0] : false;
+      const openGas = underground && isGasTile(t) && gasSkyExposed(x,y);
       if((t!==T.AIR && !isGasTile(t)) || (underground && !openGas)){
         return showMemory && hasSeen(x,y)?'rgba(0,0,0,.48)':'#000';
       }
@@ -229,8 +226,8 @@ import { isAirOrGasTile, isGasTile } from './material_physics.js';
         let style=null;
         if(!hasVisible(x,y)){
           const t=getTile(x,y);
-          const underground = WGen? (y>surfaceAt(x)) : false;
-          const openGas = isGasTile(t) && gasSkyExposed(x,y);
+          const underground = WGen ? y>surfaceHeights[x-x0] : false;
+          const openGas = underground && isGasTile(t) && gasSkyExposed(x,y);
           if((t!==T.AIR && !isGasTile(t)) || (underground && !openGas)){
             style=showMemory && hasSeen(x,y)?'rgba(0,0,0,.48)':'#000';
           }

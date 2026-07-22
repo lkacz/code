@@ -169,18 +169,22 @@ assert.equal(fog._hasSeen(3,5), true, 'x-ray reveal still persists in seen histo
   fog.importSeen([]);
   fog.setRevealAll(false);
   MM.worldGen={ surfaceHeight(){ return 10; } };
+  let gasSkyCalls=0;
+  MM.gases={skyExposed(...args){ gasSkyCalls++; return gases.skyExposed(...args); }};
   setTile(50,5,T.HOT_AIR);
   const skyFills=[];
   const skyCtx={fillStyle:'', fillRect(x,y,w,h){ skyFills.push({style:this.fillStyle,x,y,w,h}); }};
   fog.revealAround(200,1,1,{lineOfSight:false,rememberSeen:false,getTile,blocksSight:(t)=>isSolid(t)});
   fog.applyOverlay(skyCtx,50,5,0,0,1,getTile,T,{showMemory:true});
   assert.equal(skyFills.length,0,'unseen hot air in open sky does not become a black fog block');
+  assert.equal(gasSkyCalls,0,'above-surface gas skips the underground sky-exposure scan');
 
   setTile(52,12,T.STEAM);
   const openSteamFills=[];
   const openSteamCtx={fillStyle:'', fillRect(x,y,w,h){ openSteamFills.push({style:this.fillStyle,x,y,w,h}); }};
   fog.applyOverlay(openSteamCtx,52,12,0,0,1,getTile,T,{showMemory:true});
   assert.equal(openSteamFills.some(f=>f.y===12 && f.x<=52 && f.x+f.w>52 && f.style==='#000'),false,'sky-exposed steam below the nominal surface fades instead of becoming a black fog block');
+  assert.ok(gasSkyCalls>0,'underground gas still checks whether it is open to the sky');
 
   setTile(51,12,T.HOT_AIR);
   setTile(51,11,T.STONE);
@@ -192,6 +196,7 @@ assert.equal(fog._hasSeen(3,5), true, 'x-ray reveal still persists in seen histo
   setTile(51,12,T.AIR);
   setTile(51,11,T.AIR);
   setTile(52,12,T.AIR);
+  MM.gases=gases;
   MM.worldGen={};
 }
 

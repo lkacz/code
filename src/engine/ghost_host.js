@@ -78,7 +78,7 @@ const ghostHost = (function(){
 			ledger: NET.createCooldownLedger(),
 			pendingTiles: new Map(),
 			needResync: false,
-			snapCache: null,
+			snapChunks: null,
 			snapCacheAt: 0,
 			sinceCache: [],
 			lastSnapAt: 0,
@@ -745,15 +745,16 @@ const ghostHost = (function(){
 	// invalidates the cache rather than dropping replay data.
 	function sendSnapshot(s, peer, forceFresh){
 		const t = now();
-		if(forceFresh || !s.snapCache || t - s.snapCacheAt > SNAP_CACHE_MS){
+		if(forceFresh || !s.snapChunks || t - s.snapCacheAt > SNAP_CACHE_MS){
 			try{
-				s.snapCache = JSON.stringify(Object.assign({ ghostStream: NET.GHOST_PROTO }, bridge.buildSave()));
+				const json = JSON.stringify(Object.assign({ ghostStream: NET.GHOST_PROTO }, bridge.buildSave()));
+				s.snapChunks = NET.chunkPayload('snap', json);
 				s.snapCacheAt = t;
 				s.sinceCache.length = 0;
 			}
-			catch(e){ console.warn('ghost snapshot failed', e); s.snapCache = null; return; }
+			catch(e){ console.warn('ghost snapshot failed', e); s.snapChunks = null; return; }
 		}
-		for(const env of NET.chunkPayload('snap', s.snapCache)) peer.send(env);
+		for(const env of s.snapChunks) peer.send(env);
 		if(s.sinceCache.length) peer.send({ t: 'tiles', d: s.sinceCache.slice() });
 		// A cached save is only the durable base. These independently streamed
 		// planes may have advanced (or cleared) since it was serialized, so every
@@ -769,26 +770,26 @@ const ghostHost = (function(){
 		s.stats.snapshots++;
 		s.lastSnapAt = t;
 	}
-	function sendMobsFull(s, peer){
+	function sendMobsFull(s, peer, knownSig){
 		try{
 			const M = MMR && MMR.mobs;
 			if(!M || !M.serialize) return;
 			const pl = { t: 'mobsFull', data: M.serialize() };
 			if(peer) peer.send(pl); else broadcast(pl);
-			s.lastMobSig = (M.ghostRoster ? M.ghostRoster().sig : null);
+			s.lastMobSig = arguments.length > 2 ? knownSig : (M.ghostRoster ? M.ghostRoster().sig : null);
 			s.last.mobsFull = now();
 		}catch(e){ /* mob codec hiccup — next tick retries */ }
 	}
 	// Invasions ride their own plane, exactly like the mobs: the watcher never runs
 	// invasions.update() (a spectator must not spawn, dig or steal), so without this
 	// the landing party stood frozen wherever the last full snapshot caught it.
-	function sendInvFull(s, peer){
+	function sendInvFull(s, peer, knownSig){
 		try{
 			const I = MMR && MMR.invasions;
 			if(!I || !I.snapshot) return;
 			const pl = { t: 'invFull', data: I.snapshot() };
 			if(peer) peer.send(pl); else broadcast(pl);
-			s.lastInvSig = (I.ghostRoster ? I.ghostRoster().sig : null);
+			s.lastInvSig = arguments.length > 2 ? knownSig : (I.ghostRoster ? I.ghostRoster().sig : null);
 			s.last.invFull = now();
 		}catch(e){ /* next tick retries */ }
 	}
@@ -816,7 +817,7 @@ const ghostHost = (function(){
 			// tile capture is OFF with zero watchers, so the cached snapshot and its
 			// replay buffer go stale the moment the audience empties — a re-join
 			// inside the cache window must get a fresh serialization, not old cells
-			s.snapCache = null; s.sinceCache.length = 0;
+			s.snapChunks = null; s.sinceCache.length = 0;
 			if(MMR) MMR.coopBodies = []; // no live peers → no embodied bodies for creatures to hunt
 			reap(s, t);
 			return;
@@ -835,8 +836,8 @@ const ghostHost = (function(){
 			s.stats.tileMsgs++;
 			// keep the cached snapshot honest: remember what changed since it was
 			// built so a late joiner can replay the gap; too much churn = drop cache
-			if(s.snapCache){
-				if(s.sinceCache.length + d.length > 9000){ s.snapCache = null; s.sinceCache.length = 0; }
+			if(s.snapChunks){
+				if(s.sinceCache.length + d.length > 9000){ s.snapChunks = null; s.sinceCache.length = 0; }
 				else { for(const n of d) s.sinceCache.push(n); }
 			}
 		}
@@ -876,7 +877,7 @@ const ghostHost = (function(){
 		const M = MMR && MMR.mobs;
 		if(!M || !M.ghostRoster) return;
 		const roster = M.ghostRoster();
-		if(roster.sig !== s.lastMobSig || t - s.last.mobsFull > CAD.mobsFull){ sendMobsFull(s, null); }
+		if(roster.sig !== s.lastMobSig || t - s.last.mobsFull > CAD.mobsFull){ sendMobsFull(s, null, roster.sig); }
 		else broadcast({ t: 'mobs', sig: roster.sig, poses: roster.poses });
 	}
 	function invTick(s, t){
@@ -887,7 +888,7 @@ const ghostHost = (function(){
 		// nothing invading: send one empty sync so a watcher's stale squad clears
 		if(!roster.sig && !s.lastInvSig && s.invIdle) return;
 		s.invIdle = !roster.sig;
-		if(roster.sig !== s.lastInvSig || t - s.last.invFull > CAD.invFull){ sendInvFull(s, null); }
+		if(roster.sig !== s.lastInvSig || t - s.last.invFull > CAD.invFull){ sendInvFull(s, null, roster.sig); }
 		else broadcast({ t: 'inv', sig: roster.sig, poses: roster.poses, props: roster.props });
 	}
 	// The guardian arena: the save snapshot deliberately drops live entities

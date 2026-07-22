@@ -3276,6 +3276,21 @@ function decodeSavedChunk(data,rle,size){
 		return arr instanceof Uint8Array && arr.length===size ? arr : null;
 	}catch(e){ return null; }
 }
+function validateSavedChunkEncoding(data,rle,size){
+	if(typeof data!=='string' || !Number.isSafeInteger(size) || size<=0 || data.length>size*4+64) return false;
+	try{
+		const bin=atob(data);
+		if(!rle) return bin.length===size;
+		if(bin.length%2!==0) return false;
+		let total=0;
+		for(let i=1;i<bin.length;i+=2){
+			const count=bin.charCodeAt(i);
+			if(count<=0 || total>size-count) return false;
+			total+=count;
+		}
+		return total===size;
+	}catch(e){ return false; }
+}
 function isTransientTerrainTile(t){
 	return isGasTile(t);
 }
@@ -3337,7 +3352,17 @@ function restoreTerrainChunk(cx,arr){
 function stableStringify(v){ if(v===null||typeof v!=='object') return JSON.stringify(v); if(Array.isArray(v)) return '['+v.map(stableStringify).join(',')+']'; const keys=Object.keys(v).sort(); return '{'+keys.map(k=>JSON.stringify(k)+':'+stableStringify(v[k])).join(',')+'}'; }
 function computeHash(str){ // FNV-1a 32-bit
  let h=0x811c9dc5; for(let i=0;i<str.length;i++){ h^=str.charCodeAt(i); h = (h>>>0) * 0x01000193; h>>>0; } return ('00000000'+(h>>>0).toString(16)).slice(-8); }
-function attachHash(obj){ const clone=JSON.parse(JSON.stringify(obj)); const core=stableStringify(clone); const hash=computeHash(core); clone.h=hash; return {object:clone, hash}; }
+function serializeHashedSave(obj){
+	const coreJson=JSON.stringify(obj);
+	const clone=JSON.parse(coreJson);
+	const hadHash=Object.prototype.hasOwnProperty.call(clone,'h');
+	if(hadHash) delete clone.h;
+	const hash=computeHash(stableStringify(clone));
+	clone.h=hash;
+	const json=hadHash?JSON.stringify(clone):(coreJson.slice(0,-1)+(coreJson.length>2?',':'')+'"h":'+JSON.stringify(hash)+'}');
+	return {object:clone,hash,json};
+}
+function attachHash(obj){ const {object,hash}=serializeHashedSave(obj); return {object,hash}; }
 function verifyHash(obj){ if(!obj || typeof obj!=='object' || !obj.h) return {ok:true, reason:!obj?'no-object':'no-hash'}; const h=obj.h; const tmp=Object.assign({}, obj); delete tmp.h; const core=stableStringify(tmp); const calc=computeHash(core); return {ok: h===calc, expected: h, got: calc}; }
 function isSaveRecord(v){ return !!v && typeof v==='object' && !Array.isArray(v); }
 function saveValidationIssue(list,code,path,detail){
@@ -3370,7 +3395,7 @@ function validateSaveChunkPayloads(data,world,storage,errors){
 			if(seen.has(ref.key)){ saveValidationIssue(errors,'chunk-duplicate','world.modified.'+i,'duplicate chunk '+ref.key); continue; }
 			seen.add(ref.key);
 			const size=CHUNK_W*(ref.base?WORLD_H:worldSectionHeight());
-			if(!decodeSavedChunk(ch.data,!!ch.rle,size)) saveValidationIssue(errors,'chunk-data','world.modified.'+i+'.data','invalid encoded chunk payload');
+			if(!validateSavedChunkEncoding(ch.data,!!ch.rle,size)) saveValidationIssue(errors,'chunk-data','world.modified.'+i+'.data','invalid encoded chunk payload');
 		}
 	}
 	if(refs){
@@ -3407,7 +3432,7 @@ function validateSaveChunkPayloads(data,world,storage,errors){
 				saveValidationIssue(errors,'chunk-ref-hash-mismatch','world.chunkRefs.'+i,'external chunk hash mismatch');
 				continue;
 			}
-			if(!decodeSavedChunk(encoded,saved.rle!==false,size)) saveValidationIssue(errors,'chunk-ref-data','world.chunkRefs.'+i,'invalid external chunk payload');
+			if(!validateSavedChunkEncoding(encoded,saved.rle!==false,size)) saveValidationIssue(errors,'chunk-ref-data','world.chunkRefs.'+i,'invalid external chunk payload');
 		}
 	}
 }
@@ -3539,7 +3564,7 @@ function publishSavePerf(perf){
 }
 // Save scheduler state is declared before saveGame(): customization events can
 // request a save before later DOM setup code has finished running.
-let _saveStateT=null, _autoSaveWorkT=null, _autoSaveJob=null, _lastAutoSaveAt=Date.now(), _saveDirty=false, _lastSaveActivityAt=Date.now(), _saveRevision=0, _saveFailureCount=0, _nextAutoSaveRetryAt=0, _lastSaveError='';
+let _saveStateT=null, _autoSaveWorkT=null, _autoSaveJob=null, _lastAutoSaveAt=Date.now(), _saveDirty=false, _lastSaveActivityAt=Date.now(), _saveRevision=0, _saveFailureCount=0, _nextAutoSaveRetryAt=0, _lastSaveError='', _lastFullSaveSizeKB=0;
 let _lastCriticalSaveAt=0, _lastCriticalSaveSignature='', _criticalSaveFailureCount=0, _committedSaveIdentity=null;
 let _startingNewGame=false, _saveWritesBlocked=false, _saveWriteBlockReason='';
 const AUTO_SAVE_IDLE_CHECK_MS=3000;
@@ -3672,6 +3697,9 @@ function currentAutosaveRefs(){ try{ const raw=localStorage.getItem(SAVE_KEY); i
 function cleanupAutosaveChunks(keepKeys,oldRefs){ if(!Array.isArray(oldRefs)) return; for(const r of oldRefs){ try{ if(r && typeof r.key==='string' && r.key.startsWith(AUTOSAVE_CHUNK_PREFIX) && !keepKeys.has(r.key)) localStorage.removeItem(r.key); }catch(e){} } }
 function scanAutosaveRefs(raw,keep){
 	if(!raw) return;
+	// Inline named saves contain no external chunk keys. Avoid parsing their large
+	// JSON bodies; a Unicode escape can synthesize the prefix, so those still parse.
+	if(!raw.includes(AUTOSAVE_CHUNK_PREFIX) && !raw.includes('\\u')) return;
 	try{
 		const data=JSON.parse(raw);
 		const refs=data && data.world && Array.isArray(data.world.chunkRefs) ? data.world.chunkRefs : [];
@@ -4093,17 +4121,18 @@ function saveGameCore(manual){
 		const snapshotRevision=_saveRevision;
 		const data=buildSaveObject({perf});
 		const mods=(data.world && data.world.modified)? data.world.modified.length:0;
-		const {object:withHash} = timedSavePart('hash',()=>attachHash(data),perf);
-		const json=timedSavePart('json',()=>JSON.stringify(withHash),perf);
+		const serialized=timedSavePart('hash',()=>serializeHashedSave(data),perf);
+		const json=serialized.json;
 		const writeT=savePerfNow();
 		localStorage.setItem(SAVE_KEY,json);
-		rememberCommittedSave(withHash,snapshotRevision);
+		rememberCommittedSave(serialized.object,snapshotRevision);
 		const writeMs=savePerfNow()-writeT;
 		addSavePerfPart(perf,'storage.write',writeMs);
 		timedSavePart('storage.cleanup',()=>cleanupAutosaveChunks(referencedAutosaveKeys(),oldRefs),perf);
 		recordSaveSuccess();
 		publishSavePerf(perf);
-		try{ window.__lastSaveMs=savePerfNow()-t0; window.__lastSaveSizeKb=(json.length/1024)|0; window.__lastSaveChunks=mods; window.__lastSaveMode='full'; window.__lastSaveWriteMs=writeMs; }catch(e){}
+		_lastFullSaveSizeKB=(json.length/1024)|0;
+		try{ window.__lastSaveMs=savePerfNow()-t0; window.__lastSaveSizeKb=_lastFullSaveSizeKB; window.__lastSaveChunks=mods; window.__lastSaveMode='full'; window.__lastSaveWriteMs=writeMs; }catch(e){}
 		if(manual){ msg('Zapisano ('+((json.length/1024)|0)+' KB, modyf.chunks:'+mods+', '+Math.round(window.__lastSaveMs||0)+' ms)'); }
 		return true;
 	}catch(e){
@@ -4116,7 +4145,7 @@ function saveGameCore(manual){
 function showAutoSaveHint(sizeKB){ try{ let el=document.getElementById('autoSaveHint'); if(!el){ el=document.createElement('div'); el.id='autoSaveHint'; el.style.cssText='position:fixed; left:8px; bottom:8px; background:rgba(0,0,0,0.55); color:#fff; font:11px system-ui; padding:4px 8px; border-radius:6px; pointer-events:none; opacity:0; transition:opacity .4s; z-index:5000;'; document.body.appendChild(el); }
  const now=new Date(); const t=now.toLocaleTimeString(); el.textContent='Auto-zapis '+t+' ('+sizeKB+' KB)'; el.style.opacity='1'; clearTimeout(showAutoSaveHint._t); showAutoSaveHint._t=setTimeout(()=>{ el.style.opacity='0'; },2800); }catch(e){} }
 // Wrapper adds the autosave hint on non-manual saves
-function saveGame(manual){ saveCriticalState(manual?'manual-attempt':'full-attempt',true); const ok=saveGameCore(manual); if(ok){ saveCriticalState(manual?'manual':'full',true); _saveDirty=false; _lastAutoSaveAt=Date.now(); _autoSaveJob=null; if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; } if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; } } if(ok && !manual){ try{ const raw=localStorage.getItem(SAVE_KEY); if(raw) showAutoSaveHint((raw.length/1024)|0); }catch(e){} } return ok; }
+function saveGame(manual){ saveCriticalState(manual?'manual-attempt':'full-attempt',true); const ok=saveGameCore(manual); if(ok){ saveCriticalState(manual?'manual':'full',true); _saveDirty=false; _lastAutoSaveAt=Date.now(); _autoSaveJob=null; if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; } if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; } } if(ok && !manual) showAutoSaveHint(_lastFullSaveSizeKB); return ok; }
 function publishLoadReport(report){
 	const clean=Object.assign({at:Date.now()},report||{});
 	try{ window.__lastLoadReport=clean; }catch(e){}
@@ -4131,7 +4160,7 @@ function loadFailureSummary(preflight){
 }
 function migratedSaveJson(preflight,raw){
 	if(!preflight || (!preflight.migratedFrom && !preflight.needsRehash)) return raw;
-	return JSON.stringify(attachHash(preflight.data).object);
+	return serializeHashedSave(preflight.data).json;
 }
 function portableSaveJson(raw,storage){
 	const preflight=parseSaveCandidate(raw,{storage,requireHash:true});
@@ -4153,7 +4182,7 @@ function portableSaveJson(raw,storage){
 	const portable=JSON.parse(JSON.stringify(preflight.data));
 	delete portable.h;
 	portable.world={modified};
-	const json=JSON.stringify(attachHash(portable).object);
+	const json=serializeHashedSave(portable).json;
 	const bytes=typeof TextEncoder==='function' ? new TextEncoder().encode(json).length : json.length;
 	if(bytes>IMPORT_SAVE_BYTE_CAP) throw new Error('Portable save exceeds the import size limit');
 	return json;
@@ -4511,7 +4540,7 @@ function applyGameDataCore(data,opts){
 // Auto-save heartbeat: it only asks the dirty scheduler to try saving. The heavy
 // serialization itself is delayed until gameplay is idle, so the heartbeat cannot
 // create rhythmic frame stalls while digging or travelling.
-setInterval(()=>{ saveState(); },60000);
+setInterval(()=>{ requestAutoSaveHeartbeat(); },60000);
 setInterval(()=>{ saveCriticalState('heartbeat'); },CRITICAL_SAVE_INTERVAL_MS);
 // Expose manual save/load via menu buttons (injected later if menu exists)
 window.__injectSaveButtons = function(){ const menuPanel=document.getElementById('playerSaveMenu') || document.getElementById('menuPanel'); if(!menuPanel || document.getElementById('saveGameBtn')) return; const group=document.createElement('div'); group.className='group pauseSaveGroup'; group.style.cssText='display:flex; flex-direction:column; gap:6px;';
@@ -4542,12 +4571,14 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	function slotKey(id){ return 'mm_slot_'+id; }
 	function writeSaveSlot(key,data,perf){ const t=savePerfNow(); localStorage.setItem(key,data); addSavePerfPart(perf,'slot.write',savePerfNow()-t); publishSavePerf(perf); }
 	function refreshList(){ list.innerHTML=''; const slots=loadSlots().sort((a,b)=> b.time-a.time); if(!slots.length){ const empty=document.createElement('div'); empty.textContent='(brak zapisów)'; empty.style.fontSize='11px'; empty.style.opacity='0.6'; list.appendChild(empty); }
-		// Recompute storage usage (approx) for keys starting with mm_
-		let used=0; try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith('mm_')){ const v=localStorage.getItem(k); if(v) used += k.length + v.length; } } }catch(e){}
+		// Slot payload sizes are captured when written, so opening the browser never
+		// synchronously rereads every multi-megabyte save merely to estimate usage.
+		const slotBytes=new Map(slots.map(s=>[String(s.id),Number.isSafeInteger(s.bytes)&&s.bytes>=0?s.bytes:0]));
+		let used=0; try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith('mm_')){ if(k.startsWith('mm_slot_')) used+=k.length+(slotBytes.get(k.slice(8))||0); else { const v=localStorage.getItem(k); if(v) used += k.length + v.length; } } } }catch(e){}
 		const totalCap = 5*1024*1024; const pct=((used/totalCap)*100).toFixed(1);
 		usageLine.textContent='Użycie storage: '+((used/1024)|0)+' KB (~'+pct+'% z 5MB)'; if(used/totalCap>0.85) usageLine.style.color='#ff8080'; else usageLine.style.color='';
 		slots.forEach(s=>{ const row=document.createElement('div'); const isCur=currentSlotId===s.id; row.style.cssText='display:flex; gap:6px; align-items:center; background:'+(isCur?'rgba(60,130,255,0.25)':'rgba(255,255,255,0.05)')+'; padding:4px 6px; border-radius:6px;'+(isCur?'outline:1px solid #2d7bff;':'');
-			const info=document.createElement('div'); info.style.flex='1'; info.style.minWidth='0'; const raw=localStorage.getItem(slotKey(s.id)); const sizeKB=raw? ((raw.length/1024)|0):0; let hashState=''; if(raw){ try{ const obj=JSON.parse(raw); const v=verifyHash(obj); if(obj && obj.h){ hashState = v.ok? ('#'+obj.h.slice(0,6)) : '(USZKODZONY)'; if(!v.ok) row.style.background='rgba(255,60,60,0.25)'; } else { hashState='(brak hash)'; } }catch(e){ hashState='(BŁĄD)'; row.style.background='rgba(255,60,60,0.25)'; } }
+			const info=document.createElement('div'); info.style.flex='1'; info.style.minWidth='0'; const sizeKB=Number.isSafeInteger(s.bytes)&&s.bytes>=0?((s.bytes/1024)|0):'?'; const hashState=typeof s.hash==='string'&&/^[0-9a-f]{8}$/i.test(s.hash)?('#'+s.hash.slice(0,6)):'(sprawdzenie przy wczytaniu)';
 			// Slot name and seed are user/import-controlled — never interpolate them into HTML
 			const nameDisp=(s.name||'Bez nazwy');
 			const nameB=document.createElement('b'); nameB.textContent=nameDisp+(isCur?' *':'');
@@ -4577,7 +4608,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 		// Enable/disable Continue button visibility
 		continueBtn.style.display = slots.length? 'block':'none';
 	}
-	function performNamedSave(forcePrompt){ if(_saveWritesBlocked){ msg('Zapis zablokowany: najpierw wczytaj poprawny zapis lub rozpocznij nową warstwę'); return false; } const slots=loadSlots(); let initial=''; if(!forcePrompt && currentSlotId){ const cur=slots.find(s=>s.id===currentSlotId); if(cur) initial=cur.name||''; } const name=prompt('Nazwa zapisu:', initial); if(name==null) return false; const trimmed=name.trim(); let target=null; if(currentSlotId) target=slots.find(s=>s.id===currentSlotId && (trimmed==='' || s.name===trimmed)); if(!target && trimmed) target=slots.find(s=>s.name===trimmed); const perf={parts:[]}; let data; try{ const rawCore=buildSaveObject({perf}); const {object:withHash} = timedSavePart('hash',()=>attachHash(rawCore),perf); data=timedSavePart('json',()=>JSON.stringify(withHash),perf); }catch(e){ console.warn('Named save failed',e); msg('Błąd zapisu'); return false; } if(target){ try{ writeSaveSlot(slotKey(target.id), data, perf); target.time=Date.now(); if(trimmed) target.name=trimmed; target.seed=WORLDGEN.worldSeed; storeSlots(slots); currentSlotId=target.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Nadpisano '+(target.name||target.id)); refreshList(); return true; }catch(e){ msg('Błąd zapisu'); return false; } } else { const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); try{ writeSaveSlot(slotKey(id), data, perf); slots.push({id,name:trimmed||null,time:Date.now(),seed:WORLDGEN.worldSeed}); storeSlots(slots); currentSlotId=id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Zapisano '+(trimmed||id)); browser.style.display='flex'; refreshList(); return true; }catch(e){ msg('Błąd – brak miejsca?'); return false; } } }
+	function performNamedSave(forcePrompt){ if(_saveWritesBlocked){ msg('Zapis zablokowany: najpierw wczytaj poprawny zapis lub rozpocznij nową warstwę'); return false; } const slots=loadSlots(); let initial=''; if(!forcePrompt && currentSlotId){ const cur=slots.find(s=>s.id===currentSlotId); if(cur) initial=cur.name||''; } const name=prompt('Nazwa zapisu:', initial); if(name==null) return false; const trimmed=name.trim(); let target=null; if(currentSlotId) target=slots.find(s=>s.id===currentSlotId && (trimmed==='' || s.name===trimmed)); if(!target && trimmed) target=slots.find(s=>s.name===trimmed); const perf={parts:[]}; let data,saveHash; try{ const rawCore=buildSaveObject({perf}); const serialized=timedSavePart('hash',()=>serializeHashedSave(rawCore),perf); data=serialized.json; saveHash=serialized.hash; }catch(e){ console.warn('Named save failed',e); msg('Błąd zapisu'); return false; } if(target){ try{ writeSaveSlot(slotKey(target.id), data, perf); target.time=Date.now(); if(trimmed) target.name=trimmed; target.seed=WORLDGEN.worldSeed; target.bytes=data.length; target.hash=saveHash; storeSlots(slots); currentSlotId=target.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Nadpisano '+(target.name||target.id)); refreshList(); return true; }catch(e){ msg('Błąd zapisu'); return false; } } else { const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); try{ writeSaveSlot(slotKey(id), data, perf); slots.push({id,name:trimmed||null,time:Date.now(),seed:WORLDGEN.worldSeed,bytes:data.length,hash:saveHash}); storeSlots(slots); currentSlotId=id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Zapisano '+(trimmed||id)); browser.style.display='flex'; refreshList(); return true; }catch(e){ msg('Błąd – brak miejsca?'); return false; } } }
 
 	// Continue button logic
 	continueBtn.addEventListener('click',()=>{
@@ -4593,8 +4624,8 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	const fileInput=document.createElement('input'); fileInput.type='file'; fileInput.accept='.json,application/json'; fileInput.style.display='none';
 	fileInput.addEventListener('change',e=>{ const f=fileInput.files&&fileInput.files[0]; if(!f){ return; } if(!Number.isFinite(f.size) || f.size>IMPORT_SAVE_BYTE_CAP){ msg('Plik zapisu jest zbyt duzy'); fileInput.value=''; return; } const reader=new FileReader(); reader.onload=()=>{ try{ const txt=String(reader.result); const preflight=parseSaveCandidate(txt,{storage:localStorage,requireHash:true});
 		if(!preflight.ok){ console.warn('Imported save rejected',preflight.errors); msg('Niepoprawny plik: '+loadFailureSummary(preflight)); return; }
-		const stored=migratedSaveJson(preflight,txt);
-		const slots=loadSlots(); const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); localStorage.setItem(slotKey(id), stored); slots.push({id,name:(f.name||'import').replace(/\.json$/i,'')||null,time:Date.now(),seed:preflight.data.seed}); storeSlots(slots); msg('Zaimportowano'); refreshList(); }catch(err){ msg('Błąd importu'); } fileInput.value=''; };
+		const stored=migratedSaveJson(preflight,txt); const storedHash=((/"h":"([0-9a-f]{8})"}$/i.exec(stored.slice(-24))||[])[1])||preflight.data.h||null;
+		const slots=loadSlots(); const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); localStorage.setItem(slotKey(id), stored); slots.push({id,name:(f.name||'import').replace(/\.json$/i,'')||null,time:Date.now(),seed:preflight.data.seed,bytes:stored.length,hash:storedHash}); storeSlots(slots); msg('Zaimportowano'); refreshList(); }catch(err){ msg('Błąd importu'); } fileInput.value=''; };
 	reader.readAsText(f); });
 	importBtn.addEventListener('click',()=>fileInput.click());
 	group.appendChild(importBtn); group.appendChild(fileInput);
@@ -4632,8 +4663,11 @@ function createAutoSaveJob(){
 	assertSaveChunkCapacity(chunks,'incremental autosave');
 	return {id:Date.now().toString(36)+'_'+(_saveRevision|0).toString(36), chunks, index:0, refs:[], versions:new Map(), oldRefs:currentAutosaveRefs(), revision:_saveRevision, t0:savePerfNow(), bytes:0, encodeMs:0, chunkWriteMs:0, auditMs:0};
 }
+function incrementalAutoSaveJobRevisionMatches(job){
+	return !!job && _saveRevision===job.revision;
+}
 function incrementalAutoSaveJobIsCurrent(job){
-	if(!job || _saveRevision!==job.revision) return false;
+	if(!incrementalAutoSaveJobRevisionMatches(job)) return false;
 	const expected=new Set();
 	for(const raw of job.chunks){ const ref=normalizeWorldChunkRef(raw); if(!ref) return false; expected.add(ref.key); }
 	const current=new Set();
@@ -4667,11 +4701,11 @@ function finishIncrementalAutoSave(){
 	addSavePerfPart(perf,'chunks.audit',job.auditMs||0);
 	try{
 		const data=buildSaveObject({lightweight:true, chunkRefs:job.refs, auditChunkIds:[], perf});
-		const {object:withHash} = timedSavePart('hash',()=>attachHash(data),perf);
-		const json=timedSavePart('json',()=>JSON.stringify(withHash),perf);
+		const serialized=timedSavePart('hash',()=>serializeHashedSave(data),perf);
+		const json=serialized.json;
 		const writeT=savePerfNow();
 		localStorage.setItem(SAVE_KEY,json);
-		rememberCommittedSave(withHash,job.revision);
+		rememberCommittedSave(serialized.object,job.revision);
 		const writeMs=savePerfNow()-writeT;
 		addSavePerfPart(perf,'storage.write',writeMs);
 		// Named/fork slots may still reference blobs from the previous main save.
@@ -4706,7 +4740,7 @@ function runAutoSaveWork(){
 	try{
 		if(!_autoSaveJob) _autoSaveJob=createAutoSaveJob();
 		const job=_autoSaveJob;
-		if(!incrementalAutoSaveJobIsCurrent(job)){
+		if(!incrementalAutoSaveJobRevisionMatches(job)){
 			abandonIncrementalAutoSave(job);
 			scheduleDirtySave(AUTO_SAVE_IDLE_CHECK_MS);
 			return;
@@ -4775,6 +4809,14 @@ function saveState(){
 	_saveDirty=true;
 	_saveRevision++;
 	saveCriticalState('dirty');
+	scheduleDirtySave();
+}
+function requestAutoSaveHeartbeat(){
+	if(_startingNewGame || _saveWritesBlocked || MM.ghostMode) return;
+	// A heartbeat guarantees that a quiet, clean session eventually persists. It is
+	// not a mutation: revising an already-dirty multi-batch job can make a maximum-size
+	// save abandon itself every minute before it reaches the publication audit.
+	if(!_saveDirty && !_autoSaveJob){ saveState(); return; }
 	scheduleDirtySave();
 }
 window.__mmMarkWorldChanged = function(){
@@ -14753,9 +14795,9 @@ function draw(){ // Background first
  if(TERRAIN_TRAPS && TERRAIN_TRAPS.draw) TERRAIN_TRAPS.draw(ctx,TILE,worldFxVisible);
  if(AFTERMATH && AFTERMATH.draw) AFTERMATH.draw(ctx,TILE,worldFxVisible,camRenderX,camRenderY,W,H,zoom);
  // ground loot pickups (under creatures, over terrain — tier glow included)
- if(DROPS && DROPS.draw) DROPS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,player);
+ if(DROPS && DROPS.draw) DROPS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,player,viewX,viewY);
  // mobs
- if(MOBS && MOBS.draw) MOBS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible);
+ if(MOBS && MOBS.draw) MOBS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,viewX,viewY);
  // spectator overlay text: spirit names, chat bubbles (incl. the host's own words
  // over the hero), pings and action feedback — readable over the creature layer
  if(MM.ghostMode){ if(GHOST_CLIENT && GHOST_CLIENT.drawSpirits) GHOST_CLIENT.drawSpirits(ctx,TILE,'text'); }
@@ -18263,17 +18305,17 @@ MM.ghostBridge={
 				const prev=localStorage.getItem(SAVE_KEY);
 				if(prev){
 					const slotId='fork_'+Date.now().toString(36);
-					let prevSeed=null; try{ const p=JSON.parse(prev); prevSeed=Number.isFinite(p&&p.seed)?p.seed:null; }catch(e){ prevSeed=null; }
+					let prevSeed=null, prevHash=null; try{ const p=JSON.parse(prev); prevSeed=Number.isFinite(p&&p.seed)?p.seed:null; prevHash=typeof (p&&p.h)==='string'?p.h:null; }catch(e){ prevSeed=null; prevHash=null; }
 					if(MM.ghostForkWrite('mm_slot_'+slotId, prev)){
 						let meta=[]; try{ const m=JSON.parse(localStorage.getItem('mm_save_slots_meta_v1')||'[]'); if(Array.isArray(m)) meta=m; }catch(e){ meta=[]; }
-						meta.push({id:slotId, name:'Świat sprzed rozwidlenia', time:Date.now(), seed:prevSeed});
+						meta.push({id:slotId, name:'Świat sprzed rozwidlenia', time:Date.now(), seed:prevSeed, bytes:prev.length, hash:prevHash});
 						MM.ghostForkWrite('mm_save_slots_meta_v1', JSON.stringify(meta));
 					}
 				}
 			}catch(e){ /* backup is best-effort */ }
 			const data=buildSaveObject({perf:{parts:[]}});
-			const withHash=attachHash(data).object;
-			if(!MM.ghostForkWrite(SAVE_KEY, JSON.stringify(withHash))) return false;
+			const serialized=serializeHashedSave(data);
+			if(!MM.ghostForkWrite(SAVE_KEY, serialized.json)) return false;
 			// a cursed (challenge) world forks WITH its curse: the run marker keeps
 			// the modifiers alive in the solo continuation
 			try{ const mods=(MM.challenge&&MM.challenge.list)?MM.challenge.list():[]; if(mods.length) MM.ghostForkWrite('mm_challenge_v1', JSON.stringify({seed:data.seed, mods})); }catch(e){}

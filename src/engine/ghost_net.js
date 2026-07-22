@@ -825,9 +825,10 @@ function randBytesHex(n){
 }
 // UTF-8 byte length — the wire is bytes, not code units, so a hostile sender can't
 // smuggle a multi-megabyte payload past a String.length check with multi-byte chars.
+const utf8Encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 export function utf8Len(str){
 	const s = String(str == null ? '' : str);
-	if(typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s).length;
+	if(utf8Encoder) return utf8Encoder.encode(s).length;
 	let n = 0; // manual fallback (no TextEncoder — never on the real wire)
 	for(let i = 0; i < s.length; i++){ const c = s.codePointAt(i); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; if(c > 0xffff) i++; }
 	return n;
@@ -1293,7 +1294,8 @@ export function createSendQueue(opts){
 	const maxBytes = Number.isFinite(opts.maxBytes) ? Math.max(1, Math.floor(opts.maxBytes)) : DC_QUEUE.MAX_BYTES;
 	const acquireBytes = typeof opts.acquireBytes === 'function' ? opts.acquireBytes : null;
 	const q = [];
-	let queuedBytes = 0, closed = false, gated = false;
+	let head = 0, queuedBytes = 0, closed = false, gated = false;
+	const activeSize = () => q.length-head;
 	function releaseEntry(entry){
 		if(!entry || !entry.lease) return;
 		try{ entry.lease.release(); }catch(e){ /* accounting hooks must not block teardown */ }
@@ -1301,19 +1303,20 @@ export function createSendQueue(opts){
 	}
 	function failClosed(extraLease){
 		if(extraLease){ try{ extraLease.release(); }catch(e){ /* best effort */ } }
-		for(const entry of q) releaseEntry(entry);
+		for(let i=head;i<q.length;i++) releaseEntry(q[i]);
 		q.length = 0;
+		head = 0;
 		queuedBytes = 0;
 		closed = true;
 		gated = false;
 		return false;
 	}
 	return {
-		push(item){
+		push(item, measuredBytes){
 			if(closed) return false;
-			let bytes = 0;
-			try{ bytes = utf8Len(item); }catch(e){ return failClosed(); }
-			if(q.length >= max || bytes > maxBytes || queuedBytes > maxBytes - bytes) return failClosed();
+			const bytes=Number(measuredBytes);
+			if(!Number.isSafeInteger(bytes) || bytes<0) return failClosed();
+			if(activeSize() >= max || bytes > maxBytes || queuedBytes > maxBytes - bytes) return failClosed();
 			let lease = null;
 			if(acquireBytes){
 				try{ lease = acquireBytes(bytes); }catch(e){ return failClosed(); }
@@ -1331,18 +1334,20 @@ export function createSendQueue(opts){
 			const buffered = () => Number(channel && channel.bufferedAmount) || 0;
 			if(gated && buffered() > lo) return true;         // still draining: hold
 			gated = false;
-			while(q.length){
+			while(head<q.length){
 				if(buffered() > hi){ gated = true; break; }    // congested: re-gate
-				const next = q[0];
+				const next = q[head];
 				try{ channel.send(next.item); }catch(e){ return failClosed(); }
-				q.shift();
+				q[head++]=null;
 				queuedBytes = Math.max(0, queuedBytes - next.bytes);
 				releaseEntry(next);
 			}
+			if(head===q.length){ q.length=0; head=0; }
+			else if(head>=1024 && head*2>=q.length){ q.splice(0,head); head=0; }
 			return true;
 		},
 		dispose(){ failClosed(); },
-		size(){ return q.length; },
+		size(){ return activeSize(); },
 		sizeBytes(){ return queuedBytes; },
 		closed(){ return closed; }
 	};
@@ -1584,10 +1589,11 @@ function rtcPeerWrap(id, dc){
 		id, transport: 'rtc', onMessage: null,
 		send(pl){
 			if(disposed) return;
-			let str = null;
+			let str = null, bytes = 0;
 			try{ str = JSON.stringify(pl); }catch(e){ return; }
-			if(!withinWireLimit(str, WIRE_LIMITS.JSON_MAX)) return; // never emit an oversized frame
-			if(!q.push(str) || !q.flush(dc)) closePeer();
+			try{ bytes = utf8Len(str); }catch(e){ return; }
+			if(bytes>WIRE_LIMITS.JSON_MAX) return; // never emit an oversized frame
+			if(!q.push(str,bytes) || !q.flush(dc)) closePeer();
 		},
 		close(){ closePeer(); }
 	};

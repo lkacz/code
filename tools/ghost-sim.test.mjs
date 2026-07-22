@@ -644,7 +644,7 @@ assert.ok(/MOBS_REQ_MIN_MS/.test(hostSrc) && /entry\.lastMobsReq > MOBS_REQ_MIN_
 	'needMobs is rate-limited host-side (each one is a full mob serialize)');
 assert.ok(/SNAP_CACHE_MS/.test(hostSrc) && /s\.sinceCache/.test(hostSrc) && /peer\.send\(\{ t: 'tiles', d: s\.sinceCache\.slice\(\) \}\)/.test(hostSrc),
 	'snapshot cache exists AND replays post-cache tile diffs to late joiners (coherence)');
-assert.ok(/s\.sinceCache\.length \+ d\.length > 9000\)\{ s\.snapCache = null;/.test(hostSrc),
+assert.ok(/s\.sinceCache\.length \+ d\.length > 9000\)\{ s\.snapChunks = null;/.test(hostSrc),
 	'replay-buffer overflow invalidates the cache instead of dropping diffs');
 const snapshotSlice = hostSrc.slice(hostSrc.indexOf('function sendSnapshot'), hostSrc.indexOf('function sendMobsFull'));
 const encodePlaneSlice = hostSrc.slice(hostSrc.indexOf('function encodeCurrentPlane'), hostSrc.indexOf('function sendEncodedPlane'));
@@ -654,6 +654,10 @@ const joinBuildSlice = hostSrc.slice(hostSrc.indexOf('function buildJoinPlaneFra
 const joinPlanesSlice = hostSrc.slice(hostSrc.indexOf('function sendJoinPlanes'), hostSrc.indexOf('function reap'));
 assert.ok(/sendJoinPlanes\(s, peer\);/.test(snapshotSlice),
 	'every cached or fresh snapshot is followed by current independently streamed planes');
+assert.ok(/s\.snapChunks = NET\.chunkPayload\('snap', json\);/.test(snapshotSlice)
+	&& /for\(const env of s\.snapChunks\) peer\.send\(env\);/.test(snapshotSlice)
+	&& !/for\(const env of NET\.chunkPayload/.test(snapshotSlice),
+	'a snapshot burst chunks its serialized save once and reuses those immutable envelopes for every peer');
 for(const builder of ['buildInfraPacket', 'buildPwatPacket', 'buildDriftPacket', 'buildGfxPacket', 'buildMachPacket']){
 	assert.ok(new RegExp(builder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\(').test(joinBuildSlice),
 		'late-join correction includes ' + builder);
@@ -793,15 +797,17 @@ assert.ok(/export function createRtcJoin[\s\S]*function signalAllowed\(\)\{[\s\S
 // DataChannel send goes through the bounded queue, and oversized frames are refused
 assert.ok(/const rtcQueueByteBudget = createByteBudget\(DC_QUEUE\.GLOBAL_MAX_BYTES\);/.test(netSrc)
 	&& /const q = createSendQueue\(\{ acquireBytes: bytes => rtcQueueByteBudget\.acquire\(bytes\) \}\);/.test(netSrc)
-	&& /if\(!q\.push\(str\) \|\| !q\.flush\(dc\)\) closePeer\(\);/.test(netSrc),
+	&& /if\(!q\.push\(str,bytes\) \|\| !q\.flush\(dc\)\) closePeer\(\);/.test(netSrc),
 	'P0-5: every rtc peer shares one aggregate queued-byte budget and fail-closes on denial');
-assert.ok(/function failClosed\(extraLease\)\{[\s\S]{0,180}for\(const entry of q\) releaseEntry\(entry\);/.test(netSrc)
+assert.ok(/function failClosed\(extraLease\)\{[\s\S]{0,220}for\(let i=head;i<q\.length;i\+\+\) releaseEntry\(q\[i\]\);/.test(netSrc)
 	&& /function dispose\(\)\{[\s\S]{0,100}q\.dispose\(\);/.test(netSrc)
 	&& /dc\.addEventListener\('close', dispose, \{ once: true \}\)/.test(netSrc)
 	&& /const old = pc, oldConn = conn;[\s\S]{0,300}if\(oldConn\) oldConn\.close\(\)/.test(netSrc),
 	'P0-5: queued-byte leases release on queue failure plus host/join close paths');
-assert.ok(/if\(!withinWireLimit\(str, WIRE_LIMITS\.JSON_MAX\)\) return;/.test(netSrc),
-	'P0-5: an oversized outbound frame is dropped, never emitted');
+assert.ok(/bytes = utf8Len\(str\)/.test(netSrc) && /if\(bytes>WIRE_LIMITS\.JSON_MAX\) return;/.test(netSrc),
+	'P0-5: an outbound frame is byte-measured once and oversized frames are dropped');
+assert.ok(!/q\.shift\(\)/.test(netSrc) && /q\[head\+\+\]=null;/.test(netSrc),
+	'P0-5: backpressure draining uses an amortized cursor instead of quadratic shifts');
 // assembler byte ceiling (UTF-8, not code units)
 assert.ok(/cur\.bytes \+= utf8Len\(env\.d\);/.test(netSrc) && /if\(cur\.bytes > WIRE_LIMITS\.ASSEMBLED_MAX\)\{ cur = null; return null; \}/.test(netSrc),
 	'P0-5: the snapshot assembler enforces a UTF-8 BYTE ceiling on the assembled payload');
@@ -856,12 +862,16 @@ assert.ok(/if\(live\.map\(a=>a\.id\)\.join\('\|'\) !== roster\.sig\) return fals
 	'a roster signature mismatch refuses the pose apply (wait for the full sync)');
 assert.ok(/props:/.test(invasionsSrc),
 	'slow props (a saucer settling, a burrow grinding open) ride the roster so they animate too');
-assert.ok(/function invTick\(s, t\)/.test(hostSrc) && /function sendInvFull\(s, peer\)/.test(hostSrc),
+assert.ok(/function invTick\(s, t\)/.test(hostSrc) && /function sendInvFull\(s, peer, knownSig\)/.test(hostSrc),
 	'the host drives an invasion tick and a full invasion sync');
 assert.ok(/if\(t - s\.last\.inv >= CAD\.inv\) invTick\(s, t\);/.test(hostSrc),
 	'the invasion tick is wired into the host frame');
 assert.ok(/sendInvFull\(s, entry\.peer\);/.test(hostSrc),
 	'a joining watcher gets the current squads immediately, not on the next sig change');
+assert.ok(/sendMobsFull\(s, null, roster\.sig\);/.test(hostSrc)
+	&& /sendInvFull\(s, null, roster\.sig\);/.test(hostSrc)
+	&& /arguments\.length > 2 \? knownSig/.test(hostSrc),
+	'full entity broadcasts reuse the roster signature already computed by their tick');
 assert.ok(/pl\.t === 'inv'/.test(clientSrc) && /pl\.t === 'invFull'/.test(clientSrc),
 	'the watcher handles both invasion planes');
 assert.ok(/MMR\.invasions\.ghostLerp\(dt\)/.test(clientSrc),
@@ -1405,7 +1415,7 @@ function CADHasStory(src){ return /story: \d+/.test(src.slice(src.indexOf('const
 	// is minted under the fork-scoped prefix and the index is append-only
 	assert.ok(/const slotId='fork_'\+Date\.now\(\)\.toString\(36\);/.test(mainSrc)
 		&& /MM\.ghostForkWrite\('mm_slot_'\+slotId, prev\)/.test(mainSrc)
-		&& /meta\.push\(\{id:slotId, name:'Świat sprzed rozwidlenia', time:Date\.now\(\), seed:prevSeed\}\);/.test(mainSrc),
+		&& /meta\.push\(\{id:slotId, name:'Świat sprzed rozwidlenia', time:Date\.now\(\), seed:prevSeed, bytes:prev\.length, hash:prevHash\}\);/.test(mainSrc),
 		'an existing solo save is backed up into a fork-scoped named slot before the overwrite');
 	assert.ok(/origSet\.call\(window\.localStorage, key, String\(v\)\)/.test(clientSrc),
 		'the hatch uses the ORIGINAL setItem — the lockdown allowlist stays closed');
@@ -1413,7 +1423,7 @@ function CADHasStory(src){ return /story: \d+/.test(src.slice(src.indexOf('const
 		&& /MMR\.ghostForkArmed = false; \/\/ a declined offer leaves the hatch closed/.test(clientSrc),
 		'accepting or declining disarms the hatch');
 	// main.js: the audited commit is the only ghost-mode main-save writer
-	assert.ok(/commitForkSave:\(\)=>\{/.test(mainSrc) && /MM\.ghostForkWrite\(SAVE_KEY, JSON\.stringify\(withHash\)\)/.test(mainSrc),
+	assert.ok(/commitForkSave:\(\)=>\{/.test(mainSrc) && /MM\.ghostForkWrite\(SAVE_KEY, serialized\.json\)/.test(mainSrc),
 		'the commit seam writes the hash-stamped LIVE save through the hatch');
 	assert.ok(/if\(MM\.ghostMode\) return false; \/\/ ghost sessions never write saves/.test(mainSrc),
 		'the regular save path still refuses ghost mode (the hatch is the only exit)');
@@ -1584,7 +1594,7 @@ assert.ok(/pl\.t === 'guard'/.test(clientSrc) && /MMR\.guardianLairs\.ghostLerp\
 	'the watcher applies the guardian mirror and animates it between packets');
 
 // --- audit pins (2026-07-16): cache coherence, camera respect, seat identity, chat floor -----------
-assert.ok(/s\.snapCache = null; s\.sinceCache\.length = 0;\s*\n\s*if\(MMR\) MMR\.coopBodies = \[\];[^\n]*\n\s*reap\(s, t\);/.test(hostSrc),
+assert.ok(/s\.snapChunks = null; s\.sinceCache\.length = 0;\s*\n\s*if\(MMR\) MMR\.coopBodies = \[\];[^\n]*\n\s*reap\(s, t\);/.test(hostSrc),
 	'an emptied audience invalidates the snapshot cache AND clears MM.coopBodies (no phantom body left for creatures once the last peer leaves)');
 assert.ok(/if\(other !== entry && other\.hello && other\.gid === entry\.gid\) dropPeer\(s, other, true\);/.test(hostSrc),
 	'one gid = one seat: the newest connection wins, so a dirty-drop reconnect is never blocked or twinned by its own corpse');

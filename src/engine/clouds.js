@@ -40,7 +40,8 @@ window.MM = window.MM || {};
   const CFG = {
     ACTIVE_HALF: 320,     // half-width (columns) of the simulated weather band
     EVAP_RADIUS: 200,     // evaporation scan half-width around the player
-    EVAP_SCAN_COLS: 48,   // columns scanned per tick (sliced sweep)
+    EVAP_SCAN_COLS: 16,   // columns scanned per tick (sliced sweep)
+    EVAP_WISP_RATE: 0.087,// cosmetic wisps/sec per actively evaporating nearby column
     EVAP_BASE: 1/800,     // tiles/sec lost per exposed surface at full sun + heat
     EVAP_SCAN_ABOVE: 36,  // only water within this many rows above terrain evaporates
     HUM_CAP: 12,          // regional vapor at which air is saturated (evap stops)
@@ -364,7 +365,8 @@ window.MM = window.MM || {};
         try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(wx,yTop,getTile); }catch(e){}
       } else evapAcc.set(wx,acc);
       // morning-mist wisps over actively evaporating water near the player
-      if(wisps.length<CFG.WISP_CAP && Math.abs(wx-px)<70 && Math.random()<0.012){
+      const wispChance=1-Math.exp(-Math.max(0,CFG.EVAP_WISP_RATE)*sweepDt);
+      if(wisps.length<CFG.WISP_CAP && Math.abs(wx-px)<70 && Math.random()<wispChance){
         const TILE=MM.TILE||20;
         wisps.push({x:(wx+Math.random())*TILE, y:(yTop-0.2)*TILE, life:0, max:2.2+Math.random()*1.6, r:3+Math.random()*4});
       }

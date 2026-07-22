@@ -2338,21 +2338,42 @@ window.MM = window.MM || {};
     const complete=clean.length<=INFRASTRUCTURE_SAVE_CAP;
     return {v:2,complete,truncated:complete?undefined:{records:clean.length-INFRASTRUCTURE_SAVE_CAP},list:clean.slice(0,INFRASTRUCTURE_SAVE_CAP)};
   }
-  function restoreInfrastructure(data){
-    infrastructure.clear();
-    if(!data || !Array.isArray(data.list)) return;
-    const limit=Math.min(data.list.length,INFRASTRUCTURE_SAVE_CAP);
-    for(let i=0;i<limit;i++){
-      const raw=data.list[i];
-      if(!raw || !isInfrastructureTile(raw.t)) continue;
-      if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
-      const x=Math.floor(raw.x), y=Math.floor(raw.y);
-      if(!worldYInBounds(y) || Math.abs(x)>MAX_COORD) continue;
-      const k=key(x,y);
-      const stack=normalizeInfrastructureStack(infrastructure.get(k));
-      if(!stack.includes(raw.t)) infrastructure.set(k,stack.concat(raw.t));
-      markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
+  function rememberOverlaySection(sections,x,y){
+    const cx=Math.floor(x/CHUNK_W), sy=sectionYFor(y), id=cx+','+sy;
+    if(!sections.has(id)) sections.set(id,{cx,sy});
+  }
+  function rememberStoredOverlaySections(sections,store){
+    for(const cellKey of store.keys()){
+      const comma=cellKey.indexOf(',');
+      if(comma<0) continue;
+      const x=+cellKey.slice(0,comma), y=+cellKey.slice(comma+1);
+      if(isFinite(x) && isFinite(y)) rememberOverlaySection(sections,x,y);
     }
+  }
+  function markOverlaySections(sections){
+    for(const ref of sections.values()) markModifiedChunk(ref.cx,null,ref.sy);
+  }
+  function restoreInfrastructure(data){
+    const touchedSections=new Map();
+    rememberStoredOverlaySections(touchedSections,infrastructure);
+    infrastructure.clear();
+    const hasSnapshot=!!(data && Array.isArray(data.list));
+    if(hasSnapshot){
+      const limit=Math.min(data.list.length,INFRASTRUCTURE_SAVE_CAP);
+      for(let i=0;i<limit;i++){
+        const raw=data.list[i];
+        if(!raw || !isInfrastructureTile(raw.t)) continue;
+        if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
+        const x=Math.floor(raw.x), y=Math.floor(raw.y);
+        if(!worldYInBounds(y) || Math.abs(x)>MAX_COORD) continue;
+        const k=key(x,y);
+        const stack=normalizeInfrastructureStack(infrastructure.get(k));
+        if(!stack.includes(raw.t)) infrastructure.set(k,stack.concat(raw.t));
+        rememberOverlaySection(touchedSections,x,y);
+      }
+    }
+    markOverlaySections(touchedSections);
+    if(!hasSnapshot) return;
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(0,0,T.AIR,T.COPPER_WIRE); }catch(e){}
     try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(0,0,T.AIR,T.WATER_PIPE); }catch(e){}
   }
@@ -2371,18 +2392,22 @@ window.MM = window.MM || {};
     return {v:1,complete,truncated:complete?undefined:{records:clean.length-CONSTRUCTION_BACKGROUND_SAVE_CAP},list:clean.slice(0,CONSTRUCTION_BACKGROUND_SAVE_CAP)};
   }
   function restoreConstructionBackground(data){
+    const touchedSections=new Map();
+    rememberStoredOverlaySections(touchedSections,constructionBackground);
     constructionBackground.clear();
-    if(!data || !Array.isArray(data.list)) return;
-    const limit=Math.min(data.list.length,CONSTRUCTION_BACKGROUND_SAVE_CAP);
-    for(let i=0;i<limit;i++){
-      const raw=data.list[i];
-      if(!raw || !(raw.t===0 || isConstructionBackgroundTile(raw.t))) continue;
-      if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
-      const x=Math.floor(raw.x), y=Math.floor(raw.y);
-      if(!worldYInBounds(y) || Math.abs(x)>MAX_COORD) continue;
-      constructionBackground.set(key(x,y),raw.t===0?T.AIR:raw.t);
-      markModifiedChunk(Math.floor(x/CHUNK_W),null,sectionYFor(y));
+    if(data && Array.isArray(data.list)){
+      const limit=Math.min(data.list.length,CONSTRUCTION_BACKGROUND_SAVE_CAP);
+      for(let i=0;i<limit;i++){
+        const raw=data.list[i];
+        if(!raw || !(raw.t===0 || isConstructionBackgroundTile(raw.t))) continue;
+        if(!isFinite(raw.x) || !isFinite(raw.y)) continue;
+        const x=Math.floor(raw.x), y=Math.floor(raw.y);
+        if(!worldYInBounds(y) || Math.abs(x)>MAX_COORD) continue;
+        constructionBackground.set(key(x,y),raw.t===0?T.AIR:raw.t);
+        rememberOverlaySection(touchedSections,x,y);
+      }
     }
+    markOverlaySections(touchedSections);
   }
   function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); parked.clear(); peekParkCache.clear(); evictPending=false; versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
   // Save loading replaces whole chunk arrays: any cached section view over the

@@ -666,13 +666,26 @@ assert.equal(restoredFrost.item.mergePerk,'frost','a guardian frost relic keeps 
 drops.restore({ v: 1, list: [ { x: 'nan', y: 1 }, { kind: 'gear', x: 1, y: 1, item: { id: 5 } }, { kind: 'resource', x: 1, y: 1, res: 42 } ] });
 assert.equal(drops.metrics().active, 0, 'malformed snapshot entries are dropped');
 
+// A DPR-scaled backing canvas is wider than the CSS viewport, but must not widen
+// the world-space culling window. Render callers provide CSS-space dimensions.
+drops.spawnResource(30,5,'coal',1,{vx:0,vy:0});
+let offscreenDropDraws=0;
+const dprCtx={
+  canvas:{width:800,height:600},globalAlpha:1,
+  save(){},restore(){},translate(){ offscreenDropDraws++; },rotate(){},fillRect(){},strokeRect(){},fillText(){},
+  beginPath(){},closePath(){},moveTo(){},lineTo(){},arc(){},fill(){},stroke(){},drawImage(){},
+  createLinearGradient(){ return {addColorStop(){}}; },createRadialGradient(){ return {addColorStop(){}}; }
+};
+drops.draw(dprCtx,20,0,0,1,()=>true,null,10,10);
+assert.equal(offscreenDropDraws,0,'CSS viewport bounds cull a drop that only fits inside the DPR backing canvas');
+
 // --- source pins: the wiring contracts in main.js / mobs.js / UI -------------------
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const indexSrc = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 assert.match(mainSrc, /drops:\s*timedSavePart\('drops',[^\n]*DROPS && DROPS\.snapshot/, 'save payload includes ground loot drops');
 assert.match(mainSrc, /restoreRequired\('drops',data\.drops!=null,\(\)=>\{ if\(DROPS && DROPS\.restore\) return DROPS\.restore\(data\.drops\)/, 'restore rehydrates ground loot drops and propagates an explicit rejection');
 assert.match(mainSrc, /if\(DROPS && DROPS\.update\) DROPS\.update\(dt, player, getTile\)/, 'game step ticks the drop simulation');
-assert.match(mainSrc, /if\(DROPS && DROPS\.draw\) DROPS\.draw\(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,player\)/, 'draw pass renders drops under creatures');
+assert.match(mainSrc, /if\(DROPS && DROPS\.draw\) DROPS\.draw\(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,player,viewX,viewY\)/, 'draw pass renders drops under creatures with CSS viewport culling bounds');
 assert.match(mainSrc, /DROPS && DROPS\.pickupNearest && DROPS\.pickupNearest\(player\)/, 'E key collects the nearest drop');
 assert.match(mainSrc, /MECHS\.wantsInteractKey\(player\)/, 'machine context still wins the interact key');
 assert.match(mainSrc, /id:'meat_block', name:'Blok miesa', cost:\{meatScrap:3\}/, 'meat scraps meld into a MEAT block at the bench');

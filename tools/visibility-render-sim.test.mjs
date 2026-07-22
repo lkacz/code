@@ -326,11 +326,15 @@ const { mobs } = await import('../src/engine/mobs.js');
 assert.ok(mobs, 'mobs module exports');
 mobs.deserialize({v:3, list:[{id:'BIRD', x:5, y:5, hp:3, state:'idle', facing:1, spawnT:1}], aggro:{mode:'rel', m:{}}});
 const undiscoveredMobCtx = makeCtx();
-mobs.draw(undiscoveredMobCtx,20,0,0,1,()=>false);
+mobs.draw(undiscoveredMobCtx,20,0,0,1,()=>false,40,30);
 assert.equal(undiscoveredMobCtx.calls.filter(c=>c==='fillRect').length, 0, 'undiscovered animals draw nothing');
 const rememberedMobCtx = makeCtx();
-mobs.draw(rememberedMobCtx,20,0,0,1,(x,y)=>x===5 && y===5);
+mobs.draw(rememberedMobCtx,20,0,0,1,(x,y)=>x===5 && y===5,40,30);
 assert.ok(rememberedMobCtx.calls.includes('fillRect'), 'remembered animals still draw');
+mobs.deserialize({v:3, list:[{id:'BIRD', x:30, y:5, hp:3, state:'idle', facing:1, spawnT:1}], aggro:{mode:'rel', m:{}}});
+const dprMobCtx = makeCtx();
+mobs.draw(dprMobCtx,20,0,0,1,()=>true,10,10);
+assert.equal(dprMobCtx.calls.filter(c=>c==='fillRect').length,0,'CSS viewport bounds cull a mob that only fits inside the DPR backing canvas');
 
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const grassSource = readFileSync(new URL('../src/engine/grass.js', import.meta.url), 'utf8');
@@ -346,6 +350,7 @@ assert.match(grassSource, /wind\.squall/, 'grass motion reacts to squall wind fl
 assert.doesNotMatch(grassSource, /speedAt\(/, 'grass avoids per-tile wind exposure scans while drawing blades');
 assert.match(mainSource, /function drawSandGrains\(g,px,py,h\)/, 'sand has a dedicated grain renderer');
 assert.match(mainSource, /const TERRAIN_PATTERN_VARIANTS = 6;/, 'terrain renderer has multiple deterministic texture variants');
+assert.match(mainSource, /MOBS\.draw\(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,viewX,viewY\)/, 'mob culling receives CSS viewport dimensions instead of DPR backing dimensions');
 assert.match(mainSource, /function terrainTextureVariant\(t,wx,y,h\)/, 'terrain texture variants are chosen from world coordinates');
 assert.match(mainSource, /\(patch \^ \(h>>>7\) \^ \(t\*97\)\)>>>0/, 'terrain texture variant hashes stay unsigned');
 assert.match(mainSource, /function drawTerrainPattern\(g,t,px,py,wx,y,h\)/, 'chunk renderer has a cached terrain pattern pass');

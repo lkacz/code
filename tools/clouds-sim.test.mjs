@@ -89,6 +89,24 @@ function assertConserved(label){
   assert.ok(Math.abs(m.evapMass - sum) < 1e-3, `${label}: conservation (evap=${m.evapMass.toFixed(4)} vs sinks=${sum.toFixed(4)})`);
 }
 
+// Empty-world evaporation discovery is spread across frames, while sweepDt keeps
+// the physical evaporation rate stable across simulation frame rates.
+resetWorld();
+let idleEvapReads=0;
+clouds.update((x,y)=>{ idleEvapReads++; return getTile(x,y); },setTile,1/60);
+assert.ok(idleEvapReads<=640,'one empty evaporation slice stays within its tile-read budget (got '+idleEvapReads+')');
+function evaporationAtFrameRate(dt,seconds){
+  resetWorld();
+  CFG.HUM_CAP=1e9;
+  CFG.CONDENSE_MASS=1e9;
+  for(let x=-15;x<15;x++) setTile(x,88,T.WATER);
+  for(let elapsed=0;elapsed<seconds-1e-9;elapsed+=dt) clouds.update(getTile,setTile,dt);
+  return clouds.metrics().evapMass;
+}
+const evap20=evaporationAtFrameRate(1/20,30);
+const evap60=evaporationAtFrameRate(1/60,30);
+assert.ok(Math.abs(evap20-evap60)/Math.max(evap20,evap60)<0.04,'evaporation remains stable at 20 vs 60 FPS ('+evap20.toFixed(4)+' vs '+evap60.toFixed(4)+')');
+
 // --- 1. Evaporation: a sunlit pool loses volume to vapor; mass is conserved ---
 resetWorld();
 CFG.BORDER_SPAWN = false;       // no untracked moisture entering the books

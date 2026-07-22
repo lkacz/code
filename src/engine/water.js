@@ -47,7 +47,7 @@ window.MM = window.MM || {};
   const PASSIVE_SCAN_SPAN = PASSIVE_SCAN_RADIUS*2+1;
   const PASSIVE_SCAN_INTERVAL = 0.10;
   const PASSIVE_SCAN_BURST_LIMIT = 3;
-  const PASSIVE_SCAN_COLS_IDLE = 64;
+  const PASSIVE_SCAN_COLS_IDLE = 16;
   const PASSIVE_SCAN_COLS_ACTIVE = 24;
   const PASSIVE_SCAN_COLS_BUSY = 8;
   let passiveScanAcc = 0;
@@ -81,7 +81,7 @@ window.MM = window.MM || {};
   const MATERIAL_SCAN_INTERVAL = 0.22;
   const MATERIAL_SCAN_RADIUS = 220;
   const MATERIAL_SCAN_SPAN = MATERIAL_SCAN_RADIUS*2+1;
-  const MATERIAL_SCAN_COLS_IDLE = 36;
+  const MATERIAL_SCAN_COLS_IDLE = 18;
   const MATERIAL_SCAN_COLS_ACTIVE = 16;
   const MATERIAL_QUEUE_CAP = 2400;
   const MATERIAL_PROCESS_CAP = 56;
@@ -493,10 +493,11 @@ window.MM = window.MM || {};
     }
     return null;
   }
-  function queueWetSand(x,y,getTile){
+  function queueWetSand(x,y,getTile,knownTile){
     if(!materialReactionsEnabled() || !validTile(x,y)) return false;
     x=Math.floor(x); y=Math.floor(y);
-    if(getSafe(getTile,x,y,T.AIR)!==T.SAND || countAdjacentWater(x,y,getTile)<=0) return false;
+    const tile=knownTile===undefined ? getSafe(getTile,x,y,T.AIR) : knownTile;
+    if(tile!==T.SAND || countAdjacentWater(x,y,getTile)<=0) return false;
     const kk=k(x,y);
     if(!wetSand.has(kk)){
       if(wetSand.size>=MATERIAL_QUEUE_CAP) return false;
@@ -504,10 +505,11 @@ window.MM = window.MM || {};
     }
     return true;
   }
-  function queueDryMud(x,y,getTile){
+  function queueDryMud(x,y,getTile,knownTile){
     if(!materialReactionsEnabled() || !validTile(x,y)) return false;
     x=Math.floor(x); y=Math.floor(y);
-    if(getSafe(getTile,x,y,T.AIR)!==T.MUD) return false;
+    const tile=knownTile===undefined ? getSafe(getTile,x,y,T.AIR) : knownTile;
+    if(tile!==T.MUD) return false;
     const kk=k(x,y);
     if(!dryMud.has(kk)){
       if(dryMud.size>=MATERIAL_QUEUE_CAP) return false;
@@ -515,10 +517,11 @@ window.MM = window.MM || {};
     }
     return true;
   }
-  function queueWetClay(x,y,getTile){
+  function queueWetClay(x,y,getTile,knownTile){
     if(!clayReactionsEnabled() || !validTile(x,y)) return false;
     x=Math.floor(x); y=Math.floor(y);
-    if(getSafe(getTile,x,y,T.AIR)!==T.CLAY || countAdjacentWater(x,y,getTile)<=0) return false;
+    const tile=knownTile===undefined ? getSafe(getTile,x,y,T.AIR) : knownTile;
+    if(tile!==T.CLAY || countAdjacentWater(x,y,getTile)<=0) return false;
     const kk=k(x,y);
     if(!wetClay.has(kk)){
       if(wetClay.size>=MATERIAL_QUEUE_CAP) return false;
@@ -526,10 +529,11 @@ window.MM = window.MM || {};
     }
     return true;
   }
-  function queueDryClay(x,y,getTile){
+  function queueDryClay(x,y,getTile,knownTile){
     if(!clayReactionsEnabled() || !validTile(x,y)) return false;
     x=Math.floor(x); y=Math.floor(y);
-    if(getSafe(getTile,x,y,T.AIR)!==T.WET_CLAY) return false;
+    const tile=knownTile===undefined ? getSafe(getTile,x,y,T.AIR) : knownTile;
+    if(tile!==T.WET_CLAY) return false;
     const kk=k(x,y);
     if(!dryClay.has(kk)){
       if(dryClay.size>=MATERIAL_QUEUE_CAP) return false;
@@ -543,10 +547,12 @@ window.MM = window.MM || {};
     const cells=[[0,0],[1,0],[-1,0],[0,1],[0,-1]];
     for(const d of cells){
       const tx=Math.floor(x)+d[0], ty=Math.floor(y)+d[1];
-      queued = queueWetSand(tx,ty,getTile) || queued;
-      queued = queueDryMud(tx,ty,getTile) || queued;
-      queued = queueWetClay(tx,ty,getTile) || queued;
-      queued = queueDryClay(tx,ty,getTile) || queued;
+      if(!validTile(tx,ty)) continue;
+      const t=getSafe(getTile,tx,ty,T.AIR);
+      if(t===T.SAND) queued = queueWetSand(tx,ty,getTile,t) || queued;
+      else if(t===T.MUD) queued = queueDryMud(tx,ty,getTile,t) || queued;
+      else if(t===T.CLAY) queued = queueWetClay(tx,ty,getTile,t) || queued;
+      else if(t===T.WET_CLAY) queued = queueDryClay(tx,ty,getTile,t) || queued;
     }
     return queued;
   }
@@ -675,10 +681,10 @@ window.MM = window.MM || {};
       const wx = cx - MATERIAL_SCAN_RADIUS + ((materialScanOffset+i)%MATERIAL_SCAN_SPAN);
       for(let y=yr.top;y<yr.bottom;y++){
         const t=getSafe(getTile,wx,y,T.AIR);
-        if(t===T.SAND) queued = queueWetSand(wx,y,getTile) || queued;
-        else if(t===T.MUD) queued = queueDryMud(wx,y,getTile) || queued;
-        else if(t===T.CLAY) queued = queueWetClay(wx,y,getTile) || queued;
-        else if(t===T.WET_CLAY) queued = queueDryClay(wx,y,getTile) || queued;
+        if(t===T.SAND) queued = queueWetSand(wx,y,getTile,t) || queued;
+        else if(t===T.MUD) queued = queueDryMud(wx,y,getTile,t) || queued;
+        else if(t===T.CLAY) queued = queueWetClay(wx,y,getTile,t) || queued;
+        else if(t===T.WET_CLAY) queued = queueDryClay(wx,y,getTile,t) || queued;
       }
     }
     materialScanOffset=(materialScanOffset+columns)%MATERIAL_SCAN_SPAN;
@@ -1318,14 +1324,6 @@ window.MM = window.MM || {};
   }
 
   // ---------------- Rendering ----------------
-  function toxicSegmentFraction(wx,top,bot){
-    let hits=0, total=0;
-    for(let y=top; y<=bot; y++){
-      total++;
-      if(toxicWater.has(toxicKey(wx,y))) hits++;
-    }
-    return total>0 ? hits/total : 0;
-  }
   const TOXIC_BLEND_X=Object.freeze([[-2,0.16],[-1,0.42],[0,1],[1,0.42],[2,0.16]]);
   const TOXIC_BLEND_Y=Object.freeze([[-1,0.28],[0,1],[1,0.28]]);
   function toxicVisualFraction(wx,top,bot,getTile){
@@ -1440,7 +1438,7 @@ window.MM = window.MM || {};
           const frac=(UNITS-lvl)/UNITS;
           const bot=y-1;
           (segs||(segs=[])).push({top, bot, lvl, frac, rest:top*TILE+frac*TILE, open: (top>WORLD_TOP && isAir(getTile(wx,top-1))) || lvl<UNITS, surf:0, yl:0, yr:0,
-            toxicCore:toxicSegmentFraction(wx,top,bot), toxic:toxicVisualFraction(wx,top,bot,getTile)});
+            toxic:toxicVisualFraction(wx,top,bot,getTile)});
         } else y++;
       }
       if(segs){ anyWater=true; cols[xi]=segs; }

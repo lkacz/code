@@ -316,6 +316,7 @@ assert.match(mobsSource, /function primeDeathPhysics/, 'mob death pieces get per
 assert.match(mobsSource, /function drawIrregularDeathBlob/, 'organic death chunks use irregular blob silhouettes');
 assert.match(mobsSource, /function drawIrregularDeathShard/, 'small death debris uses angular shard silhouettes');
 assert.doesNotMatch(mobsSource, /ctx\.fillRect\(-w\*0\.5,-h\*0\.5,w,h\)/, 'organic death core fallback is no longer a rectangular block');
+assert.match(mobsSource, /const t=getTile\(x,y\); if\(mobCellBlocked\(x,y,getTile,t\)\)/, 'vertical collision reuses the tile needed by spring-platform handling');
 
 function cityCenterForSeed(){
   let best=null;

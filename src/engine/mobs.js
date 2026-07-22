@@ -7651,8 +7651,8 @@ const mobs = (function(){
     }catch(e){}
     return false;
   }
-  function mobCellBlocked(x,y,getTile){
-    const t=getTile(x,y);
+  function mobCellBlocked(x,y,getTile,knownTile){
+    const t=knownTile===undefined ? getTile(x,y) : knownTile;
     return !!(isSolid && isSolid(t)) || healingShelterBarrierAt(x,y,getTile);
   }
   function depenetrateMobFromTerrain(m,spec,getTile){
@@ -7927,7 +7927,7 @@ const mobs = (function(){
         const wasGround = m.onGround; m.onGround=false;
         for(let y=minY; y<=maxY; y++){
           for(let x=minX; x<=maxX; x++){
-            const t=getTile(x,y); if(mobCellBlocked(x,y,getTile)){
+            const t=getTile(x,y); if(mobCellBlocked(x,y,getTile,t)){
               if(m.vy>0){
                 m.y = y - halfH - 0.001;
                 const spring=MM.springPlatforms;
@@ -8455,12 +8455,13 @@ const mobs = (function(){
     ctx.restore();
   }
 
-  function draw(ctx, TILE, camX,camY, zoom, canDrawTile){
+  function draw(ctx, TILE, camX,camY, zoom, canDrawTile, viewX,viewY){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const mobVisible = (m)=> !visibleTile || visibleTile(Math.floor(m.x), Math.floor(m.y));
     ctx.save(); ctx.imageSmoothingEnabled=false; const now=performance.now();
   // View bounds expressed in tile coordinates (camX/camY already in tiles)
-  const viewL = camX - 2; const viewR = camX + (ctx.canvas.width/zoom)/TILE + 2; const viewT = camY - 2; const viewB = camY + (ctx.canvas.height/zoom)/TILE + 2;
+  const tilesWide=Math.max(0,viewX), tilesHigh=Math.max(0,viewY);
+  const viewL = camX - 2; const viewR = camX + tilesWide + 2; const viewT = camY - 2; const viewB = camY + tilesHigh + 2;
   const disableCull = !!window.__mobDisableCull;
   for(const m of mobs){ if(!disableCull && (m.x < viewL || m.x > viewR || m.y < viewT || m.y > viewB)) continue; if(!mobVisible(m)) continue; const spec=SPECIES[m.id]; const screenX = (m.x*TILE); let screenY=(m.y*TILE);
       // Anchor adjustment: center position to feet baseline so sprites don't float

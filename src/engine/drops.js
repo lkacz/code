@@ -997,11 +997,12 @@ const drops = (function(){
     ctx.strokeStyle='rgba(255,255,255,0.88)'; ctx.lineWidth=Math.max(1,TILE*0.045); ctx.stroke();
     ctx.restore();
   }
-  function draw(ctx,TILE,camX,camY,zoom,canDrawTile,player){
+  function draw(ctx,TILE,camX,camY,zoom,canDrawTile,player,viewX,viewY){
     if(!ctx || (!list.length && !arrowCollectFx.length)) return;
     const visible=typeof canDrawTile==='function' ? canDrawTile : null;
-    const viewL=camX-2, viewR=camX+(ctx.canvas.width/zoom)/TILE+2;
-    const viewT=camY-2, viewB=camY+(ctx.canvas.height/zoom)/TILE+2;
+    const tilesWide=Math.max(0,viewX), tilesHigh=Math.max(0,viewY);
+    const viewL=camX-2, viewR=camX+tilesWide+2;
+    const viewT=camY-2, viewB=camY+tilesHigh+2;
     const now=performance.now();
     let hint=null;
     if(player && finiteNum(player.x)) hint=nearestInReach(player,PICKUP_RADIUS);

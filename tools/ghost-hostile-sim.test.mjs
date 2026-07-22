@@ -83,36 +83,50 @@ assert.equal(NET.validSignalSize({ c: 'x'.repeat(NET.WIRE_LIMITS.ICE_MAX + 1) })
 	const q = NET.createSendQueue({ hi: 100, lo: 40, max: 3 });
 	const sent = [];
 	const ch = { bufferedAmount: 0, send(x){ sent.push(x); } };
-	assert.equal(q.push('a') && q.flush(ch), true, 'a message flushes when the socket is idle');
+	assert.equal(q.push('a',1) && q.flush(ch), true, 'a message flushes when the socket is idle');
 	assert.equal(sent.length, 1, 'the idle message went out');
 	ch.bufferedAmount = 500; // congested
-	q.push('b'); q.flush(ch);
+	q.push('b',1); q.flush(ch);
 	assert.equal(q.size(), 1, 'a congested socket holds the message in the queue (no unbounded dc.send)');
 	// overflow the backlog → fail closed (the transport then closes the channel)
 	const q2 = NET.createSendQueue({ hi: 100, lo: 40, max: 2 });
 	const chDead = { bufferedAmount: 9999, send(){} };
-	q2.push('1'); q2.push('2');
-	assert.equal(q2.push('3'), false, 'the queue refuses past its ceiling');
+	q2.push('1',1); q2.push('2',1);
+	assert.equal(q2.push('3',1), false, 'the queue refuses past its ceiling');
 	assert.equal(q2.closed(), true, 'an overflowing queue fail-closes');
 	const q3 = NET.createSendQueue({ hi: 100, lo: 40, max: 99, maxBytes: 5 });
-	assert.equal(q3.push('12345'), true, 'byte-bounded queue admits an exactly-full backlog');
+	assert.equal(q3.push('12345',5), true, 'byte-bounded queue admits an exactly-full backlog');
 	assert.equal(q3.sizeBytes(), 5, 'queue reports its UTF-8 backlog bytes');
-	assert.equal(q3.push('x'), false, 'queue fails closed before exceeding its byte ceiling');
+	assert.equal(q3.push('x',1), false, 'queue fails closed before exceeding its byte ceiling');
 	assert.equal(q3.closed(), true, 'a byte-overflowing queue fail-closes');
+	const measured = NET.createSendQueue({ hi: 100, lo: 40, maxBytes: 4 });
+	assert.equal(measured.push('😀',4), true, 'trusted premeasured UTF-8 bytes admit an exact-cap packet');
+	assert.equal(measured.sizeBytes(),4,'premeasured packets retain exact byte accounting');
+	assert.equal(measured.flush({bufferedAmount:0,send(){}}),true,'premeasured packet drains normally');
+	const unmeasured=NET.createSendQueue({maxBytes:4});
+	assert.equal(unmeasured.push('x'),false,'queue rejects packets without trusted byte accounting');
+	assert.equal(unmeasured.closed(),true,'missing byte accounting fail-closes the queue');
+	const cursorQueue=NET.createSendQueue({hi:100,lo:40,max:4096,maxBytes:4096});
+	for(let i=0;i<4096;i++) assert.equal(cursorQueue.push(String.fromCharCode(32+(i%90)),1),true,'cursor queue admits entry '+i);
+	const cursorSent=[];
+	assert.equal(cursorQueue.flush({bufferedAmount:0,send(x){ cursorSent.push(x); }}),true,'maximum entry queue drains successfully');
+	assert.equal(cursorSent.length,4096,'cursor drain sends every queued entry');
+	assert.equal(cursorQueue.size(),0,'cursor drain resets the active queue size');
+	assert.equal(cursorQueue.sizeBytes(),0,'cursor drain releases all byte accounting');
 	assert.ok(NET.DC_QUEUE.GLOBAL_MAX_BYTES >= NET.DC_QUEUE.MAX_BYTES
 		&& NET.DC_QUEUE.GLOBAL_MAX_BYTES < NET.DC_QUEUE.MAX_BYTES * 2,
 		'the RTC-wide byte ceiling admits one maximum queue but cannot multiply it per peer');
 	const shared = NET.createByteBudget(10);
 	const qa = NET.createSendQueue({ hi: 1, lo: 0, maxBytes: 10, acquireBytes: shared.acquire });
 	const qb = NET.createSendQueue({ hi: 1, lo: 0, maxBytes: 10, acquireBytes: shared.acquire });
-	assert.equal(qa.push('123456'), true, 'first peer reserves six shared queue bytes');
-	assert.equal(qb.push('1234'), true, 'second peer consumes the remaining shared queue bytes');
+	assert.equal(qa.push('123456',6), true, 'first peer reserves six shared queue bytes');
+	assert.equal(qb.push('1234',4), true, 'second peer consumes the remaining shared queue bytes');
 	assert.equal(shared.usedBytes(), 10, 'separate queues report one aggregate byte total');
-	assert.equal(qb.push('x'), false, 'an item beyond the RTC-wide byte ceiling is refused');
+	assert.equal(qb.push('x',1), false, 'an item beyond the RTC-wide byte ceiling is refused');
 	assert.equal(qb.closed(), true, 'global byte-budget denial fail-closes the refused peer queue');
 	assert.equal(shared.usedBytes(), 6, 'fail-close releases that peer’s previously queued reservations');
 	const qc = NET.createSendQueue({ hi: 1, lo: 0, maxBytes: 10, acquireBytes: shared.acquire });
-	assert.equal(qc.push('1234'), true, 'released aggregate capacity is immediately reusable by another peer');
+	assert.equal(qc.push('1234',4), true, 'released aggregate capacity is immediately reusable by another peer');
 	qa.dispose();
 	assert.equal(shared.usedBytes(), 4, 'disposing a peer releases every byte it retained');
 	qa.dispose();
@@ -122,7 +136,7 @@ assert.equal(NET.validSignalSize({ c: 'x'.repeat(NET.WIRE_LIMITS.ICE_MAX + 1) })
 	assert.deepEqual(sharedSent, ['1234'], 'the globally budgeted item is delivered intact');
 	assert.equal(shared.usedBytes(), 0, 'successful dequeue returns its aggregate byte lease');
 	const qFail = NET.createSendQueue({ maxBytes: 10, acquireBytes: shared.acquire });
-	assert.equal(qFail.push('12345'), true, 'send-failure setup reserves shared bytes');
+	assert.equal(qFail.push('12345',5), true, 'send-failure setup reserves shared bytes');
 	assert.equal(qFail.flush({ bufferedAmount: 0, send(){ throw new Error('closed-channel'); } }), false,
 		'a channel send failure fail-closes the queue');
 	assert.equal(shared.usedBytes(), 0, 'send failure releases the current item and all retained shared bytes');

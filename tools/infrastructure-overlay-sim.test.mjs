@@ -159,6 +159,26 @@ assert.equal(world.getConstructionBackground(6,26),T.BRICK,'background construct
 assert.equal(world.getPlayerConstructionBackground(6,26),T.BRICK,'player background getter sees restored explicit support tiles');
 assert.equal(world.metrics().constructionBackground,1,'world metrics track construction background cells');
 
+// Bulk restore invalidates each affected section once, including sections that
+// disappear from the replacement snapshot.
+reset();
+world.restoreInfrastructure({v:2,list:new Array(500).fill(null).map(()=>({x:1,y:20,t:T.COPPER_WIRE}))});
+assert.equal(world.chunkVersion(0),1,'bulk infrastructure restore bumps one section version once');
+assert.equal(world.snapshotInfrastructure().list.length,1,'duplicate infrastructure rows still normalize to one overlay');
+let versionBefore=world.chunkVersion(0);
+world.restoreInfrastructure({v:2,list:[]});
+assert.equal(world.chunkVersion(0),versionBefore+1,'removed-only infrastructure section is invalidated once');
+assert.equal(world.snapshotInfrastructure().list.length,0,'empty infrastructure replacement clears the old overlay');
+
+reset();
+world.restoreConstructionBackground({v:1,list:new Array(500).fill(null).map(()=>({x:2,y:24,t:T.BRICK}))});
+assert.equal(world.chunkVersion(0),1,'bulk construction-background restore bumps one section version once');
+assert.equal(world.snapshotConstructionBackground().list.length,1,'duplicate construction-background rows normalize to one cell');
+versionBefore=world.chunkVersion(0);
+world.restoreConstructionBackground({v:1,list:[]});
+assert.equal(world.chunkVersion(0),versionBefore+1,'removed-only construction-background section is invalidated once');
+assert.equal(world.snapshotConstructionBackground().list.length,0,'empty construction-background replacement clears the old cell');
+
 reset();
 dynamo.plannedCells(-4,30,'horizontal').forEach(c=>setTile(c.x,c.y,c.t));
 setTile(-2,30,T.STONE);

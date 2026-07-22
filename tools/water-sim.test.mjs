@@ -180,8 +180,24 @@ assert.equal(water.metrics().passiveScanColumns, 0, 'short idle frame does not r
 for(let i=0;i<7;i++) water.update(getTile, setTile, 1/60);
 assert.ok(water._debug().passiveScanTotalColumns > 0, 'passive scan still runs on its simulation cadence');
 water.update(getTile, setTile, 2);
-assert.ok(water._debug().passiveScanLastColumns <= 64*3, 'large dt catch-up is bounded');
+assert.ok(water._debug().passiveScanLastColumns <= 16*3, 'large dt catch-up is bounded');
 delete globalThis.player;
+
+// Idle fallback discovery is deliberately amortized: active/tile-change wakes remain
+// immediate, while an empty world must not spend six figures of tile probes per second.
+resetWorld();
+globalThis.player={x:0};
+let idleScanReads=0;
+const countedIdleGet=(x,y)=>{ idleScanReads++; return getTile(x,y); };
+for(let i=0;i<600;i++) water.update(countedIdleGet,setTile,1/60);
+assert.ok(idleScanReads<400000,'ten idle seconds stay within the amortized tile-read budget (got '+idleScanReads+')');
+delete globalThis.player;
+
+resetWorld();
+let tileChangeReads=0;
+const countedTileChangeGet=(x,y)=>{ tileChangeReads++; return getTile(x,y); };
+water.onTileChanged(10,50,countedTileChangeGet);
+assert.ok(tileChangeReads<=105,'material dispatch reads each nearby tile once instead of once per material queue (got '+tileChangeReads+')');
 
 // --- 8. Passive wake-up works at negative world x ---
 resetWorld();
@@ -620,6 +636,9 @@ assert.equal(water.solidifyAt(filmCell.x,filmCell.y,getTile,setTile), false, 'th
 // The player's own placement path must displace water like every other solid-placement path,
 // not just wake neighbors and let the overwrite delete the cell.
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+const waterSrc = await readFile(new URL('../src/engine/water.js', import.meta.url), 'utf8');
+assert.doesNotMatch(waterSrc, /toxicSegmentFraction|toxicCore:/, 'water rendering performs no unused per-cell toxic core scan');
+assert.match(waterSrc, /if\(t===T\.SAND\) queued = queueWetSand\(tx,ty,getTile,t\)/, 'material wake dispatch passes its already-read tile to the matching queue');
 assert.match(mainSrc, /function tryPlace\(tx,ty\)[\s\S]*const displacePlacedWater=\(\)=>\{[\s\S]*WATER\.displaceAt\(tx,ty,getTile,setTile\)/, 'player block placement displaces water via displaceAt instead of deleting it');
 assert.match(mainSrc, /if\(!displacePlacedWater\(\)\)\{ msg\('Brak miejsca na wypchniecie wody'\); return false; \}\s*if\(!setForegroundConfirmed\(tx,ty,id\)\)/, 'placement requires successful displacement immediately before a confirmed tile write');
 assert.match(mainSrc, /const undoPrev=\(isGasTileId\(prevRaw\)\|\|prevRaw===T\.WATER\)\?T\.AIR:prevRaw;/, 'undo reveals air after a displaced water placement instead of minting a second fluid unit');
