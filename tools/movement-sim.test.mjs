@@ -90,7 +90,7 @@ assert.match(mainSource, /function heroTouchesLadder\(\)[\s\S]*hasLadderAt\(x,y\
 assert.match(mainSource, /import \{ applyHorizontalMovement, applyJumpArcControl, surfaceTraction \} from '\.\/engine\/movement\.js';/, 'hero movement imports shared jump arc control');
 assert.match(mainSource, /function queueJumpInput\(k\)\{[\s\S]*jumpBufferT=JUMP_BUFFER;[\s\S]*\}/, 'jump keydown and touch taps queue jump presses immediately');
 assert.match(mainSource, /if\(!e\.repeat\) queueJumpInput\(k\);/, 'keyboard jump taps are buffered on keydown');
-assert.match(mainSource, /btn\.addEventListener\('pointerdown'[\s\S]*queueJumpInput\(k\);/, 'touch up-button taps are buffered on pointerdown');
+assert.match(mainSource, /jumpBtn\.addEventListener\('pointerdown'[\s\S]{0,420}queueJumpInput\(' '\);/, 'the dedicated touch jump button buffers every press on pointerdown');
 assert.match(mainSource, /const groundedSolidInWater = inWater && player\.onGround && groundTile!==T\.AIR && groundTile!==T\.WATER && isSolid\(groundTile\);/, 'water jump is allowed only while standing on solid ground');
 assert.match(mainSource, /function heroTouchesSideBlock\(\)\{[\s\S]*const leftX=Math\.floor\(player\.x-halfW-probe\);[\s\S]*const rightX=Math\.floor\(player\.x\+halfW\+probe\);[\s\S]*solidAt\(leftX,y,'x'\) \|\| solidAt\(rightX,y,'x'\)/, 'water side jumps sample solid collision blocks just outside both sides of the hero body');
 assert.match(mainSource, /const sideSolidInWater = inWater && heroTouchesSideBlock\(\);/, 'water side-wall jump support only applies while the hero is in water');
@@ -105,7 +105,7 @@ assert.match(mainSource, /else if\(inWater\)\{\s*jumpBufferT=0;\s*\}/, 'open-wat
 assert.ok(!mainSource.includes('swimLeapT'), 'water surface leap state was removed');
 assert.ok(!mainSource.includes('MOVE.JUMP * jumpMult * 0.95'), 'surface water jump impulse was removed');
 assert.ok(!mainSource.includes('MOVE.JUMP * 0.32'), 'deep underwater swim-kick jump impulse was removed');
-assert.match(mainSource, /const ladderContact=heroTouchesLadder\(\);[\s\S]*const jumpHeldEarly=!!keys\[' '\] \|\| \(!ladderContact && climbUpInput\);/, 'up input climbs ladders instead of becoming a jump press while on a ladder');
+assert.match(mainSource, /const ladderContact=heroTouchesLadder\(\);[\s\S]*const jumpHeldEarly=!!keys\[' '\] \|\| touchJumpHeld \|\| \(!ladderContact && climbUpInput\);/, 'stick-up climbs ladders while the independent touch jump button can jump away from one');
 assert.ok(!mainSource.includes('releaseCut'), 'releasing jump does not cut upward speed into a small hop');
 assert.ok(!mainSource.includes('jumpReleasedThisFrame'), 'jump release is not used for variable-height short hops');
 assert.match(mainSource, /const downCancel=heroDropThroughInput\(\) && !ladderContact;/, 'pressing or tapping down in the air cancels the current jump arc');
@@ -115,8 +115,8 @@ assert.match(mainSource, /ladderReleaseT=0\.2;/, 'jumping from a ladder briefly 
 assert.match(mainSource, /function solidAt\(x,y,axis\)\{[\s\S]*if\(hasLadderAt\(x,y\)\) return false;/, 'ladder overlays make their cells passable for hero collision');
 assert.match(mainSource, /const TRAPDOOR_DROP_BUFFER=0\.22;/, 'trapdoor drop-through has a short input buffer');
 assert.match(mainSource, /if\(k==='s' \|\| k==='arrowdown'\) trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER;/, 'keyboard down taps buffer trapdoor drop-through');
-assert.match(mainSource, /if\(code==='ArrowDown'\) trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER;/, 'touch down taps buffer trapdoor drop-through');
-assert.match(mainSource, /function heroDropThroughInput\(\)\{\s*return !!\(keys\['s'\] \|\| keys\['arrowdown'\] \|\| trapdoorDropBufferT>0\);\s*\}/, 'trapdoor drop-through uses buffered down input');
+assert.match(mainSource, /if\(nextDown && !wasDown\)\{ trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER;/, 'a fresh downward stick crossing buffers trapdoor drop-through');
+assert.match(mainSource, /function heroDropThroughInput\(\)\{\s*return !!\(keys\['s'\] \|\| keys\['arrowdown'\] \|\| touchMoveState\.down \|\| trapdoorDropBufferT>0\);\s*\}/, 'trapdoor drop-through uses keyboard, stick, and buffered down input');
 assert.match(mainSource, /if\(trapdoorDropBufferT>0\) trapdoorDropBufferT=Math\.max\(0,trapdoorDropBufferT-dt\);/, 'trapdoor input buffer decays in the physics step');
 assert.match(mainSource, /function releaseGameplayInput\(\)\{[\s\S]*trapdoorDropBufferT=0;[\s\S]*activePointers\.clear\(\);/, 'input reset clears buffered trapdoor drops');
 assert.match(mainSource, /const TURBO_SPEED_MULT=1\.5;/, 'turbo speed multiplier is 1.5x');

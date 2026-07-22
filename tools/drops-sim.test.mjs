@@ -681,7 +681,8 @@ assert.match(mainSrc, /DROPS\.setDebugAutoPickup/, 'debug override is wired to t
 assert.doesNotMatch(mainSrc, /buildPauseRow\('🧲 Auto-zbieranie łupów'\)/, 'player pause settings no longer bypass equipment progression');
 assert.match(mainSrc, /id:'loot_charm_tile'[\s\S]*id:'loot_charm_copper'[\s\S]*id:'loot_charm_silver'[\s\S]*id:'loot_charm_antimatter'/, 'crafting exposes all four auto-loot ranges');
 assert.match(mainSrc, /if\(DROPS && DROPS\.reset\) DROPS\.reset\(\)/, 'world resets clear lingering drops');
-assert.match(mainSrc, /DROPS\.pickupAt\(aim\.x,aim\.y,player,\{visible:worldFxVisible\}\)==='picked'/, 'left click grabs the hovered drop (fog-gated)');
+assert.match(mainSrc, /const pickupOpts=\{visible:worldFxVisible,hitScale:e\.pointerType==='touch'\?1\.5:1\}/, 'touch gets a forgiving but bounded direct-pickup hit target');
+assert.match(mainSrc, /DROPS\.pickupAt\(aim\.x,aim\.y,player,pickupOpts\)==='picked'/, 'mouse or touch grabs the selected drop through the same fog-gated path');
 assert.match(mainSrc, /updateDropPreview\(\);/, 'frame loop refreshes the corner drop preview');
 assert.match(mainSrc, /DROPS\.hoverAt\(aim\.x,aim\.y,player,\{visible:worldFxVisible\}\)/, 'hover preview asks drops.hoverAt with the fog gate');
 const mobsSrc = readFileSync(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');

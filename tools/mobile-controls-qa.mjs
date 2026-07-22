@@ -40,16 +40,18 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // In-page probe: mode stamp, live media features and per-cluster visibility.
 const PROBE = `(()=>{
-	const ids=['controls','dirRing','fireBtn','ultBtn','radarBtn'];
+	const ids=['controls','dirRing','touchActionRail','jumpBtn','radarBtn'];
 	const vis=id=>{ const el=document.getElementById(id); if(!el) return 'missing'; return getComputedStyle(el).display==='none'?'hidden':'shown'; };
 	const r=sel=>{ const el=document.querySelector(sel); if(!el) return null; const b=el.getBoundingClientRect(); return [Math.round(b.left),Math.round(b.top),Math.round(b.right),Math.round(b.bottom)]; };
+	const targetSizes=[...document.querySelectorAll('#touchActionRail button')].filter(el=>getComputedStyle(el).display!=='none').map(el=>{ const b=el.getBoundingClientRect(); return {id:el.id,w:Math.round(b.width),h:Math.round(b.height)}; });
 	return JSON.stringify({
 		mode:(document.documentElement.dataset.inputMode)||'(none)',
+		actionMode:(document.documentElement.dataset.touchActionMode)||'(none)',
 		caps:{coarse:matchMedia('(pointer:coarse)').matches, hover:matchMedia('(hover:hover)').matches, fine:matchMedia('(pointer:fine)').matches, touchPoints:navigator.maxTouchPoints|0},
 		ui:Object.fromEntries(ids.map(id=>[id,vis(id)])),
+		targetSizes,
 		craftOpen:(()=>{ const c=document.getElementById('craft'); return !!(c && c.dataset.collapsed!=='true'); })(),
-		// vitals panel is canvas-drawn bottom-left: PAD=12, PANEL_W=272, PANEL_H=98 (vitals_hud.js)
-		rects:{pad:r('#controls .pad'), ring:r('#dirRing'), hotbar:r('#hotbarWrap'), weaponBar:r('#weaponBar'), fire:r('#fireBtn'), ult:r('#ultBtn'), radar:r('#radarBtn'), vitals:[12, innerHeight-110, 284, innerHeight-12]}
+		rects:{pad:r('#controls .pad'), ring:r('#dirRing'), actionRail:r('#touchActionRail'), hotbar:r('#hotbarWrap'), weaponBar:r('#weaponBar'), vitals:(window.MM&&MM.vitalsHud&&MM.vitalsHud.bounds)?(()=>{ const b=MM.vitalsHud.bounds(); return b?[Math.round(b.x),Math.round(b.y),Math.round(b.x+b.width),Math.round(b.y+b.height)]:null; })():null}
 	});
 })()`;
 
@@ -136,7 +138,7 @@ async function main(){
 			const r = p.rects;
 			const hit = (a, b) => a && b && a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
 			const bad = [];
-			const controls = ['pad','ring','fire','ult','radar'];
+			const controls = ['pad','ring','actionRail'];
 			for (const c of controls){
 				for (const bar of ['hotbar','weaponBar']) if (hit(r[c], r[bar])) bad.push(c + '∩' + bar);
 			}
@@ -180,6 +182,7 @@ async function main(){
 		console.log('B probe:', JSON.stringify(p));
 		check('B phone lands in touch mode', p.mode === 'touch', p.mode);
 		check('B touch UI shown on phone', allUi(p, 'shown') === '', allUi(p, 'shown'));
+		check('B visible touch targets are at least 48px', p.targetSizes.every(t=>t.w>=48&&t.h>=48), JSON.stringify(p.targetSizes));
 		check('B craft panel boots collapsed on touch', p.craftOpen === false, 'open=' + p.craftOpen);
 		check('B portrait controls do not overlap', overlaps(p) === '', overlaps(p));
 		await shot(outB);
@@ -207,6 +210,7 @@ async function main(){
 		console.log('D probe:', JSON.stringify(p));
 		check('D landscape stays in touch mode', p.mode === 'touch', p.mode);
 		check('D touch UI shown in landscape', allUi(p, 'shown') === '', allUi(p, 'shown'));
+		check('D visible touch targets are at least 48px', p.targetSizes.every(t=>t.w>=48&&t.h>=48), JSON.stringify(p.targetSizes));
 		check('D landscape controls do not overlap', overlaps(p) === '', overlaps(p));
 		await shot(outD);
 

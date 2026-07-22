@@ -21,6 +21,7 @@ import { applyHorizontalMovement, applyJumpArcControl, surfaceTraction } from '.
 import { BUILD_STROKE_CELL_LIMIT, rasterizeTileLine } from './engine/build_stroke.js';
 import { debugShortcutsEnabled } from './engine/debug_shortcuts.js';
 import './engine/input_mode.js'; // stamps data-input-mode on <html>; touch clusters gate off it
+import { createTouchJoystick, quantizeTouchDirection, touchMovementIntent } from './engine/touch_joystick.js';
 import { keybinds as KEYBINDS } from './engine/keybinds.js';
 import { CRUSH_TUNING, crushTickDamage, heroCrushCapacity, heroEmbeddedTiles, resolveHeroBurial } from './engine/hero_crush.js';
 import { cape as CAPE } from './engine/cape.js';
@@ -125,7 +126,25 @@ function socialBoostMult(part){
 // Game init
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d', {alpha:false});
-let W=0,H=0,DPR=1; function resize(){ DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1)); canvas.width=Math.floor(window.innerWidth*DPR); canvas.height=Math.floor(window.innerHeight*DPR); canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px'; ctx.setTransform(DPR,0,0,DPR,0,0); W=window.innerWidth; H=window.innerHeight; } window.addEventListener('resize',resize,{passive:true}); resize();
+let W=0,H=0,DPR=1;
+const canvasSafeInset={top:0,left:0};
+function refreshCanvasSafeInset(){
+	const hud=document.getElementById('hud');
+	if(!hud) return;
+	const style=getComputedStyle(hud);
+	canvasSafeInset.top=Math.max(0,(parseFloat(style.top)||8)-8);
+	canvasSafeInset.left=Math.max(0,(parseFloat(style.left)||8)-8);
+}
+function resize(){
+	DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1));
+	canvas.width=Math.floor(window.innerWidth*DPR); canvas.height=Math.floor(window.innerHeight*DPR);
+	canvas.style.width=window.innerWidth+'px'; canvas.style.height=window.innerHeight+'px';
+	ctx.setTransform(DPR,0,0,DPR,0,0); W=window.innerWidth; H=window.innerHeight;
+	refreshCanvasSafeInset();
+}
+window.addEventListener('resize',resize,{passive:true});
+if(window.visualViewport) window.visualViewport.addEventListener('resize',resize,{passive:true});
+resize();
 function resetFrameCanvasState(){
 	if(ctx.setTransform) ctx.setTransform(DPR,0,0,DPR,0,0);
 	ctx.globalAlpha=1;
@@ -1956,15 +1975,24 @@ window.addEventListener('mm-inventory-change',()=>{
 	refreshVisionButton(); refreshTreasureButton();
 });
 function turboKeyHeld(){ return !!(keys['shift']||keys['shiftleft']||keys['shiftright']); }
-function companionControlState(){
+function movementControlState(){
+	let keyboardX=0;
+	if(keys['a']||keys['arrowleft']) keyboardX-=1;
+	if(keys['d']||keys['arrowright']) keyboardX+=1;
+	const stickX=touchMoveState.active ? Math.max(-1,Math.min(1,touchMoveState.axisX||0)) : 0;
+	const x=keyboardX!==0 ? keyboardX : stickX;
 	return {
-		left:!!(keys['a']||keys['arrowleft']),
-		right:!!(keys['d']||keys['arrowright']),
-		up:!!(keys['w']||keys['arrowup']),
-		down:!!(keys['s']||keys['arrowdown']),
-		jump:!!keys[' '],
+		x,
+		left:keyboardX<0 || !!touchMoveState.left,
+		right:keyboardX>0 || !!touchMoveState.right,
+		up:!!(keys['w']||keys['arrowup']||touchMoveState.up),
+		down:!!(keys['s']||keys['arrowdown']||touchMoveState.down),
+		jump:!!(keys[' ']||touchMoveState.up||touchJumpHeld),
 		turbo:turboKeyHeld()
 	};
+}
+function companionControlState(){
+	return movementControlState();
 }
 const tools={basic:1,stone:2,meteor:3.3,diamond:4,bedrock:2.6};
 const BEDROCK_PICK_MAX_DURABILITY=10;
@@ -8665,7 +8693,7 @@ function actorOpensDoor(x,y,npcs){
 	return false;
 }
 function heroDropThroughInput(){
-	return !!(keys['s'] || keys['arrowdown'] || trapdoorDropBufferT>0);
+	return !!(keys['s'] || keys['arrowdown'] || touchMoveState.down || trapdoorDropBufferT>0);
 }
 function actorOpensTrapdoor(x,y,npcs){
 	const cx=x+0.5;
@@ -9101,7 +9129,22 @@ function infrastructureTargetBlockedReason(tx,ty,id){
 // Input + tryby specjalne
 const keys={}; let godMode=false, immunityMode=false; const keysOnce=new Set();
 let backgroundBuildMode=false;
-let fireBtnHeld=false; // declared with the other input state — the blur handler below references it
+let fireBtnHeld=false, fireBtnPointerId=null; // quick-fire owns one captured touch pointer
+let moveStickController=null, actionStickController=null;
+const touchMoveState={active:false,axisX:0,axisY:0,left:false,right:false,up:false,down:false};
+const touchActionState={active:false,mode:'tool',armed:false,x:1,y:0,lastX:1,lastY:0,hasAim:false,dir:null};
+let touchActionWeaponHeld=false, touchActionMineTimer=0, touchPlaceMode=false, touchJumpHeld=false;
+let lastTouchHapticAt=0;
+function touchHaptic(duration,minGap){
+	const now=performance.now();
+	if(now-lastTouchHapticAt<Math.max(35,Number(minGap)||45)) return false;
+	if(!(MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch())) return false;
+	try{
+		if(!navigator.vibrate) return false;
+		lastTouchHapticAt=now;
+		return !!navigator.vibrate(Math.max(1,Math.min(30,Number(duration)||7)));
+	}catch(e){ return false; }
+}
 let paused=false;      // B toggles; the loop keeps drawing but freezes the simulation
 let showMinimap=true;  // N toggles the cross-section minimap
 // Player-facing settings persistence (the pause panel writes these; boot restores)
@@ -9487,6 +9530,7 @@ function closeKeybindPanel(){
 const activePointers=new Map(); let pinch=null;
 let minePointerId=null;   // pointer that initiated cursor mining (left button / touch on canvas)
 let weaponPointerId=null; // pointer that is holding normal weapon fire on the canvas
+let directWeaponTarget=null, directWeaponStart=null; // touch-tapped mob tracks until a deliberate drag
 let mineBtnHeld=false;    // dedicated pickaxe button held -> keep mining in selected direction
 function modalInputOpen(){ return !!(MM.modalInput && MM.modalInput.isOpen && MM.modalInput.isOpen()); }
 let radioPanel=null, radioTarget=null;
@@ -9644,8 +9688,14 @@ function nearestInteractiveRadio(range){
 }
 function releaseGameplayInput(){
 	endTurboEnergyHold();
+	if(moveStickController && moveStickController.active()) moveStickController.cancel();
+	if(actionStickController && actionStickController.active()) actionStickController.cancel();
+	if(touchActionMineTimer){ clearTimeout(touchActionMineTimer); touchActionMineTimer=0; }
 	for(const k in keys) keys[k]=false;
 	keysOnce.clear();
+	Object.assign(touchMoveState,{active:false,axisX:0,axisY:0,left:false,right:false,up:false,down:false});
+	Object.assign(touchActionState,{active:false,armed:false,x:touchActionState.lastX||1,y:touchActionState.lastY||0,hasAim:false,dir:null});
+	touchActionWeaponHeld=false; touchJumpHeld=false;
 	jumpBufferT=0;
 	jumpPrev=false;
 	trapdoorDropBufferT=0;
@@ -9653,14 +9703,19 @@ function releaseGameplayInput(){
 	try{ clearBuildStroke(); }catch(e){}
 	try{ if(WEAPONS && WEAPONS.cancelHeld) WEAPONS.cancelHeld(); }catch(e){}
 	try{ endHeroDefense(null,{cancel:true}); }catch(e){}
-	minePointerId=null; weaponPointerId=null; mineBtnHeld=false; fireBtnHeld=false;
+	minePointerId=null; weaponPointerId=null; directWeaponTarget=null; directWeaponStart=null; mineBtnHeld=false; fireBtnHeld=false; fireBtnPointerId=null;
 	activePointers.clear();
 	pinch=null;
+	const quick=document.getElementById('fireBtn'); if(quick) quick.classList.remove('on');
+	const jump=document.getElementById('jumpBtn'); if(jump) jump.classList.remove('on');
+	if(touchPlaceMode) setTouchPlaceMode(false);
 }
 function queueJumpInput(k){
 	if(k===' ' || ((k==='w' || k==='arrowup') && !heroTouchesLadder())) jumpBufferT=JUMP_BUFFER;
 }
 window.addEventListener('mm-modal-input',e=>{ if(e.detail && e.detail.open) releaseGameplayInput(); });
+window.addEventListener('mm-input-mode-change',e=>{ if(e.detail && e.detail.mode==='pc') releaseGameplayInput(); });
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) releaseGameplayInput(); });
 // Debug overlay toggle (F3)
 let showPerfHud = false;
 // Chest debug helpers
@@ -9750,9 +9805,10 @@ function pickLabel(id){
 function ownedPicks(){ return PICK_ORDER.filter(t=>t==='basic'||(t==='bedrock'?hasBedrockPick():inv.tools[t])); }
 function selectToolMode(opts){
 	opts=opts||{};
+	if(actionStickController && actionStickController.active()) actionStickController.cancel();
 	if(WEAPONS && WEAPONS.cancelHeld) WEAPONS.cancelHeld();
 	endHeroDefense(null,{cancel:true});
-	weaponPointerId=null;
+	weaponPointerId=null; directWeaponTarget=null; directWeaponStart=null; fireBtnHeld=false; fireBtnPointerId=null;
 	const INV=MM.inventory;
 	const hadWeapon=!!(INV && INV.equippedId && INV.equippedId('weapon'));
 	if(hadWeapon && INV.unequip) INV.unequip('weapon');
@@ -9774,8 +9830,10 @@ function selectWeaponKey(key){
 		updateInventory(); updateWeaponBar();
 		return;
 	}
+	if(actionStickController && actionStickController.active()) actionStickController.cancel();
 	if(WEAPONS && WEAPONS.cancelHeld) WEAPONS.cancelHeld();
 	endHeroDefense(null,{cancel:true});
+	weaponPointerId=null; directWeaponTarget=null; directWeaponStart=null; fireBtnHeld=false; fireBtnPointerId=null;
 	if(!INV || !INV.cycleWeaponCategory) return;
 	const cat=(INV.WEAPON_CATEGORIES||[]).find(c=>c.key===key); if(!cat) return;
 	const it=INV.cycleWeaponCategory(cat.id);
@@ -9941,6 +9999,7 @@ function updateWeaponBar(){
 		slot.el.classList.toggle('out', out);
 	});
 	refreshHudTip();
+	syncTouchActionMode();
 }
 // Per-frame gauge pass (called from the game loop): ult charge on the active
 // weapon slot, bow-draw / spear-thrust progress while holding, live energy readout for the
@@ -10267,11 +10326,65 @@ window.addEventListener('keyup',e=>{ if(modalInputOpen()){ releaseGameplayInput(
 // Losing focus while keys are held would leave the player running forever — release everything
 window.addEventListener('blur',releaseGameplayInput);
 
-// Kierunek kopania
-let mineDir={dx:1,dy:0}; document.querySelectorAll('.dirbtn').forEach(b=>{ b.addEventListener('click',()=>{ noteSaveActivity(); mineDir.dx=+b.getAttribute('data-dx'); mineDir.dy=+b.getAttribute('data-dy'); document.querySelectorAll('.dirbtn').forEach(o=>o.classList.remove('sel')); b.classList.add('sel'); }); }); document.querySelector('.dirbtn[data-dx="1"][data-dy="0"]').classList.add('sel');
+// The contextual action stick reuses this eight-way tile direction in tool mode.
+let mineDir={dx:1,dy:0};
 
-// Pad dotykowy
-function bindPad(){ document.querySelectorAll('#pad .btn').forEach(btn=>{ const code=btn.getAttribute('data-key'); if(!code) return; btn.addEventListener('pointerdown',ev=>{ ev.preventDefault(); noteSaveActivity(); const k=code.toLowerCase(); keys[k]=true; btn.classList.add('on'); queueJumpInput(k); if(code==='ArrowDown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(code==='ArrowUp') keys['w']=true; }); ['pointerup','pointerleave','pointercancel'].forEach(evName=> btn.addEventListener(evName,()=>{ noteSaveActivity(); keys[code.toLowerCase()]=false; btn.classList.remove('on'); if(code==='ArrowUp') keys['w']=false; })); }); } bindPad();
+// Platform movement is mostly horizontal, but the vertical axis remains useful:
+// a fresh upward crossing queues one jump (including an unlocked mid-air jump),
+// while a held direction climbs/swims. Returning to neutral and pushing up again
+// creates another discrete jump rather than auto-jumping on every landing.
+function applyMoveStickSample(sample){
+	const intent=touchMovementIntent(sample);
+	const wasUp=touchMoveState.up, wasDown=touchMoveState.down;
+	const nextUp=wasUp ? sample.y<=-0.24 : sample.y<=-0.46;
+	const nextDown=wasDown ? sample.y>=0.24 : sample.y>=0.46;
+	touchMoveState.active=true;
+	touchMoveState.axisX=intent.axisX;
+	touchMoveState.axisY=sample.y;
+	touchMoveState.left=intent.left;
+	touchMoveState.right=intent.right;
+	touchMoveState.up=nextUp;
+	touchMoveState.down=nextDown;
+	if(nextUp && !wasUp){ queueJumpInput('arrowup'); touchHaptic(6,70); }
+	if(nextDown && !wasDown){ trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; touchHaptic(5,70); }
+}
+function clearMoveStick(){
+	Object.assign(touchMoveState,{active:false,axisX:0,axisY:0,left:false,right:false,up:false,down:false});
+}
+const moveStickEl=document.getElementById('pad');
+if(moveStickEl){
+	moveStickController=createTouchJoystick(moveStickEl,{
+		deadZone:0.16,
+		onStart(){ noteSaveActivity(); touchHaptic(5,80); },
+		onChange:applyMoveStickSample,
+		onEnd(){ noteSaveActivity(); clearMoveStick(); }
+	});
+}
+
+// A dedicated jump button complements the up-flick. It is intentionally a
+// separate discrete control so repeated taps can spend multiple mid-air jumps
+// while the left thumb keeps a steady horizontal direction.
+const jumpBtn=document.getElementById('jumpBtn');
+let jumpBtnPointerId=null;
+function releaseTouchJump(pointerId){
+	if(pointerId!=null && jumpBtnPointerId!=null && pointerId!==jumpBtnPointerId) return false;
+	jumpBtnPointerId=null; touchJumpHeld=false;
+	if(jumpBtn) jumpBtn.classList.remove('on');
+	return true;
+}
+if(jumpBtn){
+	jumpBtn.addEventListener('pointerdown',e=>{
+		if(e.pointerType==='mouse') return;
+		e.preventDefault(); noteSaveActivity();
+		jumpBtnPointerId=e.pointerId; touchJumpHeld=true;
+		try{ jumpBtn.setPointerCapture(e.pointerId); }catch(err){ /* optional */ }
+		jumpBtn.classList.add('on');
+		queueJumpInput(' '); touchHaptic(7,45);
+	});
+	jumpBtn.addEventListener('pointerup',e=>{ e.preventDefault(); releaseTouchJump(e.pointerId); });
+	jumpBtn.addEventListener('pointercancel',e=>releaseTouchJump(e.pointerId));
+	jumpBtn.addEventListener('lostpointercapture',e=>releaseTouchJump(e.pointerId));
+}
 
 // Kamera
 let camX=0,camY=0,camSX=0,camSY=0; let zoom=1, zoomTarget=1;
@@ -10350,7 +10463,8 @@ function seasonUpdateContext(){
 	const inputActive=!!(
 		keys['a'] || keys['d'] || keys['arrowleft'] || keys['arrowright'] ||
 		keys['w'] || keys['arrowup'] || keys[' '] || keys['s'] || keys['arrowdown'] ||
-		mining || mineBtnHeld || fireBtnHeld || minePointerId!=null || weaponPointerId!=null ||
+		touchMoveState.active || touchActionState.active ||
+		mining || mineBtnHeld || fireBtnHeld || touchActionWeaponHeld || minePointerId!=null || weaponPointerId!=null ||
 		(activePointers && activePointers.size)
 	);
 	return {
@@ -10896,8 +11010,11 @@ function physics(dt){
 		ensureChunks();
 		return;
 	}
-	// Horizontal input
-	let input=0; if(keys['a']||keys['arrowleft']) input-=1; if(keys['d']||keys['arrowright']) input+=1; if(input!==0) player.facing=input;
+	// Horizontal input. Keyboard remains digital; the touch stick preserves its
+	// analogue magnitude so small thumb movements produce deliberate short steps.
+	const moveControl=movementControlState();
+	let input=moveControl.x;
+	if(input!==0) player.facing=Math.sign(input);
 	// Aboard a floating raft the deck is the vehicle: each fresh tap of A/D is an
 	// oar stroke (energy-burning impulse on the boat), holding only shuffles the
 	// hero slowly across the deck. Beached rafts walk like ordinary ground.
@@ -10905,8 +11022,8 @@ function physics(dt){
 	const ridingFloatingBoat = !!(heroBoatNow && heroBoatNow.inWater && !heroBoatNow.grounded);
 	const heroTrackNow=MECHS && MECHS.heroOnTracks ? MECHS.heroOnTracks(player) : null;
 	if(ridingFloatingBoat){
-		const leftNow=!!(keys['a']||keys['arrowleft']);
-		const rightNow=!!(keys['d']||keys['arrowright']);
+		const leftNow=moveControl.left;
+		const rightNow=moveControl.right;
 		if(leftNow && !rowPrevLeft) heroRowStroke(-1);
 		if(rightNow && !rowPrevRight) heroRowStroke(1);
 		rowPrevLeft=leftNow; rowPrevRight=rightNow;
@@ -10915,12 +11032,15 @@ function physics(dt){
 		rowPrevLeft=false; rowPrevRight=false;
 		if(heroTrackNow) input=0;
 	}
-	const climbUpInput=!!(keys['w']||keys['arrowup']);
-	const climbDownInput=!!(keys['s']||keys['arrowdown']);
+	const climbUpInput=moveControl.up;
+	const climbDownInput=moveControl.down;
 	const ladderContact=heroTouchesLadder();
 	if(ladderReleaseT>0) ladderReleaseT=Math.max(0,ladderReleaseT-dt);
 	if(trapdoorDropBufferT>0) trapdoorDropBufferT=Math.max(0,trapdoorDropBufferT-dt);
-	const jumpHeldEarly=!!keys[' '] || (!ladderContact && climbUpInput);
+	// Up on the movement stick doubles as jump away from ladders. The dedicated
+	// touch button is independent, which makes repeated mid-air jumps reliable:
+	// every new press creates a fresh rising edge without recentering the stick.
+	const jumpHeldEarly=!!keys[' '] || touchJumpHeld || (!ladderContact && climbUpInput);
 	const turboRequested=turboKeyHeld();
 	if(!turboRequested) endTurboEnergyHold();
 	else if(!godMode && player.energy<=TURBO_MIN_ENERGY && turboEnergyHoldSpent>0) reportTurboEnergyUse(true);
@@ -11117,7 +11237,7 @@ function physics(dt){
 		const totalAllowed = 1 + maxAir; // total sequential presses allowed while airborne
 		// social boost stores the HEIGHT multiplier; velocity gets its square root (h ∝ v²)
 		const jumpMult = ((MM.activeModifiers && MM.activeModifiers.jumpPowerMult)||1) * (window.playerSpeedMultiplier || 2) * turboJumpMult * Math.sqrt(socialBoostMult('jump'));
-		if(ladderContact && keys[' ']){
+		if(ladderContact && (keys[' '] || touchJumpHeld)){
 			player.vy=MOVE.JUMP * jumpMult * 0.78; player.onGround=false; player.jumpCount=1; jumpBufferT=0; coyoteT=0; ladderJumped=true; ladderReleaseT=0.2;
 		}
 		else if(boatContactInWater && BOATS && BOATS.boardHeroFromWater && BOATS.boardHeroFromWater(player,{getTile}).ok){
@@ -11915,13 +12035,186 @@ function startMine(opts){
 	mining=true; mineTimer=0; mineTx=tx; mineTy=ty; mineBossTarget=bossTarget; mineBtn.classList.add('on');
 	if(godMode) instantBreak();
 }
-mineBtn.addEventListener('pointerdown',e=>{ e.preventDefault(); noteSaveActivity(); if(!isToolMode()){ msg('Wybierz 1, aby kopać'); return; } mineBtnHeld=true; startMine(); });
-['pointerup','pointerleave','pointercancel'].forEach(evName=> mineBtn.addEventListener(evName,()=>{ noteSaveActivity(); mineBtnHeld=false; stopMining(); }));
-// Weapon fire button (touch): hold to use the equipped weapon in the facing direction
+// Contextual right stick: with a tool it selects one of the eight neighbouring
+// tiles and keeps digging; with a weapon it preserves the full analogue vector
+// and continuously aims. The mode is latched for the life of a gesture so an
+// equipment change can cancel cleanly instead of turning a dig into a shot.
+const actionStickEl=document.getElementById('dirRing');
+const actionStickHint=document.getElementById('actionStickHint');
+function touchAimAlongVector(x,y,opts){
+	opts=opts||{};
+	let ux=Number(x)||0, uy=Number(y)||0;
+	const len=Math.hypot(ux,uy);
+	if(len<0.08){ ux=player.facing||1; uy=0; }
+	else { ux/=len; uy/=len; }
+	if(Math.abs(ux)>0.16) player.facing=ux<0?-1:1;
+	const originX=player.x+player.w/2, originY=player.y+player.h*0.42;
+	const range=Math.max(4,Number(opts.range)||8);
+	let target=null, bestScore=Infinity;
+	if(opts.assist!==false && MOBS && MOBS.forEachLive){
+		MOBS.forEachLive(m=>{
+			if(MOBS.isHostile && !MOBS.isHostile(m)) return;
+			if(!worldFxVisible(Math.floor(m.x),Math.floor(m.y))) return;
+			const dx=m.x-originX, dy=m.y-originY;
+			const along=dx*ux+dy*uy;
+			if(along<0.25 || along>range) return;
+			const perpendicular=Math.abs(dx*uy-dy*ux);
+			const allowance=Math.max(0.85,Math.min(2.4,0.42+along*0.24));
+			if(perpendicular>allowance) return;
+			const score=perpendicular*2.2+along*0.035;
+			if(score<bestScore){ bestScore=score; target=m; }
+		});
+	}
+	return target ? {x:target.x,y:target.y,target} : {x:originX+ux*range,y:originY+uy*range,target:null};
+}
+function touchQuickWeaponAim(){
+	let hostile=null, nearest=Infinity;
+	if(MOBS && MOBS.forEachLive){
+		MOBS.forEachLive(m=>{
+			if(MOBS.isHostile && !MOBS.isHostile(m)) return;
+			if(!worldFxVisible(Math.floor(m.x),Math.floor(m.y))) return;
+			const d2=(m.x-player.x)**2+(m.y-player.y)**2;
+			if(d2<=64 && d2<nearest){ nearest=d2; hostile=m; }
+		});
+	}
+	if(hostile){
+		if(Math.abs(hostile.x-player.x)>0.16) player.facing=hostile.x<player.x?-1:1;
+		return {x:hostile.x,y:hostile.y,target:hostile};
+	}
+	return touchAimAlongVector(player.facing||1,0,{assist:true,range:8});
+}
+function touchActionWeaponAim(){
+	if(!touchActionState.hasAim) return touchQuickWeaponAim();
+	return touchAimAlongVector(touchActionState.lastX,touchActionState.lastY,{assist:true,range:9});
+}
+function releaseActionStickWeapon(cancel){
+	if(!touchActionWeaponHeld) return false;
+	const aim=touchActionWeaponAim();
+	const it=activeWeaponItem();
+	let used=false;
+	if(WEAPONS){
+		if(cancel && WEAPONS.cancelHeld) WEAPONS.cancelHeld();
+		else if(WEAPONS.releaseHeld) used=!!WEAPONS.releaseHeld(player,aim.x,aim.y);
+	}
+	touchActionWeaponHeld=false;
+	if(used) notifyInvasionWeaponUse(it,{released:true});
+	return true;
+}
+function armActionStickMine(){
+	if(!touchActionState.active || touchActionState.mode!=='tool' || !isToolMode()) return false;
+	mineBtnHeld=true;
+	if(mining) stopMining();
+	startMine({quiet:true});
+	touchActionState.armed=true;
+	return true;
+}
+function armActionStickWeapon(){
+	if(touchActionWeaponHeld || !touchActionState.active || touchActionState.mode!=='weapon' || !activeWeaponItem()) return false;
+	// Weapon charge/hold state is singular. Last deliberate control wins,
+	// avoiding one finger releasing a bow charged by another control.
+	if(weaponPointerId!=null){ if(WEAPONS && WEAPONS.cancelHeld) WEAPONS.cancelHeld(); weaponPointerId=null; directWeaponTarget=null; directWeaponStart=null; }
+	if(fireBtnHeld){ releaseTouchWeaponFire(true); fireBtnHeld=false; fireBtnPointerId=null; const quick=document.getElementById('fireBtn'); if(quick) quick.classList.remove('on'); }
+	touchActionWeaponHeld=true;
+	return true;
+}
+function applyActionStickSample(sample){
+	if(!touchActionState.active) return;
+	if(sample.magnitude>0.08){
+		const len=Math.hypot(sample.x,sample.y)||1;
+		touchActionState.x=sample.x/len; touchActionState.y=sample.y/len;
+		touchActionState.lastX=touchActionState.x; touchActionState.lastY=touchActionState.y;
+		touchActionState.hasAim=true;
+	}
+	if(touchActionState.mode==='weapon'){
+		if(sample.magnitude>0.08 && armActionStickWeapon()) touchHaptic(5,55);
+		return;
+	}
+	const dir=quantizeTouchDirection(sample,{minMagnitude:0.08});
+	if(!dir) return;
+	const changed=!touchActionState.dir || dir.dx!==touchActionState.dir.dx || dir.dy!==touchActionState.dir.dy;
+	touchActionState.dir=dir;
+	mineDir={dx:dir.dx,dy:dir.dy};
+	if(touchActionMineTimer){ clearTimeout(touchActionMineTimer); touchActionMineTimer=0; }
+	if(changed || !touchActionState.armed){ armActionStickMine(); touchHaptic(5,55); }
+}
+function finishActionStick(cancelled){
+	if(touchActionMineTimer){ clearTimeout(touchActionMineTimer); touchActionMineTimer=0; }
+	if(touchActionState.mode==='weapon') releaseActionStickWeapon(cancelled);
+	else { mineBtnHeld=false; stopMining(); }
+	touchActionState.active=false; touchActionState.armed=false; touchActionState.dir=null;
+	noteSaveActivity();
+}
+if(actionStickEl){
+	actionStickController=createTouchJoystick(actionStickEl,{
+		deadZone:0.12,
+		onStart(sample){
+			noteSaveActivity();
+			touchActionState.active=true;
+			touchActionState.mode=isToolMode()?'tool':'weapon';
+			touchActionState.armed=false; touchActionState.dir=null; touchActionState.hasAim=false;
+			if(touchActionState.mode==='tool'){
+				touchActionMineTimer=setTimeout(()=>{
+					touchActionMineTimer=0;
+					if(!touchActionState.dir) mineDir={dx:player.facing||1,dy:0};
+					armActionStickMine();
+				},90);
+			}
+			touchHaptic(5,80);
+		},
+		onChange:applyActionStickSample,
+		onEnd(sample,event,cancelled){ finishActionStick(cancelled); }
+	});
+}
+function setTouchPlaceMode(next){
+	const enable=!!next && isToolMode();
+	if(touchPlaceMode!==enable) clearBuildStroke();
+	if(enable){
+		if(actionStickController && actionStickController.active()) actionStickController.cancel();
+		minePointerId=null; mineBtnHeld=false; stopMining();
+	}
+	touchPlaceMode=enable;
+	const button=document.getElementById('placeBtn');
+	if(button){
+		button.classList.toggle('on',touchPlaceMode);
+		button.setAttribute('aria-pressed',touchPlaceMode?'true':'false');
+		button.setAttribute('aria-label',touchPlaceMode?'Wyłącz tryb budowania':'Włącz tryb budowania');
+	}
+	document.documentElement.dataset.touchPlaceMode=touchPlaceMode?'on':'off';
+}
+function syncTouchActionMode(){
+	const mode=isToolMode()?'tool':'weapon';
+	if(touchActionState.active && touchActionState.mode!==mode && actionStickController) actionStickController.cancel();
+	if(!touchActionState.active && touchActionState.mode!==mode){ touchActionState.mode=mode; touchActionState.hasAim=false; }
+	if(mode==='weapon' && touchPlaceMode) setTouchPlaceMode(false);
+	document.documentElement.dataset.touchActionMode=mode;
+	const stick=document.getElementById('dirRing');
+	if(stick){ stick.dataset.mode=mode; stick.setAttribute('aria-label',mode==='tool'?'Joystick kopania: przeciągnij w kierunku i przytrzymaj':'Joystick ataku: przeciągnij, aby celować, i przytrzymaj'); }
+	if(mineBtn) mineBtn.textContent=mode==='tool'?'⛏️':'⚔️';
+	if(actionStickHint) actionStickHint.textContent=mode==='tool'?'Kop':'Celuj';
+	const quick=document.getElementById('fireBtn');
+	if(quick){
+		const it=activeWeaponItem(), type=(it&&it.weaponType)||'melee';
+		quick.textContent=type==='harpoon'?'🔱':(it&&it.aquaticStyle==='trident')?'🔱':type==='bow'?'🏹':type==='flame'?'🔥':type==='hose'?'💧':type==='gas'?'☠️':type==='electric'?'⚡':'⚔️';
+		quick.title=it?'Szybki atak — '+(it.name||it.id):'Szybki atak z automatycznym celowaniem';
+		quick.setAttribute('aria-label',quick.title);
+	}
+}
+const placeBtn=document.getElementById('placeBtn');
+if(placeBtn){
+	placeBtn.addEventListener('click',e=>{
+		e.preventDefault(); noteSaveActivity();
+		if(!isToolMode()){ msg('Wybierz 1, aby budować'); return; }
+		setTouchPlaceMode(!touchPlaceMode); touchHaptic(7,60);
+		msg(touchPlaceMode?'🧱 Budowanie: stukaj lub przeciągaj po świecie':'⛏ Kopanie dotykiem włączone');
+	});
+}
+syncTouchActionMode();
+
+// Quick-fire is the accessible one-button alternative to aimed right-stick fire.
 const fireBtn=document.getElementById('fireBtn');
 function releaseTouchWeaponFire(cancel){
 	if(!fireBtnHeld) return false;
-	const aim={x:player.x+player.facing*5, y:player.y-0.4};
+	const aim=touchQuickWeaponAim();
 	const it=activeWeaponItem();
 	let used=false;
 	if(WEAPONS){
@@ -11932,28 +12225,34 @@ function releaseTouchWeaponFire(cancel){
 	return true;
 }
 if(fireBtn){
-	fireBtn.addEventListener('pointerdown',e=>{ e.preventDefault(); noteSaveActivity(); if(!activeWeaponItem()){ msg('Wybierz broń — stuknij pasek broni (2–4)'); return; } fireBtnHeld=true; fireBtn.classList.add('on'); });
-	['pointerup','pointerleave'].forEach(evName=> fireBtn.addEventListener(evName,()=>{ noteSaveActivity(); releaseTouchWeaponFire(false); fireBtnHeld=false; fireBtn.classList.remove('on'); }));
-	fireBtn.addEventListener('pointercancel',()=>{ noteSaveActivity(); releaseTouchWeaponFire(true); fireBtnHeld=false; fireBtn.classList.remove('on'); });
-	// Icon reflects the equipped weapon class
-	function refreshFireBtn(){
-		const it=activeWeaponItem();
-		const type=(it && it.weaponType)||'melee';
-		fireBtn.textContent= type==='harpoon'? '🔱' : (it&&it.aquaticStyle==='trident')? '🔱' : type==='bow'? '🏹' : type==='flame'? '🔥' : type==='hose'? '💧' : type==='gas'? '☠️' : type==='electric'? '⚡' : '⚔️';
-		fireBtn.title='Użyj broni'+(it? ' – '+(it.name||it.id):'');
+	function finishQuickWeaponFire(e,cancel){
+		if(fireBtnPointerId!=null && e && e.pointerId!==fireBtnPointerId) return false;
+		noteSaveActivity(); releaseTouchWeaponFire(cancel);
+		fireBtnHeld=false; fireBtnPointerId=null; fireBtn.classList.remove('on');
+		return true;
 	}
-	refreshFireBtn();
-	window.addEventListener('mm-customization-change',refreshFireBtn);
+	fireBtn.addEventListener('pointerdown',e=>{
+		e.preventDefault(); noteSaveActivity();
+		if(!activeWeaponItem()){ msg('Wybierz broń — stuknij pasek broni (2–4)'); return; }
+		if(actionStickController && actionStickController.active()) actionStickController.cancel();
+		if(weaponPointerId!=null){ if(WEAPONS && WEAPONS.cancelHeld) WEAPONS.cancelHeld(); weaponPointerId=null; directWeaponTarget=null; directWeaponStart=null; }
+		fireBtnHeld=true; fireBtnPointerId=e.pointerId; fireBtn.classList.add('on');
+		try{ fireBtn.setPointerCapture(e.pointerId); }catch(err){ /* capture is optional */ }
+		touchHaptic(5,60);
+	});
+	fireBtn.addEventListener('pointerup',e=>finishQuickWeaponFire(e,false));
+	fireBtn.addEventListener('pointercancel',e=>finishQuickWeaponFire(e,true));
+	fireBtn.addEventListener('lostpointercapture',e=>{ if(fireBtnPointerId===e.pointerId) finishQuickWeaponFire(e,true); });
 }
-// Touch ult trigger: the PPM-ult without a right button. Aims in the facing
-// direction like the fire button; charge state is fed by updateWeaponGauges.
+// Touch ult trigger: the PPM-ult without a right button. It reuses the latest
+// stick direction when available, otherwise the same auto-target as quick-fire.
 const ultBtn=document.getElementById('ultBtn');
 if(ultBtn){
 	ultBtn.addEventListener('pointerdown',e=>{
 		e.preventDefault(); noteSaveActivity();
 		const it=activeWeaponItem();
 		if(!it){ msg('Wybierz broń — stuknij pasek broni (2–4)'); return; }
-		const aim={x:player.x+player.facing*5, y:player.y-0.4};
+		const aim=touchActionState.hasAim ? touchActionWeaponAim() : touchQuickWeaponAim();
 		if(tryWeaponUltOrDefend(player, aim.x, aim.y, it, e.pointerId, 'touch')) ultBtn.classList.add('on');
 	});
 	['pointerup','pointerleave'].forEach(evName=>ultBtn.addEventListener(evName,e=>{ noteSaveActivity(); endHeroDefense(e.pointerId,{cancel:false}); ultBtn.classList.remove('on'); }));
@@ -11961,21 +12260,27 @@ if(ultBtn){
 }
 // Only the pointer that started cursor mining may stop it — releasing another finger
 // (e.g. a movement button on the touch pad) must not cancel digging.
+function directPointerWeaponAim(clientX,clientY){
+	if(directWeaponTarget && MOBS && MOBS.isLiving && MOBS.isLiving(directWeaponTarget)){
+		return {x:directWeaponTarget.x,y:directWeaponTarget.y,target:directWeaponTarget};
+	}
+	return screenToWorld(clientX,clientY);
+}
 function releasePointerWeaponFire(e,cancel){
 	if(e.pointerId!==weaponPointerId) return false;
 	if(WEAPONS){
 		if(cancel && WEAPONS.cancelHeld) WEAPONS.cancelHeld();
 		else if(WEAPONS.releaseHeld){
 			const it=activeWeaponItem();
-			const aim=screenToWorld(e.clientX,e.clientY);
+			const aim=directPointerWeaponAim(e.clientX,e.clientY);
 			if(WEAPONS.releaseHeld(player, aim.x, aim.y)) notifyInvasionWeaponUse(it,{released:true});
 		}
 	}
-	weaponPointerId=null;
+	weaponPointerId=null; directWeaponTarget=null; directWeaponStart=null;
 	return true;
 }
-window.addEventListener('pointerup',e=>{ noteSaveActivity(); clearBuildStroke(e.pointerId); if(touchHold && e.pointerId===touchHold.id) cancelTouchHold(); activePointers.delete(e.pointerId); if(activePointers.size<2) pinch=null; releasePointerWeaponFire(e,false); endHeroDefense(e.pointerId,{cancel:false}); if(e.pointerId===minePointerId){ minePointerId=null; if(!mineBtnHeld) stopMining(); } });
-window.addEventListener('pointercancel',e=>{ noteSaveActivity(); clearBuildStroke(e.pointerId); if(touchHold && e.pointerId===touchHold.id) cancelTouchHold(); activePointers.delete(e.pointerId); if(activePointers.size<2) pinch=null; releasePointerWeaponFire(e,true); endHeroDefense(e.pointerId,{cancel:true}); if(e.pointerId===minePointerId){ minePointerId=null; if(!mineBtnHeld) stopMining(); } });
+window.addEventListener('pointerup',e=>{ noteSaveActivity(); clearBuildStroke(e.pointerId); activePointers.delete(e.pointerId); if(activePointers.size<2) pinch=null; releasePointerWeaponFire(e,false); endHeroDefense(e.pointerId,{cancel:false}); if(e.pointerId===minePointerId){ minePointerId=null; if(!mineBtnHeld) stopMining(); } });
+window.addEventListener('pointercancel',e=>{ noteSaveActivity(); clearBuildStroke(e.pointerId); activePointers.delete(e.pointerId); if(activePointers.size<2) pinch=null; releasePointerWeaponFire(e,true); endHeroDefense(e.pointerId,{cancel:true}); if(e.pointerId===minePointerId){ minePointerId=null; if(!mineBtnHeld) stopMining(); } });
 function waterCollectionChanceAt(tx,ty){
 	if(getTile(tx,ty)!==T.WATER) return 0;
 	const unitsMax=Math.max(1,(WATER && WATER.UNITS) || 10);
@@ -12330,7 +12635,7 @@ let lastChestOpen={t:0,x:0,y:0};
 const CHEST_PLACE_SUPPRESS_MS=250; // extended to reduce accidental placements
 const PLACE_REACH=5; // build reach in tiles (Chebyshev); god mode is unlimited
 let lastRightPlaceT=0; // right-button pointerdown already placed for this gesture (contextmenu dedupe)
-let buildStroke=null; // mouse RMB placement gesture; touch keeps mining/long-press controls
+let buildStroke=null; // mouse RMB or explicit touch-build placement gesture
 try{ window.__mmBuildStroke=()=>buildStroke; }catch(e){} // QA seam: gesture state visibility
 function clearBuildStroke(pointerId){
 	if(!buildStroke || (pointerId!=null && buildStroke.pointerId!==pointerId)) return false;
@@ -12340,15 +12645,21 @@ function clearBuildStroke(pointerId){
 // Placement lives on the RIGHT button — owner contract: LMB mines/attacks,
 // RMB places (a drag paints the whole line). An earlier build wired the
 // stroke to LMB and stole mining clicks on every free cell.
-function beginBuildStroke(e,tx,ty){
-	if(!e || e.pointerType!=='mouse' || e.button!==2 || modalInputOpen()) return false;
+function beginBuildStroke(e,tx,ty,opts){
+	opts=opts||{};
+	const explicitTouch=!!opts.touchExplicit && e && e.pointerType==='touch' && e.button===0;
+	const mouseSecondary=e && e.pointerType==='mouse' && e.button===2;
+	if(!e || (!mouseSecondary && !explicitTouch) || modalInputOpen()) return false;
 	const placement=canPlaceAt(tx,ty);
 	if(!placement.ok || !tryPlace(tx,ty)) return false;
 	// a held LMB mining gesture yields: placing owns the pointer exclusively
-	minePointerId=null;
+	minePointerId=null; mineBtnHeld=false;
 	stopMining();
 	buildStroke={
 		pointerId:e.pointerId,
+		pointerType:e.pointerType,
+		buttonMask:explicitTouch?1:2,
+		touchExplicit:explicitTouch,
 		selection:HOTBAR_ORDER[hotbarIndex],
 		lastTx:Math.floor(tx),
 		lastTy:Math.floor(ty),
@@ -12360,7 +12671,8 @@ function beginBuildStroke(e,tx,ty){
 function continueBuildStroke(e){
 	const stroke=buildStroke;
 	if(!stroke || !e || stroke.pointerId!==e.pointerId) return false;
-	if((((Number(e.buttons)||0)&2)===0) || HOTBAR_ORDER[hotbarIndex]!==stroke.selection){
+	const stillHeld=stroke.touchExplicit ? activePointers.has(e.pointerId) : (((Number(e.buttons)||0)&stroke.buttonMask)!==0);
+	if(!stillHeld || HOTBAR_ORDER[hotbarIndex]!==stroke.selection){
 		clearBuildStroke(e.pointerId);
 		return false;
 	}
@@ -12388,37 +12700,17 @@ function continueBuildStroke(e){
 	}
 	return true;
 }
-// Touch long-press = place block. Android surfaces it as a contextmenu event, iOS
-// never fires contextmenu at all — so a pointer-based hold timer covers both, and
-// lastRightPlaceT dedupes whichever path lands first on Android.
-let touchHold=null; // {id,x,y,timer} pending long-press placement
-const TOUCH_HOLD_MS=550, TOUCH_HOLD_SLOP=12;
-function cancelTouchHold(){ if(touchHold){ clearTimeout(touchHold.timer); touchHold=null; } }
-function armTouchHold(e){
-	cancelTouchHold();
-	const x=e.clientX, y=e.clientY;
-	touchHold={ id:e.pointerId, x, y, timer:setTimeout(()=>{
-		touchHold=null;
-		if(pinch || activePointers.size>1 || modalInputOpen()) return;
-		if(!isToolMode()) return;
-		const now=performance.now();
-		if(now-lastRightPlaceT<400) return;
-		if(now-lastChestOpen.t<CHEST_PLACE_SUPPRESS_MS) return;
-		lastRightPlaceT=now;
-		// the initial touch started cursor mining — cancel it before placing
-		if(minePointerId!=null){ minePointerId=null; stopMining(); }
-		const p=screenToWorldTile(x,y);
-		useToolSecondaryAt(p.tx,p.ty);
-	}, TOUCH_HOLD_MS) };
-}
+// Building on touch is explicit: the 🧱 toggle owns tap/drag placement. A mining
+// hold therefore remains mining for as long as the finger stays down.
 canvas.addEventListener('contextmenu',e=>{ if(modalInputOpen()){ e.preventDefault(); return; } e.preventDefault(); noteSaveActivity(); const now=performance.now();
-	// Right mouse button is handled on pointerdown; contextmenu remains only for touch long-press.
+	if(e.pointerType==='touch' || (MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch())) return;
+	// Right mouse button is handled on pointerdown; this fallback covers browsers
+	// that synthesize contextmenu without delivering the expected button event.
 	if(now-lastRightPlaceT<400) return;
 	if(!isToolMode()) return;
 	if(now-lastChestOpen.t<CHEST_PLACE_SUPPRESS_MS) return;
 	lastRightPlaceT=now; // beat the pointer-hold timer to this gesture
-	cancelTouchHold();
-	// Touch long-press: the initial touch started cursor mining — cancel it before placing
+	// A synthesized non-touch fallback can still arrive after pointerdown.
 	if(minePointerId!=null){ minePointerId=null; stopMining(); }
 	const p=screenToWorldTile(e.clientX,e.clientY);
 	useToolSecondaryAt(p.tx,p.ty); });
@@ -13354,47 +13646,66 @@ function drawParticles(){ if(PARTICLES && PARTICLES.draw) PARTICLES.draw(ctx,wor
 canvas.addEventListener('pointerdown',e=>{
 	if(modalInputOpen()){ e.preventDefault(); return; }
 	noteSaveActivity();
-	if(touchHold && e.pointerId!==touchHold.id) cancelTouchHold(); // a second finger is not a long-press
 	activePointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
 	if(activePointers.size===2){
 		// Second finger down → pinch zoom; abort the mining gesture from the first finger
-		minePointerId=null; stopMining(); clearBuildStroke();
+		const cancelCanvasWeapon=weaponPointerId!=null;
+		minePointerId=null; weaponPointerId=null; directWeaponTarget=null; directWeaponStart=null; stopMining(); clearBuildStroke();
+		if(cancelCanvasWeapon && WEAPONS && WEAPONS.cancelHeld) WEAPONS.cancelHeld();
 		const pts=[...activePointers.values()];
 		pinch={d:Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y)||1, z:zoomTarget};
 		return;
 	}
 	if(activePointers.size>2 || pinch) return;
 	lastPointer.x=e.clientX; lastPointer.y=e.clientY; lastPointer.has=true;
-	const {tx,ty}=screenToWorldTile(e.clientX,e.clientY);
+	let {tx,ty}=screenToWorldTile(e.clientX,e.clientY);
 	const weaponMode=!isToolMode();
 	if(e.button===0){
-		// Cursor loot grab (PC): clicking the hovered ground drop takes exactly that
-		// one (the corner preview announces it first). 'far' falls through, so the
-		// click still mines/fires toward a drop that's out of reach.
-		if(e.pointerType!=='touch' && DROPS && DROPS.pickupAt){
+		// Direct selection is first-class on both pointer types. Touch receives a
+		// modestly larger visual hit target, but still takes exactly one chosen drop.
+		if(DROPS && DROPS.pickupAt){
 			const aim=screenToWorld(e.clientX,e.clientY);
+			const pickupOpts={visible:worldFxVisible,hitScale:e.pointerType==='touch'?1.5:1};
 			// hero-mode guest: the drop lives on the HOST — route the grab as an
 			// intent (the replica hover only decides the click is a pickup at all)
 			if(MM.ghostHeroIntents && DROPS.hoverAt){
-				const h=DROPS.hoverAt(aim.x,aim.y,player,{visible:worldFxVisible});
-				if(h && h.inReach && h.kind!=='chest'){ MM.ghostHeroIntents.pickup(aim.x,aim.y); return; }
-			} else if(DROPS.pickupAt(aim.x,aim.y,player,{visible:worldFxVisible})==='picked'){ noteSaveActivity(); return; }
+				const h=DROPS.hoverAt(aim.x,aim.y,player,pickupOpts);
+				if(h && h.inReach && h.kind!=='chest'){ MM.ghostHeroIntents.pickup(h.x,h.y); if(e.pointerType==='touch') touchHaptic(7,55); return; }
+			} else if(DROPS.pickupAt(aim.x,aim.y,player,pickupOpts)==='picked'){ noteSaveActivity(); if(e.pointerType==='touch') touchHaptic(7,55); return; }
 		}
 		if(assignCompanionHarvestTargetAt(tx,ty)) return;
 		if(weaponMode){
+			if(actionStickController && actionStickController.active()) actionStickController.cancel();
+			if(fireBtnHeld){ releaseTouchWeaponFire(true); fireBtnHeld=false; fireBtnPointerId=null; if(fireBtn) fireBtn.classList.remove('on'); }
 			weaponPointerId=e.pointerId;
-			const aim=screenToWorld(e.clientX,e.clientY);
+			directWeaponTarget=null;
+			directWeaponStart=e.pointerType==='touch'?{x:e.clientX,y:e.clientY}:null;
+			let aim=screenToWorld(e.clientX,e.clientY);
+			if(e.pointerType==='touch' && MOBS && MOBS.nearestLiving){
+				const tappedMob=MOBS.nearestLiving(aim.x,aim.y,0.9);
+				if(tappedMob && worldFxVisible(Math.floor(tappedMob.x),Math.floor(tappedMob.y))){ directWeaponTarget=tappedMob; aim={x:tappedMob.x,y:tappedMob.y,target:tappedMob}; }
+			}
 			const it=activeWeaponItem();
 			if(WEAPONS && WEAPONS.fireHeld && WEAPONS.fireHeld(player, aim.x, aim.y, 0.016)) notifyInvasionWeaponUse(it,{held:true});
+			if(e.pointerType==='touch') touchHaptic(5,45);
 			return;
 		}
 		// Left click: adjacent melee first, else open chest, else mine the clicked tile.
 		// The pointer stays registered so holding/dragging keeps mining (see updateMining).
-		minePointerId=e.pointerId;
+		let tappedDirectMob=null;
+		if(e.pointerType==='touch' && MOBS && MOBS.nearestLiving){
+			const aim=screenToWorld(e.clientX,e.clientY);
+			const tappedMob=MOBS.nearestLiving(aim.x,aim.y,0.9);
+			if(tappedMob && worldFxVisible(Math.floor(tappedMob.x),Math.floor(tappedMob.y))){ tappedDirectMob=tappedMob; tx=Math.floor(tappedMob.x); ty=Math.floor(tappedMob.y); }
+		}
 		const dxRange = Math.abs(tx - Math.floor(player.x)); const dyRange=Math.abs(ty - Math.floor(player.y));
 		// Equipped weapon/charm bonus damage on top of base melee / tool damage
 		const atkBonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-		if(dxRange<=MELEE_REACH && dyRange<=MELEE_REACH && player.atkCd<=0 && ((CENTER_GUARDIAN && CENTER_GUARDIAN.attackAt && CENTER_GUARDIAN.attackAt(tx,ty,atkBonus)) || (GUARDIANS && GUARDIANS.attackAt && GUARDIANS.attackAt(tx,ty,atkBonus)) || (UNDERGROUND && UNDERGROUND.attackAt && UNDERGROUND.attackAt(tx,ty,atkBonus)) || (SKY_GUARDIAN && SKY_GUARDIAN.attackAt && SKY_GUARDIAN.attackAt(tx,ty,atkBonus)) || (INVASIONS && INVASIONS.attackAt && INVASIONS.attackAt(tx,ty,atkBonus)) || (MECHS && MECHS.attackAt && MECHS.attackAt(tx,ty,atkBonus,{source:'hero'})) || (NPCS && NPCS.attackAt && NPCS.attackAt(tx,ty,atkBonus,tutorialNpcCtx)) || (MOBS && MOBS.attackAt && MOBS.attackAt(tx,ty,atkBonus,{source:'hero'})))){ player.atkCd=0.35; if(WEAPONS && WEAPONS.notifyMeleeSwing) WEAPONS.notifyMeleeSwing(tx,ty,player); return; }
+		if(dxRange<=MELEE_REACH && dyRange<=MELEE_REACH && player.atkCd<=0 && ((CENTER_GUARDIAN && CENTER_GUARDIAN.attackAt && CENTER_GUARDIAN.attackAt(tx,ty,atkBonus)) || (GUARDIANS && GUARDIANS.attackAt && GUARDIANS.attackAt(tx,ty,atkBonus)) || (UNDERGROUND && UNDERGROUND.attackAt && UNDERGROUND.attackAt(tx,ty,atkBonus)) || (SKY_GUARDIAN && SKY_GUARDIAN.attackAt && SKY_GUARDIAN.attackAt(tx,ty,atkBonus)) || (INVASIONS && INVASIONS.attackAt && INVASIONS.attackAt(tx,ty,atkBonus)) || (MECHS && MECHS.attackAt && MECHS.attackAt(tx,ty,atkBonus,{source:'hero'})) || (NPCS && NPCS.attackAt && NPCS.attackAt(tx,ty,atkBonus,tutorialNpcCtx)) || (MOBS && MOBS.attackAt && MOBS.attackAt(tx,ty,atkBonus,{source:'hero'})))){ player.atkCd=0.35; if(WEAPONS && WEAPONS.notifyMeleeSwing) WEAPONS.notifyMeleeSwing(tx,ty,player); if(e.pointerType==='touch') touchHaptic(7,45); return; }
+		if(tappedDirectMob){
+			if((dxRange>MELEE_REACH || dyRange>MELEE_REACH) && player.atkCd<=0) msg('Za daleko — podejdź lub wybierz broń dystansową');
+			return;
+		}
 		// The center's confession/epilogue dialogue outranks ordinary NPC talk: the
 		// obelisk (and the mentor standing at it) belongs to the story while it speaks.
 		if(CENTER_GUARDIAN && CENTER_GUARDIAN.interactAt && CENTER_GUARDIAN.interactAt(tx,ty,player)) return;
@@ -13408,8 +13719,16 @@ canvas.addEventListener('pointerdown',e=>{
 		if(dxRange<=3 && dyRange<=3 && tryOpenGraveAt(tx,ty)) return;
 		// plants: harvest ripe berries / clear vegetation before digging the tile behind it
 		if(dxRange<=3 && dyRange<=3 && PLANTS && PLANTS.harvestAt && PLANTS.harvestAt(tx,ty)){ try{ if(MM.audio && MM.audio.play) MM.audio.play('harvest',{x:tx+0.5,y:ty+0.5}); }catch(e){} return; }
+		// Explicit build mode owns only otherwise-unclaimed canvas taps. Direct
+		// attack, pickup, conversation, chest, altar and harvest therefore continue
+		// to work while 🧱 is on; an empty/ordinary tile becomes tap/drag placement.
+		if(e.pointerType==='touch' && touchPlaceMode){
+			if(beginBuildStroke(e,tx,ty,{touchExplicit:true})) touchHaptic(5,45);
+			else useToolSecondaryAt(tx,ty);
+			return;
+		}
+		minePointerId=e.pointerId;
 		startMineAt(tx,ty,{quiet:true});
-		if(e.pointerType==='touch') armTouchHold(e); // hold in place → block placement (iOS-safe)
 	} else if(e.button===2){
 		e.preventDefault();
 		lastRightPlaceT=performance.now();
@@ -13436,8 +13755,10 @@ canvas.addEventListener('pointerdown',e=>{
 });
 canvas.addEventListener('pointermove',e=>{
 	lastPointer.x=e.clientX; lastPointer.y=e.clientY; lastPointer.has=true;
+	if(e.pointerId===weaponPointerId && directWeaponStart && Math.hypot(e.clientX-directWeaponStart.x,e.clientY-directWeaponStart.y)>14){
+		directWeaponTarget=null; directWeaponStart=null;
+	}
 	if(continueBuildStroke(e)){ noteSaveActivity(); return; }
-	if(touchHold && e.pointerId===touchHold.id && (Math.abs(e.clientX-touchHold.x)>TOUCH_HOLD_SLOP || Math.abs(e.clientY-touchHold.y)>TOUCH_HOLD_SLOP)) cancelTouchHold(); // drag = mining gesture
 	const ap=activePointers.get(e.pointerId);
 	if(ap){ noteSaveActivity(); ap.x=e.clientX; ap.y=e.clientY;
 		if(pinch && activePointers.size>=2){
@@ -13703,11 +14024,15 @@ function draw(){ // Background first
 		const bf=(MM.progress && MM.progress.getBuffs)? MM.progress.getBuffs():[];
 		// hero elemental statuses render as red-ringed debuff chips in the same row
 		const debuffs=(HERO_STATUS && HERO_STATUS.list)? HERO_STATUS.list():[];
+		const touchHud=!!(MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch());
 		VITALS_HUD.draw(ctx,{
 			W,H,
 			hp:player.hp, maxHp:player.maxHp,
 			energy:player.energy||0, energyMax:player.maxEnergy||heroEnergyCapacity(),
-			level:lv, points:pts, buffs:bf.concat(debuffs)
+			level:lv, points:pts, buffs:bf.concat(debuffs),
+			compact:touchHud,
+			x:canvasSafeInset.left+12,
+			y:canvasSafeInset.top+(W>H?54:104)
 		});
 	}
 	// damage flash overlay
@@ -17001,7 +17326,14 @@ if(!loaded && !MM.ghostMode){
 		inv.water=Math.max(inv.water|0,10);
 	}catch(e){}
 }
-updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); normalizeLegacyHelpDebugCopy(); if(MM.ghostMode){ /* the ghost veil owns the first paint */ } else if(!loaded) msg('Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. E=Ekwipunek, '+visionShortcutLabel()+'=optyka, C=Centrum, H=Pomoc. Debug: panel 🛠.'); else msg('Wczytano zapis – miłej gry!');
+updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); normalizeLegacyHelpDebugCopy();
+if(MM.ghostMode){ /* the ghost veil owns the first paint */ }
+else if(!loaded){
+	const touchWelcome=MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch();
+	msg(touchWelcome
+		?'Dotyk: lewy joystick = ruch, ↑ = skok i skoki w powietrzu, prawy = kop/celuj. Stukaj też bezpośrednio w moby, łupy i bloki.'
+		:'Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. E=Ekwipunek, '+visionShortcutLabel()+'=optyka, C=Centrum, H=Pomoc. Debug: panel 🛠.');
+} else msg('Wczytano zapis – miłej gry!');
 // Ghost spectator bridge: the one sanctioned window into main.js internals for
 // ghost_host.js / ghost_client.js — snapshot codec, world access, camera and
 // hero touch-points. Hosting streams THROUGH it; watching replays INTO it.
@@ -17672,10 +18004,13 @@ function runGameStep(dt,ts){
 	}
 	if(TELEPORTERS && TELEPORTERS.beginPowerFrame) TELEPORTERS.beginPowerFrame();
 	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
-	// Weapon use: selected weapon slots fire from LPM; the touch button aims forward.
+	// Weapon use: canvas taps keep exact pointer aim, the right stick keeps its
+	// analogue aim (with a narrow assist cone), and quick-fire chooses a hostile.
 	const heldWeapon=activeWeaponItem();
-	if(heldWeapon && ((weaponPointerId!=null && lastPointer.has)||fireBtnHeld) && WEAPONS && WEAPONS.fireHeld){
-		const aim=(weaponPointerId!=null && lastPointer.has && !fireBtnHeld)? screenToWorld(lastPointer.x,lastPointer.y) : {x:player.x+player.facing*5, y:player.y-0.4};
+	if(heldWeapon && ((weaponPointerId!=null && lastPointer.has)||fireBtnHeld||touchActionWeaponHeld) && WEAPONS && WEAPONS.fireHeld){
+		const aim=(weaponPointerId!=null && lastPointer.has && !fireBtnHeld && !touchActionWeaponHeld)
+			? directPointerWeaponAim(lastPointer.x,lastPointer.y)
+			: touchActionWeaponHeld ? touchActionWeaponAim() : touchQuickWeaponAim();
 		if(WEAPONS.fireHeld(player, aim.x, aim.y, dt)) notifyInvasionWeaponUse(heldWeapon,{held:true});
 	}
 	if(WEAPONS && WEAPONS.update) WEAPONS.update(dt, getTile, setTile);
@@ -17748,8 +18083,10 @@ function runHeroStep(dt,ts){
 		}
 	}
 	const heldWeapon=activeWeaponItem();
-	if(heldWeapon && ((weaponPointerId!=null && lastPointer.has)||fireBtnHeld) && WEAPONS && WEAPONS.fireHeld){
-		const aim=(weaponPointerId!=null && lastPointer.has && !fireBtnHeld)? screenToWorld(lastPointer.x,lastPointer.y) : {x:player.x+player.facing*5, y:player.y-0.4};
+	if(heldWeapon && ((weaponPointerId!=null && lastPointer.has)||fireBtnHeld||touchActionWeaponHeld) && WEAPONS && WEAPONS.fireHeld){
+		const aim=(weaponPointerId!=null && lastPointer.has && !fireBtnHeld && !touchActionWeaponHeld)
+			? directPointerWeaponAim(lastPointer.x,lastPointer.y)
+			: touchActionWeaponHeld ? touchActionWeaponAim() : touchQuickWeaponAim();
 		WEAPONS.fireHeld(player, aim.x, aim.y, dt);
 	}
 	// projectiles are HOST-flown (the pushArrow chokepoint forwards fire intents;

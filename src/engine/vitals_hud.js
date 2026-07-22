@@ -180,6 +180,7 @@ export function createVitalsModel(){
 // --- canvas renderer ---------------------------------------------------------
 const PAD=12;                 // screen margin
 const PANEL_W=272, PANEL_R=13;
+const COMPACT_W=190, COMPACT_H=62, COMPACT_R=12;
 const IN_X=12, IN_Y=11;       // panel inner padding
 const HP_H=20, EN_H=13, BADGE=26, XP_H=8;
 const GAP_A=8, GAP_B=9;       // hp→en, en→xp gaps
@@ -188,6 +189,7 @@ const FONT='system-ui, "Segoe UI", sans-serif';
 
 const model=createVitalsModel();
 let lastNow=0;
+let lastPanelBounds=null;
 const gradCache=new Map();
 
 function noteXpAward(detail){
@@ -292,6 +294,76 @@ function drawBar(ctx,x,y,w,h,s,opts){
 	ctx.restore();
 }
 
+// Touch layout: keep the combat-critical values in a thumb-clear top corner.
+// It deliberately omits floating deltas and buff chips; those belong to the
+// full desktop treatment and would make this small panel harder to scan.
+function drawCompactPanel(ctx,o,s,lv,px,py){
+	const ix=px+7, bw=COMPACT_W-14;
+
+	ctx.save();
+	ctx.shadowColor='rgba(0,0,0,0.45)'; ctx.shadowBlur=12; ctx.shadowOffsetY=3;
+	roundedPath(ctx,px,py,COMPACT_W,COMPACT_H,COMPACT_R);
+	ctx.fillStyle='rgba(9,13,21,0.72)';
+	ctx.fill();
+	ctx.restore();
+	roundedPath(ctx,px+0.5,py+0.5,COMPACT_W-1,COMPACT_H-1,COMPACT_R);
+	ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=1; ctx.stroke();
+
+	const hpY=py+7, hpH=18;
+	if(s.hp.low){
+		const beat=0.5+0.5*Math.sin(s.hp.lowPulse*Math.PI*2);
+		ctx.save();
+		ctx.shadowColor='rgba(255,58,48,'+(0.32+0.42*beat).toFixed(3)+')';
+		ctx.shadowBlur=7+5*beat;
+		roundedPath(ctx,ix,hpY,bw,hpH,hpH/2);
+		ctx.strokeStyle='rgba(255,80,64,'+(0.45+0.4*beat).toFixed(3)+')';
+		ctx.lineWidth=1.25; ctx.stroke();
+		ctx.restore();
+	}
+	drawBar(ctx,ix,hpY,bw,hpH,s.hp,{
+		key:'hp-compact', stops:[[0,'#ff3a34'],[0.55,'#ff6a38'],[1,'#ffa03d']],
+		chipColor:'rgba(255,219,178,0.85)', ticks:0
+	});
+	drawHeart(ctx,ix+11,hpY+hpH/2,10,s.hp.low?'#ff6157':'#ff5a4d');
+	ctx.font='700 10px '+FONT;
+	textShadowed(ctx,'HP',ix+20,hpY+12.5,'rgba(255,255,255,0.86)');
+	{
+		const t=Math.round(Number(o.hp)||0)+' / '+Math.round(Number(o.maxHp)||0);
+		textShadowed(ctx,t,ix+bw-7-ctx.measureText(t).width,hpY+12.5,'#fff');
+	}
+
+	const enY=py+29, enH=13;
+	drawBar(ctx,ix,enY,bw,enH,s.en,{
+		key:'en-compact', stops:[[0,'#33d9ff'],[0.6,'#3f8dff'],[1,'#5a6bff']],
+		chipColor:'rgba(191,234,255,0.8)', ticks:0,
+		stroke:s.en.full? 'rgba(190,240,255,0.45)' : undefined
+	});
+	drawBolt(ctx,ix+10,enY+enH/2,9,'#7fe7ff');
+	ctx.font='700 9px '+FONT;
+	textShadowed(ctx,'EN',ix+18,enY+9.5,'rgba(255,255,255,0.82)');
+	{
+		const t=Math.floor(Math.max(0,Number(o.energy)||0))+' / '+Math.round(Number(o.energyMax)||0);
+		textShadowed(ctx,t,ix+bw-7-ctx.measureText(t).width,enY+9.5,'#eafaff');
+	}
+
+	const xpY=py+48, levelW=34, xpX=ix+levelW+5, xpW=bw-levelW-5;
+	roundedPath(ctx,ix,py+46,levelW,11,5.5);
+	ctx.fillStyle=grad(ctx,'badge-compact',levelW,11,[[0,'#f9d54e'],[1,'#c9861d']],true);
+	ctx.fill();
+	ctx.font='800 8px '+FONT;
+	ctx.textAlign='center';
+	ctx.fillStyle='#3a2604';
+	ctx.fillText('LV '+Math.max(1,Number(lv.level)||1),ix+levelW/2,py+54.5);
+	ctx.textAlign='left';
+	drawBar(ctx,xpX,xpY,xpW,8,{fill:s.xp.fill,chip:0,shimmer:0},{
+		key:'xp-compact', stops:[[0,'#79b6ff'],[1,'#2c7ef8']], chipColor:'rgba(0,0,0,0)', ticks:0
+	});
+	ctx.font='700 7px '+FONT;
+	ctx.textAlign='center';
+	textShadowed(ctx,(lv.into|0)+' / '+(lv.need|0)+' XP',xpX+xpW/2,py+55,'rgba(238,246,255,0.94)');
+	ctx.textAlign='left';
+}
+
 function draw(ctx,o){
 	const now=(typeof performance!=='undefined'&&performance.now)? performance.now() : Date.now();
 	const dt=lastNow? (now-lastNow)/1000 : 0;
@@ -301,8 +373,11 @@ function draw(ctx,o){
 		hp:o.hp, maxHp:o.maxHp, en:o.energy, enMax:o.energyMax,
 		level:lv.level, xpInto:lv.into, xpNeed:lv.need, buffs:o.buffs
 	},dt);
-	const px=PAD, py=o.H-PAD-PANEL_H;
+	const compact=!!o.compact;
+	const px=compact && Number.isFinite(Number(o.x)) ? Number(o.x) : PAD;
+	const py=compact && Number.isFinite(Number(o.y)) ? Number(o.y) : (o.H-PAD-PANEL_H);
 	const bw=PANEL_W-IN_X*2;
+	lastPanelBounds={x:px,y:py,width:compact?COMPACT_W:PANEL_W,height:compact?COMPACT_H:PANEL_H,compact};
 
 	ctx.save();
 	ctx.textBaseline='alphabetic';
@@ -315,6 +390,12 @@ function draw(ctx,o){
 		vg.addColorStop(1,'rgba(160,20,20,'+(0.10+0.09*beat).toFixed(3)+')');
 		ctx.fillStyle=vg;
 		ctx.fillRect(0,0,o.W,o.H);
+	}
+
+	if(compact){
+		drawCompactPanel(ctx,o,s,lv,px,py);
+		ctx.restore();
+		return;
 	}
 
 	// glass panel
@@ -490,5 +571,7 @@ function draw(ctx,o){
 	ctx.restore();
 }
 
-export const vitalsHud={ draw, createVitalsModel, model, noteXpAward };
+function bounds(){ return lastPanelBounds? {...lastPanelBounds} : null; }
+
+export const vitalsHud={ draw, bounds, createVitalsModel, model, noteXpAward };
 MM.vitalsHud=vitalsHud;

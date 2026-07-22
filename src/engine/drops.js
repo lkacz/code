@@ -653,11 +653,15 @@ const drops = (function(){
   let hoverDrop=null; // draw() highlights this one (set fresh each frame by hoverAt)
   function dropAtPoint(wx,wy,opts){
     if(!finiteNum(wx) || !finiteNum(wy)) return null;
+    // A finger obscures more of the world than a cursor. Callers may enlarge the
+    // visual hit target while pickup reach and exact single-drop selection stay
+    // unchanged. Clamp it so a tap never vacuums an unrelated nearby pile.
+    const hitScale=Math.max(1,Math.min(1.8,finiteNum(opts&&opts.hitScale)?opts.hitScale:1));
     let best=null, bestD=Infinity;
     for(const d of list){
       const dx=d.x-wx, dy=d.y-wy;
       const dd=dx*dx+dy*dy;
-      const hit=d.kind==='chest' ? 0.66 : MOUSE_HIT;
+      const hit=(d.kind==='chest' ? 0.66 : MOUSE_HIT)*hitScale;
       const r2=hit*hit;
       if(dd<=r2 && dd<bestD){ bestD=dd; best=d; }
     }

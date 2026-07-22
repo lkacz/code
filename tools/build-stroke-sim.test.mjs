@@ -27,16 +27,18 @@ assert.equal(bounded.length,BUILD_STROKE_CELL_LIMIT,'hostile pointer coordinates
 assert.deepEqual(rasterizeTileLine(NaN,0,4,0),[],'non-finite pointer coordinates are rejected');
 
 const mainSource=fs.readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
-// Owner contract: LMB mines/attacks, RMB places — the stroke lives on the
-// RIGHT button only (an earlier build wired it to LMB and stole mining clicks).
-assert.match(mainSource,/function beginBuildStroke[\s\S]{0,200}e\.button!==2/,'the placement stroke arms ONLY on the right mouse button');
-assert.match(mainSource,/&2\)===0\) \|\| HOTBAR_ORDER\[hotbarIndex\]!==stroke\.selection/,'the stroke continues only while the RIGHT button stays held');
+// Owner contract: mouse LMB mines/attacks and RMB places. Touch placement is
+// allowed only behind the explicit build-mode toggle, never a timed long press.
+assert.match(mainSource,/function beginBuildStroke[\s\S]{0,260}touchExplicit[\s\S]{0,160}pointerType==='mouse' && e\.button===2/,'placement accepts RMB or an explicitly flagged touch gesture');
+assert.match(mainSource,/buttonMask:explicitTouch\?1:2/,'each placement stroke records the correct held-pointer mask');
+assert.match(mainSource,/stroke\.touchExplicit \? activePointers\.has\(e\.pointerId\)/,'touch paint continues only while its owning canvas pointer remains active');
 assert.match(mainSource,/if\(beginBuildStroke\(e,tx,ty\)\) return;\s*\n\s*useToolSecondaryAt\(tx,ty\);/,'the RMB branch tries the stroke first, then the classic secondary action');
 {
 	const lmb=mainSource.slice(mainSource.indexOf('if(e.button===0){'),mainSource.indexOf('} else if(e.button===2){'));
-	assert.ok(lmb.length>200 && !lmb.includes('beginBuildStroke'),'the LEFT-button branch never places blocks');
+	assert.match(lmb,/e\.pointerType==='touch' && touchPlaceMode[\s\S]{0,180}beginBuildStroke\(e,tx,ty,\{touchExplicit:true\}\)/,'touch LMB places only while explicit build mode is active');
 }
-assert.match(mainSource,/pointermove[\s\S]{0,220}continueBuildStroke\(e\)/,'held-pointer movement continues the placement stroke');
+assert.ok(!mainSource.includes('armTouchHold'),'a mining hold can never time out into accidental placement');
+assert.match(mainSource,/pointermove[\s\S]{0,520}continueBuildStroke\(e\)/,'held-pointer movement continues the placement stroke');
 assert.match(mainSource,/pointerup[\s\S]{0,180}clearBuildStroke\(e\.pointerId\)/,'releasing the owning pointer ends placement immediately');
 assert.match(mainSource,/function beginBuildStroke[\s\S]{0,400}placement=canPlaceAt\(tx,ty\)/,'drag placement uses the same validation rules as single-block placement');
 
