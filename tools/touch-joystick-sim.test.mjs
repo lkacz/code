@@ -4,10 +4,11 @@ import fs from 'node:fs';
 import {
 	nextTouchActionMode,
 	normalizeTouchActionMode,
+	normalizeTouchGridTarget,
 	quantizeTouchDirection,
 	sampleTouchStick,
-	touchMovementIntent,
-	touchTargetSelection
+	stepTouchGridTarget,
+	touchMovementIntent
 } from '../src/engine/touch_joystick.js';
 
 function close(actual,expected,message,epsilon=1e-10){
@@ -112,7 +113,7 @@ function close(actual,expected,message,epsilon=1e-10){
 	}
 }
 
-// --- 6. Action modes are explicit and the right stick selects, but never fires.
+// --- 6. Action modes are explicit; grid targets advance exactly one tile.
 {
 	assert.equal(normalizeTouchActionMode('mine'),'mine');
 	assert.equal(normalizeTouchActionMode('unknown'),'mine','unknown persisted modes safely fall back to mining');
@@ -120,14 +121,16 @@ function close(actual,expected,message,epsilon=1e-10){
 	assert.equal(nextTouchActionMode('build'),'combat');
 	assert.equal(nextTouchActionMode('combat'),'mine');
 
-	const adjacent=touchTargetSelection({x:0.12,y:0,magnitude:0.12},{maxDistance:3});
-	assert.deepEqual({dx:adjacent.dx,dy:adjacent.dy,distance:adjacent.distance,offsetX:adjacent.offsetX,offsetY:adjacent.offsetY},{dx:1,dy:0,distance:1,offsetX:1,offsetY:0});
-	const middle=touchTargetSelection({x:0,y:-0.5,magnitude:0.5},{maxDistance:4});
-	assert.deepEqual({dx:middle.dx,dy:middle.dy,distance:middle.distance,offsetX:middle.offsetX,offsetY:middle.offsetY},{dx:0,dy:-1,distance:2,offsetX:0,offsetY:-2});
-	const far=touchTargetSelection({x:-0.8,y:0.8,magnitude:1},{maxDistance:3});
-	assert.deepEqual({dx:far.dx,dy:far.dy,distance:far.distance,offsetX:far.offsetX,offsetY:far.offsetY},{dx:-1,dy:1,distance:3,offsetX:-3,offsetY:3});
-	const fallback=touchTargetSelection({x:0,y:0,magnitude:0},{fallback:{dx:-1,dy:0},maxDistance:3});
-	assert.deepEqual({dx:fallback.dx,dy:fallback.dy,distance:fallback.distance},{dx:-1,dy:0,distance:1});
+	assert.deepEqual(normalizeTouchGridTarget(null,{fallback:{x:-1,y:0},maxDistance:3}),{x:-1,y:0,maxDistance:3});
+	assert.deepEqual(normalizeTouchGridTarget({x:8,y:-7},{maxDistance:3}),{x:3,y:-3,maxDistance:3},'stored targets are clamped to reach');
+	const up=stepTouchGridTarget({x:1,y:0},{dx:0,dy:-1},{maxDistance:3});
+	assert.deepEqual(up,{x:1,y:-1,maxDistance:3,changed:true},'up changes only one row');
+	const left=stepTouchGridTarget(up,{dx:-1,dy:0},{maxDistance:3});
+	assert.deepEqual(left,{x:0,y:-1,maxDistance:3,changed:true},'left changes only one column');
+	const centre=stepTouchGridTarget({x:1,y:0},{dx:-1,dy:0},{maxDistance:3});
+	assert.deepEqual(centre,{x:0,y:0,maxDistance:3,changed:true},'the hero tile is traversed rather than skipped');
+	const edge=stepTouchGridTarget({x:3,y:-2},{dx:1,dy:0},{maxDistance:3});
+	assert.deepEqual(edge,{x:3,y:-2,maxDistance:3,changed:false},'presses stop cleanly at reach');
 }
 
 // --- 7. Integration seams keep joystick and direct-touch interaction parallel.
@@ -136,7 +139,7 @@ function close(actual,expected,message,epsilon=1e-10){
 	const indexSource=fs.readFileSync(new URL('../index.html',import.meta.url),'utf8');
 	const dropsSource=fs.readFileSync(new URL('../src/engine/drops.js',import.meta.url),'utf8');
 	assert.match(mainSource,/moveStickController=createTouchJoystick/,'the movement zone is bound as a joystick');
-	assert.match(mainSource,/actionStickController=createTouchJoystick/,'the contextual action zone is bound as a joystick');
+	assert.match(mainSource,/actionStickController=createTouchJoystick[\s\S]{0,180}canStart:\(\)=>touchActionMode==='combat'/,'the right stick activates only for combat');
 	assert.match(mainSource,/let input=moveControl\.x/,'touch movement reaches physics as an analog horizontal axis');
 	assert.match(mainSource,/jumpHeldEarly=!!keys\[' '\] \|\| touchJumpHeld/,'the dedicated jump button participates in jump physics');
 	assert.match(mainSource,/jumpBtn[\s\S]{0,900}queueJumpInput\(' '\)/,'every dedicated jump press queues a discrete jump, including mid-air jumps');
@@ -145,10 +148,13 @@ function close(actual,expected,message,epsilon=1e-10){
 	assert.match(mainSource,/MOBS\.nearestLiving\(aim\.x,aim\.y,0\.9\)/,'a direct touch can snap to the specifically tapped mob');
 	assert.match(mainSource,/e\.pointerType==='touch' && touchPlaceMode/,'placement is explicit while ordinary canvas taps remain mine, attack, collect, or interact');
 	assert.match(mainSource,/setTouchActionMode\(nextTouchActionMode\(touchActionMode\)\)/,'the mode button explicitly cycles the right-stick action');
+	assert.match(mainSource,/nudgeTouchGridTarget\(Number\(button\.dataset\.dx\)[\s\S]{0,120}Number\(button\.dataset\.dy\)/,'grid buttons advance the selected tile explicitly');
 	assert.match(mainSource,/if\(mode==='mine'\)[\s\S]{0,500}startTouchSelectedMine\(\)[\s\S]{0,300}else if\(mode==='build'\)/,'the contextual action button executes mining and building after target selection');
 	assert.match(mainSource,/drawTouchActionTarget\(\)/,'the selected tile or combat aim has a persistent world cursor');
 	assert.doesNotMatch(mainSource,/function applyActionStickSample\(sample\)[\s\S]{0,900}armTouchActionWeapon\(\)/,'moving the right stick alone never starts an attack');
 	assert.match(indexSource,/id="actionModeBtn"[\s\S]{0,300}touchModeLabel">TRYB/,'the touch rail exposes a labelled action-mode switch');
+	assert.match(indexSource,/id="actionModeBtn"[\s\S]{0,240}touchModeIcon">↻/,'the mode switch uses a neutral change symbol instead of duplicating the active action');
+	assert.match(indexSource,/id="touchGridUp"[\s\S]{0,900}id="touchGridDown"/,'the grid selector exposes four directions and a centre reset');
 	assert.match(indexSource,/id="fireBtn"[\s\S]{0,300}touchActionLabel">KOP/,'the contextual trigger states the action it will perform');
 	assert.doesNotMatch(indexSource,/id="radarBtn"/,'the unexplained compass button no longer occupies the primary touch rail');
 	assert.match(dropsSource,/const hitScale=Math\.max\(1,Math\.min\(1\.8/,'drop hit enlargement is bounded');

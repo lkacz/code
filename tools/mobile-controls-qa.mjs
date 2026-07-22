@@ -40,13 +40,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // In-page probe: mode stamp, live media features and per-cluster visibility.
 const PROBE = `(()=>{
-	const ids=['controls','dirRing','touchActionRail','jumpBtn','actionModeBtn','fireBtn'];
+	const ids=['controls','dirRing','touchGridPad','touchActionRail','jumpBtn','actionModeBtn','fireBtn'];
 	const vis=id=>{ const el=document.getElementById(id); if(!el) return 'missing'; return el.getClientRects().length===0?'hidden':'shown'; };
 	const r=sel=>{ const el=document.querySelector(sel); if(!el||el.getClientRects().length===0) return null; const b=el.getBoundingClientRect(); if(b.width<=0||b.height<=0) return null; return [Math.round(b.left),Math.round(b.top),Math.round(b.right),Math.round(b.bottom)]; };
 	const targetSizes=[...document.querySelectorAll('#touchActionRail button')].filter(el=>el.getClientRects().length>0).map(el=>{ const b=el.getBoundingClientRect(); return {id:el.id,w:Math.round(b.width),h:Math.round(b.height),textFits:el.scrollWidth<=el.clientWidth&&el.scrollHeight<=el.clientHeight}; });
+	const gridTargetSizes=[...document.querySelectorAll('#touchGridPad button')].filter(el=>el.getClientRects().length>0).map(el=>{ const b=el.getBoundingClientRect(); return {id:el.id,w:Math.round(b.width),h:Math.round(b.height)}; });
 	const selectors={
-		pad:'#controls .pad', ring:'#dirRing', actionRail:'#touchActionRail',
+		pad:'#controls .pad', ring:'#dirRing', actionRail:'#touchActionRail', aimStick:'#touchAimStick',
 		modeButton:'#actionModeBtn', actionButton:'#fireBtn', hotbar:'#hotbarWrap',
+		gridRight:'#touchGridRight', gridUp:'#touchGridUp', gridReset:'#touchGridReset',
 		weaponBar:'#weaponBar', craft:'#craft', craftTracker:'#craftTracker',
 		messages:'#messages', worldStatus:'#worldStatusPanel', atomicWinter:'#atomicWinterTimerPanel',
 		task:'#taskPanel', fps:'#fpsPanel', menu:'#menuWrap', cornerCards:'#cornerCards'
@@ -59,6 +61,13 @@ const PROBE = `(()=>{
 		caps:{coarse:matchMedia('(pointer:coarse)').matches, hover:matchMedia('(hover:hover)').matches, fine:matchMedia('(pointer:fine)').matches, touchPoints:navigator.maxTouchPoints|0},
 		ui:Object.fromEntries(ids.map(id=>[id,vis(id)])),
 		targetSizes,
+		gridTargetSizes,
+		selector:(document.getElementById('dirRing')||{}).dataset?.selector||'(none)',
+		gridTarget:[Number((document.getElementById('dirRing')||{}).dataset?.gridX),Number((document.getElementById('dirRing')||{}).dataset?.gridY)],
+		modeIcon:(document.querySelector('#actionModeBtn .touchModeIcon')||{}).textContent||'',
+		modeLabel:(document.querySelector('#actionModeBtn .touchModeLabel')||{}).textContent||'',
+		actionLabel:(document.querySelector('#fireBtn .touchActionLabel')||{}).textContent||'',
+		jumpLabel:(document.querySelector('#jumpBtn .touchJumpLabel')||{}).textContent||'',
 		stickHintsVisible:[...document.querySelectorAll('.touchStickHint')].filter(el=>el.getClientRects().length>0).map(el=>el.textContent.trim()),
 		craftOpen:(()=>{ const c=document.getElementById('craft'); return !!(c && c.dataset.collapsed!=='true'); })(),
 		viewport:[innerWidth,innerHeight],
@@ -194,21 +203,45 @@ async function main(){
 		check('B phone lands in touch mode', p.mode === 'touch', p.mode);
 		check('B touch UI shown on phone', allUi(p, 'shown') === '', allUi(p, 'shown'));
 		check('B visible touch targets are at least 48px', p.targetSizes.every(t=>t.w>=48&&t.h>=48), JSON.stringify(p.targetSizes));
+		check('B grid keys are at least 48px', p.gridTargetSizes.length===5&&p.gridTargetSizes.every(t=>t.w>=48&&t.h>=48), JSON.stringify(p.gridTargetSizes));
 		check('B touch button labels fit their targets', p.targetSizes.every(t=>t.textFits), JSON.stringify(p.targetSizes));
 		check('B stick labels do not cover the joystick', p.stickHintsVisible.length === 0, p.stickHintsVisible.join(','));
 		check('B action mode defaults to mine', p.actionMode === 'mine', p.actionMode);
+		check('B mining uses the precise grid selector', p.selector === 'grid', p.selector);
+		check('B mode switch uses a neutral icon', p.modeIcon === '↻', p.modeIcon);
+		check('B primary controls have explicit labels', p.modeLabel==='TRYB'&&p.actionLabel==='KOP'&&p.jumpLabel==='SKOK', p.modeLabel+'/'+p.actionLabel+'/'+p.jumpLabel);
+		check('B grid target starts beside the hero', p.gridTarget[0]===1&&p.gridTarget[1]===0, JSON.stringify(p.gridTarget));
 		check('B craft panel boots collapsed on touch', p.craftOpen === false, 'open=' + p.craftOpen);
 		check('B portrait interface does not overlap or clip', layoutIssues(p) === '', layoutIssues(p));
 		await shot(outB);
+		const rightRect=p.rects.gridRight;
+		await tap((rightRect[0]+rightRect[2])/2,(rightRect[1]+rightRect[3])/2);
+		await sleep(120);
+		p=await probe();
+		check('B right key advances exactly one column', p.gridTarget[0]===2&&p.gridTarget[1]===0, JSON.stringify(p.gridTarget));
+		const upRect=p.rects.gridUp;
+		await tap((upRect[0]+upRect[2])/2,(upRect[1]+upRect[3])/2);
+		await sleep(120);
+		p=await probe();
+		check('B up key advances exactly one row', p.gridTarget[0]===2&&p.gridTarget[1]===-1, JSON.stringify(p.gridTarget));
+		const resetRect=p.rects.gridReset;
+		await tap((resetRect[0]+resetRect[2])/2,(resetRect[1]+resetRect[3])/2);
+		await sleep(120);
+		p=await probe();
+		check('B centre key resets beside the hero', Math.abs(p.gridTarget[0])===1&&p.gridTarget[1]===0, JSON.stringify(p.gridTarget));
 		const modeRect=p.rects.modeButton;
 		await tap((modeRect[0]+modeRect[2])/2,(modeRect[1]+modeRect[3])/2);
 		await sleep(180);
 		p=await probe();
 		check('B mode button cycles mine to build', p.actionMode === 'build', p.actionMode);
+		check('B building keeps the precise grid selector', p.selector === 'grid'&&p.ui.touchGridPad==='shown', p.selector+'/'+p.ui.touchGridPad);
+		check('B build trigger says POSTAW', p.actionLabel === 'POSTAW', p.actionLabel);
 		await tap((modeRect[0]+modeRect[2])/2,(modeRect[1]+modeRect[3])/2);
 		await sleep(180);
 		p=await probe();
 		check('B mode button cycles build to combat', p.actionMode === 'combat', p.actionMode);
+		check('B combat swaps the grid for analog aim', p.selector === 'combat'&&p.ui.touchGridPad==='hidden'&&!!p.rects.aimStick, p.selector+'/'+p.ui.touchGridPad);
+		check('B combat trigger says ATAK', p.actionLabel === 'ATAK', p.actionLabel);
 
 		// --- stage C: hybrid — mouse press while touch-capable -------------------
 		await sleep(900); // clear the ghost-mouse grace window
@@ -234,6 +267,7 @@ async function main(){
 		check('D landscape stays in touch mode', p.mode === 'touch', p.mode);
 		check('D touch UI shown in landscape', allUi(p, 'shown') === '', allUi(p, 'shown'));
 		check('D visible touch targets are at least 48px', p.targetSizes.every(t=>t.w>=48&&t.h>=48), JSON.stringify(p.targetSizes));
+		check('D grid keys remain at least 48px', p.gridTargetSizes.length===5&&p.gridTargetSizes.every(t=>t.w>=48&&t.h>=48), JSON.stringify(p.gridTargetSizes));
 		check('D touch button labels fit their targets', p.targetSizes.every(t=>t.textFits), JSON.stringify(p.targetSizes));
 		check('D stick labels do not cover the joystick', p.stickHintsVisible.length === 0, p.stickHintsVisible.join(','));
 		check('D landscape interface does not overlap or clip', layoutIssues(p) === '', layoutIssues(p));

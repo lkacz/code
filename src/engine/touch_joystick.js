@@ -1,7 +1,7 @@
 // Touch joystick geometry and pointer binding.
 //
 // The geometry helpers are deliberately DOM-free so the dead zone, clamping,
-// movement thresholds and eight-way tool direction remain regression-testable.
+// movement thresholds, combat aim and tile-by-tile targeting remain testable.
 // createTouchJoystick only owns one pointer and one pair of visual elements; the
 // game decides what a sampled vector means (movement, mining, aiming, and so on).
 
@@ -82,27 +82,29 @@ export function nextTouchActionMode(value){
 	return TOUCH_ACTION_MODES[(TOUCH_ACTION_MODES.indexOf(mode)+1)%TOUCH_ACTION_MODES.length];
 }
 
-// Grid actions keep the eight-way direction, while radial travel selects how
-// far along that direction the cursor sits. A tiny deliberate movement always
-// selects the adjacent tile; full travel reaches maxDistance.
-export function touchTargetSelection(sample,opts){
+export function normalizeTouchGridTarget(value,opts){
 	opts=opts||{};
-	const fallback=opts.fallback||{dx:1,dy:0};
-	const direction=quantizeTouchDirection(sample,{minMagnitude:opts.minMagnitude})
-		|| quantizeTouchDirection({x:fallback.dx,y:fallback.dy},{minMagnitude:0.01})
-		|| {dx:1,dy:0,octant:0,angle:0};
 	const maxDistance=Math.max(1,Math.min(8,Math.trunc(finite(opts.maxDistance,3))));
-	const vectorMagnitude=Math.hypot(finite(sample&&sample.x,0),finite(sample&&sample.y,0));
-	const magnitude=Math.max(0,Math.min(1,finite(sample&&sample.magnitude,vectorMagnitude)));
-	const distance=Math.max(1,Math.min(maxDistance,Math.ceil(magnitude*maxDistance)));
-	return {
-		dx:direction.dx,
-		dy:direction.dy,
-		octant:direction.octant,
-		distance,
-		offsetX:direction.dx*distance,
-		offsetY:direction.dy*distance
-	};
+	const fallback=opts.fallback||{x:1,y:0};
+	let x=value?Number(value.x):NaN, y=value?Number(value.y):NaN;
+	if(!Number.isFinite(x)) x=finite(fallback.x,1);
+	if(!Number.isFinite(y)) y=finite(fallback.y,0);
+	x=Math.max(-maxDistance,Math.min(maxDistance,Math.trunc(x)));
+	y=Math.max(-maxDistance,Math.min(maxDistance,Math.trunc(y)));
+	return {x,y,maxDistance};
+}
+
+// Mining/building targets move exactly one tile per deliberate press and stay
+// clamped to the action's Chebyshev reach. The hero cell remains part of the
+// path, so crossing from one side to the other is genuinely tile-by-tile.
+export function stepTouchGridTarget(value,delta,opts){
+	opts=opts||{};
+	const current=normalizeTouchGridTarget(value,opts);
+	const stepX=Math.sign(finite(delta&&delta.dx,0));
+	const stepY=Math.sign(finite(delta&&delta.dy,0));
+	let x=Math.max(-current.maxDistance,Math.min(current.maxDistance,current.x+stepX));
+	let y=Math.max(-current.maxDistance,Math.min(current.maxDistance,current.y+stepY));
+	return {x,y,maxDistance:current.maxDistance,changed:x!==current.x||y!==current.y};
 }
 
 function zeroSample(){
@@ -163,7 +165,7 @@ export function createTouchJoystick(element,opts){
 		return true;
 	}
 	function down(ev){
-		if(pointerId!=null || (opts.touchOnly!==false && ev.pointerType==='mouse')) return;
+		if(pointerId!=null || (opts.touchOnly!==false && ev.pointerType==='mouse') || (typeof opts.canStart==='function' && !opts.canStart(ev))) return;
 		ev.preventDefault();
 		pointerId=ev.pointerId;
 		const p=localPoint(ev);

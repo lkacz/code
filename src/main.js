@@ -25,9 +25,10 @@ import {
 	createTouchJoystick,
 	nextTouchActionMode,
 	normalizeTouchActionMode,
+	normalizeTouchGridTarget,
 	quantizeTouchDirection,
-	touchMovementIntent,
-	touchTargetSelection
+	stepTouchGridTarget,
+	touchMovementIntent
 } from './engine/touch_joystick.js';
 import { keybinds as KEYBINDS } from './engine/keybinds.js';
 import { CRUSH_TUNING, crushTickDamage, heroCrushCapacity, heroEmbeddedTiles, resolveHeroBurial } from './engine/hero_crush.js';
@@ -9142,7 +9143,7 @@ const touchMoveState={active:false,axisX:0,axisY:0,left:false,right:false,up:fal
 const TOUCH_ACTION_MODE_KEY='mm_touch_action_mode_v2';
 let touchActionMode='mine';
 try{ touchActionMode=normalizeTouchActionMode(localStorage.getItem(TOUCH_ACTION_MODE_KEY)); }catch(e){}
-const touchActionState={active:false,mode:touchActionMode,x:1,y:0,lastX:1,lastY:0,magnitude:0,hasAim:false,dir:null};
+const touchActionState={active:false,mode:touchActionMode,lastX:1,lastY:0,hasAim:false,dir:null,gridX:1,gridY:0};
 let touchActionWeaponHeld=false, touchPlaceMode=touchActionMode==='build', touchJumpHeld=false;
 let touchActionButtonHeld=false, touchActionButtonMode=null, touchLastBuildTargetKey='', touchLastWeaponId=null;
 let lastTouchHapticAt=0;
@@ -9704,7 +9705,7 @@ function releaseGameplayInput(){
 	for(const k in keys) keys[k]=false;
 	keysOnce.clear();
 	Object.assign(touchMoveState,{active:false,axisX:0,axisY:0,left:false,right:false,up:false,down:false});
-	Object.assign(touchActionState,{active:false,x:touchActionState.lastX||1,y:touchActionState.lastY||0,dir:null});
+	Object.assign(touchActionState,{active:false,dir:null});
 	touchActionWeaponHeld=false; touchActionButtonHeld=false; touchActionButtonMode=null; touchLastBuildTargetKey=''; touchJumpHeld=false;
 	jumpBufferT=0;
 	jumpPrev=false;
@@ -9790,7 +9791,7 @@ function normalizeLegacyHelpDebugCopy(){
 	const help=document.getElementById('help');
 	if(!help || help.dataset.debugCopyNormalized==='1') return;
 	const touchHelp=help.querySelector('.touchHelp');
-	if(touchHelp) touchHelp.innerHTML='<b>Dotyk:</b> lewy joystick steruje ruchem; wychylenie w górę lub przycisk ↑ skacze, także ponownie w powietrzu. Prawy joystick tylko wybiera cel. Przycisk TRYB przełącza Kopanie → Budowanie → Walkę, a sąsiedni duży przycisk wykonuje akcję. Możesz wycelować, puścić joystick i dopiero potwierdzić albo używać obu naraz. Nadal możesz stuknąć bezpośrednio przeciwnika, łup, obiekt lub blok. Kompas skarbów jest w menu i wymaga założonego wisiorka-kompasu.';
+	if(touchHelp) touchHelp.innerHTML='<b>Dotyk:</b> lewy joystick steruje ruchem; wychylenie w górę lub przycisk ↑ skacze, także ponownie w powietrzu. W Kopaniu i Budowaniu prawy krzyżak przesuwa cel dokładnie o jedną kratkę; środkowy przycisk przywraca cel obok bohatera. W Walce prawa strefa zmienia się w analogowy celownik. TRYB przełącza Kopanie → Budowanie → Walkę, a przycisk KOP, POSTAW lub ATAK wykonuje opisaną akcję. Nadal możesz stuknąć bezpośrednio przeciwnika, łup, obiekt lub blok. Kompas skarbów jest w menu i wymaga założonego wisiorka-kompasu.';
 	for(const node of help.childNodes){
 		if(node.nodeType!==3 || !node.textContent) continue;
 		node.textContent=node.textContent.replace(
@@ -12056,7 +12057,6 @@ function startMine(opts){
 // This makes mine/build/combat explicit and lets one thumb aim, release, then
 // confirm, while two-thumb players can aim and hold the action simultaneously.
 const actionStickEl=document.getElementById('dirRing');
-const actionStickHint=document.getElementById('actionStickHint');
 const TOUCH_ACTION_META=Object.freeze({
 	mine:{icon:'⛏️',short:'KOP',label:'Kopanie'},
 	build:{icon:'🧱',short:'BUD',label:'Budowanie'},
@@ -12132,14 +12132,40 @@ function armTouchActionWeapon(){
 function touchSelectedGridTarget(mode){
 	mode=mode||touchActionMode;
 	const maxDistance=mode==='build'?Math.min(4,PLACE_REACH):MINE_REACH;
-	const selection=touchTargetSelection({
-		x:touchActionState.lastX,
-		y:touchActionState.lastY,
-		magnitude:touchActionState.hasAim?touchActionState.magnitude:0
-	},{fallback:{dx:player.facing||1,dy:0},maxDistance,minMagnitude:0.08});
-	const tx=Math.floor(player.x+selection.offsetX+(selection.dx>0?player.w/2:selection.dx<0?-player.w/2:0));
-	const ty=Math.floor(player.y+selection.offsetY);
-	return Object.assign({tx,ty},selection);
+	const selection=normalizeTouchGridTarget(
+		{x:touchActionState.gridX,y:touchActionState.gridY},
+		{fallback:{x:player.facing||1,y:0},maxDistance}
+	);
+	touchActionState.gridX=selection.x;
+	touchActionState.gridY=selection.y;
+	const dx=Math.sign(selection.x), dy=Math.sign(selection.y);
+	const tx=Math.floor(player.x+selection.x+(dx>0?player.w/2:dx<0?-player.w/2:0));
+	const ty=Math.floor(player.y+selection.y);
+	return {tx,ty,dx,dy,distance:Math.max(Math.abs(selection.x),Math.abs(selection.y)),offsetX:selection.x,offsetY:selection.y};
+}
+function resetTouchGridTarget(){
+	touchActionState.gridX=player.facing<0?-1:1;
+	touchActionState.gridY=0;
+	syncTouchGridSelector();
+	retargetTouchHeldAction();
+}
+function nudgeTouchGridTarget(dx,dy){
+	if(touchActionMode==='combat') return false;
+	const maxDistance=touchActionMode==='build'?Math.min(4,PLACE_REACH):MINE_REACH;
+	const next=stepTouchGridTarget(
+		{x:touchActionState.gridX,y:touchActionState.gridY},
+		{dx,dy},
+		{fallback:{x:player.facing||1,y:0},maxDistance}
+	);
+	touchActionState.gridX=next.x;
+	touchActionState.gridY=next.y;
+	mineDir={dx:Math.sign(next.x),dy:Math.sign(next.y)};
+	syncTouchGridSelector();
+	if(next.changed){
+		touchHaptic(5,45);
+		retargetTouchHeldAction();
+	}
+	return next.changed;
 }
 function rememberTouchWeapon(){
 	const item=activeWeaponItem();
@@ -12230,9 +12256,7 @@ function applyActionStickSample(sample){
 	if(!touchActionState.active) return;
 	if(sample.magnitude>0.08){
 		const len=Math.hypot(sample.x,sample.y)||1;
-		touchActionState.x=sample.x/len; touchActionState.y=sample.y/len;
-		touchActionState.lastX=touchActionState.x; touchActionState.lastY=touchActionState.y;
-		touchActionState.magnitude=sample.magnitude;
+		touchActionState.lastX=sample.x/len; touchActionState.lastY=sample.y/len;
 		touchActionState.hasAim=true;
 	}
 	const dir=quantizeTouchDirection(sample,{minMagnitude:0.08});
@@ -12250,6 +12274,7 @@ function finishActionStick(){
 if(actionStickEl){
 	actionStickController=createTouchJoystick(actionStickEl,{
 		deadZone:0.12,
+		canStart:()=>touchActionMode==='combat',
 		onStart(sample){
 			noteSaveActivity();
 			touchActionState.active=true;
@@ -12260,6 +12285,24 @@ if(actionStickEl){
 		onEnd(){ finishActionStick(); }
 	});
 }
+const touchGridPad=document.getElementById('touchGridPad');
+if(touchGridPad){
+	function activateGridButton(button){
+		if(button.dataset.gridReset==='true') resetTouchGridTarget();
+		else nudgeTouchGridTarget(Number(button.dataset.dx)||0,Number(button.dataset.dy)||0);
+		noteSaveActivity();
+	}
+	for(const button of touchGridPad.querySelectorAll('button')){
+		button.addEventListener('pointerdown',e=>{
+			e.preventDefault(); e.stopPropagation();
+			activateGridButton(button);
+		});
+		button.addEventListener('click',e=>{
+			if(e.detail!==0) return;
+			e.preventDefault(); activateGridButton(button);
+		});
+	}
+}
 function setTouchPlaceMode(next){
 	const enable=!!next;
 	if(touchPlaceMode!==enable) clearBuildStroke();
@@ -12269,6 +12312,17 @@ function setTouchPlaceMode(next){
 	touchPlaceMode=enable;
 	document.documentElement.dataset.touchPlaceMode=touchPlaceMode?'on':'off';
 }
+function syncTouchGridSelector(){
+	const stick=document.getElementById('dirRing');
+	if(!stick) return;
+	stick.dataset.gridX=String(touchActionState.gridX);
+	stick.dataset.gridY=String(touchActionState.gridY);
+	if(touchActionMode==='combat') return;
+	const horizontal=touchActionState.gridX<0?Math.abs(touchActionState.gridX)+' w lewo':touchActionState.gridX>0?touchActionState.gridX+' w prawo':'';
+	const vertical=touchActionState.gridY<0?Math.abs(touchActionState.gridY)+' w górę':touchActionState.gridY>0?touchActionState.gridY+' w dół':'';
+	const position=[horizontal,vertical].filter(Boolean).join(', ')||'na polu bohatera';
+	stick.setAttribute('aria-label','Krzyżak celu trybu '+TOUCH_ACTION_META[touchActionMode].label+'. Wybrane pole: '+position+'. Każde naciśnięcie przesuwa cel o jedną kratkę.');
+}
 function syncTouchActionMode(){
 	const mode=touchActionMode;
 	if(touchActionState.active && touchActionState.mode!==mode && actionStickController) actionStickController.cancel();
@@ -12277,15 +12331,19 @@ function syncTouchActionMode(){
 	document.documentElement.dataset.touchActionMode=mode;
 	const stick=document.getElementById('dirRing');
 	const meta=TOUCH_ACTION_META[mode];
-	if(stick){ stick.dataset.mode=mode; stick.setAttribute('aria-label','Celownik trybu '+meta.label+': wybierz kierunek i odległość, potem naciśnij przycisk akcji'); }
-	if(mineBtn) mineBtn.textContent=mode==='combat'?'🎯':meta.icon;
-	if(actionStickHint) actionStickHint.textContent=mode==='combat'?'Celuj':mode==='build'?'Wskaż':'Wybierz';
+	if(stick){
+		stick.dataset.mode=mode;
+		stick.dataset.selector=mode==='combat'?'combat':'grid';
+		if(mode==='combat') stick.setAttribute('aria-label','Analogowy celownik walki. Wychyl w stronę przeciwnika, potem użyj przycisku ATAK.');
+	}
+	if(mineBtn) mineBtn.textContent='🎯';
+	syncTouchGridSelector();
 	const modeButton=document.getElementById('actionModeBtn');
 	if(modeButton){
 		modeButton.dataset.mode=mode;
-		const icon=modeButton.querySelector('.touchModeIcon'); if(icon) icon.textContent=meta.icon;
+		const icon=modeButton.querySelector('.touchModeIcon'); if(icon) icon.textContent='↻';
 		const label=modeButton.querySelector('.touchModeLabel'); if(label) label.textContent='TRYB';
-		modeButton.title='Tryb: '+meta.label+' — stuknij, aby przełączyć';
+		modeButton.title='Aktualny tryb: '+meta.label+' — stuknij, aby przełączyć';
 		modeButton.setAttribute('aria-label',modeButton.title);
 	}
 	const quick=document.getElementById('fireBtn');
@@ -12309,12 +12367,15 @@ function syncTouchActionMode(){
 }
 function setTouchActionMode(next,opts){
 	opts=opts||{};
+	const previousMode=touchActionMode;
 	const mode=normalizeTouchActionMode(next,touchActionMode);
 	if(touchActionButtonHeld) finishTouchActionButton(null,true);
 	if(actionStickController && actionStickController.active()) actionStickController.cancel();
 	if(mode!=='combat') rememberTouchWeapon();
 	touchActionMode=mode;
 	touchActionState.mode=mode;
+	if(mode==='combat' && previousMode!=='combat') touchActionState.hasAim=false;
+	else if(mode!=='combat' && previousMode==='combat') resetTouchGridTarget();
 	setTouchPlaceMode(mode==='build');
 	if(opts.equip!==false){
 		if(mode==='combat') restoreTouchWeapon();
@@ -12323,8 +12384,8 @@ function setTouchActionMode(next,opts){
 	if(opts.remember!==false){ try{ localStorage.setItem(TOUCH_ACTION_MODE_KEY,mode); }catch(e){} }
 	syncTouchActionMode();
 	if(opts.announce!==false){
-		if(mode==='mine') msg('⛏ Kopanie: wskaż blok joystickiem i przytrzymaj ⛏');
-		else if(mode==='build') msg('🧱 Budowanie: wskaż pole joystickiem i naciśnij 🧱');
+		if(mode==='mine') msg('⛏ Kopanie: strzałkami wybierz blok pole po polu, potem przytrzymaj KOP');
+		else if(mode==='build') msg('🧱 Budowanie: strzałkami wybierz pole, potem naciśnij POSTAW');
 		else msg(activeWeaponItem()?'⚔ Walka: wyceluj joystickiem i przytrzymaj atak':'⚔ Walka: wybierz broń na pasku 2–4');
 	}
 }
@@ -12338,8 +12399,8 @@ if(actionModeBtn){
 }
 syncTouchActionMode();
 
-// One contextual trigger performs the mode selected by actionModeBtn. The stick
-// remains free to move the cursor while this button is held with another thumb.
+// One contextual trigger performs the mode selected by actionModeBtn. The grid
+// pad or combat stick remains free while this button is held by another thumb.
 const fireBtn=document.getElementById('fireBtn');
 function releaseTouchWeaponFire(cancel){
 	if(!fireBtnHeld && !touchActionWeaponHeld) return false;
@@ -17479,7 +17540,7 @@ if(MM.ghostMode){ /* the ghost veil owns the first paint */ }
 else if(!loaded){
 	const touchWelcome=MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch();
 	msg(touchWelcome
-		?'Dotyk: prawy joystick wybiera cel. TRYB przełącza Kopanie, Budowanie i Walkę; sąsiedni przycisk wykonuje akcję. Bezpośrednie stuknięcia nadal działają.'
+		?'Dotyk: krzyżak wybiera blok pole po polu; w Walce zmienia się w joystick celowania. TRYB zmienia akcję. Bezpośrednie stuknięcia nadal działają.'
 		:'Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. E=Ekwipunek, '+visionShortcutLabel()+'=optyka, C=Centrum, H=Pomoc. Debug: panel 🛠.');
 } else msg('Wczytano zapis – miłej gry!');
 // Ghost spectator bridge: the one sanctioned window into main.js internals for
