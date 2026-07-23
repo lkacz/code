@@ -1449,6 +1449,7 @@ function mqttOpen(url, opts){
 		for(const p of dec.push(new Uint8Array(ev.data))){
 			if(p.type === 'connack'){
 				if(!p.ok){ api.close(); if(opts.onDown) opts.onDown('connack'); return; }
+				if(connected) return; // MQTT sends exactly one CONNACK; a duplicate from a hostile/buggy broker must not spawn a second ping watchdog or re-run onReady (double brokerIdx-- underflows failover)
 				connected = true;
 				lastPong = Date.now();
 				// pong watchdog: a broker that dies without a close frame would

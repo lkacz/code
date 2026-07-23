@@ -1280,6 +1280,9 @@ const ghostClient = (function(){
 		}
 		if(pl.t === 'assistState'){
 			assistState = pl.data && typeof pl.data === 'object' ? pl.data : null;
+			// bound host-sent arrays before JSON.stringify (below) and the DOM build in
+			// renderAssistBody — a hostile host must not stall the tab (mirrors mobsFull/invFull)
+			if(assistState) for(const key of ['recipes', 'items', 'resources']){ if(Array.isArray(assistState[key]) && assistState[key].length > 400) assistState[key].length = 400; }
 			assistApproval = !!pl.approval;
 			// identical ticks skip the DOM rebuild — the panel refreshes every 1.5 s
 			// and most ticks change nothing under the assistant's cursor
