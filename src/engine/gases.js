@@ -44,6 +44,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
     [0,-3],[-1,-3],[1,-3],[-3,-1],[3,-1],[-2,-2],[2,-2]
   ];
   const NEIGHBORS = [[0,-1],[1,0],[-1,0],[0,1],[1,-1],[-1,-1],[1,1],[-1,1]];
+  // Precomputed moveGas direction orders: [crossFirst?1:0][sideFirst>0?1:0].
+  // Shared read-only arrays replace a fresh array-of-arrays per moving cell/frame.
+  const MOVE_DIRS = [
+    [ [[0,-1],[-1,-1],[1,-1],[-1,0],[1,0]], [[0,-1],[1,-1],[-1,-1],[1,0],[-1,0]] ],
+    [ [[-1,0],[0,-1],[-1,-1],[1,-1],[1,0]], [[1,0],[0,-1],[1,-1],[-1,-1],[-1,0]] ]
+  ];
   const active = new Map(); // "x,y" -> {x,y,t,age,moveT,reactT,poisonT}
   const condensate = new Map(); // local steam mass buckets; five steam cells make one water cell
   let scanAcc = 0;
@@ -502,9 +508,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const sideFirst=windDir || ((hash32(g.x,g.y,Math.floor(g.age*3)+101)&1) ? -1 : 1);
     const crossChance=clamp((Math.abs(drift)-0.55)/2.6,0,0.68);
     const crossFirst=windDir && rand01(g.x,g.y,frameSeq+173)<crossChance;
-    const dirs=crossFirst
-      ? [[sideFirst,0],[0,-1],[sideFirst,-1],[-sideFirst,-1],[-sideFirst,0]]
-      : [[0,-1],[sideFirst,-1],[-sideFirst,-1],[sideFirst,0],[-sideFirst,0]];
+    const dirs=MOVE_DIRS[crossFirst?1:0][sideFirst>0?1:0];
     for(const [dx,dy] of dirs){
       const nx=g.x+dx, ny=g.y+dy;
       if(ny<WORLD_TOP){ return ventGasToSky(g,getTile,setTile,1.2); }

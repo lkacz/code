@@ -4269,7 +4269,7 @@ const companions = (function(){
     if(!Number.isFinite(wx) || !Number.isFinite(wy)) return null;
     const r=Number(range);
     if(!Number.isFinite(r) || r<=0) return null;
-    let best=null, bd=r*r;
+    let bestC=null, bd=r*r;
     for(const c of list){
       if(!enemyTargetable(c)) continue;
       if(opts && opts.excludeGolems && (isClayGolem(c) || isWaterGolem(c) || isMeatGolem(c) || isFriedMeatGolem(c))) continue;
@@ -4278,9 +4278,11 @@ const companions = (function(){
       const dx=ax-wx, dy=ay-wy, d2=dx*dx+dy*dy;
       if(d2>bd) continue;
       bd=d2;
-      best={kind:'companion', id:c.id, raw:c, x:ax, y:c.y, aimY:ay, tx:Math.floor(ax), ty:Math.floor(ay), hp:c.hp, maxHp:c.maxHp, vx:c.vx||0, vy:c.vy||0};
+      bestC=c;
     }
-    return best;
+    if(!bestC) return null;
+    const bx=bestC.x, by=companionAimY(bestC);
+    return {kind:'companion', id:bestC.id, raw:bestC, x:bx, y:bestC.y, aimY:by, tx:Math.floor(bx), ty:Math.floor(by), hp:bestC.hp, maxHp:bestC.maxHp, vx:bestC.vx||0, vy:bestC.vy||0};
   }
   function debugNearest(player,range,predicate){
     return nearestCompanion(player,range||999999,predicate) || list.find(c=>!predicate || predicate(c)) || null;

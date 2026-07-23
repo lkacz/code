@@ -6311,8 +6311,8 @@ const mobs = (function(){
         const m=mobs[i];
         if(!validMobState(m) || m.hp<=0) continue;
         const key=m._cellKey || cellKey(m.x,m.y);
-        const parts=key.split(',');
-        const cx=+parts[0], cy=+parts[1];
+        const ci=key.indexOf(',');
+        const cx=+key.slice(0,ci), cy=+key.slice(ci+1);
         for(let gx=cx-1;gx<=cx+1;gx++){
           for(let gy=cy-1;gy<=cy+1;gy++){
             const set=grid.get(gx+','+gy);
@@ -7800,7 +7800,7 @@ const mobs = (function(){
   const pursue = ((typeof spec.pursueRange==='number'? spec.pursueRange : ((typeof spec.sightRange==='number'? spec.sightRange : 16)+6))) * fogSight;
   const combatTarget = combatTargetForMob(m,heroForMob,aggressive,Math.max(sight,pursue));
   const aimTarget = combatTarget && combatTarget.kind==='companion' ? companionTargetPoint(combatTarget) : combatTarget;
-  const distToPlayer = aimTarget ? Math.hypot(aimTarget.x-m.x, aimTarget.y-m.y) : distToHero;
+  const distToPlayer = (aimTarget && aimTarget!==heroForMob) ? Math.hypot(aimTarget.x-m.x, aimTarget.y-m.y) : distToHero;
   const canSee = distToPlayer <= sight;
   const shouldPursue = distToPlayer <= pursue;
   const aggroNow = aggressive && (canSee || shouldPursue);

@@ -1589,7 +1589,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const energyCost=electricShotEnergyCost(w,power,charge);
     if(!spendHeroEnergy(player,energyCost)){
       electricCd=Math.max(electricCd,0.18);
-      try{ if(window.msg) window.msg('Za maĹ‚o energii'); }catch(e){}
+      try{ if(window.msg) window.msg('Za mało energii'); }catch(e){}
       return false;
     }
     electricCd=cadence;

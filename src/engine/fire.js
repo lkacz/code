@@ -35,6 +35,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   const NEIGHBORS=[[0,-1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[1,1],[-1,1]];
   const HEAT_NEIGHBORS=[[0,0],[0,-1],[1,0],[-1,0],[0,1],[1,-1],[-1,-1],[1,1],[-1,1]];
   const COMBUSTION_FACES=[[0,-1],[1,0],[0,1],[-1,0]];
+  const WATER_FACES=[[0,-1],[1,0],[-1,0],[0,1]]; // reused by wetAt (no per-call alloc)
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
@@ -48,7 +49,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   function wetAt(getTile,x,y){
     // A tile touching water (or underwater) won't hold a flame
     if(getTile(x,y)===T.WATER) return true;
-    return [[0,-1],[1,0],[-1,0],[0,1]].some(([dx,dy])=>getTile(x+dx,y+dy)===T.WATER);
+    for(let i=0;i<WATER_FACES.length;i++){ const f=WATER_FACES[i]; if(getTile(x+f[0],y+f[1])===T.WATER) return true; } return false;
   }
   function coalHasAirAccess(getTile,x,y){
     // Fire needs an exposed face. Diagonal pockets do not ventilate a solid

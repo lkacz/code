@@ -128,6 +128,7 @@ function syncRoster(roster){
 			fill.style.cssText = 'display:block;height:100%;border-radius:99px;transition:width .2s ease;';
 			barWrap.appendChild(fill);
 			row.append(nm, barWrap);
+			row._hpFill = fill; row._nm = nm; // cache refs — avoids a querySelector pair per row per frame
 			// clicking a teammate's row pulses its marker/arrow for a moment —
 			// display-only, both ends, zero protocol (self has nothing to point at)
 			if(!r.self){
@@ -141,11 +142,11 @@ function syncRoster(roster){
 	for(const r of roster){
 		const el = rows.get(r.id);
 		if(!el) continue;
-		const fill = el.querySelector('.partyHpFill');
+		const fill = el._hpFill;
 		if(fill){ fill.style.width = Math.round(r.hpFrac * 100) + '%'; fill.style.background = r.dead ? '#555' : hpColor(r.hpFrac); }
 		el.style.opacity = r.dead ? '0.5' : '1';
 		// a dead teammate keeps its row, marked with a skull until respawn
-		const nm = el.querySelector('.partyName');
+		const nm = el._nm;
 		const label = (r.dead ? '💀 ' : '') + r.name;
 		if(nm && nm.textContent !== label) nm.textContent = label;
 	}

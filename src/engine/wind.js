@@ -449,13 +449,14 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
       visualAcc=0;
     }
     const cap=particleCap();
+    const spd=currentSpeed(); // loop-invariant: no wind state mutates inside this loop
     for(let i=particles.length-1;i>=0;i--){
       const p=particles[i];
       p.life+=dt;
       const k=Math.max(0,1-p.life/p.max);
       p.x += p.vx*dt;
       p.y += (p.vy + Math.sin(p.life*5+p.phase)*0.10*k)*dt;
-      p.vx += localSpeedAt(p.x,p.y)*0.045*dt;
+      p.vx += spd*altitudeMultiplier(p.y)*0.045*dt;
       p.vy += (p.kind==='dust'?0.02:0.05)*dt;
       p.phase += (p.spin||0)*dt;
       if(p.life>=p.max) particles.splice(i,1);
@@ -479,7 +480,8 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
   function draw(ctx,TILE,sx,sy,viewX,viewY,canDrawTile){
     if(!ctx || !particles.length) return;
     const visible=typeof canDrawTile === 'function' ? canDrawTile : null;
-    const mag=Math.abs(currentSpeed());
+    const spd=currentSpeed();
+    const mag=Math.abs(spd);
     const baseAlpha=clamp(0.28+mag*0.10,0.22,0.78);
     ctx.save();
     ctx.lineCap='round';
@@ -507,7 +509,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
         ctx.lineWidth=Math.max(1,TILE*(0.025+Math.min(0.035,mag*0.006)));
         const len=TILE*(0.18+Math.min(0.42,mag*0.055));
         ctx.beginPath();
-        ctx.moveTo(px-len*Math.sign(currentSpeed()||1),py);
+        ctx.moveTo(px-len*Math.sign(spd||1),py);
         ctx.lineTo(px,py+Math.sin(p.phase||0)*TILE*0.02);
         ctx.stroke();
         if(mag>2.6){
@@ -520,7 +522,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
         ctx.lineWidth=Math.max(1,TILE*(p.kind==='gust'?0.045:0.033));
         const len=TILE*((p.line||0.26)+Math.min(0.62,mag*(p.kind==='gust'?0.10:0.065)));
         ctx.beginPath();
-        ctx.moveTo(px-len*Math.sign(currentSpeed()||1),py);
+        ctx.moveTo(px-len*Math.sign(spd||1),py);
         ctx.lineTo(px,py+Math.sin(p.phase||0)*TILE*0.025);
         ctx.stroke();
       }

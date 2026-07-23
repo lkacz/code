@@ -175,12 +175,16 @@ function hash01(seed) {
   return (n >>> 0) / 4294967295;
 }
 
+const NIGHT_LIFT_ALPHA = [0, 0.15, 0.2, 0.25, 0.3];
+const NIGHT_TINT_ALPHA = [0, 0.08, 0.1, 0.115, 0.13];
+const NIGHT_GRAIN = [0, 90, 150, 230, VISION_LIMITS.maxNoiseMarks];
+const NIGHT_SCAN_ALPHA = [0, 0.045, 0.05, 0.055, 0.06];
 function nightPalette(level) {
   return {
-    liftAlpha: [0, 0.15, 0.2, 0.25, 0.3][level],
-    tintAlpha: [0, 0.08, 0.1, 0.115, 0.13][level],
-    grain: [0, 90, 150, 230, VISION_LIMITS.maxNoiseMarks][level],
-    scanAlpha: [0, 0.045, 0.05, 0.055, 0.06][level],
+    liftAlpha: NIGHT_LIFT_ALPHA[level],
+    tintAlpha: NIGHT_TINT_ALPHA[level],
+    grain: NIGHT_GRAIN[level],
+    scanAlpha: NIGHT_SCAN_ALPHA[level],
   };
 }
 

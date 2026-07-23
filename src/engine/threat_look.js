@@ -307,29 +307,29 @@ export function applySpawnLook(m,spec){
 
 // A horn, a claw, a fang, a tusk: one continuous taper from a thick base to a
 // point, curling as it grows. dx,dy is the growth direction; curl bends it.
+const _spurLx=new Float64Array(8),_spurLy=new Float64Array(8),_spurRx=new Float64Array(8),_spurRy=new Float64Array(8);
 function keratinSpur(ctx,x,y,dx,dy,len,thick,curl,col,tipCol){
   const steps=7;
-  const L=[],R=[];
   const nx=-dy, ny=dx;                       // normal to the growth axis
   for(let i=0;i<=steps;i++){
     const t=i/steps;
     const w=thick*(1-t)*(1-t*0.30);          // taper: thick root, fine point
     const px=x + dx*len*t + curl*len*t*t;    // quadratic curl, like real horn
     const py=y + dy*len*t - curl*len*t*t*0.18;
-    L.push([px+nx*w*0.5, py+ny*w*0.5]);
-    R.push([px-nx*w*0.5, py-ny*w*0.5]);
+    _spurLx[i]=px+nx*w*0.5; _spurLy[i]=py+ny*w*0.5;
+    _spurRx[i]=px-nx*w*0.5; _spurRy[i]=py-ny*w*0.5;
   }
   ctx.beginPath();
-  ctx.moveTo(L[0][0],L[0][1]);
-  for(let i=1;i<=steps;i++) ctx.lineTo(L[i][0],L[i][1]);
-  for(let i=steps;i>=0;i--) ctx.lineTo(R[i][0],R[i][1]);
+  ctx.moveTo(_spurLx[0],_spurLy[0]);
+  for(let i=1;i<=steps;i++) ctx.lineTo(_spurLx[i],_spurLy[i]);
+  for(let i=steps;i>=0;i--) ctx.lineTo(_spurRx[i],_spurRy[i]);
   ctx.closePath();
   ctx.fillStyle=col; ctx.fill();
   // worn pale point, where the horn is polished by use
   ctx.beginPath();
-  ctx.moveTo(L[steps-2][0],L[steps-2][1]);
-  ctx.lineTo(L[steps][0],L[steps][1]);
-  ctx.lineTo(R[steps-2][0],R[steps-2][1]);
+  ctx.moveTo(_spurLx[steps-2],_spurLy[steps-2]);
+  ctx.lineTo(_spurLx[steps],_spurLy[steps]);
+  ctx.lineTo(_spurRx[steps-2],_spurRy[steps-2]);
   ctx.closePath();
   ctx.fillStyle=tipCol; ctx.fill();
 }

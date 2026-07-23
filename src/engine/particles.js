@@ -577,7 +577,8 @@ import { isSolidCollisionTile } from './material_physics.js';
         const fadeIn=Math.min(1, age/0.12);
         const plumeAlpha=fadeIn*Math.pow(alpha,1.35)*(p.alpha||0.38)*smokeAlphaScale;
         if(plumeAlpha<0.012) continue;
-        const sp=smokeSprite(shade,p.variant||0);
+        let sp=p._sp;
+        if(sp===undefined) sp=p._sp=smokeSprite(shade,p.variant||0);
         if(sp && ctx.drawImage){
           ctx.save();
           ctx.globalAlpha=plumeAlpha;

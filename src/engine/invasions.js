@@ -4115,7 +4115,7 @@ const invasions = (function(){
     const r = Math.max(0, Number(range) || 0);
     if(r <= 0) return null;
     const r2 = r * r;
-    let best = null, bestD = Infinity;
+    let bestTeam = null, bestAlien = null, bestD = Infinity;
     const excludeTeamId = opts && opts.excludeTeamId ? String(opts.excludeTeamId) : '';
     for(const team of teams){
       if(!team || team.state === 'defeated') continue;
@@ -4129,14 +4129,15 @@ const invasions = (function(){
         const d2 = dx * dx + dy * dy;
         if(d2 > r2 || d2 >= bestD) continue;
         bestD = d2;
-        best = alienTargetSnapshot(team,a);
+        bestTeam = team;
+        bestAlien = a;
       }
     }
-    return best;
+    return bestAlien ? alienTargetSnapshot(bestTeam, bestAlien) : null;
   }
   function findAlienAtWorld(wx,wy){
     if(!Number.isFinite(wx) || !Number.isFinite(wy)) return null;
-    let best = null, bestD = Infinity;
+    let bestTeam = null, bestAlien = null, bestD = Infinity;
     for(const team of teams){
       if(!team || team.state === 'defeated') continue;
       for(const a of team.aliens){
@@ -4146,10 +4147,10 @@ const invasions = (function(){
         const dy = Math.abs(wy - alienAimY(a));
         if(dx > 0.82 * scale || dy > 1.02 * scale) continue;
         const d2 = dx * dx + dy * dy;
-        if(d2 < bestD){ bestD = d2; best = {team,alien:a}; }
+        if(d2 < bestD){ bestD = d2; bestTeam = team; bestAlien = a; }
       }
     }
-    return best;
+    return bestAlien ? {team:bestTeam, alien:bestAlien} : null;
   }
   function finalizeAlienDeath(team,a,opts){
     if(!a) return false;

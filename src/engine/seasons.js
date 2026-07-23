@@ -475,16 +475,18 @@ function hostilityAdjustedProfile(base, x){
 // rain/storm multipliers, terrain scans). Rebuilding + freezing the hostility-mixed
 // object each call was measurable allocation churn; memoize per (sim time, player
 // column, forced season) — everything the result depends on.
-let profileCacheKey = '';
 let profileCacheValue = null;
+let pcElapsed = NaN, pcX = NaN, pcForced = null, pcSeed = NaN;
 function profile(){
   if(!enabled) return DISABLED_PROFILE;
   // worldSeed is part of the key: hostility varies per world, and a reload can
   // land on the same sim time / player column as the previous world.
-  const key = elapsedSeconds + '|' + Math.round(activeWorldX(0)) + '|' + (forcedSeason || '') + '|' + worldSeed();
-  if(profileCacheValue && profileCacheKey === key) return profileCacheValue;
+  const px = Math.round(activeWorldX(0));
+  const forced = forcedSeason || '';
+  const seed = worldSeed();
+  if(profileCacheValue && pcElapsed === elapsedSeconds && pcX === px && pcForced === forced && pcSeed === seed) return profileCacheValue;
   profileCacheValue = hostilityAdjustedProfile(currentState().profile);
-  profileCacheKey = key;
+  pcElapsed = elapsedSeconds; pcX = px; pcForced = forced; pcSeed = seed;
   return profileCacheValue;
 }
 

@@ -243,7 +243,7 @@ const turrets = (function(){
     }catch(e){ targets=[]; }
     try{
       if(MM.guardianLairs && MM.guardianLairs.targetsForTurret){
-        targets=targets.concat(MM.guardianLairs.targetsForTurret(sx,sy,cfg.range,onlyBoss) || []);
+        { const _t=MM.guardianLairs.targetsForTurret(sx,sy,cfg.range,onlyBoss); if(Array.isArray(_t)) for(let _i=0;_i<_t.length;_i++) targets.push(_t[_i]); }
       }else if(MM.guardianLairs && MM.guardianLairs.nearestForTurret){
         const target=MM.guardianLairs.nearestForTurret(sx,sy,cfg.range,onlyBoss);
         if(target) targets.push(target);
@@ -251,7 +251,7 @@ const turrets = (function(){
     }catch(e){}
     try{
       if(MM.undergroundBoss && MM.undergroundBoss.targetsForTurret){
-        targets=targets.concat(MM.undergroundBoss.targetsForTurret(sx,sy,cfg.range,onlyBoss) || []);
+        { const _t=MM.undergroundBoss.targetsForTurret(sx,sy,cfg.range,onlyBoss); if(Array.isArray(_t)) for(let _i=0;_i<_t.length;_i++) targets.push(_t[_i]); }
       }else if(MM.undergroundBoss && MM.undergroundBoss.nearestForTurret){
         const target=MM.undergroundBoss.nearestForTurret(sx,sy,cfg.range,onlyBoss);
         if(target) targets.push(target);
@@ -259,7 +259,7 @@ const turrets = (function(){
     }catch(e){}
     try{
       if(MM.skyGuardian && MM.skyGuardian.targetsForTurret){
-        targets=targets.concat(MM.skyGuardian.targetsForTurret(sx,sy,cfg.range,onlyBoss) || []);
+        { const _t=MM.skyGuardian.targetsForTurret(sx,sy,cfg.range,onlyBoss); if(Array.isArray(_t)) for(let _i=0;_i<_t.length;_i++) targets.push(_t[_i]); }
       }else if(MM.skyGuardian && MM.skyGuardian.nearestForTurret){
         const target=MM.skyGuardian.nearestForTurret(sx,sy,cfg.range,onlyBoss);
         if(target) targets.push(target);
@@ -307,12 +307,13 @@ const turrets = (function(){
     return out;
   }
   function nearestHostileTarget(m,getTile){
-    const targets=[nearestMobTarget(m,getTile), nearestBossTarget(m,getTile), nearestUfoTarget(m,getTile)].filter(Boolean);
     let best=null, bd=Infinity;
-    for(const t of targets){
-      const d=targetDistance2(m,t);
-      if(d<bd){ bd=d; best=t; }
-    }
+    const mob=nearestMobTarget(m,getTile);
+    if(mob){ const d=targetDistance2(m,mob); if(d<bd){ bd=d; best=mob; } }
+    const boss=nearestBossTarget(m,getTile);
+    if(boss){ const d=targetDistance2(m,boss); if(d<bd){ bd=d; best=boss; } }
+    const ufo=nearestUfoTarget(m,getTile);
+    if(ufo){ const d=targetDistance2(m,ufo); if(d<bd){ bd=d; best=ufo; } }
     return best;
   }
   function nearestFireTarget(m,getTile){

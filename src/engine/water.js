@@ -986,10 +986,9 @@ window.MM = window.MM || {};
         // check lets water clip through solid wall corners into sealed pockets
         const leftBelowAir = sy+1<WORLD_BOTTOM && canFill(getTile(sx-1,sy)) && canFill(getTile(sx-1,sy+1));
         const rightBelowAir= sy+1<WORLD_BOTTOM && canFill(getTile(sx+1,sy)) && canFill(getTile(sx+1,sy+1));
-        function dropDepth(x){ let d=0, yy=sy+1; while(yy<WORLD_BOTTOM && canFill(getTile(x,yy)) && d<8){ d++; yy++; } return d; }
         if(leftBelowAir || rightBelowAir){
           let order=[];
-            if(leftBelowAir && rightBelowAir){ const dl=dropDepth(sx-1); const dr=dropDepth(sx+1); order = dl>dr?[-1,1]:dr>dl?[1,-1]:(((sx+sy)&1)?[-1,1]:[1,-1]); }
+            if(leftBelowAir && rightBelowAir){ const dl=verticalDropDepth(sx-1,sy,getTile,8); const dr=verticalDropDepth(sx+1,sy,getTile,8); order = dl>dr?[-1,1]:dr>dl?[1,-1]:(((sx+sy)&1)?[-1,1]:[1,-1]); }
             else order = leftBelowAir?[-1]:[1];
           for(const dx of order){ if(canFill(getTile(sx+dx,sy)) && canFill(getTile(sx+dx,sy+1))){ moveUnits(sx,sy,sx+dx,sy+1,lvl,getTile,setTile); next.add(LPK(sx+dx,sy+1)); markNeighbors(next,sx+dx,sy+1); disturb(sx+dx,46); moved=true; break; } }
           if(moved) continue;
@@ -1331,10 +1330,8 @@ window.MM = window.MM || {};
     const height=Math.max(1,bot-top+1);
     const step=Math.max(1,Math.floor(height/12));
     let toxicWeight=0, waterWeight=0;
-    const sampled=new Set();
-    for(let sy=top; sy<=bot; sy+=step) sampled.add(sy);
-    sampled.add(bot);
-    for(const sy of sampled){
+    let sy=top;
+    while(true){
       for(const [dx,xw] of TOXIC_BLEND_X){
         for(const [dy,yw] of TOXIC_BLEND_Y){
           const x=wx+dx, y=sy+dy, weight=xw*yw;
@@ -1343,6 +1340,8 @@ window.MM = window.MM || {};
           if(toxicWater.has(toxicKey(x,y))) toxicWeight+=weight;
         }
       }
+      if(sy>=bot) break;
+      sy = (sy+step>bot) ? bot : sy+step;
     }
     return waterWeight>0 ? Math.max(0,Math.min(1,toxicWeight/waterWeight)) : 0;
   }

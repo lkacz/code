@@ -400,6 +400,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     }
   }
   function updateMasterTiles(dt,getTile,setTile){
+    if(!masterTiles.size) return;
     for(const [k,m] of [...masterTiles.entries()]){
       const tile=getTile(m.x,m.y);
       if(tile!==T.VOLCANO_MASTER_STONE && tile!==T.SERVANT_STONE){ masterTiles.delete(k); continue; }
