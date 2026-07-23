@@ -182,6 +182,41 @@ assert.equal(boatRectsOverlap(rammer,target), false, 'separate wooden rafts push
 assert.ok(rammer.vx<5, 'ramming raft loses speed on impact');
 assert.ok(target.vx>0, 'hit raft receives momentum from the collision');
 
+// The capped-fleet broad phase must retain the same collision result, including
+// a pair straddling a spatial-bucket boundary. Distant boats are deliberately
+// present so this exercises the indexed path rather than the small-fleet path.
+boats.reset();
+boats.restore({v:1,boats:[
+  {x:14,y:9.55,vx:5,cells:[[0,0],[1,0]]},
+  {x:16.03,y:9.55,vx:0,cells:[[0,0]]},
+  ...Array.from({length:30},(_,i)=>({x:1000+i*40,y:9.55,vx:0,cells:[[0,0]]}))
+]});
+const [indexedRammer,indexedTarget]=boats._debug.boats();
+boats.update(1/30,null,getTile,{wind:calm,water});
+assert.equal(boatRectsOverlap(indexedRammer,indexedTarget), false, 'broad-phase fleet collision separates hulls across a bucket boundary');
+assert.ok(indexedTarget.vx>0, 'broad-phase fleet collision transfers momentum in deterministic boat order');
+assert.equal(boats._debug.broadPhaseMode(),'indexed','narrow sparse fleets retain the indexed collision path');
+
+// Max-width sparse hulls touch many unique coarse buckets. Allocating a full
+// fleet bitset for each one is slower than direct AABB checks, even though the
+// boats never meet, so the planner must reject that construction shape early.
+boats.reset();
+const maxWideCells=Array.from({length:boats.config.MAX_CELLS},(_,dx)=>[dx,0]);
+boats.restore({v:1,boats:Array.from({length:boats.config.MAX_BOATS},(_,i)=>({
+  x:i*256, y:9.55, vx:0, cells:maxWideCells
+}))});
+boats.update(1/60,null,getTile,{wind:calm,water});
+assert.equal(boats._debug.broadPhaseMode(),'wide-fallback','wide sparse fleets avoid high-construction-cost bitset buckets');
+
+// The mob hull hook is read-only, so the simulation can share its stable cell
+// array instead of allocating one clone per plank every frame.
+boats.reset();
+boats.restore({v:1,boats:[{x:10,y:9.55,vx:0,cells:[[0,0],[1,0]]}]});
+const hookBoat=boats._debug.boats()[0];
+let hookCells=null;
+boats.update(1/60,null,getTile,{wind:calm,water,mobs:{collideBoat(record){ hookCells=record.cells; return null; }}});
+assert.equal(hookCells,hookBoat.cells,'mob collision receives the stable read-only hull-cell array');
+
 mobs.clearAll();
 boats.reset();
 boats.restore({v:1,boats:[{x:10,y:9.55,vx:3,cells:[[0,0],[1,0]]}]});

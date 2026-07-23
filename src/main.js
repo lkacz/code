@@ -701,12 +701,10 @@ function getElectricNetworkTile(x,y){
 }
 function getFluidNetworkTile(x,y){ return hasInfrastructureTile(x,y,T.WATER_PIPE) ? T.WATER_PIPE : (getNetworkTile(x,y)===T.WATER_PIPE ? T.WATER_PIPE : getTile(x,y)); }
 function isInfrastructureTileId(t){ return !!(WORLD && WORLD.isInfrastructureTile && WORLD.isInfrastructureTile(t)); }
+function infrastructureRenderRank(t){ return t===T.WATER_PIPE ? 1 : (isPowerCableTileId(t) ? 2 : (isLadderTileId(t) ? 3 : 0)); }
 function getRenderInfrastructureTiles(x,y){
 	const overs=getInfrastructureTiles(x,y);
-	if(overs.length) return overs.slice().sort((a,b)=>{
-		const rank=t=> t===T.WATER_PIPE ? 1 : (isPowerCableTileId(t) ? 2 : (isLadderTileId(t) ? 3 : 0));
-		return rank(a)-rank(b);
-	});
+	if(overs.length) return overs.slice().sort((a,b)=>infrastructureRenderRank(a)-infrastructureRenderRank(b));
 	const base=getTile(x,y);
 	return isInfrastructureTileId(base) ? [base] : [];
 }
@@ -9864,7 +9862,7 @@ function ensurePausePanel(){
 	pausePanel.appendChild(buildPauseSection('Rozgrywka'));
 	const mapRow=buildPauseRow('🗺️ Minimapa (N)');
 	const map=document.createElement('input'); map.type='checkbox'; map.checked=showMinimap;
-	map.addEventListener('change',()=>{ showMinimap=map.checked; try{ localStorage.setItem(MINIMAP_OFF_KEY, showMinimap?'0':'1'); }catch(e){} });
+	map.addEventListener('change',()=>{ showMinimap=map.checked; invalidateMinimapBuild(); try{ localStorage.setItem(MINIMAP_OFF_KEY, showMinimap?'0':'1'); }catch(e){} });
 	mapRow.appendChild(map); pausePanel.appendChild(mapRow);
 	const lightRow=buildPauseRow('💡 Oświetlenie jaskiń');
 	const light=document.createElement('input'); light.type='checkbox'; light.checked=!!(LIGHTING && LIGHTING.config && LIGHTING.config.enabled);
@@ -10992,7 +10990,7 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='f'&&!keysOnce.has('f')){ if(FISHING && FISHING.onKey) FISHING.onKey(player,getTile); keysOnce.add('f'); }
 	if(debugKeysEnabled && k==='o'&&!keysOnce.has('o')){ keysOnce.add('o'); if(VOLCANO && VOLCANO.forceMasterEruption) VOLCANO.forceMasterEruption(); }
 	if(k==='b'&&!keysOnce.has('b')){ setPaused(!paused); keysOnce.add('b'); }
-	if(k==='n'&&!keysOnce.has('n')){ showMinimap=!showMinimap; msg('Minimapa '+(showMinimap?'ON':'OFF')); keysOnce.add('n'); }
+	if(k==='n'&&!keysOnce.has('n')){ showMinimap=!showMinimap; invalidateMinimapBuild(); msg('Minimapa '+(showMinimap?'ON':'OFF')); keysOnce.add('n'); }
 	if(k==='u'&&!keysOnce.has('u')){ toggleFullscreen(); keysOnce.add('u'); }
 	// G paints soot graffiti (Shift+G cycles the stencil) — but only while the
 	// developer toolbox is off: with debug shortcuts armed G stays the god toggle
@@ -11367,7 +11365,7 @@ function heroNearWarmth(cx,cy){
 	}
 	return false;
 }
-function sampleThermalMode(cx,inWater){
+function sampleThermalMode(cx,inWater,warmth){
 	if(!SURVIVAL || !SURVIVAL.thermalExposureMode) return 'none';
 	const cy=Math.floor(player.y);
 	let climate=0.5;
@@ -11377,7 +11375,7 @@ function sampleThermalMode(cx,inWater){
 	const sheltered=!gasSkyExposedTile(cx, cy-1);
 	return SURVIVAL.thermalExposureMode({
 		climate, temp, sheltered, inWater,
-		nearWarmth: heroNearWarmth(cx, cy)
+		nearWarmth: (warmth!==undefined?warmth:heroNearWarmth(cx, cy))
 	});
 }
 function updateHouseHealing(dt){
@@ -11441,9 +11439,10 @@ function heroRowStroke(dir){
 function groundTileUnderPlayer(){
 	if(!player.onGround) return T.AIR;
 	const y=Math.floor(player.y+player.h/2+0.05);
-	const samples=[player.x, player.x-player.w*0.42, player.x+player.w*0.42];
+	const off=player.w*0.42;
 	let ground=T.AIR;
-	for(const sx of samples){
+	for(let s=0;s<3;s++){
+		const sx = s===0?player.x : (s===1?player.x-off : player.x+off);
 		const t=getTile(Math.floor(sx),y);
 		if(t===T.ICE) return T.ICE;
 		if(t===T.SNOW || t===T.TOXIC_SNOW || t===T.GRASS_SNOW) ground=T.SNOW;
@@ -11887,8 +11886,8 @@ function physics(dt){
 		thermalEnvAcc+=dt;
 		if(thermalEnvAcc>=0.5){
 			thermalEnvAcc=0;
-			thermalModeCached=godMode ? 'none' : sampleThermalMode(tileX,inWater);
 			heroWarmthCached=heroNearWarmth(tileX, Math.floor(player.y));
+			thermalModeCached=godMode ? 'none' : sampleThermalMode(tileX,inWater,heroWarmthCached);
 			heroRainWetCached=!godMode && !inWater && gasSkyExposedTile(tileX, Math.floor(player.y)-1) && !!(CLOUDS && CLOUDS.isRainingAt && CLOUDS.isRainingAt(tileX));
 			sampleSandExposure(tileX);
 		}
@@ -15120,7 +15119,13 @@ function draw(){ // Background first
 // sky enemies, bosses, UFOs, or build targeting near the top of the screen.
 const MINIMAP_W=220, MINIMAP_H=96, MINIMAP_RANGE=220;
 const MINIMAP_ALPHA=0.62, MINIMAP_POINTER_ALPHA=0.18, MINIMAP_BACKDROP_ALPHA=0.12;
-let mmCanvas=null, mmLastBuild=0;
+const MINIMAP_ROWS_PER_STEP=8, MINIMAP_STEP_BUDGET_MS=1.25;
+let mmCanvas=null, mmSpareCanvas=null, mmLastBuild=0, mmBuild=null;
+function invalidateMinimapBuild(){
+	if(mmBuild && mmBuild.canvas) mmSpareCanvas=mmBuild.canvas;
+	mmBuild=null; mmLastBuild=0;
+	if(mmCanvas){ const g=mmCanvas.getContext('2d'); g.clearRect(0,0,mmCanvas.width,mmCanvas.height); }
+}
 function minimapTileColor(t){
 	if(t===T.WATER) return '#2278de';
 	if(t===T.LAVA) return '#e25822';
@@ -15285,87 +15290,93 @@ function minimapOrigin(mw,mh){
 	const touch=!!(MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch());
 	return { x:W-mw-12, y: touch ? 44 : Math.max(44, H-mh-12) };
 }
+function beginMinimapBuild(MW,MH,RANGE){
+	const canvas=mmSpareCanvas || document.createElement('canvas'); mmSpareCanvas=null; canvas.width=MW; canvas.height=MH;
+	const g=canvas.getContext('2d');
+	const minY=worldMinY(), maxY=worldMaxY();
+	g.clearRect(0,0,MW,MH);
+	drawMinimapBands(g,MW,MH,minY,maxY);
+	mmBuild={
+		canvas,g,minY,maxY,range:RANGE,
+		cx:Math.floor(player.x), heroY:Math.round(player.y),
+		xScale:(RANGE*2)/MW, yScale:(maxY-minY)/MH,
+		surfCache:new Map(), py:0
+	};
+}
+function stepMinimapBuild(MW,MH){
+	const b=mmBuild;
+	if(!b) return false;
+	const started=framePerfNow();
+	let rows=0;
+	const surfaceAt=(wx)=>{
+		let s=b.surfCache.get(wx);
+		if(s===undefined){ s=WORLDGEN.surfaceHeight(wx); b.surfCache.set(wx,s); }
+		return s;
+	};
+	while(b.py<MH && rows<MINIMAP_ROWS_PER_STEP){
+		const py=b.py++;
+		const y0=Math.max(b.minY, Math.floor(b.minY+py*b.yScale));
+		const y1=Math.min(b.maxY-1, Math.ceil(b.minY+(py+1)*b.yScale)-1);
+		let runColor=null, runStart=0;
+		const flushRun=(i)=>{
+			if(!runColor) return;
+			b.g.fillStyle=runColor;
+			b.g.fillRect(runStart,py,i-runStart,1);
+			runColor=null;
+		};
+		for(let i=0;i<MW;i++){
+			const wx0=Math.floor(b.cx-b.range+i*b.xScale);
+			const wx1=Math.floor(b.cx-b.range+(i+1)*b.xScale-0.001);
+			let color=null, cave=false, priority=false;
+			for(let wx=wx0; wx<=wx1; wx++){
+				const surf=surfaceAt(wx);
+				for(let wy=y0; wy<=y1; wy++){
+					// Only discovered terrain appears; the M-key map reveal flips
+					// worldTileDiscovered() to always-true, so the debug full map
+					// falls out of the same gate.
+					if(!worldTileDiscovered(wx,wy)) continue;
+					const t=getTile(wx,wy);
+					if(t===T.AIR){
+						if(wy>surf) cave=true;
+						continue;
+					}
+					const c=minimapTileColor(t);
+					if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || isFurnishingTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.STEAM_BOILER || t===T.STEAM_JET || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
+					if(!color) color=c;
+				}
+			}
+			const pxColor=priority?color:(cave?'rgba(2,5,10,0.72)':(color||null));
+			if(pxColor!==runColor){
+				flushRun(i);
+				if(pxColor){ runStart=i; runColor=pxColor; }
+			}
+		}
+		flushRun(MW);
+		rows++;
+		if(rows>=2 && framePerfNow()-started>=MINIMAP_STEP_BUDGET_MS) break;
+	}
+	if(b.py<MH) return false;
+	b.g.fillStyle='#ffd23e';
+	const heroPy=minimapWorldYToPixel(b.heroY,MH,b.minY,b.maxY);
+	b.g.fillRect(MW/2-1, Math.max(2,heroPy-3), 3, 5);
+	const previous=mmCanvas;
+	mmCanvas=b.canvas;
+	mmSpareCanvas=previous;
+	mmBuild=null;
+	mmLastBuild=performance.now();
+	return true;
+}
 function drawMinimap(){
 	if(!showMinimap) return;
 	const MW=MINIMAP_W, MH=MINIMAP_H, RANGE=MINIMAP_RANGE;
-	if(!mmCanvas || mmCanvas.width!==MW || mmCanvas.height!==MH){ mmCanvas=document.createElement('canvas'); mmCanvas.width=MW; mmCanvas.height=MH; mmLastBuild=0; }
+	if(!mmCanvas || mmCanvas.width!==MW || mmCanvas.height!==MH){ mmCanvas=document.createElement('canvas'); mmCanvas.width=MW; mmCanvas.height=MH; mmSpareCanvas=null; mmLastBuild=0; mmBuild=null; }
 	const now=performance.now();
 	const frameLoaded=Number.isFinite(lastFrameMs) && lastFrameMs>28;
 	const rebuildEvery = lastFrameMs>40 ? 3200 : (lastFrameMs>24 ? 1800 : 900);
-	if(frameLoaded && mmLastBuild>0 && now-mmLastBuild<rebuildEvery*1.75){
-		ctx.save();
-		const {x:mx,y:my}=minimapOrigin(MW,MH);
-		const pointerOver=lastPointer.has && lastPointer.x>=mx && lastPointer.x<=mx+MW && lastPointer.y>=my && lastPointer.y<=my+MH;
-		const alpha=pointerOver ? MINIMAP_POINTER_ALPHA : MINIMAP_ALPHA;
-		ctx.fillStyle='rgba(6,10,18,'+(MINIMAP_BACKDROP_ALPHA*(alpha/MINIMAP_ALPHA)).toFixed(3)+')';
-		ctx.fillRect(mx,my,MW,MH);
-		ctx.globalAlpha=alpha;
-		ctx.drawImage(mmCanvas,mx,my);
-		ctx.globalAlpha=1;
-		ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1; ctx.strokeRect(mx+0.5,my+0.5,MW-1,MH-1);
-		ctx.restore();
-		return;
-	}
-	if(now-mmLastBuild>rebuildEvery){
-		mmLastBuild=now;
-		const g=mmCanvas.getContext('2d');
-		g.clearRect(0,0,MW,MH);
-		const minY=worldMinY(), maxY=worldMaxY();
-		drawMinimapBands(g,MW,MH,minY,maxY);
-		const cx=Math.floor(player.x);
-		const xScale=(RANGE*2)/MW;
-		const yScale=(maxY-minY)/MH;
-		const surfCache=new Map();
-		const surfaceAt=(wx)=>{
-			let s=surfCache.get(wx);
-			if(s===undefined){ s=WORLDGEN.surfaceHeight(wx); surfCache.set(wx,s); }
-			return s;
-		};
-		const rowToY=(row)=>minimapWorldYToPixel(row,MH,minY,maxY);
-		for(let py=0; py<MH; py++){
-			const y0=Math.max(minY, Math.floor(minY+py*yScale));
-			const y1=Math.min(maxY-1, Math.ceil(minY+(py+1)*yScale)-1);
-			let runColor=null, runStart=0;
-			const flushRun=(i)=>{
-				if(!runColor) return;
-				g.fillStyle=runColor;
-				g.fillRect(runStart,py,i-runStart,1);
-				runColor=null;
-			};
-			for(let i=0;i<MW;i++){
-				const wx0=Math.floor(cx-RANGE+i*xScale);
-				const wx1=Math.floor(cx-RANGE+(i+1)*xScale-0.001);
-				let color=null, cave=false, priority=false;
-				for(let wx=wx0; wx<=wx1; wx++){
-					const surf=surfaceAt(wx);
-					for(let wy=y0; wy<=y1; wy++){
-						// Only discovered terrain appears; the M-key map reveal flips
-						// worldTileDiscovered() to always-true, so the debug full map
-						// falls out of the same gate.
-						if(!worldTileDiscovered(wx,wy)) continue;
-						const t=getTile(wx,wy);
-						if(t===T.AIR){
-							if(wy>surf) cave=true;
-							continue;
-						}
-						const c=minimapTileColor(t);
-						if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || isFurnishingTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.STEAM_BOILER || t===T.STEAM_JET || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
-						if(!color) color=c;
-					}
-				}
-				const pxColor=priority?color:(cave?'rgba(2,5,10,0.72)':(color||null));
-				if(pxColor!==runColor){
-					flushRun(i);
-					if(pxColor){ runStart=i; runColor=pxColor; }
-				}
-			}
-			flushRun(MW);
-		}
-		// hero marker
-		g.fillStyle='#ffd23e';
-		const py=rowToY(Math.round(player.y));
-		g.fillRect(MW/2-1, Math.max(2,py-3), 3, 5);
-	}
+	if(mmBuild && (Math.abs(Math.floor(player.x)-mmBuild.cx)>8 || Math.abs(Math.round(player.y)-mmBuild.heroY)>8)) mmBuild=null;
+	const canSpendBuildTime=!frameLoaded || mmLastBuild<=0 || now-mmLastBuild>=rebuildEvery*1.75;
+	if(!mmBuild && now-mmLastBuild>rebuildEvery && canSpendBuildTime) beginMinimapBuild(MW,MH,RANGE);
+	if(mmBuild && canSpendBuildTime) stepMinimapBuild(MW,MH);
 	ctx.save();
 	const {x:mx,y:my}=minimapOrigin(MW,MH);
 	const pointerOver=lastPointer.has && lastPointer.x>=mx && lastPointer.x<=mx+MW && lastPointer.y>=my && lastPointer.y<=my+MH;
@@ -17444,6 +17455,7 @@ function regenWorld(){
 	WORLD.clear(); if(WORLD.clearHeights) WORLD.clearHeights();
 	if(typeof chunkCanvases!=='undefined') chunkCanvases.clear();
 	if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear();
+	invalidateMinimapBuild();
 
 	// Reset fog-of-war (seen tiles) and ensure full fog state
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
@@ -17477,6 +17489,8 @@ window.scanMeteorCrater = function(){ return METEORITES && METEORITES.scanNeares
 // FPS
 let frames=0,lastFps=performance.now(), currentFps=0; function updateFps(now){ frames++; if(now-lastFps>1000){ currentFps=frames; const budget = (GRASS && GRASS.getBudgetInfo)? GRASS.getBudgetInfo():''; el.fps.textContent=currentFps+' FPS'+ (budget? (' '+budget):''); frames=0; lastFps=now; }}
 const framePerf={simMs:0,drawMs:0,frameMs:0,avgFrameMs:0,jitterMs:0,maxFrameMs:0,longFrames:0,samples:0};
+const PERF_PUBLISH_INTERVAL_MS=125;
+let lastPerfPublishAt=-Infinity;
 function framePerfNow(){ return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); }
 // Render health: names the CAUSE when FPS locks at ~30 — browser energy-saver
 // throttling vs software rasterization vs honest sim load (engine/render_health.js).
@@ -17509,6 +17523,9 @@ function recordFramePerf(frameMs,simMs,drawMs){
 	framePerf.maxFrameMs=Math.max(framePerf.maxFrameMs*0.995, framePerf.frameMs);
 	framePerf.samples++;
 	if(framePerf.frameMs>33) framePerf.longFrames++;
+	const publishAt=framePerfNow();
+	if(publishAt-lastPerfPublishAt<PERF_PUBLISH_INTERVAL_MS && window.__mmPerf) return;
+	lastPerfPublishAt=publishAt;
 	try{
 		window.__mmPerf={
 			frameMs:+framePerf.frameMs.toFixed(2),
@@ -18891,6 +18908,7 @@ let volcanoLeakWakeT=0;
 const MAX_FRAME_DT=0.05;
 let lastPowerCatchupSaveAt=0;
 function runGameFrame(totalDt,ts){
+	if(WORLD && WORLD.maintainChunkCache) WORLD.maintainChunkCache();
 	const steps=Math.max(1,Math.ceil(Math.max(0,totalDt)/MAX_FRAME_DT));
 	const stepDt=Math.max(0,totalDt)/steps;
 	for(let i=0;i<steps;i++) runGameStep(stepDt,ts);

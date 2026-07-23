@@ -339,6 +339,9 @@ assert.equal(dprMobCtx.calls.filter(c=>c==='fillRect').length,0,'CSS viewport bo
 const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const grassSource = readFileSync(new URL('../src/engine/grass.js', import.meta.url), 'utf8');
 assert.match(mainSource, /const MINIMAP_ALPHA=0\.62, MINIMAP_POINTER_ALPHA=0\.18, MINIMAP_BACKDROP_ALPHA=0\.12;/, 'minimap uses a deliberately translucent overlay opacity');
+assert.match(mainSource, /const MINIMAP_ROWS_PER_STEP=8, MINIMAP_STEP_BUDGET_MS=1\.25;/, 'minimap rebuilds have a fixed row and time budget');
+assert.match(mainSource, /function stepMinimapBuild\(MW,MH\)[\s\S]*while\(b\.py<MH && rows<MINIMAP_ROWS_PER_STEP\)[\s\S]*mmCanvas=b\.canvas;[\s\S]*mmBuild=null;/, 'minimap builds incrementally and atomically swaps the finished canvas');
+assert.match(mainSource, /const canvas=mmSpareCanvas \|\| document\.createElement\('canvas'\);[\s\S]*mmSpareCanvas=previous;/, 'minimap alternates two offscreen canvases instead of allocating one on every rebuild');
 assert.match(mainSource, /g\.clearRect\(0,0,MW,MH\);/, 'minimap offscreen canvas clears to transparent air instead of an opaque panel');
 assert.match(mainSource, /const pxColor=priority\?color:\(cave\?'rgba\(2,5,10,0\.72\)':\(color\|\|null\)\);/, 'minimap cave fill stays translucent so actors behind it remain visible');
 assert.match(mainSource, /const pointerOver=lastPointer\.has && lastPointer\.x>=mx && lastPointer\.x<=mx\+MW && lastPointer\.y>=my && lastPointer\.y<=my\+MH;[\s\S]*const alpha=pointerOver \? MINIMAP_POINTER_ALPHA : MINIMAP_ALPHA;/, 'minimap fades down when the pointer is over it');
@@ -412,6 +415,7 @@ assert.match(mainSource, /function beginChunkCacheFrame\(\)[\s\S]*chunkCacheRebu
 assert.match(mainSource, /entry=\{canvas:c,ctx:cctx,version:-1,sy,chests:\[\],doorways:\[\]\}/, 'section chunk cache tracks door and trapdoor cells for metadata reuse');
 assert.match(mainSource, /function visibleDoorwayCellsFor\(sx,sy,viewX,viewY\)[\s\S]*collectDoorwayCellsInRange\(x0,x1,y0,y1,cells\)/, 'door overlay animation scans only the bounded visible section range');
 assert.match(mainSource, /window\.__mmPerf=\{[\s\S]*simMs[\s\S]*drawMs[\s\S]*chunks:\{rebuilt:chunkCacheRebuiltThisFrame,partial:chunkCachePartialRebuiltThisFrame,deferred:chunkCacheDeferredThisFrame/, 'frame profiler exposes sim/draw timing and full/partial chunk rebuild pressure');
+assert.match(mainSource, /const PERF_PUBLISH_INTERVAL_MS=125;[\s\S]*if\(publishAt-lastPerfPublishAt<PERF_PUBLISH_INTERVAL_MS && window\.__mmPerf\) return;/, 'public frame diagnostics are sampled instead of allocating every frame');
 assert.match(mainSource, /drawFogOverlay\(sx,sy,viewX,viewY,\{camX:camRenderX,camY:camRenderY,shake:screenShake\}\)/, 'fog overlay receives the render camera and combined shake for precision-safe drawing');
 assert.match(mainSource, /originX: localLayer \? opts\.camX : 0/, 'fog overlay can draw in camera-local coordinates');
 assert.match(mainSource, /const MIN_ZOOM=0\.72, MAX_ZOOM=3;/, 'zoom-out is clamped at the former LOD threshold');

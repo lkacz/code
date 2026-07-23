@@ -502,6 +502,172 @@ assert.match(mainSource, /function placePlayer\(skipMsg,opts\)[\s\S]*const dest=
 assert.match(mainSource, /function debugGasOrigin\(\)[\s\S]*ensureChunkAtY\(Math\.floor\(tx\/CHUNK_W\),ty\)/, 'debug gas placement probes the correct vertical section');
 assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*ensureChunkAtY\(Math\.floor\(cell\.x\/CHUNK_W\),cell\.y\)/, 'debug rig placement validates cells in the correct vertical section');
 
+{ // --- Chunk eviction maintenance is resumable and bounded per game turn.
+  world.clear();
+  world._setChunkCapForTest(200);
+  globalThis.player = { x: 2, y: 20 };
+  const blank = new Uint8Array(CHUNK_W*WORLD_H);
+  for(let cx=1; cx<=80; cx++) assert.equal(world.setChunkArray('c'+cx,blank),true,'bounded-eviction fixture chunk installs');
+  const before=world.chunkCacheStats();
+  world._setChunkCapForTest(24);
+  const firstDropped=world._evictFarChunks();
+  let stats=world.chunkCacheStats();
+  assert.ok(firstDropped>=0 && firstDropped<=8, 'one eviction turn drops no more than its hard chunk budget');
+  assert.ok(before.live-stats.live<=8, 'the first turn cannot synchronously drain the whole cache');
+  assert.equal(stats.evictActive,true,'oversized cache leaves resumable eviction work active');
+  globalThis.player.x=50*CHUNK_W+2; // travel after ranking: destructive edge must re-check protection
+  let turns=1;
+  while(stats.evictActive && turns<100){
+    const liveBeforeTurn=stats.live;
+    const dropped=world.maintainChunkCache();
+    stats=world.chunkCacheStats();
+    assert.ok(dropped>=0 && dropped<=8, 'each resumed eviction turn honors the chunk budget');
+    assert.ok(liveBeforeTurn-stats.live<=8, 'each resumed turn mutates at most eight live chunks');
+    turns++;
+  }
+  assert.ok(turns<100, 'bounded maintenance eventually reaches the hysteresis target');
+  assert.ok(stats.live<=18, 'resumed eviction reaches the 75% hysteresis target');
+  assert.equal(world._world.has('c1'),true,'chunks protected during the scan remain live');
+  assert.equal(world._world.has('c50'),true,'chunks near the player at drop time are re-protected after travel');
+  assert.equal(stats.evictRuns,before.evictRuns+1,'resuming a queue does not repeat the full candidate scan');
+  assert.ok(stats.evictBatches>=turns,'maintenance batches are exposed in cache metrics');
+  const idleBatches=stats.evictBatches;
+  assert.equal(world.maintainChunkCache(),0,'cache maintenance is a no-op after reaching its target');
+  assert.equal(world.chunkCacheStats().evictBatches,idleBatches,'an idle maintenance hook does not create empty work batches');
+  world._setChunkCapForTest(1536);
+  delete globalThis.player;
+  world.clear();
+}
+
+{ // Chunks appended after a scan snapshot receive a fresh bounded cycle.
+  world.clear();
+  world._setChunkCapForTest(100);
+  globalThis.player = { x: 2, y: 20 };
+  const blank = new Uint8Array(CHUNK_W*WORLD_H);
+  for(let cx=1; cx<=30; cx++) assert.equal(world.setChunkArray('c'+cx,blank),true,'growth-eviction fixture chunk installs');
+  world._setChunkCapForTest(12);
+  const beforeGrowth=world.chunkCacheStats();
+  const previousTrees=MM.trees;
+  let injected=false;
+  MM.trees={
+    clearChunk(){
+      if(injected) return;
+      injected=true;
+      // clearChunk runs at the destructive edge, after candidate scanning. The
+      // re-entrant requests defer because eviction is active, reproducing cache
+      // growth between resumable turns without timers or test-only engine seams.
+      for(let cx=100; cx<125; cx++) assert.equal(world.setChunkArray('c'+cx,blank),true,'mid-cycle growth chunk installs');
+    }
+  };
+  let growthStats;
+  try{
+    world._evictFarChunks();
+    growthStats=world.chunkCacheStats();
+    let growthTurns=0;
+    while(growthStats.evictActive && growthTurns++<100){ world.maintainChunkCache(); growthStats=world.chunkCacheStats(); }
+    assert.equal(injected,true,'fixture appended chunks after the first candidate scan');
+    assert.ok(growthTurns<100,'cache growth during eviction still converges');
+    assert.ok(growthStats.live<=9,'a follow-up scan includes mid-cycle additions and reaches the original target');
+    assert.equal(growthStats.evictRuns,beforeGrowth.evictRuns+2,'mid-cycle growth schedules exactly one fresh bounded candidate cycle');
+  } finally {
+    if(previousTrees===undefined) delete MM.trees;
+    else MM.trees=previousTrees;
+  }
+  world._setChunkCapForTest(1536);
+  delete globalThis.player;
+  world.clear();
+}
+
+{ // A player move during a scan gets one fresh anchor-aware cycle.
+  world.clear();
+  world._setChunkCapForTest(300);
+  globalThis.player = { x: 2, y: 20 };
+  const blank = new Uint8Array(CHUNK_W*WORLD_H);
+  const pinned = blank.slice(); pinned[0]=T.TELEPORTER;
+  for(let cx=1; cx<=60; cx++) assert.equal(world.setChunkArray('c'+cx,blank),true,'moving-anchor fixture chunk installs');
+  for(let cx=61; cx<=201; cx++){
+    assert.equal(world.setChunkArray('c'+cx,pinned),true,'moving-anchor pinned chunk installs');
+    world.markModifiedChunk(cx);
+  }
+  world._setChunkCapForTest(200);
+  const beforeMove=world.chunkCacheStats();
+  world._evictFarChunks();
+  let moveStats=world.chunkCacheStats();
+  assert.equal(moveStats.evictPhase,'scan','large fixture leaves the first bounded candidate scan resumable');
+  globalThis.player.x=56*CHUNK_W+2;
+  let moveTurns=0;
+  while(moveStats.live===201 && moveTurns++<20){ world.maintainChunkCache(); moveStats=world.chunkCacheStats(); }
+  assert.ok(moveStats.live<201,'intermediate player anchor protects candidates at the destructive edge');
+  globalThis.player.x=2; // returning must not erase the fact that this cycle used another anchor
+  while(moveStats.evictActive && moveTurns++<100){ world.maintainChunkCache(); moveStats=world.chunkCacheStats(); }
+  assert.ok(moveTurns<100,'anchor-changing eviction converges');
+  assert.ok(moveStats.live<=150,'fresh scan finds chunks skipped around an intermediate player anchor');
+  assert.equal(moveStats.evictRuns,beforeMove.evictRuns+2,'one anchor change schedules exactly one fresh bounded cycle');
+  assert.equal(world._world.has('c1'),true,'the final player neighborhood remains protected');
+  assert.equal(world._world.has('c60'),false,'a chunk skipped near an intermediate anchor is reconsidered by the follow-up scan');
+  world._setChunkCapForTest(1536);
+  delete globalThis.player;
+  world.clear();
+}
+
+{ // Ordinary teleporter edits do not trigger hysteresis before the hard cap.
+  world.clear();
+  world._setChunkCapForTest(20);
+  globalThis.player = { x: 2, y: 20 };
+  const ordinary = new Uint8Array(CHUNK_W*WORLD_H);
+  for(let cx=10; cx<=26; cx++) assert.equal(world.setChunkArray('c'+cx,ordinary.slice()),true,'ordinary-cache fixture chunk installs');
+  const ordinaryBefore=world.chunkCacheStats();
+  world.setTile(26*CHUNK_W,0,T.TELEPORTER);
+  assert.equal(world.maintainChunkCache(),0,'teleporter edits do not start eviction below the normal hard cap');
+  const ordinaryAfter=world.chunkCacheStats();
+  assert.equal(ordinaryAfter.live,ordinaryBefore.live,'teleporter edits preserve an ordinary cache above target but below cap');
+  assert.equal(ordinaryAfter.evictRuns,ordinaryBefore.evictRuns,'teleporter edits do not create premature candidate scans');
+  assert.equal(ordinaryAfter.evictBatches,ordinaryBefore.evictBatches,'teleporter edits do not create premature maintenance batches');
+  world._setChunkCapForTest(1536);
+  delete globalThis.player;
+  world.clear();
+}
+
+{ // A cache made entirely of never-park chunks must not rescan every frame.
+  world.clear();
+  world._setChunkCapForTest(100);
+  globalThis.player = { x: 2, y: 20 };
+  const pinned = new Uint8Array(CHUNK_W*WORLD_H);
+  pinned[0]=T.TELEPORTER;
+  for(let cx=10; cx<=26; cx++){
+    assert.equal(world.setChunkArray('c'+cx,pinned.slice()),true,'pinned-eviction fixture chunk installs');
+    world.markModifiedChunk(cx);
+  }
+  world._setChunkCapForTest(20);
+  world._evictFarChunks();
+  let pinnedStats=world.chunkCacheStats(), pinTurns=0;
+  while(pinnedStats.evictActive && pinTurns++<20){ world.maintainChunkCache(); pinnedStats=world.chunkCacheStats(); }
+  assert.equal(pinnedStats.evictActive,false,'a pinned-only candidate queue terminates');
+  assert.equal(pinnedStats.live,17,'never-park chunks remain live above the hysteresis target');
+  const stalledRuns=pinnedStats.evictRuns, stalledBatches=pinnedStats.evictBatches;
+  for(let i=0;i<5;i++) assert.equal(world.maintainChunkCache(),0,'unchanged pinned overflow stays idle');
+  pinnedStats=world.chunkCacheStats();
+  assert.equal(pinnedStats.evictRuns,stalledRuns,'pinned overflow does not restart candidate scans without a state change');
+  assert.equal(pinnedStats.evictBatches,stalledBatches,'pinned overflow does not consume empty maintenance batches');
+  world.setTile(26*CHUNK_W,0,T.AIR);
+  let unpinnedStats=world.chunkCacheStats(), unpinTurns=0;
+  do { world.maintainChunkCache(); unpinnedStats=world.chunkCacheStats(); } while(unpinnedStats.evictActive && unpinTurns++<20);
+  assert.ok(unpinTurns<20,'removing a teleporter pin retries below the normal cap trigger');
+  assert.equal(unpinnedStats.live,16,'the formerly pinned tile-edited chunk is reconsidered');
+  assert.equal(unpinnedStats.evictRuns,stalledRuns+1,'one teleporter eligibility transition schedules one fresh bounded cycle');
+  assert.equal(world._world.has('c26'),false,'the tile-unpinned far chunk can leave the live cache');
+  assert.equal(world.setChunkArray('c25',new Uint8Array(CHUNK_W*WORLD_H)),true,'whole-chunk replacement can remove a teleporter pin');
+  let replacedStats=world.chunkCacheStats(), replaceTurns=0;
+  do { world.maintainChunkCache(); replacedStats=world.chunkCacheStats(); } while(replacedStats.evictActive && replaceTurns++<20);
+  assert.ok(replaceTurns<20,'whole-chunk pin removal also retries below the normal cap trigger');
+  assert.ok(replacedStats.live<=15,'tile and whole-chunk pin transitions together complete hysteresis');
+  assert.equal(replacedStats.evictRuns,stalledRuns+2,'each distinct teleporter eligibility change schedules only one bounded cycle');
+  assert.equal(world._world.has('c25'),false,'the replacement-unpinned far chunk can leave the live cache');
+  world._setChunkCapForTest(1536);
+  delete globalThis.player;
+  world.clear();
+}
+
 { // --- Chunk parking: far modified chunks compress into cold storage instead of
   // pinning the live map open (the 240->30 fps long-session decay fix).
   world.clear();
@@ -563,6 +729,12 @@ assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*ensureChunk
 assert.match(worldSource, /const revived=rehydrateChunk\(k\);/, 'chunk generation revives parked cold-store copies before regenerating');
 assert.match(worldSource, /finally \{ genExit\(\); \}/, 'generation exits through the deferred-eviction gate');
 assert.match(worldSource, /if\(genDepth>0\)\{ evictPending=true; return; \}/, 'eviction defers while any generation is in flight (no mid-frame chunk drops)');
+assert.match(worldSource, /const EVICT_DROP_BUDGET=8;/, 'each world-cache maintenance turn has a hard chunk mutation budget');
+assert.match(worldSource, /worldAPI\.maintainChunkCache = maintainChunkCache;/, 'the host frame can resume bounded cache maintenance');
+assert.match(mainSource, /function runGameFrame\(totalDt,ts\)\{\s*if\(WORLD && WORLD\.maintainChunkCache\) WORLD\.maintainChunkCache\(\);/, 'the host game frame resumes bounded world-cache maintenance once per rendered frame');
+assert.match(worldSource, /if\(old===T\.TELEPORTER \|\| v===T\.TELEPORTER\) noteNeverParkEligibilityChanged\(\);/, 'only direct teleporter tile transitions invalidate pinned eviction retry state');
+assert.match(worldSource, /if\(previous && previousNeverPark!==nextNeverPark\) noteNeverParkEligibilityChanged\(\);/, 'whole-chunk teleporter eligibility transitions also invalidate pinned retry state');
+assert.doesNotMatch(worldSource, /cand\.sort\(/, 'eviction no longer allocates and sorts a full candidate array in one turn');
 assert.match(worldSource, /invalidateViewsFor\(parsed\);\s+\/\/ surgical/, 'eviction invalidates only the dropped chunk section views');
 assert.doesNotMatch(worldSource, /sectionViews\.clear\(\); \/\/ cached views may alias deleted chunk arrays/, 'eviction no longer wipes the whole section-view cache');
 assert.doesNotMatch(worldSource, /if\(versions\.get\(k\)\) continue;\s+\/\/ modified chunk/, 'modified chunks are no longer exempt from eviction (they park instead)');

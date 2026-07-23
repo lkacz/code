@@ -104,8 +104,59 @@ window.MM = window.MM || {};
   const peekParkCache=new Map(); // key -> decoded array; tiny LRU for peek/save reads
   const PEEK_PARK_CACHE_MAX=8;
   const PROTECT_RADIUS_CX=4;     // never evict/park the player's active neighborhood
-  const chunkCacheStats={parked:0,rehydrated:0,evictRuns:0,dropped:0,lastEvictMs:0};
+  // Eviction is maintenance, not gameplay: keep each turn small enough that even
+  // parking incompressible edited chunks cannot monopolize a render frame. A
+  // single pack is atomic and may run a little over the time budget, so the hard
+  // chunk-count ceiling remains the final guard.
+  const EVICT_SCAN_BUDGET=192;
+  const EVICT_DROP_BUDGET=8;
+  const EVICT_TIME_BUDGET_MS=2;
+  const chunkCacheStats={parked:0,rehydrated:0,evictRuns:0,evictBatches:0,dropped:0,lastEvictMs:0};
   let genDepth=0, evictPending=false, evicting=false, lastRevivedKey=null;
+  let evictWork=null;            // resumable {iterator,remaining,heap,target,phase,...}
+  let evictRetrySize=-1, evictRetryPcx=0, evictRetryPsy=0;
+  let evictRetryRequested=false; // eligibility changed below the normal cap trigger
+  let liveChunkAddEpoch=0;       // detects entries omitted by a scan's snapshot bound
+  function setLiveChunk(k,arr){
+    if(!world.has(k)) liveChunkAddEpoch++;
+    world.set(k,arr);
+  }
+  function cacheNow(){ return (typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now(); }
+  function playerChunkAnchor(){
+    const p=(typeof window!=='undefined' && window.player) || null;
+    return {
+      pcx:(p && isFinite(p.x)) ? Math.floor(p.x/CHUNK_W) : 0,
+      psy:sectionYFor(p && isFinite(p.y) ? p.y : 0)
+    };
+  }
+  function fartherCandidate(a,b){ return a[0]>b[0]; }
+  function evictionHeapPush(heap,item){
+    let i=heap.length;
+    heap.push(item);
+    while(i>0){
+      const p=(i-1)>>1;
+      if(!fartherCandidate(item,heap[p])) break;
+      heap[i]=heap[p]; i=p;
+    }
+    heap[i]=item;
+  }
+  function evictionHeapPop(heap){
+    if(!heap.length) return null;
+    const top=heap[0], tail=heap.pop();
+    if(heap.length){
+      let i=0;
+      while(true){
+        const l=i*2+1;
+        if(l>=heap.length) break;
+        const r=l+1;
+        const child=r<heap.length && fartherCandidate(heap[r],heap[l]) ? r : l;
+        if(!fartherCandidate(heap[child],tail)) break;
+        heap[i]=heap[child]; i=child;
+      }
+      heap[i]=tail;
+    }
+    return top;
+  }
   function packChunkArray(arr){
     let s=''; let i=0; const n=arr.length;
     while(i<n){
@@ -150,55 +201,150 @@ window.MM = window.MM || {};
     if(!p) return null;
     const arr=unpackChunkArray(p);
     parked.delete(k); peekParkCache.delete(k);
-    world.set(k,arr);
+    setLiveChunk(k,arr);
     chunkCacheStats.rehydrated++;
     lastRevivedKey=k; // the eviction below must not instantly re-park what was just demanded
+    if(evictWork) evictWork.protected.add(k);       // scan may take several maintenance turns
     if(world.size>CHUNK_CAP) requestEvict();
     return arr;
   }
-  function requestEvict(){ if(genDepth>0 || evicting){ evictPending=true; return; } evictFarChunks(); }
-  function genExit(){ genDepth--; if(genDepth===0 && evictPending){ evictPending=false; evictFarChunks(); } }
-  function evictFarChunks(){
-    if(evicting) return;
-    if(genDepth>0){ evictPending=true; return; }
+  function evictionTarget(){ return Math.max(1,(CHUNK_CAP*0.75)|0); }
+  function beginEvictionWork(anchor,carryProtected){
+    const protectedKeys=new Set(carryProtected || []);
+    if(lastRevivedKey) protectedKeys.add(lastRevivedKey);
+    evictRetryRequested=false;
+    evictWork={
+      iterator:world.keys(), remaining:world.size, heap:[], target:evictionTarget(),
+      phase:'scan', pcx:anchor.pcx, psy:anchor.psy, scanned:0, anchorChanged:false,
+      protected:protectedKeys,
+      addEpoch:liveChunkAddEpoch
+    };
+    chunkCacheStats.evictRuns++;
+  }
+  function finishEvictionWork(anchor){
+    const finished=evictWork;
+    const target=finished ? finished.target : evictionTarget();
+    evictWork=null;
+    if(world.size>target){
+      const anchorChanged=finished && (finished.anchorChanged || finished.pcx!==anchor.pcx || finished.psy!==anchor.psy);
+      const additionsMissed=finished && finished.addEpoch!==liveChunkAddEpoch;
+      if(additionsMissed || anchorChanged || evictRetryRequested){
+        // The iterator deliberately uses one anchor and the map size captured
+        // at cycle start. Entries appended meanwhile or chunks excluded around
+        // an old player position may not be in its heap. A teleporter transition
+        // can also make a previously skipped candidate eligible. Run one fresh
+        // bounded cycle before classifying the remainder as pinned.
+        beginEvictionWork(anchor,finished.protected);
+        return;
+      }
+      // All candidates were protected or otherwise pinned. Do not restart the
+      // same full scan on every ensure; retry after growth or meaningful travel.
+      evictRetrySize=world.size; evictRetryPcx=anchor.pcx; evictRetryPsy=anchor.psy;
+    }else{
+      evictRetrySize=-1;
+      evictRetryRequested=false;
+    }
+  }
+  function mayBeginEviction(force,anchor){
+    const target=evictionTarget();
+    if(force || evictRetryRequested) return world.size>target;
+    if(world.size<=CHUNK_CAP) return false;
+    if(evictRetrySize<0) return true;
+    if(world.size>evictRetrySize) return true;
+    return Math.abs(anchor.pcx-evictRetryPcx)>PROTECT_RADIUS_CX || Math.abs(anchor.psy-evictRetryPsy)>1;
+  }
+  function advanceEvictionScan(work,deadline){
+    let scanned=0;
+    while(work.phase==='scan' && scanned<EVICT_SCAN_BUDGET && cacheNow()<deadline){
+      if(work.remaining<=0){ work.phase='drop'; break; }
+      const next=work.iterator.next();
+      if(next.done){ work.remaining=0; work.phase='drop'; break; }
+      work.remaining--; work.scanned++; scanned++;
+      const k=next.value;
+      if(k===lastRevivedKey || work.protected.has(k)) continue; // demanded during this eviction cycle
+      const parsed=parseChunkKey(k);
+      if(!parsed) continue;
+      if(Math.abs(parsed.cx-work.pcx)<=PROTECT_RADIUS_CX) continue;
+      const distance=Math.abs(parsed.cx-work.pcx)+Math.abs((parsed.sy==null?0:parsed.sy)-work.psy)*0.35;
+      evictionHeapPush(work.heap,[distance,k,parsed]);
+    }
+    if(work.phase==='scan' && work.remaining<=0) work.phase='drop';
+  }
+  function dropEvictionCandidates(work,deadline){
+    const anchor=playerChunkAnchor();
+    let dropped=0;
+    while(work.phase==='drop' && work.heap.length && world.size>work.target && dropped<EVICT_DROP_BUDGET && cacheNow()<deadline){
+      const candidate=evictionHeapPop(work.heap);
+      const k=candidate[1], parsed=candidate[2];
+      if(k===lastRevivedKey || work.protected.has(k)) continue;
+      // The scan is resumable, so the player may have travelled since this
+      // candidate was ranked. Re-check protection at the destructive edge.
+      if(Math.abs(parsed.cx-anchor.pcx)<=PROTECT_RADIUS_CX) continue;
+      const arr=world.get(k);
+      if(!arr) continue;
+      if(versions.get(k)){
+        if(chunkContainsNeverParkTile(arr)) continue;
+        parked.set(k,packChunkArray(arr));          // modified: park compressed, version survives
+        peekParkCache.delete(k);
+        chunkCacheStats.parked++;
+      }else{
+        try{ if(parsed.base && MM.trees && MM.trees.clearChunk) MM.trees.clearChunk(parsed.cx); }catch(e){}
+        versions.delete(k);
+      }
+      world.delete(k);
+      invalidateViewsFor(parsed);                  // surgical: only views aliasing this array
+      chunkCacheStats.dropped++;
+      dropped++;
+    }
+    return dropped;
+  }
+  function maintainChunkCache(force){
+    if(genDepth>0){ evictPending=true; return 0; }
+    if(evicting){ evictPending=true; return 0; }
+    const anchor=playerChunkAnchor();
+    if(!evictWork){
+      if(!mayBeginEviction(!!force,anchor)){
+        if(world.size<=evictionTarget()) evictRetryRequested=false;
+        evictPending=false; lastRevivedKey=null; return 0;
+      }
+      beginEvictionWork(anchor);
+    }
+    if(evictWork.pcx!==anchor.pcx || evictWork.psy!==anchor.psy) evictWork.anchorChanged=true;
+    const t0=cacheNow(), deadline=t0+EVICT_TIME_BUDGET_MS;
+    let dropped=0;
     evicting=true;
-    const t0=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    chunkCacheStats.evictBatches++;
     try{
-      const p=(typeof window!=='undefined' && window.player) || null;
-      const pcx=(p && isFinite(p.x))? Math.floor(p.x/CHUNK_W) : 0;
-      const psy=sectionYFor(p && isFinite(p.y) ? p.y : 0);
-      const cand=[];
-      for(const k of world.keys()){
-        if(k===lastRevivedKey) continue;           // just rehydrated on demand this very call
-        const parsed=parseChunkKey(k);
-        if(!parsed) continue;
-        if(Math.abs(parsed.cx-pcx)<=PROTECT_RADIUS_CX) continue; // active working set stays
-        cand.push([Math.abs(parsed.cx-pcx) + Math.abs((parsed.sy==null?0:parsed.sy) - psy)*0.35, k, parsed]);
-      }
-      cand.sort((a,b)=>b[0]-a[0]);                  // farthest first
-      const target=(CHUNK_CAP*0.75)|0;
-      for(let i=0;i<cand.length && world.size>target;i++){
-        const k=cand[i][1], parsed=cand[i][2];
-        const arr=world.get(k);
-        if(!arr) continue;
-        if(versions.get(k)){
-          if(chunkContainsNeverParkTile(arr)) continue;
-          parked.set(k,packChunkArray(arr));        // modified: park compressed, version survives
-          peekParkCache.delete(k);
-          chunkCacheStats.parked++;
-        }else{
-          try{ if(parsed.base && MM.trees && MM.trees.clearChunk) MM.trees.clearChunk(parsed.cx); }catch(e){}
-          versions.delete(k);
-        }
-        world.delete(k);
-        invalidateViewsFor(parsed);                 // surgical: only views aliasing this array
-        chunkCacheStats.dropped++;
-      }
-      chunkCacheStats.evictRuns++;
+      if(evictWork.phase==='scan') advanceEvictionScan(evictWork,deadline);
+      if(evictWork.phase==='drop' && cacheNow()<deadline) dropped=dropEvictionCandidates(evictWork,deadline);
+      if(evictWork && (world.size<=evictWork.target || (evictWork.phase==='drop' && evictWork.heap.length===0))) finishEvictionWork(playerChunkAnchor());
+      evictPending=!!evictWork;
     } finally {
       lastRevivedKey=null;
       evicting=false;
-      chunkCacheStats.lastEvictMs=+((((typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now())-t0).toFixed(2));
+      chunkCacheStats.lastEvictMs=+((cacheNow()-t0).toFixed(2));
+    }
+    return dropped;
+  }
+  function requestEvict(){
+    if(genDepth>0 || evicting){ evictPending=true; return; }
+    evictPending=true;
+    maintainChunkCache(false);
+  }
+  function genExit(){ genDepth--; if(genDepth===0 && evictPending) maintainChunkCache(false); }
+  // Compatibility/test seam: one explicitly requested bounded maintenance turn.
+  function evictFarChunks(){
+    if(genDepth>0){ evictPending=true; return; }
+    return maintainChunkCache(true);
+  }
+  function noteNeverParkEligibilityChanged(){
+    // A teleporter transition only invalidates a previously incomplete eviction.
+    // It must not make an ordinary cache below CHUNK_CAP enter hysteresis early.
+    if(!evictWork && evictRetrySize<0 && !evictRetryRequested) return;
+    evictRetrySize=-1;
+    if(world.size>evictionTarget()){
+      evictRetryRequested=true;
+      evictPending=true;
     }
   }
   function ck(x){ return 'c'+x; }
@@ -1735,7 +1881,7 @@ window.MM = window.MM || {};
     // Chests are reward entities now, never procedural terrain. This final
     // scrub also covers third-party/story structure passes applied above.
     stripChestTiles(arr);
-    world.set(k,arr); markModifiedChunk(cx,0);
+    setLiveChunk(k,arr); markModifiedChunk(cx,0);
     if(world.size>CHUNK_CAP) requestEvict();
     auditCityStructuralStability(arr,cx);
     // A new chunk may carve caves right beside existing dormant water (or bring its own
@@ -1788,7 +1934,7 @@ window.MM = window.MM || {};
         genDepth++;
         try{
           arr=generateVerticalSection(cx,sy);
-          world.set(k,arr);
+          setLiveChunk(k,arr);
           markModifiedChunk(cx,0,sy);
           if(world.size>CHUNK_CAP) requestEvict();
         } finally { genExit(); }
@@ -2170,11 +2316,10 @@ window.MM = window.MM || {};
     if(constructionBackground.size===0 && generatedBackground.size===0) return T.AIR;
     if(!worldYInBounds(y) || !isFinite(x) || Math.abs(x)>MAX_COORD) return T.AIR;
     if(constructionBackground.size>0){
-      const k=key(x,y);
-      if(constructionBackground.has(k)){
+      const t=constructionBackground.get(key(x,y));
+      if(t!==undefined){
         // An explicit non-buildable entry (T.AIR) is a tombstone left where the
         // player mined out a generated backdrop cell — it must stay empty.
-        const t=constructionBackground.get(k);
         return isConstructionBackgroundTile(t) ? t : T.AIR;
       }
     }
@@ -2309,6 +2454,7 @@ window.MM = window.MM || {};
     if(arr[idx]===v) return;
     const old=arr[idx];
     arr[idx]=v;
+    if(old===T.TELEPORTER || v===T.TELEPORTER) noteNeverParkEligibilityChanged();
     notifyTileChanged(x,y,old,v);
     if(!transient){
       markModifiedChunk(cx,null,sy);
@@ -2409,7 +2555,7 @@ window.MM = window.MM || {};
     }
     markOverlaySections(touchedSections);
   }
-  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); parked.clear(); peekParkCache.clear(); evictPending=false; versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); parked.clear(); peekParkCache.clear(); evictWork=null; evictPending=false; evictRetrySize=-1; evictRetryRequested=false; lastRevivedKey=null; liveChunkAddEpoch=0; versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
   // Save loading replaces whole chunk arrays: any cached section view over the
   // old array must be dropped or reads would silently hit the orphaned buffer.
   function setChunkArray(key,arr){
@@ -2425,10 +2571,15 @@ window.MM = window.MM || {};
     }
     const expected=CHUNK_W*(ref.base ? WORLD_H : WORLD_SECTION_H);
     if(!(arr instanceof Uint8Array) || arr.length!==expected) return false;
+    const previous=world.get(ref.key);
+    const previousNeverPark=!!previous && chunkContainsNeverParkTile(previous);
     // Old saves may contain chest blocks. They are intentionally removed, not
     // converted: only fresh mob/reward drops populate physical chests now.
+    const next=stripChestTiles(arr);
+    const nextNeverPark=!!previous && chunkContainsNeverParkTile(next);
     parked.delete(ref.key); peekParkCache.delete(ref.key); // restored data supersedes any parked copy
-    world.set(ref.key,stripChestTiles(arr)); invalidateViewsFor(ref);
+    setLiveChunk(ref.key,next); invalidateViewsFor(ref);
+    if(previous && previousNeverPark!==nextNeverPark) noteNeverParkEligibilityChanged();
     if(world.size>CHUNK_CAP) requestEvict();
     // Save-loaded base chunks skip ensureChunk, so replay the deterministic
     // city pass in background-only mode to rebuild interior backdrops.
@@ -2505,11 +2656,18 @@ window.MM = window.MM || {};
   };
   worldAPI.chunkCacheStats = function(){
     let pinned=0; for(const v of versions.values()){ if(v) pinned++; }
-    return Object.assign({live:world.size, parkedNow:parked.size, pinned, cap:CHUNK_CAP}, chunkCacheStats);
+    return Object.assign({
+      live:world.size, parkedNow:parked.size, pinned, cap:CHUNK_CAP,
+      evictActive:!!evictWork,
+      evictPhase:evictWork ? evictWork.phase : 'idle',
+      evictQueued:evictWork ? evictWork.heap.length : 0,
+      evictScanRemaining:evictWork && evictWork.phase==='scan' ? evictWork.remaining : 0
+    }, chunkCacheStats);
   };
   worldAPI._parked = parked;
   worldAPI._evictFarChunks = evictFarChunks;
-  worldAPI._setChunkCapForTest = function(n){ CHUNK_CAP = (Number.isInteger(n) && n>8) ? n : 1536; };
+  worldAPI.maintainChunkCache = maintainChunkCache;
+  worldAPI._setChunkCapForTest = function(n){ CHUNK_CAP = (Number.isInteger(n) && n>8) ? n : 1536; evictWork=null; evictPending=false; evictRetrySize=-1; evictRetryRequested=false; };
   worldAPI.metrics = function(){
     return {chunks:world.size, modified:modifiedChunks.size, infrastructure:infrastructure.size, constructionBackground:constructionBackground.size, heightCache:heightCache.size, lakeCache:lakeLevels.size};
   };

@@ -675,7 +675,7 @@ assert.ok(/bytes > NET\.WIRE_LIMITS\.ASSEMBLED_MAX/.test(encodePlaneSlice)
 assert.ok(/function broadcastCurrentPlane\(packet\)/.test(hostSrc)
 	&& /function infraTick[\s\S]{0,260}broadcastCurrentPlane\(packet\)/.test(hostSrc)
 	&& /function gfxTick[\s\S]{0,300}broadcastCurrentPlane\(built\.packet\)/.test(hostSrc)
-	&& /function machTick[\s\S]{0,500}broadcastCurrentPlane\(\{ t: 'mach', data \}\)/.test(hostSrc),
+	&& /function machTick[\s\S]{0,500}broadcastCurrentPlane\(packet\)/.test(hostSrc),
 	'live infrastructure, graffiti and vehicle planes share the size-aware broadcast path');
 assert.ok(/data && data\.complete === false/.test(infraBuildSlice)
 	&& /bg && bg\.complete === false/.test(infraBuildSlice)
@@ -1166,7 +1166,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	// the vehicles plane: boats and mechs stream live between joins (same save
 	// codec a reload uses; sig-skip = silence while nothing moves)
 	assert.ok(/function machTick\(s, t\)/.test(hostSrc) && /if\(sig === s\.lastMachSig\) return;/.test(hostSrc)
-		&& /broadcastCurrentPlane\(\{ t: 'mach', data \}\)/.test(hostSrc),
+		&& /broadcastCurrentPlane\(packet\)/.test(hostSrc),
 		'the mach plane broadcasts vehicle snapshots on change only');
 	assert.ok(/pl\.t === 'mach'/.test(clientSrc) && /bridge\.restoreBoats\(pl\.data\.b\);/.test(clientSrc)
 		&& /bridge\.restoreMechs\(pl\.data\.m\);/.test(clientSrc),

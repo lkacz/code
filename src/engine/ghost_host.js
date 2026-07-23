@@ -56,6 +56,10 @@ const ghostHost = (function(){
 	let bridge = null;
 	let session = null; // {room, name, listen, peers:Map(peerObj->entry), ledger, timers...}
 	let ui = { panel: null, menuBtn: null };
+	// Builders that already need an exact JSON signature can attach that same
+	// serialization to their packet. Weak keys keep this a one-packet hint rather
+	// than a second cache with its own lifetime or invalidation semantics.
+	const currentPlaneJsonHints = new WeakMap();
 
 	function now(){ return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
 
@@ -711,7 +715,10 @@ const ghostHost = (function(){
 	// either fan out the direct packet or the existing byte-bounded chunk envelope.
 	function encodeCurrentPlane(packet){
 		let json = null;
-		try{ json = JSON.stringify(packet); }catch(e){ return null; }
+		try{
+			json = packet && typeof packet === 'object' ? currentPlaneJsonHints.get(packet) : null;
+			if(typeof json !== 'string') json = JSON.stringify(packet);
+		}catch(e){ return null; }
 		if(typeof json !== 'string') return null;
 		const bytes = NET.utf8Len(json);
 		if(bytes > NET.WIRE_LIMITS.ASSEMBLED_MAX) return null;
@@ -876,7 +883,9 @@ const ghostHost = (function(){
 		s.last.mobs = t;
 		const M = MMR && MMR.mobs;
 		if(!M || !M.ghostRoster) return;
-		const roster = M.ghostRoster();
+		let roster = null;
+		try{ roster = M.ghostRoster(); }catch(e){ return; }
+		if(!roster) return;
 		if(roster.sig !== s.lastMobSig || t - s.last.mobsFull > CAD.mobsFull){ sendMobsFull(s, null, roster.sig); }
 		else broadcast({ t: 'mobs', sig: roster.sig, poses: roster.poses });
 	}
@@ -884,7 +893,9 @@ const ghostHost = (function(){
 		s.last.inv = t;
 		const I = MMR && MMR.invasions;
 		if(!I || !I.ghostRoster) return;
-		const roster = I.ghostRoster();
+		let roster = null;
+		try{ roster = I.ghostRoster(); }catch(e){ return; }
+		if(!roster) return;
 		// nothing invading: send one empty sync so a watcher's stale squad clears
 		if(!roster.sig && !s.lastInvSig && s.invIdle) return;
 		s.invIdle = !roster.sig;
@@ -1135,7 +1146,13 @@ const ghostHost = (function(){
 		try{ boats = hasBoats ? B.snapshot() : null; }catch(e){ boats = null; }
 		try{ mechs = hasMechs ? M.snapshot() : null; }catch(e){ mechs = null; }
 		const data = { b: boats, m: mechs };
-		return { packet: { t: 'mach', data }, data, fast, any: !!(data.b || data.m), sig: JSON.stringify(data) };
+		const packet = { t: 'mach', data };
+		// The packet prefix is constant, so its exact JSON is also an exact state
+		// signature. Reuse it in encodeCurrentPlane instead of walking every static
+		// hull cell a second time whenever this state is actually sent.
+		const sig = JSON.stringify(packet);
+		currentPlaneJsonHints.set(packet, sig);
+		return { packet, data, fast, any: !!(data.b || data.m), sig };
 	}
 	function machTick(s, t){
 		s.last.mach = t;
@@ -1143,11 +1160,11 @@ const ghostHost = (function(){
 			const built = buildMachPacket();
 			if(!built) return;
 			s.machFast = built.fast;
-			const data = built.data, sig = built.sig;
+			const packet = built.packet, sig = built.sig;
 			if(!built.any && !s.machWas) return;
 			if(sig === s.lastMachSig) return;
 			invalidateJoinPlaneCache(s);
-			if(!broadcastCurrentPlane({ t: 'mach', data })) return;
+			if(!broadcastCurrentPlane(packet)) return;
 			s.lastMachSig = sig;
 			s.machWas = built.any;
 		}catch(e){ /* codec hiccup — next tick retries */ }

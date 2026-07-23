@@ -98,6 +98,152 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
 {
   reset();
   setTile(0,10,T.TELEPORTER);
+  const farPlayer={x:200,y:200,w:0.7,h:0.95,vx:0,vy:0,energy:0};
+  const machine=teleporters._debug.machines.get('0,10');
+  tick(0.01,farPlayer); // discovers once that this endpoint has no source
+  machine.cooldown=0.8;
+  machine.pulse=1;
+  tick(0.25,farPlayer);
+  tick(0.25,farPlayer);
+  tick(0.25,farPlayer);
+  assert.ok(Math.abs(machine.cooldown-0.05)<0.002,'cheap distant cooldown state remains frame-accurate while validation sleeps');
+  tick(0.24,farPlayer);
+  assert.equal(machine.cooldown,0,'remote cooldown integrates the complete elapsed time');
+  assert.equal(machine.pulse,0,'remote pulse decay integrates the complete elapsed time');
+}
+
+{
+  reset();
+  setTile(0,9,T.TELEPORTER);
+  setTile(0,11,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
+  for(const machine of dynamo._debug.machines.values()) machine.energy=10;
+  const farPlayer={x:200,y:200,w:0.7,h:0.95,vx:0,vy:0,energy:0};
+  tick(0.25,farPlayer);
+  const upper=teleporters._debug.machines.get('0,9');
+  const lower=teleporters._debug.machines.get('0,11');
+  assert.ok(Math.abs(upper.energy-2.5)<0.002 && Math.abs(lower.energy-2.5)<0.002,'charging distant peers remain in every scarce-power frame and split it fairly');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
+  const nearbyPlayer={x:0.5,y:10.5,w:0.7,h:0.95,vx:0,vy:0,energy:0};
+  tick(0.1,nearbyPlayer);
+  assert.ok(Math.abs(teleporters._debug.machines.get('0,10').energy-teleporters._debug.CHARGE_RATE*0.1)<0.002,'nearby teleporters remain frame-accurate below the remote cadence interval');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
+  const player={x:0.5,y:10.5,w:0.7,h:0.95,vx:0,vy:0,energy:0};
+  tick(0.75,player);
+  const machine=teleporters._debug.machines.get('0,10');
+  assert.ok(Math.abs(machine.energy-teleporters._debug.CHARGE_RATE*0.75)<0.002,'nearby time is integrated once before a range transition');
+  player.x=200;
+  player.y=200;
+  tick(0.25,player);
+  assert.ok(Math.abs(machine.energy-teleporters._debug.CHARGE_RATE)<0.002,'nearby-to-remote transition does not reapply the shared cadence history');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
+  const farPlayer={x:200,y:200,w:0.7,h:0.95,vx:0,vy:0,energy:0};
+  teleporters._debug.debugSetEnergy(0,10,teleporters._debug.TELEPORTER_CAPACITY,getTile);
+  tick(0.25,farPlayer);
+  teleporters._debug.debugSetEnergy(0,10,150,getTile);
+  tick(0.1,farPlayer);
+  const energy=teleporters._debug.machines.get('0,10').energy;
+  assert.ok(Math.abs(energy-(150+teleporters._debug.CHARGE_RATE*0.1))<0.002,'a full remote battery spent between cadence ticks only recharges for the subsequent real frame time');
+}
+
+function rangeFairnessSample(playerX){
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(80,10,T.TELEPORTER);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.SILVER_WIRE);
+  setTile(-1,10,T.SILVER_WIRE);
+  for(let x=0;x<=80;x++) setTile(x,11,T.SILVER_WIRE);
+  chargeDynamo(-4,10);
+  for(const machine of dynamo._debug.machines.values()) machine.energy=4;
+  tick(0.1,{x:playerX,y:10.5,w:0.7,h:0.95,vx:0,vy:0,energy:0});
+  return [teleporters._debug.machines.get('0,10').energy,teleporters._debug.machines.get('80,10').energy];
+}
+{
+  const allNear=rangeFairnessSample(40.5);
+  const mixedRange=rangeFairnessSample(0.5);
+  assert.ok(allNear.every(energy=>Math.abs(energy-2)<0.002),'scarce source splits evenly when both endpoints are nearby');
+  assert.ok(mixedRange.every((energy,index)=>Math.abs(energy-allNear[index])<0.002),'mixed near/far endpoints preserve the same scarce-source allocation as all-near peers');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  const farPlayer={x:200,y:200,w:0.7,h:0.95,vx:0,vy:0,energy:0};
+  tick(0.2,farPlayer);
+  tiles.delete(k(0,10)); // bypass topology notifications like a low-level restore
+  tick(0.2,farPlayer);
+  assert.equal(teleporters.metrics().machines,1,'a raw distant removal may wait for the bounded remote validation cadence');
+  let waited=0.2;
+  while(teleporters.metrics().machines && waited<teleporters._debug.REMOTE_UPDATE_INTERVAL+0.05){
+    tick(0.05,farPlayer);
+    waited+=0.05;
+  }
+  assert.equal(teleporters.metrics().machines,0,'the next bounded remote validation removes an invalid teleporter');
+  assert.ok(waited<=teleporters._debug.REMOTE_UPDATE_INTERVAL+0.051,'raw removals are discovered within one staggered validation interval');
+
+  setTile(0,10,T.TELEPORTER);
+  setTile(0,10,T.AIR);
+  assert.equal(teleporters.metrics().machines,0,'normal topology notifications remove distant teleporters immediately');
+}
+
+{
+  reset();
+  const endpointKeys=new Set();
+  const count=240;
+  for(let i=0;i<count;i++){
+    const x=i*3;
+    endpointKeys.add(k(x,10));
+    setTile(x,10,T.TELEPORTER);
+  }
+  const covered=new Set();
+  const farPlayer={x:-10000,y:200,w:0.7,h:0.95,vx:0,vy:0,energy:0};
+  let maxValidated=0;
+  for(let frame=0;frame<23;frame++){
+    const validated=new Set();
+    const countingGetTile=(x,y)=>{
+      const id=k(x,y);
+      if(endpointKeys.has(id)) validated.add(id);
+      return getTile(x,y);
+    };
+    teleporters.update(0.05,farPlayer,countingGetTile,setTile,{dynamo});
+    maxValidated=Math.max(maxValidated,validated.size);
+    for(const id of validated) covered.add(id);
+  }
+  assert.ok(maxValidated<=teleporters._debug.REMOTE_VALIDATION_MAX_PER_UPDATE,'remote validation never exceeds its hard per-update endpoint budget');
+  assert.equal(covered.size,count,'the staggered remote schedule covers every source-less endpoint within approximately one second');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
   placeDynamo(-4,10);
   setTile(-2,10,T.COPPER_WIRE);
   setTile(-1,10,T.COPPER_WIRE);
@@ -366,6 +512,7 @@ function runMixedFairness(order){
   setTile(2,8,T.TELEPORTER);
   teleporters._debug.debugCharge(2,8,77,getTile);
   const snap=teleporters.snapshot();
+  assert.deepEqual(Object.keys(snap.list[0]).sort(),['energy','x','y'],'teleporter snapshots exclude transient cadence and network-cache bookkeeping');
   teleporters.reset();
   assert.equal(teleporters.metrics().machines,0,'reset clears teleporter battery state');
   teleporters.restore(snap,getTile);

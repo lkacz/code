@@ -146,8 +146,8 @@ const mainSource = readFileSync(new URL('../src/main.js', import.meta.url), 'utf
 
   // main.js wiring pins
   assert.match(mainSource, /SURVIVAL\.updateThermalExposure\(thermalState, dt, thermalModeCached\)/, 'main drives the thermal state machine');
-  assert.match(mainSource, /sampleThermalMode\(tileX,inWater\)/, 'main samples the thermal environment (throttled)');
-  assert.match(mainSource, /function sampleThermalMode\(cx,inWater\)[\s\S]*sampleAmbientTemperature\(cx,cy,climate\)/, 'survival and the HUD share the same ambient-temperature sampler');
+  assert.match(mainSource, /sampleThermalMode\(tileX,inWater,heroWarmthCached\)/, 'main samples the thermal environment (throttled)');
+  assert.match(mainSource, /function sampleThermalMode\(cx,inWater,warmth\)[\s\S]*sampleAmbientTemperature\(cx,cy,climate\)/, 'survival and the HUD share the same ambient-temperature sampler');
   assert.match(mainSource, /cause:thermal\.mode==='cold' \? 'deep_frost' : 'heat_stroke'/, 'thermal damage carries frost/heat causes');
   assert.match(mainSource, /function heroNearWarmth\(cx,cy\)/, 'main scans for torches/fire/lava as cold mitigation');
 }

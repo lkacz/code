@@ -45,6 +45,16 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
   let lastCtx = null;
   let simT = 0;
 
+  // Broad-phase buckets are deliberately much larger than a plank. Sparse
+  // fleets then cost roughly O(boats), while crowded buckets still fall back
+  // to testing every physically plausible pair.
+  const BOAT_BROAD_PHASE_CELL = 16;
+  const BOAT_BROAD_PHASE_PAD = 0.01;
+  const BOAT_BROAD_PHASE_MIN = 32;
+  const BOAT_BROAD_PHASE_MAX_DENSITY = 0.20;
+  const BOAT_BROAD_PHASE_MAX_REFS_PER_BOAT = 4;
+  let lastBroadPhaseMode = 'small';
+
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
   function key(dx,dy){ return dx+','+dy; }
   function isSolidTile(t){ return isSolidCollisionTile(t); }
@@ -59,6 +69,116 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     const x=Math.min(a.right,b.right)-Math.max(a.left,b.left);
     const y=Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top);
     return {x,y,hit:x>0 && y>0};
+  }
+  function boatBroadPhaseRange(rect){
+    const pad=BOAT_BROAD_PHASE_PAD, cell=BOAT_BROAD_PHASE_CELL;
+    return {
+      minX:Math.floor((rect.left-pad)/cell),
+      maxX:Math.floor((rect.right+pad)/cell),
+      minY:Math.floor((rect.top-pad)/cell),
+      maxY:Math.floor((rect.bottom+pad)/cell)
+    };
+  }
+  function createBoatBroadPhase(){
+    const ranges=new Array(boats.length);
+    function visitRange(range,fn){
+      for(let gx=range.minX; gx<=range.maxX; gx++){
+        for(let gy=range.minY; gy<=range.maxY; gy++) fn(key(gx,gy));
+      }
+    }
+    let fleetMinX=Infinity, fleetMaxX=-Infinity, fleetMinY=Infinity, fleetMaxY=-Infinity;
+    let totalBucketRefs=0;
+    for(let i=0;i<boats.length;i++){
+      const range=boatBroadPhaseRange(boatRect(boats[i]));
+      ranges[i]=range;
+      totalBucketRefs+=(range.maxX-range.minX+1)*(range.maxY-range.minY+1);
+      fleetMinX=Math.min(fleetMinX,range.minX);
+      fleetMaxX=Math.max(fleetMaxX,range.maxX);
+      fleetMinY=Math.min(fleetMinY,range.minY);
+      fleetMaxY=Math.max(fleetMaxY,range.maxY);
+    }
+    // A few very wide hulls can own thousands of unique buckets while having
+    // no possible contacts. Building one full fleet bitset per bucket then costs
+    // more than the direct AABB pass, so reject that shape before any Maps or
+    // typed arrays are allocated.
+    if(totalBucketRefs>boats.length*BOAT_BROAD_PHASE_MAX_REFS_PER_BOAT){
+      lastBroadPhaseMode='wide-fallback';
+      return null;
+    }
+    // Avoid even constructing an index when the whole fleet is tightly packed.
+    const fleetCells=(fleetMaxX-fleetMinX+1)*(fleetMaxY-fleetMinY+1);
+    if(fleetCells<=boats.length/8){ lastBroadPhaseMode='dense-fallback'; return null; }
+
+    // Estimate bucket density before allocating the bitset index. A packed
+    // fleet has real quadratic contact work and is faster on the direct loop.
+    const bucketCounts=new Map();
+    for(const range of ranges){
+      visitRange(range,k=>bucketCounts.set(k,(bucketCounts.get(k)||0)+1));
+    }
+    let pairRefs=0;
+    for(const count of bucketCounts.values()) pairRefs+=count*(count-1)/2;
+    const allPairs=boats.length*(boats.length-1)/2;
+    // Over-counting hulls that span several buckets intentionally makes this
+    // fallback conservative.
+    if(pairRefs>=allPairs*BOAT_BROAD_PHASE_MAX_DENSITY){ lastBroadPhaseMode='dense-fallback'; return null; }
+
+    const buckets=new Map();
+    const nearby=[];
+    const bitWords=Math.ceil(boats.length/32);
+    function add(index,range){
+      visitRange(range,k=>{
+        let bucket=buckets.get(k);
+        if(!bucket){ bucket={bits:new Uint32Array(bitWords),count:0}; buckets.set(k,bucket); }
+        const word=index>>>5, mask=1<<(index&31);
+        if((bucket.bits[word]&mask)!==0) return;
+        bucket.bits[word]|=mask;
+        bucket.count++;
+      });
+    }
+    function remove(index,range){
+      visitRange(range,k=>{
+        const bucket=buckets.get(k);
+        if(!bucket) return;
+        const word=index>>>5, mask=1<<(index&31);
+        if((bucket.bits[word]&mask)===0) return;
+        bucket.bits[word]&=~mask;
+        bucket.count--;
+        if(!bucket.count) buckets.delete(k);
+      });
+    }
+    function sameRange(a,b){
+      return !!a && a.minX===b.minX && a.maxX===b.maxX && a.minY===b.minY && a.maxY===b.maxY;
+    }
+    function update(index,rect){
+      const next=boatBroadPhaseRange(rect);
+      const prev=ranges[index];
+      if(sameRange(prev,next)) return;
+      if(prev) remove(index,prev);
+      ranges[index]=next;
+      add(index,next);
+    }
+    function firstCandidate(rect,afterIndex){
+      const range=boatBroadPhaseRange(rect);
+      nearby.length=0;
+      visitRange(range,k=>{
+        const bucket=buckets.get(k);
+        if(bucket) nearby.push(bucket);
+      });
+      const first=afterIndex+1;
+      for(let word=first>>>5; word<bitWords; word++){
+        let bits=0;
+        for(const bucket of nearby) bits|=bucket.bits[word];
+        if(word===(first>>>5)) bits&=(-1<<(first&31));
+        if(bits!==0){
+          const lowBit=bits&-bits;
+          return (word<<5)+(31-Math.clz32(lowBit));
+        }
+      }
+      return -1;
+    }
+    for(let i=0;i<boats.length;i++) add(i,ranges[i]);
+    lastBroadPhaseMode='indexed';
+    return {update,firstCandidate};
   }
   function canBoatFitAt(b,x,y,getTile){
     for(const c of b.cells){
@@ -82,10 +202,11 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     if(!b || !(b.vy<0) || !(dt>0)) return false;
     let remaining=Math.min(3.5,-b.vy*dt);
     let moved=false;
+    const tops=topCells(b);
     while(remaining>0){
       const step=Math.min(0.4,remaining);
       let blocked=false;
-      for(const c of topCells(b)){
+      for(const c of tops){
         const ty=Math.floor(b.y+c.dy-step);
         if(isSolidTile(getSafe(getTile,Math.floor(b.x+c.dx+0.5),ty))){
           blocked=true;
@@ -238,11 +359,16 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     }
   });
 
-  function resolveBoatBoatCollisions(b,getTile,boatIndex){
+  function resolveBoatBoatCollisions(b,getTile,boatIndex,broadPhase){
     let a=boatRect(b);
-    // Every pair is resolved once. The old all-against-all call from every boat
-    // visited each pair twice and doubled an already quadratic hot path.
-    for(let i=Math.max(0,(boatIndex|0)+1); i<boats.length; i++){
+    let afterIndex=Math.max(-1,boatIndex|0);
+    // Every plausible pair is resolved once and in the same index order as the
+    // former all-pairs loop. Re-query after each collision because separation
+    // can move this hull into a candidate bucket that it did not occupy before.
+    while(afterIndex<boats.length-1){
+      const i=broadPhase ? broadPhase.firstCandidate(a,afterIndex) : afterIndex+1;
+      if(i<0) break;
+      afterIndex=i;
       const other=boats[i];
       const o=boatRect(other);
       const ov=rectOverlap(a,o);
@@ -279,6 +405,10 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
         other.vy=0;
         a=boatRect(b);
       }
+      if(broadPhase){
+        broadPhase.update(boatIndex,a);
+        broadPhase.update(i,boatRect(other));
+      }
     }
   }
 
@@ -288,7 +418,9 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
       const res=ctx.mobs.collideBoat({
         id:b.id,
         x:b.x, y:b.y, vx:b.vx, vy:b.vy,
-        cells:b.cells.map(c=>({dx:c.dx,dy:c.dy}))
+        // collideBoat treats hull cells as read-only; sharing the stable array
+        // avoids cloning every plank of every raft on every simulation frame.
+        cells:b.cells
       }, bounds(b), dt, {getTile});
       if(res){
         if(Number.isFinite(res.drag)) dragLoad+=res.drag;
@@ -310,8 +442,9 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     const yFrom=Math.floor(b.y+bb.minDy)-2;
     const yTo=Math.floor(b.y+bb.maxDy)+3;
     const minDepth=minFloatDepthForHeight(bb.h);
+    const surfOpts={minDepth};
     for(let dx=bb.minDx; dx<=bb.maxDx; dx++){
-      const s=surfaceYAt(getTile,water,Math.floor(b.x+dx+0.5),yFrom,yTo,{minDepth});
+      const s=surfaceYAt(getTile,water,Math.floor(b.x+dx+0.5),yFrom,yTo,surfOpts);
       if(s!=null){ surfSum+=s; surfN++; }
     }
     if(surfN>0){
@@ -338,11 +471,12 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
         moveBoatUp(b,dt,getTile);
       }else{
         let remaining=b.vy*dt;
+        const bottoms=bottomCells(b);
         while(remaining>0){
           const step=Math.min(0.4,remaining);
           remaining-=step;
           let blocked=false, launched=false;
-          for(const c of bottomCells(b)){
+          for(const c of bottoms){
             const tx=Math.floor(b.x+c.dx+0.5);
             const ty=Math.floor(b.y+c.dy+1+step);
             const t=getSafe(getTile,tx,ty);
@@ -380,7 +514,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
         for(const c of bottomCells(b)){
           const edgeX=dir>0 ? nx+c.dx+1-1e-4 : nx+c.dx+1e-4;
           const tx=Math.floor(edgeX);
-          const lane=surfaceYAt(getTile,water,tx,yFrom,yTo,{minDepth});
+          const lane=surfaceYAt(getTile,water,tx,yFrom,yTo,surfOpts);
           if(lane!=null) continue;
           nx = dir>0 ? Math.min(nx, tx-(c.dx+1)-0.001) : Math.max(nx, tx+1-c.dx+0.001);
           b.vx=0;
@@ -420,7 +554,11 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     for(let i=0;i<boats.length;i++) updateBoat(boats[i],dt,getTile,(ctx||{}));
     // Resolve on the final positions for this frame. Doing this inside each
     // boat's movement let a later boat move back into an already-resolved hull.
-    for(let i=0;i<boats.length;i++) resolveBoatBoatCollisions(boats[i],getTile,i);
+    if(boats.length>1){
+      if(boats.length<BOAT_BROAD_PHASE_MIN) lastBroadPhaseMode='small';
+      const broadPhase=boats.length>=BOAT_BROAD_PHASE_MIN ? createBoatBroadPhase() : null;
+      for(let i=0;i<boats.length;i++) resolveBoatBoatCollisions(boats[i],getTile,i,broadPhase);
+    } else lastBroadPhaseMode='small';
   }
 
   // ---------------- Hero coupling (boss-style rigid platform) ----------------
@@ -746,7 +884,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
   }
 
   // ---------------- Persistence ----------------
-  function reset(){ boats=[]; heroBoatId=null; nextId=1; simT=0; }
+  function reset(){ boats=[]; heroBoatId=null; nextId=1; simT=0; lastBroadPhaseMode='small'; }
   function snapshot(){
     if(!boats.length) return null;
     const saved=[];
@@ -821,7 +959,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     registerPropulsion,
     snapshot, restore, reset, metrics,
     config:CFG,
-    _debug:{boats:()=>boats, bounds, surfaceYAt, topCells, bottomCells}
+    _debug:{boats:()=>boats, bounds, surfaceYAt, topCells, bottomCells, broadPhaseMode:()=>lastBroadPhaseMode}
   };
   root.MM.boats=api;
 })();

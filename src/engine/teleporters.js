@@ -24,6 +24,14 @@ import { isHeroPassableTile } from './material_physics.js';
   const FLOW_MARK_INTERVAL_MS = 90;
   const WIRE_TTL = 0.62;
   const FAIR_DEMAND_GRACE_FRAMES = 1;
+  // All scalar state stays frame-accurate. Stable distant machines use a
+  // bounded validation cadence so full or source-less endpoints do not turn
+  // tile checks and cable discovery into a per-frame lifetime-construction cost.
+  const ACTIVE_RX = 68;
+  const ACTIVE_RY = 42;
+  const REMOTE_UPDATE_INTERVAL = 1.0;
+  const REMOTE_VALIDATIONS_PER_SECOND = MACHINE_CAP/REMOTE_UPDATE_INTERVAL;
+  const REMOTE_VALIDATION_MAX_PER_UPDATE = 64;
   const COPPER_DELIVERY_EFFICIENCY = 0.5;
   const SILVER_DELIVERY_EFFICIENCY = 1;
   const COPPER_HEAT_THRESHOLD = 12;
@@ -46,6 +54,8 @@ import { isHeroPassableTile } from './material_physics.js';
 
   let networkRev = 1;
   let scanT = 0;
+  let remoteClock = 0;
+  let remoteValidationCredit = 0;
   let teleporterListStamp = '';
   let teleporterListCache = [];
   let visibleScanKey = '';
@@ -78,6 +88,27 @@ import { isHeroPassableTile } from './material_physics.js';
   function isPowerDeviceTile(t){ return !!(INFO[t] && INFO[t].powerDevice); }
   function isPowerSourceTile(t){ return isDynamoTile(t) || !!(INFO[t] && INFO[t].powerSource); }
   function isMachineNetworkTile(t){ return isCable(t) || isPowerDeviceTile(t) || isPowerSourceTile(t); }
+  function hasMachineNetworkNeighbor(x,y,getTile){
+    for(const [dx,dy] of NETWORK_ADJ){
+      if(isMachineNetworkTile(getSafe(getTile,x+dx,y+dy,T.AIR))) return true;
+    }
+    return false;
+  }
+  function remoteValidationPhase(m){
+    let h=Math.imul((m.x|0)^0x9e3779b9,0x85ebca6b);
+    h^=Math.imul((m.y|0)^0xc2b2ae35,0x27d4eb2d);
+    h^=h>>>16;
+    return (h>>>0)/4294967296*REMOTE_UPDATE_INTERVAL;
+  }
+  function armRemoteValidation(m){
+    if(!Number.isFinite(m.remoteCheckAt)) m.remoteCheckAt=remoteClock+remoteValidationPhase(m);
+  }
+  function takeRemoteValidationBudget(dt,due){
+    remoteValidationCredit=Math.min(REMOTE_VALIDATION_MAX_PER_UPDATE,remoteValidationCredit+REMOTE_VALIDATIONS_PER_SECOND*dt);
+    const count=Math.min(due,REMOTE_VALIDATION_MAX_PER_UPDATE,Math.floor(remoteValidationCredit+1e-9));
+    remoteValidationCredit=Math.max(0,remoteValidationCredit-count);
+    return count;
+  }
   function basePowerTileAt(x,y,getTile){
     let t=getSafe(getTile,x,y,T.AIR);
     if(isCable(t) && MM.world && typeof MM.world.getTile==='function'){
@@ -102,6 +133,8 @@ import { isHeroPassableTile } from './material_physics.js';
     let m=machines.get(k);
     if(!m){
       m={x,y,energy:0,pulse:0,cooldown:0,lastUse:0};
+      m.locallyIsolated=!hasMachineNetworkNeighbor(x,y,getTile);
+      if(m.locallyIsolated) m.sourceLessRev=networkRev;
       machines.set(k,m);
     }
     m.x=x; m.y=y;
@@ -865,8 +898,7 @@ import { isHeroPassableTile } from './material_physics.js';
     result.lost=Math.max(0,result.raw-result.delivered);
     return result;
   }
-  function registerPowerDemandAt(x,y,want,getTile,dynamo){
-    const net=networkFor(x,y,getTile);
+  function registerPowerDemandForNetwork(net,x,y,want,getTile,dynamo){
     const consumerId=key(x,y);
     const networkId=networkIdentity(net);
     let registry=fairDemandRegistry.get(networkId);
@@ -878,10 +910,22 @@ import { isHeroPassableTile } from './material_physics.js';
     });
     return {net,consumerId,networkId,registry};
   }
-  function fairAllocationFor(net,consumerId,want,getTile,dynamo){
-    const registered=registerPowerDemandAt(net.target.x,net.target.y,want,getTile,dynamo);
-    const networkId=registered.networkId;
-    const registry=registered.registry;
+  function registerPowerDemandAt(x,y,want,getTile,dynamo){
+    return registerPowerDemandForNetwork(networkFor(x,y,getTile),x,y,want,getTile,dynamo);
+  }
+  function clearMachinePowerDemand(m){
+    if(!m || !m.lastNetworkId) return;
+    const registry=fairDemandRegistry.get(m.lastNetworkId);
+    if(!registry) return;
+    registry.delete(key(m.x,m.y));
+    if(!registry.size) fairDemandRegistry.delete(m.lastNetworkId);
+  }
+  function fairAllocationFor(net,consumerId,want,getTile,dynamo,demandRegistered){
+    const networkId=networkIdentity(net);
+    let registry=demandRegistered ? fairDemandRegistry.get(networkId) : null;
+    if(!registry || !registry.has(consumerId)){
+      registry=registerPowerDemandForNetwork(net,net.target.x,net.target.y,want,getTile,dynamo).registry;
+    }
     let frame=fairFrameAllocations.get(networkId);
     if(frame) return frame;
     const demands=new Map();
@@ -896,14 +940,13 @@ import { isHeroPassableTile } from './material_physics.js';
     fairFrameAllocations.set(networkId,frame);
     return frame;
   }
-  function drainNetworkEnergyAt(x,y,amount,getTile,dynamo,opts){
+  function drainNetworkEnergyFrom(net,x,y,amount,getTile,dynamo,opts){
     opts=opts||{};
     const maxTake=Math.max(0,Number(amount)||0);
-    const net=networkFor(x,y,getTile);
     const consumerId=key(x,y);
     let permitted=maxTake;
     if(opts.fair){
-      const frame=fairAllocationFor(net,consumerId,maxTake,getTile,dynamo);
+      const frame=fairAllocationFor(net,consumerId,maxTake,getTile,dynamo,opts.demandRegistered);
       const allocation=Math.max(0,Number(frame.allocations.get(consumerId))||0);
       const used=Math.max(0,Number(frame.used.get(consumerId))||0);
       permitted=Math.min(maxTake,Math.max(0,allocation-used));
@@ -919,21 +962,37 @@ import { isHeroPassableTile } from './material_physics.js';
     if(drained>0) markNetworkActivity(net,drained,consumerId,getTile,transfer.sourceKeys);
     return drained;
   }
-  function chargeBatteryAt(x,y,battery,dt,getTile,dynamo,opts){
-    opts=opts||{};
+  function drainNetworkEnergyAt(x,y,amount,getTile,dynamo,opts){
+    return drainNetworkEnergyFrom(networkFor(x,y,getTile),x,y,amount,getTile,dynamo,opts);
+  }
+  function batteryChargeDemand(battery,dt,capacity,rate){
     if(!battery || !(dt>0) || !Number.isFinite(dt)) return 0;
-    const capacity=opts.capacity===undefined ? TELEPORTER_CAPACITY : finiteNonNegative(opts.capacity,0);
-    const rate=opts.rate===undefined ? CHARGE_RATE : finiteNonNegative(opts.rate,0);
     const current=Math.max(0,Math.min(capacity,finiteNonNegative(battery.energy,0)));
     // Normalize corrupted callers even when the battery is already full or the
     // requested rate is zero; otherwise Infinity/NaN can persist indefinitely.
     battery.energy=current;
-    const want=Math.min(capacity-current,rate*dt);
-    if(opts.fair!==false) registerPowerDemandAt(x,y,want,getTile,dynamo);
+    return Math.min(capacity-current,rate*dt);
+  }
+  function chargeBatteryFrom(net,x,y,battery,dt,getTile,dynamo,opts){
+    opts=opts||{};
+    const capacity=opts.capacity===undefined ? TELEPORTER_CAPACITY : finiteNonNegative(opts.capacity,0);
+    const rate=opts.rate===undefined ? CHARGE_RATE : finiteNonNegative(opts.rate,0);
+    const want=batteryChargeDemand(battery,dt,capacity,rate);
+    const current=battery ? battery.energy : 0;
+    const fair=opts.fair!==false;
+    let demandRegistered=!!opts.demandRegistered;
+    if(fair && !demandRegistered){
+      registerPowerDemandForNetwork(net,x,y,want,getTile,dynamo);
+      demandRegistered=true;
+    }
     if(!(want>0) || !Number.isFinite(want)) return 0;
-    const gained=drainNetworkEnergyAt(x,y,want,getTile,dynamo,{fair:opts.fair!==false});
+    const gained=drainNetworkEnergyFrom(net,x,y,want,getTile,dynamo,{fair,demandRegistered});
     if(gained>0) battery.energy=Math.min(capacity,current+gained);
     return gained;
+  }
+  function chargeBatteryAt(x,y,battery,dt,getTile,dynamo,opts){
+    if(!battery || !(dt>0) || !Number.isFinite(dt)) return 0;
+    return chargeBatteryFrom(networkFor(x,y,getTile),x,y,battery,dt,getTile,dynamo,opts);
   }
   function heroAvailable(heroEnergy,player){
     if(heroEnergy && heroEnergy.info){
@@ -983,9 +1042,10 @@ import { isHeroPassableTile } from './material_physics.js';
     m.pulse=1;
     return spent;
   }
-  function chargeFromNetwork(m,dt,getTile,dynamo){
+  function chargeFromNetwork(m,dt,getTile,dynamo,net,demandRegistered){
     if(!m || !(dt>0)) return 0;
-    const gained=chargeBatteryAt(m.x,m.y,m,dt,getTile,dynamo,{capacity:TELEPORTER_CAPACITY,rate:CHARGE_RATE});
+    const network=net || networkFor(m.x,m.y,getTile);
+    const gained=chargeBatteryFrom(network,m.x,m.y,m,dt,getTile,dynamo,{capacity:TELEPORTER_CAPACITY,rate:CHARGE_RATE,demandRegistered});
     if(gained>0){
       m.energy=clampEnergy(m.energy||0);
       m.pulse=1;
@@ -1192,6 +1252,7 @@ import { isHeroPassableTile } from './material_physics.js';
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return;
     if(externalPowerFramePending) externalPowerFramePending=false;
     else advancePowerFrame();
+    remoteClock+=dt;
     decayWireActivity(dt,getTile);
     scanT-=dt;
     if(scanT<=0){
@@ -1199,19 +1260,66 @@ import { isHeroPassableTile } from './material_physics.js';
       scanNearbyTeleporters(player,getTile);
     }
     if(player && player._teleporterCooldown>0) player._teleporterCooldown=Math.max(0,player._teleporterCooldown-dt);
+    const hasPlayer=!!(player && Number.isFinite(player.x) && Number.isFinite(player.y));
+    const px=hasPlayer ? player.x : 0;
+    const py=hasPlayer ? player.y : 0;
+    const dynamo=opts && opts.dynamo;
+    const chargeRows=[];
+    const dueRemote=[];
+    const validateAndQueue=(k,m)=>{
+      if(getSafe(getTile,m.x,m.y,T.AIR)!==T.TELEPORTER){
+        machines.delete(k);
+        networkCache.delete(k);
+        return false;
+      }
+      const want=batteryChargeDemand(m,dt,TELEPORTER_CAPACITY,CHARGE_RATE);
+      if(want>0 && Number.isFinite(want)){
+        const net=networkFor(m.x,m.y,getTile);
+        const hasSources=networkSources(net).length>0;
+        if(hasSources) m.locallyIsolated=false;
+        m.sourceLessRev=hasSources ? 0 : networkRev;
+        const registered=registerPowerDemandForNetwork(net,m.x,m.y,want,getTile,dynamo);
+        m.lastNetworkId=registered.networkId;
+        chargeRows.push({m,step:dt,net});
+      }
+      return true;
+    };
     for(const [k,m] of machines){
-      if(!m || getSafe(getTile,m.x,m.y,T.AIR)!==T.TELEPORTER){
+      if(!m){
         machines.delete(k);
         networkCache.delete(k);
         continue;
       }
+      // These scalar transitions are cheap and must remain real-time. In
+      // particular, spending a previously full remote battery between cadence
+      // ticks must not let it recharge for time during which it was still full.
       m.cooldown=Math.max(0,(m.cooldown||0)-dt);
       m.pulse=Math.max(0,(m.pulse||0)-dt*2.6);
-      chargeFromNetwork(m,dt,getTile,opts && opts.dynamo);
+      const nearby=!hasPlayer || (m && Math.abs(m.x-px)<=ACTIVE_RX && Math.abs(m.y-py)<=ACTIVE_RY);
+      const full=!!(m && finiteNonNegative(m.energy,0)>=TELEPORTER_CAPACITY-1e-9);
+      const knownSourceLess=!!(m && (m.locallyIsolated || m.sourceLessRev===networkRev));
+      if(full || knownSourceLess) clearMachinePowerDemand(m);
+      if(!nearby && (full || knownSourceLess)){
+        armRemoteValidation(m);
+        if(m.remoteCheckAt<=remoteClock) dueRemote.push({k,m});
+        continue;
+      }
+      m.remoteCheckAt=NaN;
+      validateAndQueue(k,m);
     }
+    const remoteBudget=takeRemoteValidationBudget(dt,dueRemote.length);
+    for(let i=0;i<remoteBudget;i++){
+      const row=dueRemote[i];
+      if(!validateAndQueue(row.k,row.m)) continue;
+      const stillFull=finiteNonNegative(row.m.energy,0)>=TELEPORTER_CAPACITY-1e-9;
+      const stillSourceLess=row.m.locallyIsolated || row.m.sourceLessRev===networkRev;
+      row.m.remoteCheckAt=(stillFull || stillSourceLess) ? remoteClock+REMOTE_UPDATE_INTERVAL : NaN;
+    }
+    // Register every active or woken machine before any source is drained.
+    // Otherwise the first endpoint could consume a scarce shared network before
+    // its peers became visible to max-min allocation.
+    for(const row of chargeRows) chargeFromNetwork(row.m,row.step,getTile,dynamo,row.net,true);
     if(machines.size>MACHINE_CAP){
-      const px=player && Number.isFinite(player.x) ? player.x : 0;
-      const py=player && Number.isFinite(player.y) ? player.y : 0;
       const idle=[...machines.entries()]
         .filter(([,m])=>m && (m.energy||0)<=0.001 && (m.pulse||0)<=0.001 && (m.cooldown||0)<=0.001)
         .map(([k,m])=>({k,d:Math.abs((m.x||0)-px)+Math.abs((m.y||0)-py)}))
@@ -1230,6 +1338,7 @@ import { isHeroPassableTile } from './material_physics.js';
     advancePowerFrame();
     let changed=false;
     const dynamo=opts && opts.dynamo;
+    const chargeRows=[];
     for(const [raw,m] of machines){
       if(!m || getSafe(getTile,m.x,m.y,T.AIR)!==T.TELEPORTER){
         machines.delete(raw);
@@ -1240,8 +1349,20 @@ import { isHeroPassableTile } from './material_physics.js';
       const before=m.energy||0;
       m.cooldown=0;
       m.pulse=0;
-      chargeFromNetwork(m,simDt,getTile,dynamo);
-      if(Math.abs((m.energy||0)-before)>0.0001) changed=true;
+      const want=batteryChargeDemand(m,simDt,TELEPORTER_CAPACITY,CHARGE_RATE);
+      if(want>0 && Number.isFinite(want)){
+        const net=networkFor(m.x,m.y,getTile);
+        const hasSources=networkSources(net).length>0;
+        if(hasSources) m.locallyIsolated=false;
+        m.sourceLessRev=hasSources ? 0 : networkRev;
+        const registered=registerPowerDemandForNetwork(net,m.x,m.y,want,getTile,dynamo);
+        m.lastNetworkId=registered.networkId;
+        chargeRows.push({m,step:simDt,net,before});
+      }else clearMachinePowerDemand(m);
+    }
+    for(const row of chargeRows){
+      chargeFromNetwork(row.m,row.step,getTile,dynamo,row.net,true);
+      if(Math.abs((row.m.energy||0)-row.before)>0.0001) changed=true;
     }
     return changed;
   }
@@ -1343,7 +1464,15 @@ import { isHeroPassableTile } from './material_physics.js';
     invalidateTeleporterSearch();
     const tx=Math.floor(x), ty=Math.floor(y);
     if(oldTile===T.TELEPORTER && newTile!==T.TELEPORTER) machines.delete(key(tx,ty));
-    if(newTile===T.TELEPORTER) ensureMachine(tx,ty,MM.world && MM.world.getTile);
+    const worldGet=MM.world && MM.world.getTile;
+    if(newTile===T.TELEPORTER) ensureMachine(tx,ty,worldGet);
+    for(const [dx,dy] of [[0,0],...NETWORK_ADJ]){
+      const m=machines.get(key(tx+dx,ty+dy));
+      if(!m) continue;
+      m.locallyIsolated=!hasMachineNetworkNeighbor(m.x,m.y,worldGet);
+      m.sourceLessRev=m.locallyIsolated ? networkRev : 0;
+      m.remoteCheckAt=NaN;
+    }
   }
   function snapshot(){
     const list=[...machines.values()]
@@ -1381,6 +1510,8 @@ import { isHeroPassableTile } from './material_physics.js';
     networkRev++;
     invalidateTeleporterSearch();
     scanT=0;
+    remoteClock=0;
+    remoteValidationCredit=0;
     visibleScanKey='';
     visibleScanAt=0;
   }
@@ -1436,7 +1567,7 @@ import { isHeroPassableTile } from './material_physics.js';
     restore,
     reset,
     metrics,
-    _debug:{machines,networkCache,wireActivity,fairDemandRegistry,fairFrameAllocations,copperHeatBuffers,TELEPORTER_CAPACITY,MACHINE_CAP,NETWORK_CAP,NETWORK_ENDPOINT_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,COPPER_DELIVERY_EFFICIENCY,SILVER_DELIVERY_EFFICIENCY,COPPER_HEAT_THRESHOLD,debugCharge,debugSetEnergy,ensureMachine,listLoadedTeleporters,nearestTeleporter,teleporterUnderPlayer,tryTeleport,networkFor,networkDeliveryEfficiency,sourceRouteInfo,isAlienBunkerTeleporter,maxMinAlloc,maxMinAllocWeighted,networkIdentity}
+    _debug:{machines,networkCache,wireActivity,fairDemandRegistry,fairFrameAllocations,copperHeatBuffers,TELEPORTER_CAPACITY,MACHINE_CAP,NETWORK_CAP,NETWORK_ENDPOINT_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,ACTIVE_RX,ACTIVE_RY,REMOTE_UPDATE_INTERVAL,REMOTE_VALIDATIONS_PER_SECOND,REMOTE_VALIDATION_MAX_PER_UPDATE,COPPER_DELIVERY_EFFICIENCY,SILVER_DELIVERY_EFFICIENCY,COPPER_HEAT_THRESHOLD,debugCharge,debugSetEnergy,ensureMachine,listLoadedTeleporters,nearestTeleporter,teleporterUnderPlayer,tryTeleport,networkFor,networkDeliveryEfficiency,sourceRouteInfo,isAlienBunkerTeleporter,maxMinAlloc,maxMinAllocWeighted,networkIdentity}
   };
   MM.teleporters=api;
 })();

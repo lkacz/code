@@ -913,9 +913,14 @@ try{
 			water: MM.water, drifts: MM.softDrifts, icicles: MM.icicles,
 			graffiti: MM.graffiti, boats: MM.boats, mechs: MM.mechs
 		};
-		let rev = 1, saveBuilds = 0;
+		let rev = 1, saveBuilds = 0, machJsonVisits = 0;
 		const builds = { infra: 0, bg: 0, water: 0, drift: 0, prints: 0, ice: 0, gfx: 0, boats: 0, mechs: 0 };
 		const restore = (key, value) => { if(value === undefined) delete MM[key]; else MM[key] = value; };
+		const countedMachSnapshot = () => {
+			const out = { rev };
+			Object.defineProperty(out, 'toJSON', { value(){ machJsonVisits++; return { rev }; } });
+			return out;
+		};
 		try{
 			bridge.buildSave = () => { saveBuilds++; return { v: 1, world: 'cached-' + rev }; };
 			bridge.snapshotInfra = () => { builds.infra++; return { rev }; };
@@ -928,8 +933,8 @@ try{
 			};
 			MM.icicles = { ghostIciclesIn: () => { builds.ice++; return [[5, 6, rev]]; } };
 			MM.graffiti = { ghostVersion: () => rev, ghostOut: () => { builds.gfx++; return [[rev]]; } };
-			MM.boats = { snapshot: () => { builds.boats++; return { rev }; } };
-			MM.mechs = { snapshot: () => { builds.mechs++; return { rev }; }, anyGuestDriven: () => false };
+			MM.boats = { snapshot: () => { builds.boats++; return countedMachSnapshot(); } };
+			MM.mechs = { snapshot: () => { builds.mechs++; return countedMachSnapshot(); }, anyGuestDriven: () => false };
 
 			const first = makeGuest('c-late-one'); first.hello('gid-late-one'); await flush();
 			check(first.last('infra')?.data?.rev === 1 && first.last('infra')?.bg?.rev === 1,
@@ -976,6 +981,8 @@ try{
 			check(builds.infra > beforeTtlExpiryBuilds.infra && builds.gfx > beforeTtlExpiryBuilds.gfx
 				&& builds.boats > beforeTtlExpiryBuilds.boats,
 				'the one-second join-plane cache expires and rebuilds current truth even without an invalidation event');
+			check(machJsonVisits === builds.boats + builds.mechs,
+				'each vehicle snapshot topology is serialized once per mach build, including live and join-plane sends');
 
 			// Exact resync race: first accept ordinary live water/drift, then request a
 			// snapshot immediately. Its current corrections must follow the snapshot and
