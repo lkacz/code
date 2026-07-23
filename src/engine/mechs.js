@@ -367,13 +367,21 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return {x:Math.floor((x==null?m.x:x)+c.dx),y:Math.floor((y==null?m.y:y)+c.dy)};
   }
   function supportCells(m){
+    // Per-mech-immutable like bounds()/_bounds: a live mech never mutates its
+    // cells in place (park/destroy drop the whole hull), so the lowest cell per
+    // column is fixed for the mech's lifetime. Cache it — supportSnapY reaches
+    // here ~4x per physics frame per mech. Never serialized (snapshot lists
+    // fields explicitly), so the cache stays off the wire.
+    if(m && m._supportCells) return m._supportCells;
     const byX=new Map();
     for(const c of (m && m.cells) || []){
       if(!c || c.t===T.AIR) continue;
       const prev=byX.get(c.dx);
       if(!prev || c.dy>prev.dy) byX.set(c.dx,c);
     }
-    return [...byX.values()];
+    const out=[...byX.values()];
+    if(m) m._supportCells=out;
+    return out;
   }
   function supportSnapY(m,x,y,getTile){
     let target=null;
@@ -1035,9 +1043,11 @@ import { damageBlastCreatures } from './explosion_damage.js';
     }
     return false;
   }
-  function mechTrackCircuitConnected(m){
+  function mechTrackCircuitConnected(m,energised){
     if(!hasTrackDrive(m)) return false;
-    const energised=energisedCells(m);
+    // Callers within one frame can share a single conductor flood; an empty Set
+    // is still truthy, so a passed set (even size 0) skips the rebuild correctly.
+    if(!energised) energised=energisedCells(m);
     if(!energised.size) return false;
     return (m.cells||[]).some(c=>isTrackCell(c) && energised.has(c.dx+','+c.dy));
   }
@@ -1045,14 +1055,14 @@ import { damageBlastCreatures } from './explosion_damage.js';
   // dynamo/solar network that drives the tracks actually reaches it. True when
   // ANY turret cell is powered — each cell is still gated individually when
   // firing, so a stranded first turret cannot silence a wired second one.
-  function mechTurretCircuitConnected(m){
+  function mechTurretCircuitConnected(m,energised){
     const cells=mountedTurretCells(m);
     if(!cells.length) return false;
-    const energised=energisedCells(m);
+    if(!energised) energised=energisedCells(m);
     return cells.some(c=>cellPowered(c,energised));
   }
-  function trackDriveReady(m){
-    return !hasTrackDrive(m) || mechTrackCircuitConnected(m);
+  function trackDriveReady(m,energised){
+    return !hasTrackDrive(m) || mechTrackCircuitConnected(m,energised);
   }
   function solarCharge(m,dt,getTile){
     const sun=daylight();
@@ -1241,7 +1251,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   function consumeRiderEnergy(m,dt,dir,jump,ctx,getTile){
     if(!m.rider && !m.guestGid) return {dir,jump}; // a guest at the stick pays the mech's energy too
-    if(hasTrackDrive(m) && !mechTrackCircuitConnected(m)){
+    // trackCircuitOk was freshly computed by updateMech this frame (before it
+    // dispatched here), so reuse it instead of re-flooding the circuit graph.
+    if(hasTrackDrive(m) && !m.trackCircuitOk){
       m.vx=0;
       m.noPowerT=0.8;
       return {dir:0,jump:false};
@@ -1253,14 +1265,14 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(allowJump && m.onGround) want+=CFG.RIDER_JUMP_ENERGY;
     if(want<=0) return {dir,jump:false};
     const have=Math.max(0,Number(m.energy)||0);
-    const canPayWalk=!moving || have>=walkCost || (hasTrackDrive(m) && mechTrackCircuitConnected(m));
+    const canPayWalk=!moving || have>=walkCost || (hasTrackDrive(m) && m.trackCircuitOk);
     if(!canPayWalk || (have<=0.02 && !hasTrackDrive(m))){
       m.energy=0;
       m.vx=0;
       m.noPowerT=0.8;
       return {dir:0,jump:false};
     }
-    const canJump=!allowJump || !m.onGround || have>=want || (hasTrackDrive(m) && mechTrackCircuitConnected(m));
+    const canJump=!allowJump || !m.onGround || have>=want || (hasTrackDrive(m) && m.trackCircuitOk);
     if(moving){
       if(!spendMechOrHeroTrackEnergy(m,walkCost,ctx,getTile)){
         m.vx=0;
@@ -1280,7 +1292,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
   function consumeTrackStandEnergy(m,dt,dir,ctx,getTile){
     dir=dir<0?-1:(dir>0?1:0);
     if(!dir || !hasTrackDrive(m)) return 0;
-    if(!mechTrackCircuitConnected(m)){
+    // hasTrackDrive guaranteed above, so m.trackCircuitOk (set by updateMech this
+    // frame) equals mechTrackCircuitConnected(m) here — reuse it, no re-flood.
+    if(!m.trackCircuitOk){
       m.vx=0;
       m.noPowerT=0.8;
       return 0;
@@ -2000,8 +2014,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   function updateMech(m,dt,player,getTile,setTile,ctx){
     if(m.hp<=0) return;
-    m.trackCircuitOk=trackDriveReady(m);
-    m.turretCircuitOk=mechTurretCircuitConnected(m);
+    // One conductor flood per mech per frame: the cell topology is immutable
+    // between these two reads, so build the energised set once and share it
+    // (consumeRiderEnergy/consumeTrackStandEnergy then reuse m.trackCircuitOk).
+    const energised=energisedCells(m);
+    m.trackCircuitOk=trackDriveReady(m,energised);
+    m.turretCircuitOk=mechTurretCircuitConnected(m,energised);
     updateEnergy(m,dt,getTile);
     updateWaterIntake(m,dt,getTile);
     m.heroPowerPulse=Math.max(0,(m.heroPowerPulse||0)-dt*2.6);
@@ -2949,7 +2967,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
       const key=(dx|0)+','+(dy|0);
       if(seen.has(key)) continue;
       seen.add(key);
-      const infra=Array.isArray(rc.infra) ? rc.infra.filter(it=>INFRA_OK.has(it)).slice(0,3) : [];
+      // Slice BEFORE filter: rc.infra is untrusted (hand-edited save or 'mach'
+      // stream payload) and otherwise unbounded, so cap the scan to a constant.
+      // Honest data holds <=3 (snapshot slices to 3), far under this ceiling.
+      const infra=Array.isArray(rc.infra) ? rc.infra.slice(0,12).filter(it=>INFRA_OK.has(it)).slice(0,3) : [];
       if(t===T.AIR && !infra.length) continue;
       const role=builtRoleFor(t|0);
       const cell={dx:dx|0,dy:dy|0,t:t|0,role,hp:durabilityForCell(t|0,role)};
@@ -3090,7 +3111,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
 
   const api={
     update,draw,attackAt,damageAt,damageRadius,blastRadius,igniteRadius,douseRadius,isLiving,
-    toggleBoard,heroMech,syncRider,absorbHeroDamage,cellAt,findAt,
+    toggleBoard,nearestBoardable,heroMech,syncRider,absorbHeroDamage,cellAt,findAt,
     guestBoardNearest,guestUnboard,guestSetControls,guestDriveInfo,anyGuestDriven,mechById,
     snapshot,restore,reset,forceSpawn,metrics,heroOnTracks,
     trySeatFromWorld,wantsInteractKey,tileOverlayAt,absorbDynamoFlow,
