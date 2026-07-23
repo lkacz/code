@@ -58,6 +58,9 @@ window.MM = window.MM || {};
   // Lateral energy cooldown after pressure smoothing
   const lateralCooldown = new Map(); // x -> seconds remaining
   const LATERAL_INTERVAL = 0.075;
+  // Shared frozen lateral scan orders — reused each cell instead of allocating [-1,1]/[1,-1] literals in the solver hot loop
+  const DIR_LR = Object.freeze([-1,1]);
+  const DIR_RL = Object.freeze([1,-1]);
   const TILE_CHANGE_BATCH_WAKE_CAP = 24;
   let lateralAcc = 0;
   // Adaptive pressure leveling cadence
@@ -953,7 +956,7 @@ window.MM = window.MM || {};
       }
       const lateralEvaluated = lateralStep && !(lateralCooldown.get(sx)>0);
       if(lateralEvaluated){
-        const dynOrder=((sx+sy)&1)?[-1,1]:[1,-1];
+        const dynOrder=((sx+sy)&1)?DIR_LR:DIR_RL;
         for(const dx of dynOrder){
           const flow=sideDynamoFlowTarget(sx,sy,dx,getTile);
           if(!flow) continue;
@@ -969,7 +972,7 @@ window.MM = window.MM || {};
           break;
         }
         if(moved) continue;
-        for(const dx of (((sx+sy)&1)?[-1,1]:[1,-1])){
+        for(const dx of (((sx+sy)&1)?DIR_LR:DIR_RL)){
           const flow=surfaceLevelTarget(sx,sy,dx,getTile);
           if(!flow) continue;
           // A roofed surface mouth must be filled by the pressure solver while the
@@ -997,7 +1000,7 @@ window.MM = window.MM || {};
         // passable side cell receives our units — surfaces merge smoothly instead of
         // stopping one block apart.
         if(getTile(sx,sy-1)!==T.WATER){
-          for(const dx of (((sx+sy)&1)?[-1,1]:[1,-1])){
+          for(const dx of (((sx+sy)&1)?DIR_LR:DIR_RL)){
             if(!canFill(getTile(sx+dx,sy))) continue;
             if(sy+1>=WORLD_BOTTOM || getTile(sx+dx,sy+1)!==T.WATER) continue;
             const bLvl=levelUnits(getTile,sx+dx,sy+1);
@@ -1016,7 +1019,7 @@ window.MM = window.MM || {};
         // so it cannot oscillate; it stops at a 1-unit (1/10 block) residual, which is
         // the sim's surface tolerance. Only head-free cells spread into voids — cells
         // under pressure use the pressurized push below.
-        for(const dx of (((sx+sy)&1)?[-1,1]:[1,-1])){
+        for(const dx of (((sx+sy)&1)?DIR_LR:DIR_RL)){
           const nx=sx+dx;
           const nt=getTile(nx,sy);
           if(nt===T.WATER){
@@ -1044,7 +1047,7 @@ window.MM = window.MM || {};
         // Lateral downhill seeking: only move sideways when a drop exists within range —
         // otherwise a lone puddle random-walks across flat ground forever.
         const RANGE=6; const candidates=[];
-        for(const dx of [-1,1]){
+        for(const dx of DIR_LR){
           const nx=sx+dx; if(!isAir(getTile(nx,sy))) continue;
           if(sy+1<WORLD_BOTTOM && canFill(getTile(nx,sy+1))){ // immediate drop
             let drop=0, yy=sy+1; while(yy<WORLD_BOTTOM && canFill(getTile(nx,yy)) && drop<8){ drop++; yy++; }
@@ -1070,7 +1073,7 @@ window.MM = window.MM || {};
         // are filled by pressure leveling instead, which joins dry columns below the
         // waterline. Open surface cells have no head, so lone puddles can't random-walk.
         if(!moved && getTile(sx,sy-1)===T.WATER){
-          for(const dx of (((sx+sy)&1)?[-1,1]:[1,-1])){
+          for(const dx of (((sx+sy)&1)?DIR_LR:DIR_RL)){
             const nx=sx+dx;
             if(!isAir(getTile(nx,sy))) continue;
             if(!(sy+1<WORLD_BOTTOM) || canFill(getTile(nx,sy+1))) continue; // a drop: spill logic owns it
