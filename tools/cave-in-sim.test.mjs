@@ -102,6 +102,10 @@ try {
     assert.equal(C.metrics().collapsed, 1, 'the roof lets go after the warning');
     assert.ok(spawned > 0, 'rubble is handed to falling.js — never written as a raw setTile');
     assert.equal(C.metrics().watching, 0, 'the watch entry is consumed');
+    // The invariant the first cut violated: spawnLoose only pushes a falling
+    // ENTITY, so without clearing the cell first the roof never opened AND the
+    // settled rubble minted a second copy of the tile.
+    assert.equal(getTile(15, 49), T.AIR, 'the ceiling cell is actually OPENED — rubble is moved, never duplicated');
     MM.fallingSolids = undefined;
   }
 

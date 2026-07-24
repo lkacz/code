@@ -25,7 +25,7 @@ import { T } from '../constants.js';
     GLIDE_VY: 2.6,       // terminal fall speed under canopy (gravity is ~21)
     WIND_PULL: 3.1,      // how hard the weather carries you, per second
     MAX_GLIDE_VX: 9.5,   // horizontal speed cap while gliding
-    THERMAL_LIFT: 6.2,   // upward pull in a strong column, per second
+    DRAG_RATE: 24,       // canopy easing toward its target, per second — MUST out-pace gravity (40)
     THERMAL_SCAN: 9,     // tiles below to look for rising air
     THERMAL_MAX_VY: -3.4,// the strongest a thermal can ever haul you up
     STALL_SPEED: 13,     // beyond this the canopy is torn out of your hands
@@ -46,7 +46,10 @@ import { T } from '../constants.js';
     if(body && body.glider === true) return true;
     if(body && body.glider === false) return false;
     const inv = root.inv;
-    return !!(inv && inv.glider);
+    // main.js persists the crafted Lotnia as inv.tools.glider (the recipe writes
+    // it, the save round-trips it). Reading only inv.glider meant the canopy
+    // could never open for anyone.
+    return !!(inv && (inv.glider || (inv.tools && inv.tools.glider)));
   }
 
   // 0..1 strength of rising air under this column, plus geothermal warmth.
@@ -103,14 +106,16 @@ import { T } from '../constants.js';
 
     const lift = thermalAt(body.x, body.y, getTile);
     out.lift = lift;
-    if(lift > 0.05){
-      // rising air can carry you ABOVE where you started — this is what makes
-      // the sky biomes reachable without a tower
-      body.vy = Math.max(CFG.THERMAL_MAX_VY, vy - CFG.THERMAL_LIFT * lift * dt);
-    } else if(vy > CFG.GLIDE_VY){
-      // canopy drag: ease down to terminal glide rather than snapping to it
-      body.vy = Math.max(CFG.GLIDE_VY, vy - (vy - CFG.GLIDE_VY) * Math.min(1, dt * 6));
-    }
+    // physics() already added a FULL gravity step (MOVE.GRAV * playerSpeedMultiplier
+    // = 40 tiles/s^2, capped at 40 tiles/s) before this runs, so a per-frame
+    // DECREMENT is simply out-accelerated by it — and the runaway vy then trips
+    // STALL_SPEED and shuts the canopy. The canopy therefore eases toward a
+    // TARGET: rising air moves that target below zero (a real climb), and
+    // DRAG_RATE must be large enough to swallow gravity.
+    const target = lift > 0.05
+      ? Math.max(CFG.THERMAL_MAX_VY, CFG.GLIDE_VY - lift * (CFG.GLIDE_VY - CFG.THERMAL_MAX_VY))
+      : CFG.GLIDE_VY;
+    if(vy > target) body.vy = Math.max(target, vy - (vy - target) * Math.min(1, dt * CFG.DRAG_RATE));
 
     const w = windPush(body, getTile);
     out.wind = w;

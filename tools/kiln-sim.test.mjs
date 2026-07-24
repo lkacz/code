@@ -61,7 +61,7 @@ function buildChamber(){
   // ...or the electrical grid, which is what gives power a real consumer
   buildChamber();
   const savedDyn = MM.dynamo;
-  MM.dynamo = { absorbNear: (x, y, amount) => ({ taken: amount }) };
+  MM.dynamo = { absorbNear: (x, y, amount) => ({ amount: amount }) }; // the REAL dynamo API shape
   assert.ok(K._debug.heatRate(k, 0.1, get) > 0, 'the grid can heat it instead (new power DEMAND)');
   MM.dynamo = savedDyn;
 }

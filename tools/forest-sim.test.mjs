@@ -42,7 +42,46 @@ try {
     assert.equal(F._debug.suppressed(10, 58, get), true, 'an established canopy shades out competitors');
   }
 
-  // ----------------------------------------------------------- species carry-over
+  // ------------------------------- a real stand must ACTUALLY sow (regression) --
+// Two independent blockers shipped in the first cut: disperse() looked for a
+// parent with the SEEDBED predicate (which requires the trunk's own cell to be
+// air, so a real tree could never match), and the seed throw was structurally
+// shorter than the parent's own suppression box. Either one alone made the
+// entire feature inert. Pin both.
+{
+  F.reset(); tiles.clear();
+  ground(0, 120, 59);
+  for(const x of [20, 30, 40, 50]) for(let i = 1; i <= 4; i++) set(x, 59 - i, T.WOOD);
+  const savedS = MM.seasons, savedW = MM.wind;
+  try {
+    MM.seasons = { profile: () => ({ leafDropStrength: 1, leafGrowStrength: 1 }) };
+    MM.wind = { speed: () => 1.4 };
+    let sown = 0;
+    for(let i = 0; i < 400 && sown === 0; i++) sown += F._debug.disperse(35, 58, get);
+    assert.ok(sown > 0, 'a surviving stand actually sows seed');
+  } finally { MM.seasons = savedS; MM.wind = savedW; }
+
+  // negative control: a clearcut sows nothing at all
+  F.reset(); tiles.clear(); ground(0, 120, 59);
+  let none = 0;
+  for(let i = 0; i < 200; i++) none += F._debug.disperse(35, 58, get);
+  assert.equal(none, 0, 'a clearcut with no parents left sows nothing');
+
+  // every seed must clear the parent's own MIN_GAP box, or it is rejected by
+  // construction and the forest can never spread
+  F.reset(); tiles.clear(); ground(0, 120, 59);
+  for(let i = 1; i <= 5; i++) set(60, 59 - i, T.WOOD);
+  for(let i = 0; i < 120; i++){
+    F.reset();
+    assert.equal(F.plantSeed(60, 58, get), true, 'a parent always manages to sow');
+    const s = [...F._debug.saplings().values()][0];
+    const d = Math.abs(s.x - 60);
+    assert.ok(d > F.CFG.MIN_GAP, 'a seed clears the parent MIN_GAP box (' + d + ')');
+    assert.ok(d <= F.CFG.WIND_CARRY, 'a seed never outruns WIND_CARRY (' + d + ')');
+  }
+}
+
+// ----------------------------------------------------------- species carry-over
   {
     F.reset(); tiles.clear();
     ground(0, 40, 59);

@@ -153,10 +153,15 @@ export function emitMovement(body){
   return emit(body.x, body.y, cause, sp >= CFG.SPRINT_SPEED ? 1 : 0.75);
 }
 
-// A creature is unaware when it has neither seen nor heard its target — the
-// backstab window. Kept here so the melee entry asks ONE question.
+// A creature is unaware when it has neither seen nor heard you AND has not yet
+// been touched this life. The last clause is what makes this a genuine AMBUSH
+// rather than a permanent damage multiplier: `_aggro` is only ever set for
+// HOSTILE creatures, so without it every passive animal would count as unaware
+// forever and every hit — including damage-over-time ticks — would be a
+// backstab. One surprise per creature; after that it knows you are there.
 export function isUnaware(mob){
-  return !!mob && !mob._aggro && !mob._investigate && !(mob.status && mob.status.aggroed);
+  if(!mob || mob._hurtOnce) return false;
+  return !mob._aggro && !mob._noticed && !mob._investigate;
 }
 
 export function reset(){

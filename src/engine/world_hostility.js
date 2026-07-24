@@ -52,9 +52,17 @@ function at(x){
   const ramp = smoothstep(RAMP_START * reach, RAMP_FULL * reach, distance);
   // the deeds floor lifts the whole curve: what you have TAKEN raises the
   // baseline everywhere, so a long, greedy run is dangerous even back at spawn
-  const hostility = clamp(Math.max(ramp * tuning.intensity, tuning.floor), 0, 4);
-  const hot = wx > 0 ? hostility : 0;
-  const cold = wx < 0 ? hostility : 0;
+  const ramped = clamp(ramp * tuning.intensity, 0, 4);
+  const hostility = clamp(Math.max(ramped, tuning.floor), 0, 4);
+  // hot/cold stay a PURE function of the distance ramp. Worldgen reads them
+  // (temperatureBias/moistureBias/volcanoGateDelta/volcanoSizeMult below, and
+  // WG.temperature/WG.moisture), and terrain MUST regenerate identically for a
+  // seed forever: unmodified chunks are dropped on eviction and regenerated on
+  // return, so a rising deeds/descent floor would silently rewrite biomes the
+  // player had already explored — and a guest, which never sees the host's
+  // floor, would generate a different world entirely.
+  const hot = wx > 0 ? ramped : 0;
+  const cold = wx < 0 ? ramped : 0;
   const side = hostility <= 0.001 ? 'center' : (wx < 0 ? 'cold' : 'hot');
   return {
     x: wx,

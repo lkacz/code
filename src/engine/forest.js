@@ -122,7 +122,18 @@ import { T, CHUNK_W, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, isAutumnLeaf } from '../
   // Sow one seed downwind of a surviving parent tree.
   function sowNear(x, y, getTile){
     if(saplings.size >= CFG.MAX_SAPLINGS) return false;
-    const tx = Math.floor(x) + windShift() + (Math.floor(Math.random() * 5) - 2);
+    // The seed must clear the parent's OWN MIN_GAP suppression box (suppressed()
+    // scans +-MIN_GAP and finds the parent trunk) or it is rejected by
+    // construction. Natural wind is |speed| <= ~1.6 in fair weather, so the old
+    // windShift+jitter could never exceed 3 tiles < MIN_GAP 4 — the two rules
+    // were mutually exclusive and nothing ever sowed. Wind now biases DIRECTION
+    // and DISTANCE, not whether the seed clears at all.
+    const drift = windShift();
+    const dir = drift !== 0 ? (drift > 0 ? 1 : -1) : (Math.random() < 0.5 ? 1 : -1);
+    const span = Math.max(1, CFG.WIND_CARRY - CFG.MIN_GAP);
+    const throwDist = Math.min(CFG.WIND_CARRY,
+      CFG.MIN_GAP + 1 + Math.floor(Math.random() * span) + Math.abs(drift));
+    const tx = Math.floor(x) + dir * throwDist;
     const top = soilTopAt(tx, getTile, y);
     if(top == null) return false;
     const sy = top - 1;
@@ -143,12 +154,19 @@ import { T, CHUNK_W, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, isAutumnLeaf } from '../
     let sown = 0;
     for(let i = 0; i < CFG.SEEDS_PER_SCAN; i++){
       const px = Math.floor(anchorX) + Math.floor((Math.random() * 2 - 1) * CFG.SEED_RADIUS);
-      const top = soilTopAt(px, getTile, anchorY);
+      // A parent stands ON the soil, so its base occupies the very cell
+      // soilTopAt() requires to be AIR — using that predicate here meant a real
+      // tree could NEVER be found and nothing ever sowed. Locate the trunk base
+      // directly instead. Two stacked trunk cells = a real stem (every buildTree
+      // variant is >=3 tall), so a lone player-placed plank is not a seed source.
+      let top = null;
+      const py0 = Math.max(WORLD_TOP + 1, Math.floor(anchorY) - 24);
+      const py1 = Math.min(WORLD_BOTTOM - 2, Math.floor(anchorY) + 24);
+      for(let y = py0; y <= py1; y++){
+        if(isTrunk(getSafe(getTile, px, y)) && isTrunk(getSafe(getTile, px, y - 1))
+          && isSoil(getSafe(getTile, px, y + 1))){ top = y + 1; break; }
+      }
       if(top == null) continue;
-      // a parent must actually be standing here
-      let parent = false;
-      for(let dy = 1; dy <= 6 && !parent; dy++) if(isTrunk(getSafe(getTile, px, top - dy))) parent = true;
-      if(!parent) continue;
       if(Math.random() > Math.min(0.95, 0.35 * boost)) continue;
       if(sowNear(px, top - 1, getTile)) sown++;
     }

@@ -14,6 +14,12 @@ const { glider: G } = await import('../src/engine/glider.js');
 const air = () => T.AIR;
 const body = (over) => Object.assign({ x: 0, y: 10, vx: 0, vy: 6, onGround: false, glider: true }, over || {});
 const HOLD = { holdingJump: true };
+// main.js physics() adds a FULL gravity step BEFORE the glider runs
+// (MOVE.GRAV 20 x playerSpeedMultiplier 2 = 40 tiles/s^2, capped at 40). A
+// harness without it measures terminal velocities in a world the game does not
+// have — which is exactly how the thermal branch shipped unable to beat gravity.
+const GRAV_STEP = 40 / 60;
+function gravity(b){ b.vy += GRAV_STEP; if(b.vy > 40) b.vy = 40; }
 
 // ------------------------------------------------------------------- gating
 {
@@ -51,13 +57,18 @@ const HOLD = { holdingJump: true };
   // dive-speed guard first: start under the stall limit
   b.vy = 12;
   let r;
-  for(let i = 0; i < 60; i++) r = G.step(b, 1 / 60, air, HOLD);
+  for(let i = 0; i < 240; i++){ gravity(b); r = G.step(b, 1 / 60, air, HOLD); }
   assert.ok(r.open, 'the canopy stays open through a sustained fall');
-  // easing is asymptotic, so it approaches terminal glide rather than snapping to it
-  assert.ok(b.vy <= G.CFG.GLIDE_VY + 0.15, 'the fall eases down to terminal glide (' + b.vy.toFixed(2) + ')');
-  assert.ok(b.vy < 12 * 0.35, 'a 12 tiles/s plummet is cut to a fraction of its speed');
+  assert.notEqual(r.reason, 'stall', 'gravity must never out-run the canopy into a stall');
+  assert.ok(b.vy < 4.2, 'under REAL gravity the canopy still holds a gentle descent (' + b.vy.toFixed(2) + ')');
+  // Terminal is the equilibrium between the gravity step and the canopy easing —
+  // measurably ~3.6 tiles/s, NOT the bare GLIDE_VY target. A gravity-free harness
+  // measured ~2.6 and hid the fact that the thermal branch could not beat gravity.
+  assert.ok(Math.abs(b.vy - 3.6) < 0.25, 'terminal glide under real gravity (' + b.vy.toFixed(2) + ')');
+  assert.ok(b.vy < 40 * 0.15, 'a 40 tiles/s free fall is cut to a fraction of its speed');
   assert.ok(b.vy > 0, 'a glide still descends — it is not flight');
   assert.ok(G.CFG.GLIDE_VY < 6, 'terminal glide is far gentler than free fall');
+  assert.ok(G.CFG.DRAG_RATE >= 24, 'canopy drag must out-pace the 40 tiles/s^2 gravity step main.js applies first');
 }
 
 // -------------------------------------------------------------- wind carries
@@ -107,9 +118,10 @@ const HOLD = { holdingJump: true };
   G.reset();
   const soaring = body({ vy: 5 });
   let r;
-  for(let i = 0; i < 60; i++) r = G.step(soaring, 1 / 60, lavaBelow, HOLD);
+  for(let i = 0; i < 240; i++){ gravity(soaring); r = G.step(soaring, 1 / 60, lavaBelow, HOLD); }
   assert.ok(r.lift > 0, 'the glider reports the lift it found');
-  assert.ok(soaring.vy < 0, 'a strong thermal reverses the fall into a climb (' + soaring.vy.toFixed(2) + ')');
+  assert.notEqual(r.reason, 'stall', 'a thermal must not stall the canopy');
+  assert.ok(soaring.vy < 0, 'a strong thermal beats GRAVITY and reverses the fall into a climb (' + soaring.vy.toFixed(2) + ')');
   assert.ok(soaring.vy >= G.CFG.THERMAL_MAX_VY - 0.001, 'climb speed is capped (' + soaring.vy.toFixed(2) + ')');
 }
 
@@ -129,6 +141,11 @@ const HOLD = { holdingJump: true };
   assert.equal(G.step(denied, 0.1, air, HOLD).open, false, 'a body without a canopy cannot borrow the hero inventory');
   const viaInv = { x: 0, y: 0, vx: 0, vy: 6, onGround: false };
   assert.equal(G.step(viaInv, 0.1, air, HOLD).open, true, 'the hero falls back to its crafted tool flag');
+  // the shape main.js ACTUALLY writes (recipe id:'glider' -> inv.tools.glider)
+  G.reset();
+  globalThis.inv = { tools: { glider: true } };
+  const viaTools = { x: 0, y: 0, vx: 0, vy: 6, onGround: false };
+  assert.equal(G.step(viaTools, 0.1, air, HOLD).open, true, 'the hero reads inv.tools.glider — the flag main.js persists');
   globalThis.inv = undefined;
 }
 

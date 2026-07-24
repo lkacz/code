@@ -78,7 +78,9 @@ import { T } from '../constants.js';
     try{
       if(MM.dynamo && MM.dynamo.absorbNear){
         const got = MM.dynamo.absorbNear(k.x + 0.5, k.y + 0.5, CFG.ENERGY_PER_SEC * dt, getTile, 4);
-        const taken = got && Number.isFinite(Number(got.taken)) ? Number(got.taken) : (Number(got) || 0);
+        // dynamo.absorbNear returns {amount,...} — there is no `taken` key, so the
+        // old read was always 0: electric heating was dead while still draining.
+        const taken = got && Number.isFinite(Number(got.amount)) ? Number(got.amount) : 0;
         if(taken > 0) return CFG.ENERGY_RATE * (taken / Math.max(1e-6, CFG.ENERGY_PER_SEC * dt));
       }
     }catch(e){ /* no grid */ }

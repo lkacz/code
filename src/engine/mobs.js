@@ -7860,6 +7860,11 @@ const mobs = (function(){
   if(m._investigateT > 0){ m._investigateT -= dt; if(m._investigateT <= 0) m._investigate = null; }
   const aggroNow = aggressive && (canSee || shouldPursue);
   m._aggro = aggroNow;
+  // PERCEPTION, tracked apart from hostility: a peaceful, pacified or spooked
+  // creature still NOTICES a body at sight/pursue range. The ambush check must
+  // ask "did it notice me", never "is it hostile" — otherwise every
+  // non-aggressive creature would be permanently ambushable.
+  m._noticed = canSee || shouldPursue;
   const fleeTarget=m._progressionOutmatched ? {x:m.x+(m.x>=player.x?10000:-10000),y:m.y} : null;
   m._combatTarget=fleeTarget || (aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : heroForMob);
   // Blinded (sand in the eyes): the AI perceives its target impossibly far away,
@@ -7873,11 +7878,22 @@ const mobs = (function(){
   // the NOISE and aggressive still false: the creature walks over to look, it does
   // not charge. That is what turns a thrown stone into a decoy.
   const investigateAt = (!aggroNow && !blindMob && m._investigate) ? m._investigate : null;
-  const aiTarget = blindMob ? {x:m.x-10000, y:m.y} : (investigateAt || m._combatTarget);
-  const aiDist = (blindMob || m._progressionOutmatched) ? 10000
-    : (investigateAt ? Math.hypot(investigateAt.x-m.x, investigateAt.y-m.y) : distToPlayer);
-  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:aiTarget, getTile, setTile, distToPlayer:aiDist});
+  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : m._combatTarget), getTile, setTile, distToPlayer:(blindMob || m._progressionOutmatched ? 10000 : distToPlayer)});
   _mobTargetBody=null;
+  // Investigating a sound is a pure STEERING nudge applied AFTER the species AI —
+  // it must NEVER become the AI's notion of "the player". Species attacks are
+  // instant-hit (damagePlayer resolves to the real hero, not to the point the AI
+  // aimed at), so handing a noise point in as ctx.player made every proximity
+  // attack fire at the noise and land on the hero from any distance. Steering
+  // here also gives the default (onUpdate-less) branch the investigation it never
+  // had, since that branch is gated on `aggressive`.
+  if(investigateAt && !m._progressionOutmatched){
+    const ix=investigateAt.x-m.x;
+    if(Math.abs(ix)>0.7){
+      m.vx += Math.sign(ix)*((spec.speed||2)*(m.speedMul||1))*0.5*dt*30;
+      m.facing = ix>=0?1:-1;
+    }
+  }
       // This runs after every species-specific AI, overriding proximity shortcuts
       // that used to make weak wolves, vultures, worms, etc. lunge anyway.
       applyProgressionFlee(m,spec,player,challenge,dt);
@@ -11306,7 +11322,11 @@ const mobs = (function(){
     // Cios z zaskoczenia: striking a creature that has neither seen NOR heard you
     // is a backstab — the payoff that makes sneaking worth its speed cost. Hero
     // melee only; a mob ambushing another mob is not a player skill expression.
-    if(MM.noise && MM.noise.isUnaware && MM.noise.isUnaware(m) && opts && (opts.source==='hero' || opts.source==='hero_melee' || opts.source==='coop')){
+    // Direct hits only: a status tick (burn/bleed/poison) or a chained arc must
+    // never claim the ambush bonus, and _hurtOnce below closes the window after
+    // the first strike lands.
+    const directHit = !!opts && !opts._chained && opts.cause!=='status' && !opts.dot;
+    if(directHit && MM.noise && MM.noise.isUnaware && MM.noise.isUnaware(m) && (opts.source==='hero' || opts.source==='hero_melee' || opts.source==='coop')){
       dealt*=MM.noise.CFG.BACKSTAB_MULT;
       applyStatus(m,'stun',{dur:MM.noise.CFG.BACKSTAB_STUN, source:opts.source, cause:'backstab'});
       noteCombatEvent({kind:'crit', target:'mob', source:opts.source, x:m.x, y:m.y-0.3,
@@ -11321,6 +11341,9 @@ const mobs = (function(){
     if(!(dealt>0)) return;
     const willDie=beforeHp-dealt<=0;
     noteDamageSource(m,opts);
+    // the ambush window closes the instant anything actually lands (engine/noise.js
+    // isUnaware) — a creature that has been hit knows you are there
+    m._hurtOnce=true;
     m.hp-=dealt;
     m.hitFlashUntil = performance.now()+120;
     m.shake = 0.6;

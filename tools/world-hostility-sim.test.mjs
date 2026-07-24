@@ -185,6 +185,16 @@ assert.equal(worldHostility.at(0).hostility, 0, 'spawn is safe at the default fl
 worldHostility.setTuning({floor:1.5});
 assert.ok(worldHostility.at(0).hostility >= 1.5, 'a deeds floor makes spawn itself dangerous');
 assert.ok(worldHostility.setTuning({floor:99}).floor <= worldHostility.TUNING_BOUNDS.floor[1], 'the floor is clamped like every other tuning knob');
+// The deeds/descent floor is a DIFFICULTY axis ONLY. Worldgen climate must stay a
+// pure function of the seed: unmodified chunks are evicted and REGENERATED on
+// return, so if the floor moved climate the world would silently rewrite biomes
+// the player already explored — and a guest, which never sees the host's floor,
+// would generate different terrain for the same seed.
+worldHostility.setTuning({floor:2.2});
+assert.equal(worldHostility.at(500).temperatureBias, 0, 'the deeds floor never moves worldgen climate');
+assert.equal(worldHostility.at(-500).moistureBias, 0, 'nor worldgen moisture on the cold side');
+assert.equal(worldHostility.at(500).volcanoSizeMult, 1, 'nor volcano gating/size near spawn');
+assert.ok(worldHostility.at(500).mobHpMult > 1, 'while the difficulty consumers still read the raised floor');
 worldHostility.setTuning({intensity:1, reach:1, floor:0});
 
 console.log('world-hostility-sim: all assertions passed');

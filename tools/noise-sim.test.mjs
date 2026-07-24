@@ -120,7 +120,12 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   assert.equal(N.isUnaware({}), true, 'a calm creature is unaware');
   assert.equal(N.isUnaware({_aggro: true}), false, 'a creature that SEES you is aware');
   assert.equal(N.isUnaware({_investigate: {x: 0, y: 0}}), false, 'a creature that HEARD you is aware');
-  assert.equal(N.isUnaware({status: {aggroed: true}}), false, 'an already-aggroed creature is aware');
+  // PERCEPTION, not hostility: mobs.js sets _noticed for ANY creature within
+  // sight/pursue range, hostile or not. Keying off _aggro alone made every
+  // passive animal permanently ambushable. (There is no status.aggroed in the
+  // STATUS registry — the original predicate tested a field that never existed.)
+  assert.equal(N.isUnaware({_noticed: true}), false, 'a creature that has NOTICED you is aware, even if peaceful');
+  assert.equal(N.isUnaware({_hurtOnce: true}), false, 'a creature already struck knows you are there — one ambush only');
   assert.equal(N.isUnaware(null), false, 'no creature is not a backstab');
   assert.ok(N.CFG.BACKSTAB_MULT > 1.5, 'the backstab payoff is worth the speed cost');
   assert.ok(N.CFG.BACKSTAB_STUN > 0, 'a backstab buys you a moment');

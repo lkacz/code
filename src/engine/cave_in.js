@@ -11,7 +11,9 @@
 //
 // Shape is a deliberate clone of avalanche.js/icicles.js: a disturb() poked from
 // the existing mining chokepoint, a warning phase you can react to, then release
-// through falling.js's own spawn path — never a raw setTile. Damage goes through
+// by clearing the cell and re-entering falling.js's own spawn path (the
+// avalanche.js order — spawnLoose pushes an ENTITY and does not open the tile,
+// so clearing first is what stops the rubble duplicating). Damage goes through
 // the host-authoritative body inlets, sweeping window.player AND MM.coopBodies,
 // so a guest cannot sprint under a bad roof in safety (CLAUDE.md rule 3).
 import { T, WORLD_MIN_Y, WORLD_MAX_Y, WORLD_H } from '../constants.js';
@@ -135,18 +137,16 @@ import { isSolidCollisionTile } from './material_physics.js';
       const t = getSafe(getTile, cx, s.y);
       if(!isNaturalRock(t)) continue;
       if(proppedNear(cx, s.y)) continue;
-      try{
-        if(F && F.spawnLoose && F.spawnLoose(cx, s.y, t)){ dropped++; continue; }
-      }catch(e){ /* fall through to the plain path */ }
-      // spawnLoose refused (cap/space): drop the tile the ordinary way so the
-      // ceiling still opens rather than silently doing nothing
-      try{
-        if(typeof setTile === 'function'){
-          setTile(cx, s.y, T.AIR);
-          if(F && F.onTileRemoved) F.onTileRemoved(cx, s.y);
-          dropped++;
-        }
-      }catch(e){ /* fine */ }
+      // spawnLoose only pushes a falling ENTITY — it never touches the world.
+      // Clear the ceiling FIRST (the avalanche.js order), or the roof never opens
+      // AND the settled rubble mints a second copy of the tile.
+      if(typeof setTile !== 'function') continue;
+      try{ setTile(cx, s.y, T.AIR); }catch(e){ continue; }
+      if(getSafe(getTile, cx, s.y) !== T.AIR) continue;   // write refused — never mint mass
+      try{ if(F && F.onTileRemoved) F.onTileRemoved(cx, s.y); }catch(e){}
+      try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(cx, s.y, getTile); }catch(e){}
+      try{ if(F && F.spawnLoose) F.spawnLoose(cx, s.y, t); }catch(e){}
+      dropped++;
     }
     if(dropped){
       stats.collapsed++;
