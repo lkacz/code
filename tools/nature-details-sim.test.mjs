@@ -566,7 +566,7 @@ const { softDrifts } = await import('../src/engine/soft_drifts.js');
   assert.match(mainSrc, /id:'soot_pigment', name:'Sadza \(pigment\)', cost:\{coal:1\}/, 'coal crushes into pigment');
   assert.match(mainSrc, /id:'weathervane', name:'Wiatrowskaz', cost:\{steel:1, wood:2\}/, 'the vane recipe');
   assert.match(mainSrc, /id:'lightning_rod', name:'Piorunochron', cost:\{steel:3, silverWire:2\}/, 'the rod recipe');
-  assert.match(mainSrc, /'WEATHERVANE','LIGHTNING_ROD','RESPAWN_TOTEM'\]/, 'the instruments joined the utility hot-select group');
+  assert.match(mainSrc, /'WEATHERVANE','LIGHTNING_ROD','RESPAWN_TOTEM'/, 'the instruments joined the utility hot-select group');
   // ghost gfx plane + intent
   assert.match(hostSrc, /gfx: 2500/, 'the gfx plane has a low-Hz cadence');
   assert.match(hostSrc, /function gfxTick\(s, t\)/, 'the host streams the graffiti plane');

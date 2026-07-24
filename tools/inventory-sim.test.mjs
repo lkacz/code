@@ -193,7 +193,8 @@ assert.match(mainSrc, /inv\.bedrockLadder\+=6/, 'bedrock ladder recipe yields si
 assert.match(mainSrc, /tiles:\['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM'/, 'hotbar machine group includes solar panels and spring platforms');
 assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER'/, 'hotbar utility group includes both cable materials and ladders');
 assert.match(mainSrc, /'LADDER','BEDROCK_LADDER'/, 'hotbar utility group exposes both ladder materials');
-assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER'[\s\S]*'RESPAWN_TOTEM'\]/, 'hotbar utility group includes respawn totems');
+assert.match(mainSrc, /tiles:\['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER'[\s\S]*'RESPAWN_TOTEM'/, 'hotbar utility group includes respawn totems');
+assert.match(mainSrc, /tiles:\['WIRE',[^\]]*'PIT_PROP'\]/, 'hotbar utility group includes timber pit props (cave-in counter-play)');
 assert.match(mainSrc, /function selectToolMode\(opts\)\{[\s\S]*INV\.unequip\('weapon'\)[\s\S]*updateWeaponBar\(\)/, 'selecting build mode holsters the active weapon and refreshes the weapon bar');
 assert.match(mainSrc, /function cycleHotbar\(idx,opts\)\{[\s\S]*selectToolMode\(\{quiet:true\}\)[\s\S]*updateHotbarSel\(\)/, 'choosing a hotbar resource immediately returns to pickaxe/build mode');
 assert.match(mainSrc, /const preview=\(c && INV\.selectedWeaponForCategory\)\? INV\.selectedWeaponForCategory\(c\.id\)/, 'inactive weapon HUD slots display their remembered selection');

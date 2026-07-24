@@ -103,6 +103,7 @@ import { fishing as FISHING } from './engine/fishing.js';
 import { boats as BOATS } from './engine/boats.js';
 import { grapple as GRAPPLE } from './engine/grapple.js';
 import { noise as NOISE } from './engine/noise.js';
+import { caveIn as CAVE_IN } from './engine/cave_in.js';
 import { mechs as MECHS } from './engine/mechs.js';
 import { altar as ALTAR } from './engine/altar.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
@@ -744,6 +745,15 @@ MM.onTileRenderChanged=function(tx,ty,old,next){
 	if((old===T.AIR && next===T.AIR) || isInfrastructureTileId(old) || isInfrastructureTileId(next)) infraOverlayChangeCounter++;
 	tx=Math.floor(tx); ty=Math.floor(ty);
 	noteRespawnTotemTileChanged(tx,ty,old,next);
+	// Pit props register here rather than in tryPlace: EVERY real tile change
+	// passes through this hook, so a prop placed, mined, burned or blasted away
+	// updates the cave-in registry by exactly one code path.
+	if(CAVE_IN && (old===T.PIT_PROP || next===T.PIT_PROP)){
+		try{
+			if(next===T.PIT_PROP) CAVE_IN.noteProp(tx,ty);
+			else if(old===T.PIT_PROP) CAVE_IN.clearProp(tx,ty);
+		}catch(e){}
+	}
 	noteHealingShelterTileChanged(tx,ty);
 	noteTileBuriesHero(tx,ty,next);
 	if(LIGHTING && LIGHTING.onTileChanged) LIGHTING.onTileChanged(tx,ty);
@@ -3103,6 +3113,15 @@ function notifyInvasionMining(tId,tx,ty){
 			NOISE.emit(tx+0.5, ty+0.5, 'mine', Math.max(0.25, Math.min(1.8, hp/22)));
 		}
 	}catch(e){}
+	// Zawał (engine/cave_in.js): the same strike that makes noise also shakes the
+	// roof. Hollowing a wide gallery out of natural rock is now a real risk you
+	// answer with pit props — the one producer the burial system was missing.
+	try{
+		if(CAVE_IN && CAVE_IN.disturb){
+			const hp=(INFO[tId] && Number(INFO[tId].hp)) || 6;
+			CAVE_IN.disturb(tx, ty, Math.max(0.3, Math.min(2, hp/12)), getTile);
+		}
+	}catch(e){}
 	return notifyInvasionHeroAction('hero_mine', {
 		x:tx+0.5,
 		y:ty+0.5,
@@ -4082,6 +4101,9 @@ function buildSaveObject(opts){
 	fire: timedSavePart('fire',()=>((FIRE && FIRE.snapshot) ? FIRE.snapshot() : null),perf),
 	boats: timedSavePart('boats',()=>((BOATS && BOATS.snapshot) ? BOATS.snapshot() : null),perf),
 	mechs: timedSavePart('mechs',()=>((MECHS && MECHS.snapshot) ? MECHS.snapshot() : null),perf),
+	// pit props are player-placed safety infrastructure: they must survive a
+	// reload or a returning miner walks into a roof they already paid to shore up
+	caveIn: timedSavePart('caveIn',()=>((CAVE_IN && CAVE_IN.snapshot) ? CAVE_IN.snapshot() : null),perf),
 	wind: timedSavePart('wind',()=>((WIND && WIND.snapshot) ? WIND.snapshot() : null),perf),
 	seasons: timedSavePart('seasons',()=>((SEASONS && SEASONS.snapshot) ? SEASONS.snapshot() : null),perf),
 	clouds: timedSavePart('clouds',()=>((CLOUDS && CLOUDS.snapshot) ? CLOUDS.snapshot() : null),perf),
@@ -4377,6 +4399,7 @@ function applyGameDataCore(data,opts){
 	try{ if(BOATS && BOATS.reset) BOATS.reset(); }catch(e){}
 	try{ if(GRAPPLE && GRAPPLE.reset) GRAPPLE.reset(); }catch(e){}
 	try{ if(MECHS && MECHS.reset) MECHS.reset(); }catch(e){}
+	try{ if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); }catch(e){}
 	try{ if(TREES && TREES.reset) TREES.reset(); }catch(e){}
 	try{ if(GRASS && GRASS.reset) GRASS.reset(); }catch(e){}
 	try{ if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); }catch(e){}
@@ -4464,6 +4487,7 @@ function applyGameDataCore(data,opts){
 	restoreRequired('fire',data.fire!=null,()=>{ if(FIRE && FIRE.restore) return FIRE.restore(data.fire,getTile); throw new Error('fire restorer unavailable'); });
 	restoreRequired('boats',data.boats!=null,()=>{ if(BOATS && BOATS.restore) return BOATS.restore(data.boats); throw new Error('boats restorer unavailable'); });
 	restoreRequired('mechs',data.mechs!=null,()=>{ if(MECHS && MECHS.restore) return MECHS.restore(data.mechs,getTile); throw new Error('mechs restorer unavailable'); });
+	try{ if(CAVE_IN && CAVE_IN.restore && data.caveIn!=null) CAVE_IN.restore(data.caveIn); }catch(e){}
 	restoreRequired('wind',data.wind!=null,()=>{ if(WIND && WIND.restore) return WIND.restore(data.wind); throw new Error('wind restorer unavailable'); });
 	restoreRequired('seasons',data.seasons!=null,()=>{ if(SEASONS && SEASONS.restore) return SEASONS.restore(data.seasons); throw new Error('seasons restorer unavailable'); });
 	restoreRequired('clouds',data.clouds!=null,()=>{ if(CLOUDS && CLOUDS.restore) return CLOUDS.restore(data.clouds); throw new Error('clouds restorer unavailable'); });
@@ -4951,6 +4975,7 @@ const RECIPES=[
 	{id:'arrows_carbon_bulk', name:'Strzaly weglowe x100', cost:{graphene:2}, make(){ inv.arrowCarbon+=100; msg('Strzaly weglowe +100'); }},
 	{id:'arrows_grapple', name:'Strzaly hakowe x12', cost:{rope:2, steel:1}, make(){ inv.arrowGrapple+=12; msg('Strzaly hakowe +12 - hak ze stali na linie z pnaczy; wystrzel w teren i przyciagnij sie (przypnij "hakowe" w pasku strzal, skok = puszczasz line)'); }},
 	{id:'rope_from_vine', name:'Lina z pnaczy x2', cost:{vine:3}, make(){ inv.rope+=2; msg('Lina +2 - pnacza z bagiennych mangrowcow skrecone w mocna line (na hakowe strzaly i inny sprzet)'); }},
+	{id:'pit_prop', name:'Stemple x4', cost:{wood:6}, make(){ inv.pitProp+=4; msg('Stemple +4 - postaw je pod szerokim stropem, zanim zawal cie przygniecie (podpieraja skale dookola)'); }},
 	{id:'harpoon_bolts', name:'Harpuny x8', cost:{steel:1, wood:1}, make(){ inv.harpoonBolt+=8; msg('Harpuny +8 - ciezkie, odzyskiwalne groty do wyrzutni podwodnej'); }},
 	{id:'toxic_snowballs', name:'Toksyczne snieżki x8', cost:{toxicSnow:2}, make(){ inv.toxicSnowball+=8; msg('Toksyczne snieżki +8 - amunicja do luku; spowalnia i zatruwa cel'); }},
 	{id:'snowballs', name:'Snieżki x8', cost:{snow:2}, make(){ inv.snowball+=8; msg('Snieżki +8 - rzut z reki (klawisz 3); chwilowo spowalniaja cel'); }},
@@ -14659,7 +14684,7 @@ const HOT_SELECT_GROUPS=[
 	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
 	{id:'home',label:'Dom i wyposażenie',tiles:['CHAIR_WOOD','CHAIR_STONE','CHAIR_STEEL','RUSTIC_STOOL','PINE_TABLE','WALL_SHELF','OAK_CABINET','COZY_BED','BOOKCASE','PATCHWORK_SOFA','HAMMOCK','WOVEN_RUG','POTTED_FERN','WALL_CLOCK','MIRROR','AQUARIUM','TERRARIUM','CHANDELIER','INDOOR_FOUNTAIN','HOLOGRAM_ART','DESK_LAMP','RADIO','TELEVISION','GAME_CONSOLE','REFRIGERATOR','COFFEE_MACHINE','AIR_PURIFIER','MEDICAL_STATION','HEALING_POD','ZERO_G_LOUNGER','MEMORY_PROJECTOR','CHRONO_CLOCK','BIOLUM_GARDEN','MINIATURE_SUN','DREAM_SYNTH','COSMIC_ORRERY']},
 		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET','SMR_CELL']},
-	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER','BEDROCK_LADDER','WATER_PUMP','TRANSISTOR','TORCH','WEATHERVANE','LIGHTNING_ROD','RESPAWN_TOTEM']},
+	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER','BEDROCK_LADDER','WATER_PUMP','TRANSISTOR','TORCH','WEATHERVANE','LIGHTNING_ROD','RESPAWN_TOTEM','PIT_PROP']},
 	{id:'food',label:'Jedzenie',tiles:['MEAT','ROTTEN_MEAT','BAKED_MEAT','GLOWSHROOM']},
 	{id:'chest',label:'Skrzynie',tiles:['CHEST_COMMON','CHEST_UNCOMMON','CHEST_RARE','CHEST_EPIC','CHEST_LEGENDARY']},
 	{id:'other',label:'Inne',tiles:[]}
@@ -19203,6 +19228,7 @@ function runGameStep(dt,ts){
 			if(bodies && bodies.length){ for(const b of bodies) NOISE.emitMovement(b); }
 		}
 	}
+	if(CAVE_IN && CAVE_IN.update) CAVE_IN.update(dt, player, getTile, setTile);
 	if(SEASONS && SEASONS.update) SEASONS.update(dt, getTile, setTile, player, seasonUpdateContext());
 	if(FIRE && FIRE.update) FIRE.update(getTile, setTile, dt);
 	if(VOLCANO && VOLCANO.update) VOLCANO.update(dt, player, getTile, setTile);

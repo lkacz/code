@@ -60,7 +60,10 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   // canopies. Mined for its 'vine' resource — twisted into 'rope' (a tile-less
   // material) that crafts the grapple arrow and other rope gear. Passable +
   // flammable deco, routed as passable-utility like GLOWSHROOM; never placed.
-  VINE:143
+  VINE:143,
+  // Stempel — timber pit prop: the counter-play to cave-ins (engine/cave_in.js).
+  // Passable so you can walk through your own gallery while it holds the roof.
+  PIT_PROP:144
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -297,6 +300,7 @@ INFO[T.HARD_WOOD]={hp:6,color:'#5e3a1c',drops:[{item:'hardWood',min:2,max:3}],pa
 // Vine: passable green drape under mangrove canopies. Mined for 'vine' (→ 'rope').
 // Passable + flammable → routes as passable-utility (like GLOWSHROOM); burns fast.
 INFO[T.VINE]={hp:1,color:'#3f7d3a',drop:'vine',passable:true,flammable:true,burnTime:1.2};
+INFO[T.PIT_PROP]={hp:4,color:'#8a6236',drop:'wood',passable:true,flammable:true,burnTime:2.2};
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;
