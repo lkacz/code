@@ -1803,6 +1803,27 @@ const ghostHost = (function(){
 			entry.peer.send({ t: 'pactAck', a: 'eat', ok: true, key, hp: +b.hp.toFixed(1) });
 			return;
 		}
+		if(pl.a === 'drop'){
+			// play mode is the zero-trust tier: the pouch is HOST truth, so the
+			// resource is taken from it FIRST and the world drop only happens if that
+			// succeeded — a guest can never mint items by spamming drops.
+			const tD = now();
+			if(tD - (b.lastDropAt || 0) < NET.PLAY_RULES.DROP_MS) return;
+			b.lastDropAt = tD;
+			const ddx = Number(pl.x), ddy = Number(pl.y);
+			if(!Number.isFinite(ddx) || !Number.isFinite(ddy)) return;
+			if(!NET.playReachOk(b.x, b.y, Math.floor(ddx), Math.floor(ddy))){ entry.peer.send({ t: 'pactAck', a: 'drop', ok: false, reason: 'reach' }); return; }
+			const dkey = typeof pl.k === 'string' ? pl.k.slice(0, 24) : '';
+			const dqty = Math.max(1, Math.min(NET.HERO_RULES.DROP_MAX, Math.floor(Number(pl.n) || 1)));
+			if(!NET.pouchTake(b.pouch, dkey, dqty)){ entry.peer.send({ t: 'pactAck', a: 'drop', ok: false, reason: 'empty' }); return; }
+			let dres = null;
+			try{ dres = bridge.ghostHeroDropAt ? bridge.ghostHeroDropAt(ddx, ddy, dkey, dqty, { x: b.x, y: b.y }) : null; }catch(e){ dres = { ok: false, reason: 'error' }; }
+			// the world refused it (bad key / no room): hand the pouch back
+			if(!(dres && dres.ok)) NET.pouchAdd(b.pouch, dkey, dqty);
+			else { keepBody(entry); sendVitals(s, entry); }
+			entry.peer.send({ t: 'pactAck', a: 'drop', ok: !!(dres && dres.ok), reason: (dres && dres.reason) || null, key: dkey });
+			return;
+		}
 		if(pl.a === 'pickup'){
 			// ground pickups aim at world floats like attacks; the bridge re-checks the
 			// drop's real reach and refuses everything but plain resources
@@ -2028,6 +2049,29 @@ const ghostHost = (function(){
 				splat: (pl.sp === 'wet' || pl.sp === 'gascloud') ? pl.sp : null, // balloon/grenade bursts, host-owned radii
 				ownerGid: entry.gid, duelGid: b.duelWith || null }; // duel arrows re-check consent at impact
 			try{ if(bridge.ghostHeroShoot) bridge.ghostHeroShoot({ x: b.x, y: b.y }, spec); }catch(e){ /* fine */ }
+			return;
+		}
+		if(pl.a === 'drop'){
+			// Setting an item down is the INVERSE of pickup and takes pickup's trust
+			// level: the guest names a resource and an amount, the HOST owns the world
+			// drop. In hero mode the pouch is the guest's own truth, so the ack simply
+			// confirms and the guest debits itself — the world write is still ours.
+			// Every number is clamped here; the KEY is whitelisted by the bridge
+			// against the real resource registry.
+			if(t - (b.lastHeroDropAt || 0) < NET.HERO_RULES.DROP_MS) return;
+			b.lastHeroDropAt = t;
+			const dx = Number(pl.x), dy = Number(pl.y);
+			if(!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+			if(!NET.playReachOk(b.x, b.y, Math.floor(dx), Math.floor(dy), NET.HERO_RULES.REACH)){
+				entry.peer.send({ t: 'hact', a: 'drop', ok: false, reason: 'reach' }); return;
+			}
+			const dkey = typeof pl.k === 'string' ? pl.k.slice(0, 24) : '';
+			const dqty = Math.max(1, Math.min(NET.HERO_RULES.DROP_MAX, Math.floor(Number(pl.n) || 1)));
+			let dres = null;
+			try{ dres = bridge.ghostHeroDropAt ? bridge.ghostHeroDropAt(dx, dy, dkey, dqty, { x: b.x, y: b.y }) : null; }
+			catch(e){ dres = { ok: false, reason: 'error' }; }
+			entry.peer.send({ t: 'hact', a: 'drop', ok: !!(dres && dres.ok), reason: (dres && dres.reason) || null,
+				key: dkey, qty: (dres && dres.qty) || 0 });
 			return;
 		}
 		if(pl.a === 'pickup'){

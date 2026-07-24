@@ -91,6 +91,7 @@ export const PLAY_RULES = {
 	DUEL_TTL_MS: 30000, // a duel challenge waits this long for the other side's consent
 	GIFT_MAX: 99,     // per-gift ceiling on host → guest resource transfers
 	PICKUP_MS: 200,   // per-body floor between ground-pickup intents
+	DROP_MS: 350,     // per-guest floor between item drops (the anti item-shower floor)
 	EAT_MS: 500,      // per-body floor between eat intents
 	LOOK_MS: 1000     // per-viewer floor between look changes
 };
@@ -136,7 +137,7 @@ export function duelAskKey(fromGid, toGid){ return JSON.stringify([fromGid, toGi
 // damage envelope). A modified hero client can gild its own trophy case; it still
 // cannot write a single illegal tile or one-shot a boss.
 export const HERO_KEY = 'mm_ghost_hero_v1';
-export const HERO_ACTIONS = ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'antenna', 'gfx'];
+export const HERO_ACTIONS = ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'antenna', 'gfx', 'drop'];
 export function validHeroAction(a){ return HERO_ACTIONS.includes(a); }
 export const HERO_RULES = {
 	REACH: 6,        // solo MINE/PLACE reach is 5; +1 tolerance for pose-stream lag
@@ -147,6 +148,8 @@ export const HERO_RULES = {
 	DMG_RADIUS: 7,   // claimed impact point must be within this of the tracked body
 	HP_MAX: 1000,    // claimed vitals (display/targeting truth) are clamped into [0, this]
 	PICKUP_MS: 150,  // per-guest floor between ground-pickup intents
+	DROP_MS: 350,    // per-body floor between item drops (anti item-shower floor)
+	DROP_MAX: 99,    // one drop may carry at most this much of one resource
 	USE_MS: 400,     // per-guest floor between world interactions (chests)
 	SHOOT_MS: 220,   // per-guest floor between projectile intents
 	ROW_MS: 250,     // per-guest floor between oar strokes
@@ -155,7 +158,7 @@ export const HERO_RULES = {
 	ANTENNA_MS: 1500, // per-guest floor between antenna-power intents (real cooldown is per-active, host-side)
 	GFX_MS: 700      // per-guest floor between soot-graffiti paints (glyphs are whitelisted host-side)
 };
-export const PLAY_ACTIONS = ['mine', 'place', 'attack', 'craft', 'duel', 'pickup', 'eat'];
+export const PLAY_ACTIONS = ['mine', 'place', 'attack', 'craft', 'duel', 'pickup', 'eat', 'drop'];
 export function validPlayAction(a){ return PLAY_ACTIONS.includes(a); }
 // --- the guest arsenal -------------------------------------------------------------
 // Curated starter templates, resolved HOST-side through the real combat chains

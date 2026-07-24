@@ -11004,6 +11004,39 @@ function paintGraffitiAtCursor(cycle){
 }
 // Ploughing a THICK soot film shakes loose pigment (soft_drifts calls this).
 MM.collectSoot=(n)=>{ inv.soot=(inv.soot|0)+Math.max(1,n|0); updateInventory(); };
+// --- Odłóż przedmiot ---------------------------------------------------------
+// The missing inverse of picking things up. Solo it frees a slot; in co-op it IS
+// the trading system — a guest drops, the other picks it up with the `pickup`
+// intent that already existed. The drop lands just in front of the hero.
+function heldDropInfo(){
+	const tid=selectedTileId();
+	const key=TILE_TO_RES[tid];
+	if(!key) return null;
+	const have=Math.max(0,inv[key]|0);
+	return {key, have, label:RES_LABEL[key]||key};
+}
+function dropHeldResource(all){
+	const held=heldDropInfo();
+	if(!held){ msg('Tego nie da się odłożyć.'); return false; }
+	if(held.have<=0){ msg('Nie masz nic w tym slocie.'); return false; }
+	const qty=Math.max(1,Math.min(99,all ? held.have : 1));
+	const dir=player.facing<0?-1:1;
+	const dx=player.x+dir*0.65, dy=player.y-0.1;
+	if(MM.ghostHeroIntents){
+		// hero guest: the HOST owns the world drop, so ask and only debit on ack
+		if(!MM.ghostHeroIntents.drop || !MM.ghostHeroIntents.drop(dx,dy,held.key,qty)) return false;
+		return true;
+	}
+	if(!DROPS || !DROPS.spawnResource) return false;
+	const d=DROPS.spawnResource(dx,dy,held.key,qty,{vx:dir*2.6, vy:-3.4, source:'player_drop'});
+	if(!d){ msg('Za dużo rzeczy leży dookoła.'); return false; }
+	inv[held.key]=held.have-qty;
+	updateInventory(); updateHotbarCounts();
+	msg('Odłożono: '+held.label+(qty>1?' ×'+qty:''));
+	noteSaveActivity();
+	return true;
+}
+MM.dropHeldResource=dropHeldResource;
 window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if(modalInputOpen()){ releaseGameplayInput(); return; } noteSaveActivity(); const k=KEYBINDS.translate(e.key.toLowerCase()); const code=(e.code||'').toLowerCase(); keys[k]=true; if(code) keys[code]=true; if(!e.repeat) queueJumpInput(k); if(k==='s' || k==='arrowdown') trapdoorDropBufferT=TRAPDOOR_DROP_BUFFER; if(k==='escape'){ closeHotSelect(); }
  if(!e.repeat && NPCS && NPCS.handleKey && NPCS.handleKey(e.key,player,tutorialNpcCtx)){ e.preventDefault(); return; }
  // Weapon shortcuts: 1 = pickaxe/build mode (cycles owned tiers), 2/3/4 cycle weapon categories
@@ -11032,6 +11065,12 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='r'&&!keysOnce.has('r') && selectedTileId()===T.DYNAMO){ toggleDynamoOrientation(); keysOnce.add('r'); e.preventDefault(); }
 	if(k==='r'&&!keysOnce.has('r') && selectedTileId()===T.WATER_PUMP){ togglePumpOrientation(); keysOnce.add('r'); e.preventDefault(); }
 	if(k==='r'&&!keysOnce.has('r') && isBackgroundBuildTileId(selectedTileId())){ toggleBackgroundBuildMode(); keysOnce.add('r'); e.preventDefault(); }
+	if(k==='.'&&!keysOnce.has('.')){
+		keysOnce.add('.');
+		dropHeldResource(!!e.shiftKey);
+		e.preventDefault();
+		return;
+	}
 	if(k==='e'&&!keysOnce.has('e')){
 		keysOnce.add('e');
 		// Machine context keeps the interact key (board/unboard). Otherwise E
@@ -18807,6 +18846,32 @@ MM.ghostBridge={
 		if(info.kind!=='resource') return {ok:false, reason:'kind'};
 		if(!D.remove(info.id)) return {ok:false, reason:'gone'};
 		return {ok:true, kind:'res', key:String(info.res||'').slice(0,24), qty:Math.max(1,Math.min(99,Number(info.qty)||1))};
+	},
+	// HOST-side inverse of ghostHeroPickupAt: a guest asks to set a resource down.
+	// The KEY is whitelisted against the real registry here (never trusted off the
+	// wire), the amount is re-clamped, and the drop is spawned near the guest BODY
+	// rather than wherever the client claimed.
+	ghostHeroDropAt:(wx,wy,key,qty,body)=>{
+		if(typeof key!=='string' || !RESOURCE_DEFS.find(r=>r.key===key)) return {ok:false, reason:'kind'};
+		const n=Math.max(1,Math.min(99,Math.floor(Number(qty)||1)));
+		const D=MM.drops;
+		if(!D || !D.spawnResource) return {ok:false, reason:'error'};
+		const bx=body && Number.isFinite(body.x) ? body.x : wx;
+		const by=body && Number.isFinite(body.y) ? body.y : wy;
+		if(!Number.isFinite(bx) || !Number.isFinite(by)) return {ok:false, reason:'where'};
+		const dir=(Number(wx)>=bx)?1:-1;
+		const d=D.spawnResource(bx+dir*0.65, by-0.1, key, n, {vx:dir*2.6, vy:-3.4, source:'player_drop'});
+		if(!d) return {ok:false, reason:'full'};
+		return {ok:true, key, qty:n};
+	},
+	// GUEST-side: an ACKNOWLEDGED drop debits the guest's own inventory. Split from
+	// the send on purpose — a refused drop must never cost the resource.
+	ghostHeroSpend:(key,qty)=>{
+		if(typeof key!=='string' || !RESOURCE_DEFS.find(r=>r.key===key)) return false;
+		const n=Math.max(1,Math.min(99,Number(qty)|0));
+		inv[key]=Math.max(0,(inv[key]|0)-n);
+		try{ updateInventory(); updateHotbarCounts(); }catch(e){}
+		return true;
 	},
 	// a validated ground pickup credits the guest's own inventory by resource KEY
 	ghostHeroGain:(key,qty)=>{

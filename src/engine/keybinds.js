@@ -38,6 +38,9 @@ window.MM = window.MM || {};
     {id:'rotate',     group:'akcja', def:'r', label:'Obrót / tryb tła'},
     {id:'undo',       group:'akcja', def:'z', label:'Cofnij budowlę'},
     {id:'scanner',    group:'akcja', def:'x', label:'Skaner kraterów'},
+    // all 26 letters were already claimed when the drop verb landed — punctuation
+    // is bindable (see BINDABLE_RE) and users can rebind it like any other action
+    {id:'drop',       group:'akcja', def:'.', label:'Odłóż przedmiot (Shift = cały stos)'},
     // 'q' moved from vision to the antenna active power (2026-07 antenna wave);
     // vision landed on the previously free 'y' — read sites track the defaults.
     {id:'antenna',    group:'akcja', def:'q', label:'Moc antenki'},

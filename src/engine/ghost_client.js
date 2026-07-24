@@ -384,6 +384,15 @@ const ghostClient = (function(){
 			conn.send({ t: 'hact', a: 'pickup', x: +Number(wx).toFixed(1), y: +Number(wy).toFixed(1) });
 			return true;
 		},
+		// the inverse of pickup: the host owns the world drop, so the guest only
+		// debits its own inventory once the ack confirms the drop actually landed
+		drop(wx, wy, key, qty){
+			if(state !== 'live' || !conn) return false;
+			if(typeof key !== 'string' || !key) return false;
+			conn.send({ t: 'hact', a: 'drop', x: +Number(wx).toFixed(1), y: +Number(wy).toFixed(1),
+				k: key.slice(0, 24), n: Math.max(1, Math.min(99, Math.floor(Number(qty) || 1))) });
+			return true;
+		},
 		use(tx, ty){
 			if(state !== 'live' || !conn) return false;
 			conn.send({ t: 'hact', a: 'use', x: Math.floor(tx), y: Math.floor(ty) });
@@ -1001,6 +1010,14 @@ const ghostClient = (function(){
 					if(banked) bridge.msg('🎰 Automat: wygrana w sakwie!');
 				}
 				else if(pl.a === 'use' && !pl.ok && pl.note) bridge.msg('🎰 ' + String(pl.note).slice(0, 80));
+				else if(pl.a === 'drop'){
+					// only ONE confirmed world drop debits the guest's own inventory —
+					// a refused drop must never cost the resource
+					if(pl.ok && typeof pl.key === 'string'){
+						try{ if(bridge.ghostHeroSpend) bridge.ghostHeroSpend(pl.key, pl.qty || 1); }catch(e){ /* fine */ }
+					} else if(pl.reason === 'reach') bridge.msg('📦 Za daleko, by tu odłożyć.');
+					else if(pl.reason === 'full') bridge.msg('📦 Za dużo rzeczy leży dookoła.');
+				}
 				else if(pl.a === 'pickup' && pl.ok && pl.item){
 					// gear travels as the item object — grantItem SANITIZES it again
 					// (a hostile host must not smuggle a poisoned item into the bag)
@@ -2869,6 +2886,7 @@ const ghostClient = (function(){
 		_heroPlace: (tx, ty, tid, layer) => heroIntents.place(tx, ty, tid, layer || 'fg'),
 		_heroUse: (tx, ty) => heroIntents.use(tx, ty),
 		_heroPickup: (wx, wy) => heroIntents.pickup(wx, wy),
+		_heroDrop: (wx, wy, key, qty) => heroIntents.drop(wx, wy, key, qty),
 		_heroShoot: (vx, vy, dmg) => heroIntents.shoot({ vx, vy, dmg }),
 		_heroBoard: () => heroIntents.board(),
 		_heroUnboard: () => heroIntents.unboard(),

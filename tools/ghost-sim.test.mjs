@@ -214,7 +214,7 @@ assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NE
 assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
 // hero-mode contract: the guest player state is guest-local truth; the world is
 // protected here — actions, rates and envelopes
-assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'antenna', 'gfx'],
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'antenna', 'gfx', 'drop'],
 	'the twelve hero world-intents');
 assert.equal(NET.HERO_RULES.ANTENNA_MS, 1500, 'antenna intent rate floor pinned (per-active cooldown lives host-side)');
 assert.equal(NET.HERO_RULES.GFX_MS, 700, 'soot-graffiti intent rate floor pinned (glyph whitelist lives host-side)');
@@ -232,7 +232,7 @@ assert.ok(NET.modeAllows('chat', 'chat') && !NET.modeAllows('chat', 'full'), 'ch
 assert.ok(!NET.modeAllows('watch', 'chat') && !NET.modeAllows('bogus', 'watch'), 'watch is the floor, garbage denies');
 
 // --- play mode: the embodied guest (full multiplayer) ---------------------------------
-assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'attack', 'craft', 'duel', 'pickup', 'eat'],
+assert.deepEqual(NET.PLAY_ACTIONS, ['mine', 'place', 'attack', 'craft', 'duel', 'pickup', 'eat', 'drop'],
 	'a player mines, builds, fights, crafts, duels, scavenges and eats — nothing that bypasses the host');
 assert.ok(NET.validPlayAction('mine') && !NET.validPlayAction('setTile') && !NET.validPlayAction('teleport'), 'play actions validate');
 assert.ok(NET.PLAY_RULES.REACH > 0 && NET.PLAY_RULES.MAX_HP > 0 && NET.PLAY_RULES.MINE_TICKS >= 1, 'play rules are sane');
@@ -1278,7 +1278,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 {
 	const FLOOR_OF = { mine: 'MINE_MS', place: 'PLACE_MS', dmg: 'DMG_MS', pickup: 'PICKUP_MS',
 		use: 'USE_MS', shoot: 'SHOOT_MS', row: 'ROW_MS', board: 'BOARD_MS', unboard: 'BOARD_MS', tp: 'TP_MS',
-		antenna: 'ANTENNA_MS', gfx: 'GFX_MS' };
+		antenna: 'ANTENNA_MS', gfx: 'GFX_MS', drop: 'DROP_MS' };
 	for(const a of NET.HERO_ACTIONS){
 		assert.ok(new RegExp("pl\\.a === '" + a + "'").test(hostSrc),
 			"hero action '" + a + "' has a handleHeroAct branch on the host");
@@ -1288,6 +1288,30 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		assert.ok(new RegExp("NET\\.HERO_RULES\\." + floor).test(hostSrc),
 			"the host branch for '" + a + "' actually reads its rate floor");
 	}
+	// --- drop verb: the inverse of pickup, and the guest-to-guest trade path ----
+	// hero mode = the guest's pouch is its own truth, so the ack only CONFIRMS and
+	// the guest debits itself; play mode = zero trust, so the host takes from the
+	// pouch FIRST and refunds if the world refuses. Both clamp key and amount.
+	assert.ok(/pl\.a === 'drop'/.test(hostSrc), 'the host handles the drop intent');
+	assert.ok(/ghostHeroDropAt/.test(hostSrc), 'the drop intent routes through a bridge seam');
+	assert.ok(/ghostHeroDropAt/.test(mainSrc), 'main.js publishes the ghostHeroDropAt seam');
+	assert.ok(/NET\.pouchTake\(b\.pouch, dkey, dqty\)/.test(hostSrc),
+		'play-mode drops debit the HOST-truth pouch before the world write');
+	assert.ok(/if\(!\(dres && dres\.ok\)\) NET\.pouchAdd\(b\.pouch, dkey, dqty\)/.test(hostSrc),
+		'a refused play-mode drop refunds the pouch (no item can be destroyed by a rejection)');
+	assert.ok(/RESOURCE_DEFS\.find\(r=>r\.key===key\)/.test(mainSrc.slice(mainSrc.indexOf('ghostHeroDropAt'))),
+		'the drop seam whitelists the resource key against the real registry');
+	assert.ok(/ghostHeroSpend/.test(clientSrc) && /ghostHeroSpend/.test(mainSrc),
+		'the guest debits its own inventory only via the acknowledged-drop seam');
+	assert.ok(Number.isFinite(NET.HERO_RULES.DROP_MAX) && NET.HERO_RULES.DROP_MAX <= 99,
+		'a single drop is capped (anti item-shower)');
+	assert.ok(NET.HERO_RULES.DROP_MS >= 200 && NET.PLAY_RULES.DROP_MS >= 200,
+		'both tiers keep a real rate floor between drops');
+	// solo path exists and is bound to a key, so the verb works without a session
+	assert.ok(/function dropHeldResource/.test(mainSrc), 'solo players can drop without a multiplayer session');
+	assert.ok(/id:'drop'/.test(readFileSync(new URL('../src/engine/keybinds.js', import.meta.url), 'utf8')),
+		'the drop verb is a rebindable action, not a hardcoded key');
+
 	// every intent the client can SEND is a valid action (no orphan senders)
 	const sent = [...clientSrc.matchAll(/t: 'hact', a: '([a-z]+)'/g)].map(m => m[1]);
 	assert.ok(sent.length >= 7, 'the client sender surface is discoverable (' + sent.length + ' senders)');
