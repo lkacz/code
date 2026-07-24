@@ -111,7 +111,7 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
             grassTiles++;
             tiles.push([x,y,t]);
           }
-        } else if(visible && (leafTile(t) || t===T.DIAMOND || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT)){
+        } else if(visible && (leafTile(t) || t===T.DIAMOND || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.TIN_ORE || t===T.SILVER_INGOT)){
           if(t===T.SILVER_ORE || t===T.SILVER_INGOT) glossyTiles++;
           tiles.push([x,y,t]);
         }

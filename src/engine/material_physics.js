@@ -214,7 +214,7 @@ export function isMeteorImpactGroundTile(t){
     t===T.GRASS_SNOW || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY ||
     t===T.ICE || t===T.MUD || t===T.CLAY || t===T.WET_CLAY ||
     t===T.BRICK || t===T.OBSIDIAN || t===T.COAL ||
-    t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.UFO_CONCRETE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA ||
+    t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.TIN_ORE || t===T.SILVER_INGOT || t===T.UFO_CONCRETE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA ||
     t===T.DIAMOND || t===T.IRIDIUM || t===T.METEORIC_IRON ||
     t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS ||
     t===T.ANTIMATTER_CRYSTAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE;
@@ -225,7 +225,7 @@ export function isMeteorPickDenseRockMaterial(t){
 }
 
 export function isMeteorPickSparkMaterial(t){
-  return isMeteorPickDenseRockMaterial(t) || t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.OBSIDIAN ||
+  return isMeteorPickDenseRockMaterial(t) || t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.TIN_ORE || t===T.SILVER_INGOT || t===T.OBSIDIAN ||
     t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ANTIMATTER_CRYSTAL;
 }
 
@@ -264,7 +264,7 @@ export function isMeteorSettlementSiteTile(t){
 }
 
 export function isCreatureRockFloorTile(t){
-  return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE;
+  return t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.TIN_ORE;
 }
 
 export function isIridiumArrowPierceableTile(t){

@@ -430,10 +430,11 @@ window.MM = window.MM || {};
   // Snow takes precedence: deep winter keeps leafDropStrength high (the last
   // leaves falling), but a freezing gale over snowfall is a BLIZZARD — frozen,
   // buried leaves do not fly. Sand cannot clash (a desert is never cold and has
-  // no canopies); soot is forcedOnly (only the soot shaman's ritual raises it).
+  // no canopies); pollen rides leafGrowStrength (spring/summer) so it never clashes
+  // with the autumn leaf gale; soot is forcedOnly (only the soot shaman raises it).
   function naturalStormTarget(prof,px){
     const w=Math.abs(windSpeed());
-    for(const mat of ['snow','sand','leaves']){
+    for(const mat of ['snow','sand','leaves','pollen']){
       const st=MATS[mat].storm;
       if(!st || st.forcedOnly) continue;
       let season=1;
@@ -512,6 +513,9 @@ window.MM = window.MM || {};
         if(land.support===T.SAND || land.support===T.UNSTABLE_SAND) return true;
         const c=cells.get(K(x,land.py));
         if(c && c.m==='sand') return true;
+      } else if(mat==='pollen'){
+        // pollen strips off flowering / vegetated ground (spring & summer meadows)
+        if(land.support===T.GRASS || land.support===T.GRASS_SNOW || land.support===T.MUD) return true;
       }
     }
     return false;
@@ -531,7 +535,7 @@ window.MM = window.MM || {};
       if(climateAt(cx)<(MATS.sand.storm.climate||0.72) && !stormSourceUpwind(cx,'sand',st.dir,getTile)) return false;
     } else if(st.mat==='soot'){
       if(!storm.active || storm.mat!=='soot') return false;
-    } else if(!stormSourceUpwind(cx,'leaves',st.dir,getTile)) return false;
+    } else if(!stormSourceUpwind(cx,st.mat,st.dir,getTile)) return false; // leaves (canopy) or pollen (flowering ground)
     if(!addUnits(cx,st.mat,getTile,setTile)) return false;
     stormBlownIn++;
     return true;
@@ -546,6 +550,7 @@ window.MM = window.MM || {};
     leaves:'Jesienna zamieć! Wichura niesie liście daleko od drzew.',
     sand:'Pustynna zamieć! Wiatr niesie tumany drobnego piasku.',
     soot:'Zamieć sadzy! Czarne płatki grzebią okolicę pod brudnym całunem.',
+    pollen:'Wiosenna zamieć! Wiatr niesie złoty pyłek z kwitnącej ziemi.',
   };
   function stormNote(st){
     const d=MATS[st.mat] && MATS[st.mat].storm;

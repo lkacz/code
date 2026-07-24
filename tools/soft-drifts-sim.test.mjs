@@ -191,6 +191,18 @@ windSpeed = 0;
 advance(45);
 assert.equal(countTiles(T.LEAF_PILE, 8, 16), 0, 'spring rots the minted leaf piles back to air');
 
+// --- 3b. a spring/summer bloom gale actually carries pollen (leafGrowStrength) --
+// Locks pollen into naturalStormTarget's loop: it was minted into MATS but omitted
+// from the hardcoded gale list, so the whole gale (+ its pollen_gale discovery) was
+// unreachable in normal play until fixed.
+reset();
+player.x = 12;
+prof = { snowStrength: 0, leafDropStrength: 0, leafGrowStrength: 1 };
+windSpeed = 5.0; // within pollen's gale band (windMin 3.4 .. windFull 6.2), snow/sand/leaves all below their season/climate gates
+advance(40);
+assert.ok([...DBG.cells.values()].some(c => c.m === 'pollen'),
+  'a spring bloom gale deposits pollen drifts (pollen is in the natural gale loop)');
+
 // --- 4. thick smoke films the ground with soot; soot never solidifies --------
 // The PLUME drives the fallout: each dense smoke cell projects straight down
 // onto the ground beneath it, and every deposited unit consumes smoke mass.

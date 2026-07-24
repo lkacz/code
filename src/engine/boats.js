@@ -851,6 +851,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
         nb.vy=b.vy;
         nb.inWater=b.inWater;
         nb.grounded=b.grounded;
+        nb.sail=b.sail;   // a split fragment of a rigged raft keeps its sail up
         markDirty(nb);
         boats.push(nb);
       }
@@ -941,9 +942,12 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
         cells.push([c.dx,c.dy]);
       }
       if(!cells.length) continue;
+      // Clamp to the hull's OWN top speed (light wood cruises above base MAX_SPEED)
+      // so a save/stream round-trip never shaves a fast light-wood raft's velocity.
+      const vcap=CFG.MAX_SPEED*boatQ(b).speed;
       const record={
         x:+b.x.toFixed(3), y:+b.y.toFixed(3),
-        vx:Number.isFinite(b.vx)?+clamp(b.vx,-CFG.MAX_SPEED,CFG.MAX_SPEED).toFixed(3):0,
+        vx:Number.isFinite(b.vx)?+clamp(b.vx,-vcap,vcap).toFixed(3):0,
         cells
       };
       // Only non-default hulls carry a material, so plain-wood save records stay
@@ -977,7 +981,10 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
         // makeBoat -> boatWoodMaterial whitelist-clamps s.material: hostile saves
         // feeding Infinity/NaN/garbage fall back to plain WOOD, never an unknown key.
         const b=makeBoat(s.x,s.y,s.material);
-        b.vx=Number.isFinite(s.vx)?clamp(s.vx,-CFG.MAX_SPEED,CFG.MAX_SPEED):0;
+        // boatQ read AFTER makeBoat resolves the (clamped) material, so a garbage
+        // material falls back to WOOD's 1.0 cap; matches the live physics cap.
+        const vcap=CFG.MAX_SPEED*boatQ(b).speed;
+        b.vx=Number.isFinite(s.vx)?clamp(s.vx,-vcap,vcap):0;
         b.sail=!!s.sail;
         b.cells=group;
         markDirty(b);
