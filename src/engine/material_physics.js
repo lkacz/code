@@ -14,6 +14,9 @@ export const BUILD_MATERIAL_PROFILES = Object.freeze({
   [T.OBSIDIAN]: Object.freeze({strength:19, support:13, weight:1.30, compression:0.43, lateral:1.08, flex:0.92, down:0.26, warn:0.24, fail:0.930, wind:0.010, rubbleRoll:3}),
   [T.DIAMOND]: Object.freeze({strength:21, weight:1.08, compression:0.30, lateral:1.20, flex:0.78, down:0.25, warn:0.22, fail:0.870, wind:0.090, rubbleRoll:3}),
   [T.GOLD_ORE]: Object.freeze({strength:12.4, weight:1.32, compression:0.42, lateral:1.10, flex:0.78, down:0.24, warn:0.23, fail:0.860, wind:0.018, rubbleRoll:3}),
+  // Tin ore: softer + lighter than silver (distinct numbers dodge the duplicate-
+  // signature guard) — a shallow, easily-worked metal vein.
+  [T.TIN_ORE]: Object.freeze({strength:11.5, weight:1.18, compression:0.44, lateral:1.10, flex:0.80, down:0.24, warn:0.24, fail:0.860, wind:0.020, rubbleRoll:3}),
   [T.SILVER_ORE]: Object.freeze({strength:13.2, weight:1.27, compression:0.40, lateral:1.08, flex:0.82, down:0.24, warn:0.25, fail:0.875, wind:0.016, rubbleRoll:3}),
   [T.SILVER_INGOT]: Object.freeze({strength:15.0, weight:1.34, compression:0.34, lateral:1.04, flex:0.94, down:0.25, warn:0.28, fail:0.905, wind:0.012, rubbleRoll:3}),
   [T.BASALT]: Object.freeze({strength:17, support:12.5, weight:1.24, compression:0.40, lateral:1.06, flex:0.95, down:0.25, warn:0.25, fail:0.925, wind:0.009, rubbleRoll:4}),
@@ -302,7 +305,7 @@ export function isWeakFillMaterial(t){
 }
 
 export function isNonStructuralResourceMaterial(t){
-  return t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.RADIOACTIVE_ORE || t===T.ELECTRONICS || t===T.METEOR_DUST;
+  return t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.TIN_ORE || t===T.SILVER_INGOT || t===T.RADIOACTIVE_ORE || t===T.ELECTRONICS || t===T.METEOR_DUST;
 }
 
 export function isLimitedBrittleStructuralMaterial(t){

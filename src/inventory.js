@@ -271,6 +271,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'stone',   label:'Skala',   color:'#888a90', tile:'STONE'},
     {key:'coal',    label:'Węgiel',  color:'#25272b', tile:'COAL'},
     {key:'gold',    label:'Złoto',   color:'#f2b93b', tile:'GOLD_ORE'},
+    {key:'tin', label:'Cyna', color:'#a5aca0', tile:'TIN_ORE'},
+    {key:'bronze', label:'Braz', color:'#b5793a', tile:null},
     {key:'silverOre', label:'Ruda srebra', color:'#9da8b8', tile:'SILVER_ORE'},
     {key:'silver', label:'Sztabka srebra', color:'#dce5ef', tile:'SILVER_INGOT'},
     {key:'diamond', label:'Diament', color:'#3ef',    tile:'DIAMOND'},

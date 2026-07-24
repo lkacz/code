@@ -1846,6 +1846,7 @@ window.MM = window.MM || {};
             else if(WG.coalVeinAt && WG.coalVeinAt(wx,y,nearCave)) t=T.COAL;
             else if(WG.silverVeinAt && WG.silverVeinAt(wx,y,nearCave)) t=T.SILVER_ORE;
             else if(WG.goldVeinAt && WG.goldVeinAt(wx,y,nearCave)) t=T.GOLD_ORE;
+            else if(WG.tinVeinAt && WG.tinVeinAt(wx,y,nearCave)) t=T.TIN_ORE;
             else t=geologyRockTile(wx,y,depth,biome);
             if(biome!==8 && t===T.STONE && depth<SURFACE_GRASS_DEPTH+sandTh+2 && WG.randSeed(wx*9.71+y*0.23)<(0.10+0.5*(desertF+waterF*0.5))) t=T.SAND;
             }

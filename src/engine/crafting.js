@@ -44,6 +44,8 @@ const crafting = (function(){
     meteorDust: 'pył z kraterów meteorytów',
     radioactiveOre: 'głębokie, skażone złoża',
     copper: 'ruiny miast: maszyny i kable',
+    tin: 'jasne, płytkie żyły cyny w skale — najwcześniejszy metal',
+    bronze: 'craft: stop miedzi i cyny (Przetwórstwo)',
     plastic: 'ruiny miast: wraki i sprzęty',
     ufoConcrete: 'rozbieraj kadłuby i ruiny obcych',
     wire: 'ruiny miast i pokonane roboty',

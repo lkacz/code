@@ -665,6 +665,33 @@ WG.silverVeinAt = function(x,y,nearCave){
 	}
 	return false;
 };
+// Tin: the earliest, shallowest metal — a soft ore for mid-tier bronze. Mirrors
+// silver's cell-grid line veins but on a shallower band + fresh salts (1924-1927,
+// statistically independent of silver/gold), placed AFTER gold in the fill ladder.
+WG.tinVeinChance = function(y, nearCave){
+	const d=clamp((y-30)/(WORLD_H-40),0,1);
+	const mid=clamp(1-Math.abs(d-0.40)*1.55,0,1);
+	return Math.min(0.44,(0.15+mid*0.20+d*0.03)*(nearCave?1.12:1));
+};
+WG.tinVeinAt = function(x,y,nearCave){
+	x=Math.floor(Number(x)||0);
+	y=Math.floor(Number(y)||0);
+	const cellW=15, cellH=8;
+	const gx0=Math.floor((x-6)/cellW), gx1=Math.floor((x+6)/cellW);
+	const gy0=Math.floor((y-1)/cellH), gy1=Math.floor((y+1)/cellH);
+	for(let gy=gy0;gy<=gy1;gy++){
+		for(let gx=gx0;gx<=gx1;gx++){
+			const ay=gy*cellH+2+Math.floor(WG.randSeed(gx*39.07+gy*79.13+1925)*Math.max(1,cellH-4));
+			const chance=WG.tinVeinChance(ay,!!nearCave);
+			if(WG.randSeed(gx*113.27+gy*241.31+1924)>=chance) continue;
+			const len=3+Math.floor(WG.randSeed(gx*51.17+gy*67.41+1926)*4);
+			const span=Math.max(1,cellW-len-3);
+			const ax=gx*cellW+2+Math.floor(WG.randSeed(gx*61.33+gy*103.07+1927)*span);
+			if(y===ay && x>=ax && x<ax+len) return true;
+		}
+	}
+	return false;
+};
 // Diamond odds now belong to the lowest legacy crust: most reachable diamonds
 // should be a bedrock-level expedition, not a routine mid-depth seam. world.js
 // still boosts exposed cave-wall rolls, but the base chance stays deliberately

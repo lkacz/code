@@ -990,6 +990,15 @@ export function deepSilverVeinAt(WG,wx,y){
   const chance=0.20+mid*0.22+lower*0.035;
   return shortGoldLineAt(WG,wx,y,16,9,7496,()=>chance);
 }
+// Deep tin: shallower deep band than silver, fresh salt 7516 (unused).
+export function deepTinVeinAt(WG,wx,y){
+  const deep=Math.max(0,Number(y)-WORLD_H);
+  if(!(deep>4 && deep<92)) return false;
+  const mid=clamp01(1-Math.abs((deep-40)/58));
+  const lower=clamp01((deep-10)/78);
+  const chance=0.18+mid*0.20+lower*0.03;
+  return shortGoldLineAt(WG,wx,y,15,8,7516,()=>chance);
+}
 
 function deepRockMaterialTile(WG,wx,y,strataOpt){
   const strata=strataOpt || deepStrataProfile(WG,wx,y);
@@ -1017,6 +1026,7 @@ function deepRockMaterialTile(WG,wx,y,strataOpt){
   if(env.city>0.24 && ore>0.989-deep*0.00008 && vein>0.20) return T.METEORIC_IRON;
   if(deepSilverVeinAt(WG,wx,y)) return T.SILVER_ORE;
   if(deepGoldVeinAt(WG,wx,y)) return T.GOLD_ORE;
+  if(deepTinVeinAt(WG,wx,y)) return T.TIN_ORE;
   if(deep>86 && ore<(0.006+strata.crystal*0.010)*oreScale) return T.ANTIMATTER_CRYSTAL;
   if(deep>52 && ore<(0.012+strata.crystal*0.022)*oreScale) return T.IRIDIUM;
   if(deep>72 && vein>0.91 && diamondOre<(0.006+strata.crystal*0.013)*diamondScale*diamondBias) return T.DIAMOND;
@@ -1090,6 +1100,7 @@ export const worldLayers = Object.freeze({
   deepCaveDressingTile,
   deepGoldVeinAt,
   deepSilverVeinAt,
+  deepTinVeinAt,
   deepTile
 });
 

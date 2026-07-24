@@ -51,7 +51,11 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   // engine/boats.js). Hard wood: dense, dark, slow-grown snow-conifer timber,
   // drops 'hardWood' — superior for ARROWS (a much tougher shaft that rarely
   // breaks on impact; see ARROW_TIERS in engine/weapons.js). Both are placeable.
-  LIGHT_WOOD:140, HARD_WOOD:141
+  LIGHT_WOOD:140, HARD_WOOD:141,
+  // Tin ore (engine/worldgen.js veins): a soft, shallow metal mined for raw 'tin'.
+  // Smelted with copper into BRONZE (a tile-less alloy resource) — a mid-tier metal
+  // bridging stone/copper and steel. Ore only; bronze is never a placed block.
+  TIN_ORE:142
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -252,6 +256,7 @@ for(const [tileName,drop,color,hp,homeRegenBonus,furnitureCategory,lightLevel] o
     ...(lightLevel ? {lightLevel} : null)
   };
 }
+INFO[T.TIN_ORE]={hp:9,color:'#a5aca0',drop:'tin',passable:false,ore:true};
 INFO[T.SILVER_ORE]={hp:10,color:'#aeb8c8',drop:'silverOre',passable:false,ore:true,silverOre:true};
 INFO[T.SILVER_INGOT]={hp:8,color:'#dce5ef',drop:'silver',passable:false,preciousIngot:true};
 INFO[T.SILVER_WIRE]={hp:1,color:'#d9ecff',drop:'silverWire',passable:true,machine:'silverWire',conductor:true,powerCable:'silver',conductivity:1};
