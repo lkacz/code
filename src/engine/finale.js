@@ -655,6 +655,34 @@ const finale = (function(){
       if(!started){ fresh.disabled = false; fresh.textContent = '🌱 Nowa warstwa (nowy świat)'; }
     });
     btns.appendChild(fresh);
+    // Zejście Warstw: the completions tally used to be a number nobody read.
+    // Descending queues a DERIVED world — same whitelisted curses, one more of
+    // them each layer, a raised hostility floor — through the challenge module's
+    // existing one-shot sessionStorage handoff, then takes the ordinary new-game
+    // path. Boot-time law only: no runtime world writes, no stream plane.
+    const depth = completions();
+    const descend = node('button', 'fnSecondary', '⬇ Zejdź głębiej (warstwa ' + (depth + 2) + ')');
+    descend.type = 'button';
+    descend.title = 'Świat wyprowadzony z tej warstwy: te same klątwy co zawsze, ale coraz więcej naraz.';
+    descend.addEventListener('click', ()=>{
+      const C = root.MM && root.MM.challenge;
+      if(!C || !C.descentFor){ descend.disabled = true; descend.textContent = 'zejście niedostępne'; return; }
+      const plan = C.descentFor(depth + 2, report().seed || 0);
+      const names = (plan.mods || []).map(m => (C.MODS[m] && C.MODS[m].label) || m).join(', ');
+      const ok = root.confirm ? root.confirm(
+        'Zejść na warstwę ' + plan.layer + '?\n\n' +
+        (names ? 'Klątwy tej warstwy: ' + names + '\n' : 'Ta warstwa jest jeszcze łagodna.\n') +
+        '\nBieżący świat zostanie zastąpiony. Ręczne zapisy i ustawienia zostaną zachowane.') : true;
+      if(!ok) return;
+      descend.disabled = true; descend.textContent = 'Schodzę…';
+      let started = false;
+      try{
+        C.queueNext({ seed: plan.seed, mods: plan.mods });
+        if(typeof state.onNewGame === 'function') started = !!state.onNewGame();
+      }catch(e){ started = false; }
+      if(!started){ descend.disabled = false; descend.textContent = '⬇ Zejdź głębiej (warstwa ' + (depth + 2) + ')'; }
+    });
+    btns.appendChild(descend);
     const keep = node('button', 'fnSecondary', '📸 Pamiątka warstwy');
     keep.type = 'button';
     keep.addEventListener('click', ()=>{

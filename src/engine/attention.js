@@ -54,13 +54,30 @@ const OMENS = [
   { at: 0.90, text: '👁 Symulacja patrzy wprost na ciebie.' },
 ];
 
+// How deep the player has descended (finale.js mm_layers_v1, preserved across
+// new games). Each layer raises the BASELINE danger of every world after it.
+export function descentFloor(){
+  try{
+    const f = root.MM && root.MM.finale;
+    const done = f && f.layers ? Math.max(0, Math.floor(Number(f.layers().completions) || 0)) : 0;
+    return clamp(done * 0.35, 0, 2.2);
+  }catch(e){ return 0; }
+}
+
+// ONE writer for the hostility floor. The descent floor and the deeds floor are
+// two different pressures on the same number, so they COMPOSE by max rather than
+// clobbering each other (a deep veteran playing carefully still faces their
+// layer's baseline; a rampage in layer 1 still bites).
 function push(){
   try{
     if(root.MM.worldHostility && root.MM.worldHostility.setTuning){
-      root.MM.worldHostility.setTuning({ floor: floorFor() });
+      root.MM.worldHostility.setTuning({ floor: Math.max(floorFor(), descentFloor()) });
     }
   }catch(e){ /* hostility not loaded */ }
 }
+// Re-assert the composed floor after a world boots (the descent depth is only
+// knowable once finale.js has loaded its cross-world tally).
+export function refresh(){ push(); return metrics(); }
 
 function announce(){
   const lv = level();
@@ -124,6 +141,6 @@ export function metrics(){
   return { level: +level().toFixed(3), floor: +floorFor().toFixed(3), score: +score.toFixed(1), announced };
 }
 
-export const attention = { DEEDS, OMENS, level, floorFor, note, relieve, update, reset, snapshot, restore, metrics, setNotifier };
+export const attention = { DEEDS, OMENS, level, floorFor, descentFloor, refresh, note, relieve, update, reset, snapshot, restore, metrics, setNotifier };
 root.MM.attention = attention;
 export default attention;

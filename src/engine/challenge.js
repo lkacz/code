@@ -186,6 +186,54 @@ if(!isWatch){
 export const activeChallenge = active;
 export const pendingChallenge = pending;
 
+// --- Zejście Warstw --------------------------------------------------------
+// The story is literally about layers of a simulation, and finale.js already
+// minted mm_layers_v1.completions that NOTHING read. Descending turns that dead
+// counter into the endgame loop: layer N boots from a derived seed with a
+// growing, deterministic set of the mods that already exist (never new ones),
+// plus a hostility floor.
+//
+// Pure and seeded: the same (layer, baseSeed) always yields the same world, so a
+// descent is shareable as an ordinary ?seed&mods link — no new protocol.
+const DESCENT_ORDER = Object.freeze(Object.keys(CHALLENGE_MODS));
+export function descentSeed(layer, baseSeed){
+	const n = Math.max(1, Math.floor(Number(layer) || 1));
+	const s = Math.floor(Number(baseSeed) || 0);
+	// a cheap, stable mix — deterministic across host and every guest
+	let h = (s ^ 0x9e3779b9) >>> 0;
+	for(let i = 0; i < n; i++){
+		h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
+		h = (h + 0x165667b1 + i) >>> 0;
+	}
+	return h % 1000000000;
+}
+export function descentFor(layer, baseSeed){
+	const n = Math.max(1, Math.floor(Number(layer) || 1));
+	const seed = descentSeed(n, baseSeed);
+	// one extra curse per layer, drawn in a seeded order from the SAME whitelist
+	// the link parser accepts — a descent can never mint an unknown mod
+	const want = Math.min(DESCENT_ORDER.length, n - 1);
+	const picked = [];
+	let cursor = descentSeed(n + 7, baseSeed);
+	const pool = DESCENT_ORDER.slice();
+	while(picked.length < want && pool.length){
+		cursor = Math.imul(cursor ^ (cursor >>> 13), 0xc2b2ae35) >>> 0;
+		const [taken] = pool.splice(cursor % pool.length, 1);
+		// permanight and permaday are mutually exclusive by their own table note
+		if(taken === 'permaday' && picked.includes('permanight')) continue;
+		if(taken === 'permanight' && picked.includes('permaday')) continue;
+		picked.push(taken);
+	}
+	return {
+		layer: n,
+		seed,
+		mods: sanitizeMods(picked),
+		// the descent floor composes with (never clobbers) the deeds axis and the
+		// debug slider: world_hostility takes the MAX of ramp and floor
+		hostilityFloor: Math.min(2.2, (n - 1) * 0.35),
+	};
+}
+
 export function queueNextChallenge(c){
 	const clean = sanitizeChallenge(c);
 	if(!clean || typeof sessionStorage === 'undefined') return false;
@@ -274,7 +322,8 @@ const api = {
 	isIronman: () => derivedNow().ironman,
 	markFailed,
 	failed: () => runFailed,
-	parseChallenge, challengeLink, applyWorldMods, sanitizeMods
+	parseChallenge, challengeLink, applyWorldMods, sanitizeMods,
+	descentFor, descentSeed
 };
 if(MMR) MMR.challenge = api;
 export const challenge = api;
