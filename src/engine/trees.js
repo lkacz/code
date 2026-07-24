@@ -351,6 +351,28 @@ window.MM = window.MM || {};
           if(dist<=1.8 || dist<=3.05+(randSeed(wx+dx*23+dy*29)-0.42)) put(lx+dx,top+dy,T.LEAF);
         }
       }
+      // Vines drape from the underside of the mangrove canopy: for each column
+      // under the leaf box, hang a short deterministic run of passable VINE tiles
+      // into the open air below. Standalone deco written straight into AIR (NOT via
+      // put()/markTreeTile) so it is mined independently for its 'vine' drop and
+      // stays out of the fell/fall machinery. Deterministic randSeed keeps the host
+      // and every guest byte-identical (worldgen determinism contract).
+      for(let dx=-3; dx<=3; dx++){
+        const vx=lx+dx;
+        if(vx<0 || vx>=CHUNK_W) continue;
+        if(randSeed(wx+dx*41+919) < 0.62) continue; // ~38% of columns carry a vine
+        let leafY=-1; // lowest canopy leaf in this column
+        for(let y=top-3; y<=top+2; y++){ if(y>=0 && y<WORLD_H && arr[y*CHUNK_W+vx]===T.LEAF) leafY=y; }
+        if(leafY<0) continue;
+        const len=1+Math.floor(randSeed(wx+dx*57+733)*4); // 1..4 tiles of drape
+        for(let k=1; k<=len; k++){
+          const vy=leafY+k;
+          if(vy<0 || vy>=WORLD_H) break;
+          const idx=vy*CHUNK_W+vx;
+          if(arr[idx]!==T.AIR) break; // stop at the first non-air (ground / water / trunk)
+          arr[idx]=T.VINE;
+        }
+      }
     } else if(variant==='palm'){
       // Desert-island palm: tall bare trunk, a fan of fronds arcing from the crown
       // with drooping tips (kept 4-connected so felling collects the whole canopy)
@@ -561,6 +583,22 @@ window.MM = window.MM || {};
     };
   }
 
+  // A felled canopy takes its draped vines with it. Vines are standalone passable
+  // deco (never registered as tree material), so the fell collectors skip them and
+  // they would otherwise hang from nothing where the crown used to be. Sweep the
+  // collected tree's column footprint (+ the max drape below it) and clear any
+  // VINE cell to AIR. Host/solo only (setTile streams the removal to guests).
+  const VINE_MAX_DROP=4; // matches the buildTree drape length cap
+  function clearHangingVines(getTile,setTile,tiles){
+    if(!tiles.length) return;
+    let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+    for(const t of tiles){ if(t.x<minX)minX=t.x; if(t.x>maxX)maxX=t.x; if(t.y<minY)minY=t.y; if(t.y>maxY)maxY=t.y; }
+    for(let vx=minX; vx<=maxX; vx++){
+      for(let vy=minY; vy<=maxY+VINE_MAX_DROP; vy++){
+        if(getTile(vx,vy)===T.VINE) setTile(vx,vy,T.AIR);
+      }
+    }
+  }
   function startTreeFall(getTile,setTile,playerFacing,x,y){
     if(typeof getTile!=='function' || typeof setTile!=='function' || !Number.isFinite(x) || !Number.isFinite(y)
       || Math.abs(x)>TREE_MAX_ABS_X || y<0 || y>=WORLD_H) return false;
@@ -568,6 +606,7 @@ window.MM = window.MM || {};
     const collected=collectTreeTiles(getTile,setTile,x,y);
     const tiles=collected.tiles;
     if(!tiles.length) return false;
+    clearHangingVines(getTile,setTile,tiles);
     tiles.forEach(tile=>notifyRemoved(getTile,tile.x,tile.y));
     if(!collected.stem || collected.stem.height<2){
       const dir=normalizeDir(playerFacing||1);

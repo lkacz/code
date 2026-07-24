@@ -105,6 +105,7 @@ assert.ok(count(samples[4],T.MUD)>=120, 'swamp generates natural mud banks');
 assert.ok(count(samples[4],T.CLAY)>=8, 'swamp exposes clay sediment lenses');
 assert.ok(count(samples[4],T.WATER)>=25, 'swamp keeps shallow pools');
 assert.ok(countAny(samples[4],[T.WOOD,T.LIGHT_WOOD,T.LEAF])>=70, 'swamp generates sparse mangrove material (light wood is legitimately mangrove now)');
+assert.ok(count(samples[4],T.VINE)>=2, 'swamp mangroves drape harvestable vines (→ vine → rope → grapple)');
 
 assert.ok(count(samples[5],T.WATER)>=650, 'sea representative contains open water');
 // Oceans now sit in sealed bedrock basins: a clay/dirt floor over an

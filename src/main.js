@@ -101,6 +101,7 @@ import { vending as VENDING } from './engine/vending.js';
 import { trader as TRADER } from './engine/trader.js';
 import { fishing as FISHING } from './engine/fishing.js';
 import { boats as BOATS } from './engine/boats.js';
+import { grapple as GRAPPLE } from './engine/grapple.js';
 import { mechs as MECHS } from './engine/mechs.js';
 import { altar as ALTAR } from './engine/altar.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
@@ -4363,6 +4364,7 @@ function applyGameDataCore(data,opts){
 	try{ if(PROGRESS && PROGRESS.clearTransient) PROGRESS.clearTransient(); }catch(e){}
 	try{ if(FALLING && FALLING.reset) FALLING.reset(); }catch(e){}
 	try{ if(BOATS && BOATS.reset) BOATS.reset(); }catch(e){}
+	try{ if(GRAPPLE && GRAPPLE.reset) GRAPPLE.reset(); }catch(e){}
 	try{ if(MECHS && MECHS.reset) MECHS.reset(); }catch(e){}
 	try{ if(TREES && TREES.reset) TREES.reset(); }catch(e){}
 	try{ if(GRASS && GRASS.reset) GRASS.reset(); }catch(e){}
@@ -4936,6 +4938,8 @@ const RECIPES=[
 	{id:'arrows_iridium_bulk', name:'Strzaly irydowe x100', cost:{wood:10, iridium:1}, make(){ inv.arrowIridium+=100; msg('Strzaly irydowe +100'); }},
 	{id:'arrows_hardwood_bulk', name:'Strzaly z twardego drewna x100', cost:{hardWood:10}, make(){ inv.arrowHardwood+=100; msg('Strzaly z twardego drewna +100'); }},
 	{id:'arrows_carbon_bulk', name:'Strzaly weglowe x100', cost:{graphene:2}, make(){ inv.arrowCarbon+=100; msg('Strzaly weglowe +100'); }},
+	{id:'arrows_grapple', name:'Strzaly hakowe x12', cost:{rope:2, steel:1}, make(){ inv.arrowGrapple+=12; msg('Strzaly hakowe +12 - hak ze stali na linie z pnaczy; wystrzel w teren i przyciagnij sie (przypnij "hakowe" w pasku strzal, skok = puszczasz line)'); }},
+	{id:'rope_from_vine', name:'Lina z pnaczy x2', cost:{vine:3}, make(){ inv.rope+=2; msg('Lina +2 - pnacza z bagiennych mangrowcow skrecone w mocna line (na hakowe strzaly i inny sprzet)'); }},
 	{id:'harpoon_bolts', name:'Harpuny x8', cost:{steel:1, wood:1}, make(){ inv.harpoonBolt+=8; msg('Harpuny +8 - ciezkie, odzyskiwalne groty do wyrzutni podwodnej'); }},
 	{id:'toxic_snowballs', name:'Toksyczne snieżki x8', cost:{toxicSnow:2}, make(){ inv.toxicSnowball+=8; msg('Toksyczne snieżki +8 - amunicja do luku; spowalnia i zatruwa cel'); }},
 	{id:'snowballs', name:'Snieżki x8', cost:{snow:2}, make(){ inv.snowball+=8; msg('Snieżki +8 - rzut z reki (klawisz 3); chwilowo spowalniaja cel'); }},
@@ -5095,6 +5099,8 @@ const CRAFT_RECIPE_META={
 	arrows_iridium_bulk:{group:'weapons',icon:'🏹',out:'arrowIridium',amount:100,desc:'Amunicja z materialu meteorytowego.'},
 	arrows_hardwood_bulk:{group:'weapons',icon:'🏹',out:'arrowHardwood',amount:100,desc:'Twardy, sprezysty drzewiec — rzadko peka po strzale.'},
 	arrows_carbon_bulk:{group:'weapons',icon:'🏹',out:'arrowCarbon',amount:100,desc:'Lekkie wlokno weglowe (z grafenu) — bardzo szybkie i niemal niezniszczalne.'},
+	arrows_grapple:{group:'weapons',icon:'🪝',out:'arrowGrapple',amount:12,desc:'Hak na linie: wystrzel z luku w teren i przyciagnij sie do punktu zaczepienia. Przypnij "hakowe" w pasku strzal; skok puszcza line z rozpedem. Potrzebna lina (z pnaczy) i stal.'},
+	rope_from_vine:{group:'processing',icon:'🪢',out:'rope',amount:2,desc:'Skrec pnacza zerwane z bagiennych mangrowcow w mocna line — surowiec na hakowe strzaly i inny sprzet na linach.'},
 	harpoon_bolts:{group:'weapons',icon:'🔱',out:'harpoonBolt',amount:8,desc:'Ciezkie groty do wyrzutni; po trafieniu zwykle mozna je odzyskac.'},
 	toxic_snowballs:{group:'weapons',icon:'❄️',out:'toxicSnowball',amount:8,desc:'Snieżki ze skazonego sniegu: cel dostaje spowolnienie i zatrucie.'},
 	snowballs:{group:'weapons',icon:'⚪',out:'snowball',amount:8,desc:'Zwykle snieżki do rzucania: lekkie trafienie i krotki chlod.'},
@@ -7064,6 +7070,22 @@ function drawGlowshroomTileArt(g,px,py,h){
 	g.fillStyle='rgba(91,239,188,0.25)'; g.fillRect(px+2,py+2,TILE-4,TILE-5);
 	g.restore();
 }
+function drawVineTileArt(g,px,py,h){
+	// A green liana draping down the tile with a deterministic per-tile sway and a
+	// couple of leaflets — reads as a hanging mangrove vine, harvested for 'vine'.
+	g.save();
+	const sway=(((h>>>5)&7)-3.5); // -3.5..3.5 px deterministic lateral wobble
+	const cx=px+TILE/2;
+	g.lineCap='round';
+	g.strokeStyle='#3a6f34'; g.lineWidth=2.4;
+	g.beginPath(); g.moveTo(cx-sway*0.4,py); g.quadraticCurveTo(cx+sway,py+TILE*0.5,cx-sway*0.5,py+TILE); g.stroke();
+	g.strokeStyle='rgba(120,200,110,0.55)'; g.lineWidth=1;
+	g.beginPath(); g.moveTo(cx-sway*0.4,py); g.quadraticCurveTo(cx+sway,py+TILE*0.5,cx-sway*0.5,py+TILE); g.stroke();
+	g.fillStyle='#4f9a44';
+	g.fillRect(cx+1+((h>>>7)&2), py+4+((h>>>8)&3), 3, 2);
+	g.fillRect(cx-4-((h>>>9)&2), py+10+((h>>>11)&3), 3, 2);
+	g.restore();
+}
 function drawLeafPileTileArt(g,px,py,h){
 	g.save();
 	g.fillStyle='rgba(45,24,9,0.34)'; g.fillRect(px+2,py+17,TILE-4,2);
@@ -8615,6 +8637,11 @@ function drawEntityTile(g,t,px,py,wx,wy,opts){
 		g.restore();
 		return true;
 	}
+	if(t===T.VINE){
+		drawVineTileArt(g,px,py,h);
+		g.restore();
+		return true;
+	}
 	if(t===T.LEAF_PILE){
 		drawLeafPileTileArt(g,px,py,h);
 		g.restore();
@@ -8751,7 +8778,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				// TORCH renders as a sprite in the fire.js pass; GRAVE gets a headstone shape
 				// below — both bake only their backdrop here
 				const gasTile = isGasTileId(t);
-				const openArtTile=t===T.GLOWSHROOM || t===T.LEAF_PILE || t===T.METEOR_DUST || t===T.WEATHERVANE || t===T.LIGHTNING_ROD;
+				const openArtTile=t===T.GLOWSHROOM || t===T.LEAF_PILE || t===T.METEOR_DUST || t===T.WEATHERVANE || t===T.LIGHTNING_ROD || t===T.VINE;
 				const bgT=(WORLD && WORLD.getConstructionBackground) ? WORLD.getConstructionBackground(wx,y) : T.AIR;
 				const hasBg=bgT!==T.AIR && INFO[bgT] && INFO[bgT].color;
 				if(hasBg){
@@ -8778,6 +8805,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					if(t===T.GRAVE) drawGraveTile(cctx, lx*TILE, y*TILE);
 					if(t===T.RESPAWN_TOTEM) drawRespawnTotemTile(cctx, lx*TILE, y*TILE);
 					if(t===T.GLOWSHROOM) drawGlowshroomTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
+					if(t===T.VINE) drawVineTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
 					if(t===T.LEAF_PILE) drawLeafPileTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
 					if(t===T.METEOR_DUST){
 						const dustConn={
@@ -12145,6 +12173,18 @@ function physics(dt){
 		}
 	}
 
+	// Grapple hook (self-movement, no world write — see engine/grapple.js). A fired
+	// rope anchors on solid terrain the hero already sees and reels THIS body in;
+	// tapping jump lets go with the built-up momentum. Runs AFTER gravity so the
+	// taut reel overrides it, and BEFORE the integrate/collide block so a fast reel
+	// is swept through terrain (no tunnelling) and stops at walls for free. On a
+	// hero guest this is guest-authoritative like walking — no host seam.
+	if(GRAPPLE && GRAPPLE.isActive && GRAPPLE.isActive()){
+		const grRelease=jumpPressedNow;
+		const gr=GRAPPLE.step(player, dt, getTile, {release:grRelease});
+		if(grRelease && gr && gr.released) jumpBufferT=0; // the tap let go of the rope; don't also buffer a jump
+	}
+
 	// Integrate & collisions — substepped so high speed multipliers / low FPS cannot tunnel through tiles
 	{
 		const maxDisp=Math.max(Math.abs(player.vx),Math.abs(player.vy))*dt;
@@ -14883,6 +14923,8 @@ function draw(){ // Background first
  if(UFO && UFO.draw) UFO.draw(ctx,TILE,worldFxVisible);
  // weapon projectiles: arrows + flamethrower stream (above creatures)
  if(WEAPONS && WEAPONS.draw) WEAPONS.draw(ctx,TILE,worldFxVisible);
+ // grapple rope + hook (self-movement; only the acting player sees their own rope)
+ if(GRAPPLE && GRAPPLE.draw) GRAPPLE.draw(ctx,TILE,worldFxVisible);
  // meteors, impact shockwaves and hot crater smoke
  if(METEORITES && METEORITES.draw) METEORITES.draw(ctx,TILE,worldFxVisible);
   // particles (screen-space in world coords)
@@ -18576,6 +18618,12 @@ MM.ghostBridge={
 		try{ drawPlayer({remoteBody:true, cloaked:!!st.cloaked}); }catch(e){ /* one bad frame must not leak the swap */ }
 		finally{ MM.customization=savedCust; for(const k of keys) player[k]=saved[k]; }
 	},
+	// The HOST's own grapple rope as a wire snapshot, for the 'ropes' broadcast
+	// plane (ghost_host ropeTick). Guests uplink their own; the host relays all.
+	grappleWire:()=> (GRAPPLE && GRAPPLE.wireState) ? GRAPPLE.wireState() : null,
+	// Shared rope painter so a remote body's rope renders identically to the
+	// acting player's (ghost_host / ghost_client drawSpirits call this).
+	drawRopeAt:(ctx,TILE,cx,cy,tx,ty,anchored)=>{ if(GRAPPLE && GRAPPLE.drawAt) GRAPPLE.drawAt(ctx,TILE,cx,cy,tx,ty,anchored); },
 	resourceLabel:(k)=>RES_LABEL[k]||k,
 	// Host-authoritative tile-to-resource lookup for hero placement escrow.
 	ghostHeroPlacementKey:(tid)=>{

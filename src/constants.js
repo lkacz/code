@@ -55,7 +55,12 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   // Tin ore (engine/worldgen.js veins): a soft, shallow metal mined for raw 'tin'.
   // Smelted with copper into BRONZE (a tile-less alloy resource) — a mid-tier metal
   // bridging stone/copper and steel. Ore only; bronze is never a placed block.
-  TIN_ORE:142
+  TIN_ORE:142,
+  // Vine (engine/trees.js): a passable green drape hanging from swamp mangrove
+  // canopies. Mined for its 'vine' resource — twisted into 'rope' (a tile-less
+  // material) that crafts the grapple arrow and other rope gear. Passable +
+  // flammable deco, routed as passable-utility like GLOWSHROOM; never placed.
+  VINE:143
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -289,6 +294,9 @@ INFO[T.GOLDEN_WOOD]={hp:4,color:'#e6b422',drops:[{item:'wood',min:10,max:10}],pa
 // own boat / arrow recipes. isWood() (below) keeps them felling/burning like wood.
 INFO[T.LIGHT_WOOD]={hp:3,color:'#d9c9a3',drops:[{item:'lightWood',min:2,max:3}],passable:false,flammable:true,burnTime:52};
 INFO[T.HARD_WOOD]={hp:6,color:'#5e3a1c',drops:[{item:'hardWood',min:2,max:3}],passable:false,flammable:true,burnTime:80};
+// Vine: passable green drape under mangrove canopies. Mined for 'vine' (→ 'rope').
+// Passable + flammable → routes as passable-utility (like GLOWSHROOM); burns fast.
+INFO[T.VINE]={hp:1,color:'#3f7d3a',drop:'vine',passable:true,flammable:true,burnTime:1.2};
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;

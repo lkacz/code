@@ -1353,6 +1353,34 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'the finale relay fires once per host ceremony opening and re-arms after it closes');
 }
 function CADHasStory(src){ return /story: \d+/.test(src.slice(src.indexOf('const CAD = {'), src.indexOf('const CAD = {') + 400)); }
+function CADHasRope(src){ return /rope: \d+/.test(src.slice(src.indexOf('const CAD = {'), src.indexOf('const CAD = {') + 400)); }
+
+// --- rope plane: every embodied player's grapple rope reaches every viewer -----------------
+// The grapple is guest-local self-movement (no world write — see grapple.js), but
+// the ROPE is broadcast DISPLAY truth so the acting player, fellow players AND
+// pure spectators all see the same hook. A guest uplinks its tip (top-level
+// `rope` message, tip clamped host-side); the host batches its own rope + every
+// entry's into one sig-skipped `ropes` plane; the SHARED GRAPPLE painter draws
+// them identically everywhere. It is deliberately NOT a world-writing hact.
+{
+	assert.ok(/if\(t - s\.last\.rope >= CAD\.rope\) ropeTick\(s, t\);/.test(hostSrc) && CADHasRope(hostSrc),
+		'the rope plane ticks on its own cadence');
+	assert.ok(/if\(json === s\.lastRopeJson\) return; \/\/ sig-skip/.test(hostSrc), 'rope silence costs nothing (sig-skip)');
+	assert.ok(/function handleRope\(s, entry, pl\)/.test(hostSrc) && /pl\.t === 'rope'/.test(hostSrc),
+		'the host accepts a guest rope uplink (a top-level message, cloned from chat/plook)');
+	assert.ok(/broadcast\(\{ t: 'ropes'/.test(hostSrc), 'the host relays every embodied rope in one batched plane');
+	assert.ok(/ROPE_MAX_REACH/.test(hostSrc), 'the relayed hook tip is clamped to a bound of the tracked body (anti-spoof)');
+	assert.ok(/Math\.abs\(r\.x - b\.x\) > ROPE_MAX_REACH \|\| Math\.abs\(r\.y - b\.y\) > ROPE_MAX_REACH/.test(hostSrc),
+		'ropeTick RE-validates reach against the LIVE body every tick — a frozen tip on a body that walked/teleported away is dropped, not painted map-long');
+	assert.ok(!NET.validHeroAction('rope'), 'the rope is a cosmetic broadcast plane, never a world-writing hero action');
+	assert.ok(/conn\.send\(\{ t: 'rope'/.test(clientSrc), 'the guest uplinks its own rope tip');
+	assert.ok(/pl\.t === 'ropes'/.test(clientSrc), 'the client applies the relayed rope plane');
+	assert.ok(!/pl\.t === 'ropes'/.test(hostSrc), 'no client packet reaches the host ropes plane — it is broadcast-only');
+	assert.ok(/bridge\.drawRopeAt/.test(hostSrc) && /bridge\.drawRopeAt/.test(clientSrc),
+		'host + client render remote ropes through the SAME shared painter (parity with the acting player)');
+	assert.ok(/grappleWire:\(\)=>/.test(mainSrc) && /drawRopeAt:\(ctx,TILE/.test(mainSrc),
+		'the host wires its own rope + the shared painter through the ghost bridge');
+}
 
 // --- party-aware world pressure: the world happens around EVERYONE embodied ----------------
 // Spawn/despawn used to anchor on the HOST hero alone — a guest exploring far

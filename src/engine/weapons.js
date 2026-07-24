@@ -75,7 +75,13 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     // Utility ammo, deliberately below wood so 'auto' never wastes real arrows on
     // it — pin it from the HUD pips. Splats on impact: poison + chill instead of
     // raw damage (crafted from TOXIC_SNOW mined under gas-tainted blizzards).
-    {id:'toxicSnowball', key:'toxicSnowball', label:'toksyczne śnieżki', damage:0.55, speed:0.82, life:0.90, spread:0.055, color:'#8fdd7f', head:'#d9ffd0', snowball:true}
+    {id:'toxicSnowball', key:'toxicSnowball', label:'toksyczne śnieżki', damage:0.55, speed:0.82, life:0.90, spread:0.055, color:'#8fdd7f', head:'#d9ffd0', snowball:true},
+    // Grapple hook: a MOVEMENT arrow, never a combat shaft. It has no break
+    // chance (a rope, not a shaft — excluded from the durability map) and is
+    // skipped by 'auto' AND hidden from the pip row until owned/pinned, just
+    // like the snowball. Firing a pinned grapple diverts to MM.grapple (see the
+    // fireBowShot/firePowerBow guards) — it never enters the arrows array.
+    {id:'grapple', key:'arrowGrapple', label:'hakowe', damage:0, speed:1, life:1, spread:0, color:'#9a7b4a', head:'#d9c48a', grapple:true}
   ];
   // Hand-thrown projectiles (weaponType 'thrown', rotated in the ranged slot with
   // bows). Slower and lobbier than arrows; each kind carries its own splat:
@@ -708,6 +714,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       if(pinned && resourceCount(pinned.key)>0) return pinned;
     }
     for(const tier of ARROW_TIERS){
+      if(tier.grapple) continue; // the grapple hook is a movement tool — never auto-fired
       if(resourceCount(tier.key)>0) return tier;
     }
     return null;
@@ -723,7 +730,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     for(const t of ARROW_TIERS){
       const count=resourceCount(t.key);
       total+=count;
-      if(t.snowball && count<=0 && arrowPref!==t.id) continue;
+      if((t.snowball || t.grapple) && count<=0 && arrowPref!==t.id) continue;
       tiers.push({id:t.id, key:t.key, label:t.label, color:t.color, damage:t.damage, breakChance:t.breakChance,
         count, active:!!(active && active.id===t.id), pinned:arrowPref===t.id});
     }
@@ -1375,10 +1382,23 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     }
     return true;
   }
+  // Grapple hook (arrowGrapple, pinned "hakowe" tier). The bow launches a rope
+  // hook rather than a shaft — the hook lives in the grapple module (MM.grapple),
+  // NOT the arrows array, so it survives a guest's wfx stream and never becomes a
+  // host-flown projectile. Ammo is already spent by consumeArrowTier() above.
+  function fireGrappleShot(player,aimX,aimY,w){
+    bowCd=Math.max(0.28,(w && w.fireCooldown)||0.5);
+    if(player) player.facing = (Number(aimX)>=player.x) ? 1 : -1;
+    triggerHeldActionFx(aquaticStyle(w)==='crossbow'?'crossbow':'bow',0.9,180,false);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
+    try{ if(MM.grapple && MM.grapple.fire) MM.grapple.fire(player,aimX,aimY); }catch(e){}
+    return true;
+  }
   function fireBowShot(player, aimX, aimY, w, chargeRatio){
     if(bowCd>0) return false;
     const tier=consumeArrowTier();
     if(!tier) return false;
+    if(tier.grapple) return fireGrappleShot(player,aimX,aimY,w);
     const profile=bowWaterProfile(w,player);
     bowCd=Math.max(0.25, (w && w.fireCooldown)||0.55);
     const v=spreadAim(aimVector(player,aimX,aimY),tier,1);
@@ -1472,6 +1492,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   function firePowerBow(player, aimX, aimY, w, charge){
     const tier=consumeArrowTier();
     if(!tier) return false;
+    if(tier.grapple) return fireGrappleShot(player,aimX,aimY,w);
     const profile=bowWaterProfile(w,player);
     const roll=specialAttackRoll();
     const v=spreadAim(aimVector(player,aimX,aimY),tier,0.45);

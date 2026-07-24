@@ -1523,6 +1523,41 @@ try{
 		h.send({ t:'hact', a:'dmg', x:101, y:5, n:10 }); await flush();
 		check(heroDamageCalls === damageBeforeBlocked, 'coarse hero damage cannot strike a creature through an occluding wall');
 		TARGET_CLEAR = () => true;
+
+		// --- grapple ROPE broadcast plane: display parity for every viewer ----------
+		// The grapple is guest-local self-movement (no world write); the ROPE is
+		// broadcast display truth so the acting player AND every viewer see the same
+		// hook. Drives the real handleRope -> ropeTick relay on this embodied hero.
+		// ropeTick sig-skips and runs on CAD.rope, so space the ticks past 120 ms.
+		{
+			const ropeTickNow = async () => { await new Promise(r => setTimeout(r, 140)); tickHost(); await flush(); };
+			const myRope = (pl) => (pl && Array.isArray(pl.m)) ? pl.m.find(r => r[0] === 'gid-hero-intents') : null;
+			body.dead = false; body.x = 100.5; body.y = 5;
+			// 1) an embodied guest's rope reaches every viewer, keyed by its gid
+			h.clear(); h.send({ t: 'rope', ph: 1, x: 106, y: 4 }); await flush(); await ropeTickNow();
+			const r1 = myRope(h.last('ropes'));
+			check(r1 && r1[1] === 1 && Math.abs(r1[2] - 106) < 0.1 && Math.abs(r1[3] - 4) < 0.1,
+				'an embodied guest rope reaches every viewer in the ropes plane, keyed by gid');
+			// 2) an explicit let-go drops it from the relay
+			h.clear(); h.send({ t: 'rope', off: 1 }); await flush(); await ropeTickNow();
+			check(!myRope(h.last('ropes')), 'a released rope is dropped from the relay (viewers stop seeing it)');
+			// 3) TRUST: a frozen tip on a body that walked past ROPE_MAX_REACH is DROPPED
+			//    (the reach re-clamp — a hostile guest cannot paint a map-long rope)
+			h.clear(); h.send({ t: 'rope', ph: 1, x: 106, y: 4 }); await flush(); await ropeTickNow();
+			check(myRope(h.last('ropes')), 'rope present before the body drifts');
+			body.x = 100.5 + 80; // walk 80 tiles from the frozen tip (>> ROPE_MAX_REACH)
+			h.clear(); await ropeTickNow();
+			check(!myRope(h.last('ropes')),
+				'a frozen tip on a walked-away body is DROPPED by the reach re-clamp — no map-long rope on any viewer');
+			body.x = 100.5;
+			// 4) the host's own rope rides the h slot so guests render it too
+			bridge.grappleWire = () => ({ ph: 1, x: 7, y: 4 });
+			h.clear(); await ropeTickNow();
+			const rh = h.last('ropes');
+			check(rh && Array.isArray(rh.h) && rh.h[1] === 7 && rh.h[2] === 4,
+				"the host's own rope rides the plane's h slot for guests to render");
+			delete bridge.grappleWire;
+		}
 		await bye(h);
 	}
 

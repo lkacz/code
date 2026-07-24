@@ -246,6 +246,21 @@ worldGen.randSeed = ()=>0;
   for(let i=0;i<arr.length;i++){ if(arr[i]===T.LIGHT_WOOD) hasLight=true; else if(arr[i]===T.WOOD) hasPlain=true; }
   assert.equal(hasLight, true, 'lightwood tree mints LIGHT_WOOD trunk/roots');
   assert.equal(hasPlain, false, 'lightwood tree has no ordinary wood mixed in');
+  // Vines ride the randSeed thinning, and this suite stubs randSeed()=0 (which
+  // suppresses every optional roll — that is why the build above has no vines).
+  // Prove the drape fires under a non-zero seed, then restore the stub for the
+  // rest of the suite. It is a standalone passable deco, never counted as WOOD.
+  {
+    const savedSeed=worldGen.randSeed;
+    worldGen.randSeed=()=>0.9; // >=0.62 → every canopy column drapes a vine
+    const arrV=new Uint8Array(CHUNK_W*WORLD_H);
+    trees.buildTree(arrV,5,30,'lightwood',5);
+    worldGen.randSeed=savedSeed;
+    let vineCount=0, vinePlain=false;
+    for(let i=0;i<arrV.length;i++){ if(arrV[i]===T.VINE) vineCount++; else if(arrV[i]===T.WOOD) vinePlain=true; }
+    assert.ok(vineCount>0, 'a mangrove/lightwood canopy drapes harvestable VINE tiles');
+    assert.equal(vinePlain, false, 'the vine drape adds no ordinary wood');
+  }
 
   const arr2=new Uint8Array(CHUNK_W*WORLD_H);
   trees.buildTree(arr2,5,30,'hardwood',5);
@@ -268,6 +283,28 @@ worldGen.randSeed = ()=>0;
   assert.equal(trees.startTreeFall(getTile,setTile,1,3,3), true, 'hard-wood tree fells like wood');
   trees.settleAll(getTile,setTile);
   assert.equal(getTile(3,5), T.HARD_WOOD, 'felled hard-wood trunk stays hard wood (not downgraded)');
+}
+
+// A felled mangrove takes its draped vines with it — no VINE is left hanging in
+// mid-air where the canopy used to be (the fell collectors skip standalone deco,
+// so startTreeFall sweeps the crown footprint and clears them).
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){} };
+  MM.water={};
+  setTile(5,11,T.STONE);
+  setTile(5,10,T.LIGHT_WOOD); setTile(5,9,T.LIGHT_WOOD); setTile(5,8,T.LIGHT_WOOD); // trunk
+  setTile(4,7,T.LEAF); setTile(5,7,T.LEAF); setTile(6,7,T.LEAF); setTile(5,6,T.LEAF); // canopy
+  setTile(4,8,T.VINE); setTile(4,9,T.VINE); // vine drape below the (4,7) leaf
+  setTile(6,8,T.VINE); // a vine on the far canopy edge
+  assert.equal(getTile(4,8), T.VINE, 'vines are placed before felling');
+  assert.equal(trees.startTreeFall(getTile,setTile,1,5,10), true, 'mangrove fells');
+  trees.settleAll(getTile,setTile);
+  assert.equal(getTile(4,8), T.AIR, 'felling a mangrove clears its draped vines (no vine hanging from nothing)');
+  assert.equal(getTile(4,9), T.AIR, 'the whole vine drape clears with the felled canopy');
+  assert.equal(getTile(6,8), T.AIR, 'vines on the far canopy edge clear too');
 }
 
 // Each new wood drops its OWN resource key (not generic 'wood') so it can feed its

@@ -32,8 +32,10 @@ if(MMR && !MMR.ghostDreadAt){
 	};
 }
 
-const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500, drift: 700, mach: 800, story: 4000, npc: 5000, gfx: 2500 };
+const CAD = { hero: 66, wfx: 66, mobs: 120, mobsFull: 3000, inv: 120, invFull: 3000, guard: 150, body: 80, drops: 1000, seasons: 5000, infra: 1500, presence: 200, reap: 4000, resnap: 4000, prog: 1000, pwat: 500, drift: 700, mach: 800, story: 4000, npc: 5000, gfx: 2500, rope: 120 };
 const CHAT_MIN_MS = NET.CHAT.MIN_MS; // per-peer chat floor (shared with the client's local mirror)
+const ROPE_MIN_MS = 60;  // per-peer grapple-rope uplink floor (cosmetic; ~16 Hz max)
+const ROPE_MAX_REACH = 28; // a relayed hook tip is clamped this far from the body (a spoof can't paint a map-long rope)
 const ACT_POSE_TTL_MS = 6000; // an "active" pose vouches for the watcher this long
 const ELECTRIC_CAUSE = /shock|electric|lightning|laser/; // wet bodies conduct these
 const TILE_RESYNC_LIMIT = 3000;
@@ -89,7 +91,7 @@ const ghostHost = (function(){
 			joinPlaneCache: null,
 			joinPlaneCacheAt: 0,
 			joinPlaneCacheTimer: null,
-			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0, pwat: 0, drift: 0, story: 0, npc: 0 },
+			last: { hero: 0, heroKeepalive: 0, wfx: 0, mobs: 0, mobsFull: 0, inv: 0, invFull: 0, guard: 0, body: 0, drops: 0, seasons: 0, infra: 0, presence: 0, reap: 0, prog: 0, pwat: 0, drift: 0, story: 0, npc: 0, rope: 0 },
 			auraOwners: [],
 			lastMobSig: null,
 			lastInvSig: null,
@@ -226,6 +228,7 @@ const ghostHost = (function(){
 			activeGhosts: session ? entries().filter(e => e.actUntil > t).length : 0,
 			viewers: session ? entries().map(e => ({ gid: e.gid, name: e.name, mode: e.mode, avatar: e.avatar, active: e.actUntil > t, charge: +(e.charge || 0).toFixed(1), assistant: !!e.assistant, level: e.level || 1 })) : [],
 			players: session ? entries().filter(e => e.body).length : 0,
+			ropes: session ? entries().filter(e => e.rope).length : 0,
 			bodies: session ? entries().filter(e => e.body).map(e => ({ gid: e.gid, x: +e.body.x.toFixed(2), y: +e.body.y.toFixed(2), hp: +e.body.hp.toFixed(1), mhp: e.body.maxHp, dead: !!e.body.dead, look: e.look || null, pouch: Object.assign({}, e.body.pouch) })) : [],
 			aura: (MMR && MMR.ghostAura) ? MMR.ghostAura.spirits.length : 0,
 			banned: session ? session.banned.size : 0,
@@ -256,7 +259,7 @@ const ghostHost = (function(){
 			peer, gid: peer.id, room: s.room, name: null, cam: null, camPos: null, hello: false, lastSeen: now(),
 			helloDeadline: acceptedAt + HELLO_DEADLINE_MS,
 			rateT: 0, rateN: 0, lastMobsReq: 0, lastChatAt: 0,
-			mode: defaultMode, avatar: 'duszek', actUntil: 0, lastChat: null,
+			mode: defaultMode, avatar: 'duszek', actUntil: 0, lastChat: null, rope: null, lastRopeAt: 0,
 			charge: 0, powerCd: {}, assistant: false, lastAssistAt: 0, lastChargeSentAt: 0,
 			level: 1, watchT: 0, chatXpAt: 0, spookN: 0
 		};
@@ -470,7 +473,7 @@ const ghostHost = (function(){
 						if(relocation < 0){
 							// Missing collision truth or no nearby legal AABB: fail closed as a
 							// spectator and keep modeMemory intact for a later safe retry.
-							entry.body = null; entry.bodyLike = null;
+							entry.body = null; entry.bodyLike = null; entry.rope = null;
 							entry.mode = safeMode; entry.heroMode = false;
 							entry.peer.send({ t: 'perm', mode: safeMode });
 							try{ bridge.msg('⚠ Nie znaleziono bezpiecznego miejsca dla ' + entry.name); }catch(e){ /* fine */ }
@@ -527,6 +530,8 @@ const ghostHost = (function(){
 				markActive(entry);
 				broadcast({ t: 'plook', gid: entry.gid, c: entry.look });
 			}
+		} else if(pl.t === 'rope'){
+			handleRope(s, entry, pl);
 		} else if(pl.t === 'chat'){
 			handleChat(s, entry, pl);
 		} else if(pl.t === 'ping'){
@@ -773,7 +778,7 @@ const ghostHost = (function(){
 		// leave the (re)joined guest stale FOREVER. Reset the slow planes' sigs so
 		// the next tick rebroadcasts current truth to everyone (restores are
 		// idempotent; the fast planes re-sig within a second anyway).
-		s.lastStoryJson = null; s.lastNpcJson = null; s.lastDropsJson = null;
+		s.lastStoryJson = null; s.lastNpcJson = null; s.lastDropsJson = null; s.lastRopeJson = null;
 		s.stats.snapshots++;
 		s.lastSnapAt = t;
 	}
@@ -858,6 +863,7 @@ const ghostHost = (function(){
 		if(t - s.last.seasons >= CAD.seasons) seasonTick(s, t);
 		if(t - s.last.story >= CAD.story) storyTick(s, t);
 		if(t - s.last.npc >= CAD.npc) npcTick(s, t);
+		if(t - s.last.rope >= CAD.rope) ropeTick(s, t);
 		if(s.infraDirty && t - s.last.infra >= CAD.infra) infraTick(s, t);
 		if(t - s.last.presence >= CAD.presence) presenceTick(s, t);
 		if(t - s.last.pwat >= CAD.pwat) pwatTick(s, t);
@@ -980,6 +986,40 @@ const ghostHost = (function(){
 			if(json === s.lastStoryJson) return; // sig-skip: silence costs nothing
 			s.lastStoryJson = json;
 			broadcast({ t: 'story', data });
+		}catch(e){ /* skip tick */ }
+	}
+	// Grapple ropes: every embodied player's rope+hook streamed to every viewer so
+	// the acting player AND all spectators see the same rope. The host's own rope
+	// (h) comes from its live grapple; each guest's (m) is its last uplinked tip,
+	// already clamped host-side in handleRope. Batched + sig-skipped — a still (or
+	// absent) rope costs nothing. Uplink is handleRope; render is drawSpirits.
+	function ropeTick(s, t){
+		s.last.rope = t;
+		if(!session) return;
+		try{
+			let h = 0;
+			const own = bridge.grappleWire ? bridge.grappleWire() : null;
+			if(own && Number.isFinite(own.x) && Number.isFinite(own.y)){
+				h = [own.ph ? 1 : 0, +own.x.toFixed(2), +own.y.toFixed(2)];
+			}
+			const m = [];
+			for(const entry of session.peers.values()){
+				const r = entry.rope, b = entry.body;
+				if(!r || !b || b.dead) continue;
+				// Re-validate reach against the body's CURRENT position every tick: a
+				// legit rope only ever SHORTENS (the body reels toward a fixed anchor
+				// ≤ cast range away), so a tip now beyond ROPE_MAX_REACH is a stale or
+				// spoofed freeze — a hostile guest that sent one packet then withheld
+				// updates and walked off, or a post-respawn teleport. Drop it rather
+				// than let a frozen tip + moving body paint a map-long rope on everyone.
+				if(Math.abs(r.x - b.x) > ROPE_MAX_REACH || Math.abs(r.y - b.y) > ROPE_MAX_REACH){ entry.rope = null; continue; }
+				m.push([entry.gid, r.ph ? 1 : 0, +r.x.toFixed(2), +r.y.toFixed(2)]);
+				if(m.length >= 16) break;
+			}
+			const json = JSON.stringify([h, m]);
+			if(json === s.lastRopeJson) return; // sig-skip: silence costs nothing
+			s.lastRopeJson = json;
+			broadcast({ t: 'ropes', h, m });
 		}catch(e){ /* skip tick */ }
 	}
 	function buildInfraPacket(){
@@ -1257,6 +1297,25 @@ const ghostHost = (function(){
 		sendDeed(entry, pl.kind, 1); // cheer | bless | energy — only once the ledger said yes
 	}
 
+	// Grapple-rope uplink: an embodied guest reports its current hook tip (or an
+	// explicit let-go). Display-only cosmetic — stored on the entry and swept into
+	// the batched 'ropes' plane by ropeTick. The tip is CLAMPED to a sane bound of
+	// the tracked body so a spoofed packet can't paint a rope across the map, and
+	// it is rate-floored like every other guest uplink.
+	function handleRope(s, entry, pl){
+		markActive(entry);
+		const b = entry.body;
+		if(!b) return; // only an embodied body has a rope
+		const t = now();
+		if(pl.off){ entry.rope = null; return; } // explicit let-go bypasses the floor
+		if(t - (entry.lastRopeAt || 0) < ROPE_MIN_MS) return;
+		const x = Number(pl.x), y = Number(pl.y);
+		if(!Number.isFinite(x) || !Number.isFinite(y)) return;
+		const cx = b.x + Math.max(-ROPE_MAX_REACH, Math.min(ROPE_MAX_REACH, x - b.x));
+		const cy = b.y + Math.max(-ROPE_MAX_REACH, Math.min(ROPE_MAX_REACH, y - b.y));
+		entry.lastRopeAt = t;
+		entry.rope = { ph: pl.ph ? 1 : 0, x: cx, y: cy };
+	}
 	// --- short texts (host-moderated, profanity-filtered) --------------------------------
 	function handleChat(s, entry, pl){
 		markActive(entry);
@@ -1537,6 +1596,7 @@ const ghostHost = (function(){
 		keepBody(entry); // demote/leave: the pouch and earned arsenal await this gid's return
 		entry.body = null;
 		entry.bodyLike = null;
+		entry.rope = null; // a bodiless viewer has no rope to relay
 		invalidateJoinPlaneCache(s);
 		updateUi();
 	}
@@ -1579,6 +1639,7 @@ const ghostHost = (function(){
 		if(b.hp <= 0){
 			b.dead = true;
 			if(entry.bodyLike) entry.bodyLike.dead = true;
+			entry.rope = null; // a dead body drops its rope (respawn teleports it away)
 			b.respawnAt = t + NET.PLAY_RULES.RESPAWN_MS;
 			if(b.duelWith && session) endDuel(session, entry); // death settles a duel
 			dropPouchAt(s, entry, b); // the gravestone rule: the pouch stays where the hero fell
@@ -2665,6 +2726,9 @@ const ghostHost = (function(){
 				b.disp.y += (b.y - b.disp.y) * ease;
 				if(wantBody && bridge.drawHeroAt) bridge.drawHeroAt({ x: b.disp.x, y: b.disp.y, vx: b.vx, vy: b.vy, facing: b.f, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H, gid: entry.gid, look: entry.look || null, cloaked: (b.cloakUntil || 0) > now() });
 				if(wantText) paintBodyTag(ctx, TILE, b.disp.x, b.disp.y, entry.name || 'Duch', b, viewPrefs.bubbles ? entry.lastChat : null);
+				// this guest's grapple rope, glued to its eased body (the host's own
+				// rope is drawn by the solo render path). Same painter as the local hook.
+				if(wantText && entry.rope && bridge.drawRopeAt) bridge.drawRopeAt(ctx, TILE, b.disp.x, b.disp.y, entry.rope.x, entry.rope.y, entry.rope.ph);
 				continue;
 			}
 			if(!entry.cam) continue;

@@ -351,6 +351,8 @@ const ghostClient = (function(){
 	const powerFx = []; // {x,y,kind,t}
 	let hostChat = null; // the host's own words, rendered over the hero replica
 	const pings = []; // {x,y,name,t} — spots fellow spirits (or we) pointed at
+	let hostRope = null; // {ph,x,y} — the host's own grapple rope, relayed for display
+	const remoteRopes = new Map(); // gid -> {ph,x,y} — every embodied peer's rope tip
 	let lastPingSentAt = 0;
 	let prog = NET.createProgress(); // the watcher's own career (persisted in THEIR browser)
 	let progPanel = null;
@@ -1596,6 +1598,24 @@ const ghostClient = (function(){
 						if(pings.length > 8) pings.shift();
 						if(pl.gid !== gid) bridge.msg('📍 ' + String(pl.name || 'Duch').slice(0, 24) + ' wskazuje miejsce');
 					}
+				} else if(pl.t === 'ropes'){
+					// every embodied player's grapple rope, relayed for display. The
+					// host's own is `h`; each guest's is a [gid,ph,x,y] row in `m`.
+					// Stored keyed by gid (own rope draws locally, so skip it); a
+					// released rope drops out of `m` and is pruned — no TTL needed.
+					const hh = pl.h;
+					hostRope = (Array.isArray(hh) && hh.length >= 3 && Number.isFinite(+hh[1]) && Number.isFinite(+hh[2]))
+						? { ph: +hh[0] ? 1 : 0, x: +hh[1], y: +hh[2] } : null;
+					const seen = new Set();
+					for(const row of (Array.isArray(pl.m) ? pl.m.slice(0, 16) : [])){
+						if(!Array.isArray(row) || row.length < 4) continue;
+						const rg = row[0];
+						if(rg === gid) continue; // my own rope is drawn locally
+						if(!Number.isFinite(+row[2]) || !Number.isFinite(+row[3])) continue;
+						seen.add(rg);
+						remoteRopes.set(rg, { ph: +row[1] ? 1 : 0, x: +row[2], y: +row[3] });
+					}
+					for(const k of [...remoteRopes.keys()]) if(!seen.has(k)) remoteRopes.delete(k);
 				} else if(pl.t === 'powerFx' && NET.validPowerKind(pl.kind)){
 					if(Number.isFinite(pl.x) && Number.isFinite(pl.y)){
 						powerFx.push({ x: pl.x, y: pl.y, kind: pl.kind, t: nowMs() });
@@ -1693,6 +1713,7 @@ const ghostClient = (function(){
 				}
 				conn.send({ t: 'ppose', x: +p.x.toFixed(2), y: +p.y.toFixed(2), vx: +(p.vx || 0).toFixed(2), vy: +(p.vy || 0).toFixed(2), f: p.facing < 0 ? -1 : 1, act: 1, hp: +(p.hp || 0).toFixed(1), mhp: Math.max(1, Math.round(p.maxHp || 100)), c: cbits });
 			}
+			sendRope(); // stream this guest's grapple rope so everyone sees it (self-throttled)
 			saveHeroState(false); // trailing persistence rides the frame, throttled
 		} else if(play.on && play.spawned){
 			// embodied uplink: the body pose replaces the camera pose (the host uses
@@ -1850,6 +1871,17 @@ const ghostClient = (function(){
 			if((play.on || hero.on) && remoteHost.has) bubble(ctx, TILE, remoteHost.dx, remoteHost.dy - 1.0, hostChat.text);
 			else if(p) bubble(ctx, TILE, p.x, p.y - (p.h || 1) / 2 - 0.5, hostChat.text);
 		}
+		// grapple ropes — the host's own (over its hero) and every fellow player's
+		// (glued to its body), drawn with the SAME painter as the acting player's
+		// local hook so players and spectators see an identical rope. The viewer's
+		// OWN rope is drawn by the solo render path, so it is skipped in `m` on apply.
+		if(bridge.drawRopeAt){
+			if(hostRope){
+				if((play.on || hero.on) && remoteHost.has) bridge.drawRopeAt(ctx, TILE, remoteHost.dx, remoteHost.dy, hostRope.x, hostRope.y, hostRope.ph);
+				else if(p) bridge.drawRopeAt(ctx, TILE, p.x, p.y, hostRope.x, hostRope.y, hostRope.ph);
+			}
+			if(remoteRopes.size) for(const b of bodies){ if(b.dead) continue; const rr = remoteRopes.get(b.id); if(rr) bridge.drawRopeAt(ctx, TILE, b.x, b.y, rr.x, rr.y, rr.ph); }
+		}
 		const now = nowMs();
 		// pointed spots pulse for a few seconds
 		for(let i = pings.length - 1; i >= 0; i--){
@@ -1902,6 +1934,26 @@ const ghostClient = (function(){
 		conn.send({ t: 'chat', text: res.text });
 		noteInput();
 		return true;
+	}
+	// Grapple-rope uplink: while THIS guest's local hook is out, report its tip so
+	// the host can relay it to everyone; on let-go, send one explicit clear. The
+	// rope is guest-local self-movement (no world write) — this is display parity
+	// only, so fellow players and spectators see the same rope the guest sees.
+	const NET_ROPE_SEND_MS = 75; // ~13 Hz uplink while a rope is out (host relays at CAD.rope)
+	let lastRopeSentAt = 0, ropeWasActive = false;
+	function sendRope(){
+		if(state !== 'live' || mode === 'watch' || !conn) return;
+		const g = MMR && MMR.grapple;
+		const w = g && g.wireState ? g.wireState() : null;
+		const t = nowMs();
+		if(w && Number.isFinite(w.x) && Number.isFinite(w.y)){
+			if(ropeWasActive && t - lastRopeSentAt < NET_ROPE_SEND_MS) return; // ~13 Hz
+			lastRopeSentAt = t; ropeWasActive = true;
+			conn.send({ t: 'rope', ph: w.ph ? 1 : 0, x: +w.x.toFixed(2), y: +w.y.toFixed(2) });
+		} else if(ropeWasActive){
+			ropeWasActive = false;
+			conn.send({ t: 'rope', off: 1 }); // instant let-go, no waiting for a TTL
+		}
 	}
 	// Powers strike at the SPIRIT's position — the host re-derives it from the last
 	// pose, so the client cannot aim them anywhere it hasn't actually flown.
@@ -2801,6 +2853,7 @@ const ghostClient = (function(){
 	const api = { boot, frame, active: () => !!WATCH && state !== 'idle', state: () => state, drawSpirits, sendBuff, sendChat, sendPower, sendPing, sendAssist, setAvatar, setFollow, setCam, noteInput, leave, metrics, partyMembers,
 		openProgress: () => toggleProgPanel(),
 		_debugConnLost: scheduleReconnect, // QA: exercises the real drop→rejoin→resnapshot cycle
+		_ropes: () => ({ host: hostRope, remotes: [...remoteRopes.entries()].map(([g, r]) => ({ gid: g, ph: r.ph, x: r.x, y: r.y })) }), // QA: relayed rope state as this viewer sees it
 		// QA seams for play mode: fire an intent / arm a pouch resource without the
 		// screen-coordinate math (headless clicks are brittle); the wire path, the
 		// host validation and the pouch accounting are all still the production ones
