@@ -1,0 +1,143 @@
+// Wypał ciągły — the kiln (src/engine/kiln.js).
+// Closes three gaps at once: thin power demand, instant/free/station-less
+// crafting, and hand-smelting that does not scale. It invents no chemistry —
+// it applies reactions.js's EXISTING heat recipes in bulk.
+// Run: node tools/kiln-sim.test.mjs
+import { strict as assert } from 'assert';
+import { readFile } from 'node:fs/promises';
+
+globalThis.window = globalThis;
+globalThis.MM = {};
+
+const { T } = await import('../src/constants.js');
+await import('../src/engine/reactions.js');           // the real recipe table
+const { kiln: K } = await import('../src/engine/kiln.js');
+
+const tiles = new Map();
+const kk = (x, y) => x + ',' + y;
+const get = (x, y) => tiles.has(kk(x, y)) ? tiles.get(kk(x, y)) : T.STONE;
+const set = (x, y, t) => tiles.set(kk(x, y), t);
+
+// a sealed 3x2 brick chamber with the kiln mouth at the bottom
+function buildChamber(){
+  tiles.clear();
+  for(let x = 4; x <= 8; x++) for(let y = 6; y <= 11; y++) set(x, y, T.BRICK);
+  for(let x = 5; x <= 7; x++) for(let y = 8; y <= 9; y++) set(x, y, T.AIR);
+  set(6, 10, T.KILN);
+}
+
+// ------------------------------------------------------------ chamber sealing
+{
+  K.reset(); buildChamber();
+  const ch = K._debug.chamberAt(6, 10, get);
+  assert.ok(ch && ch.length === 6, 'a sealed brick chamber is found (' + (ch && ch.length) + ' cells)');
+
+  // punch a hole: the volume leaks and must be rejected, NOT flood the world
+  set(5, 8, T.AIR); set(4, 8, T.AIR); set(3, 8, T.AIR);
+  for(let x = -50; x <= 3; x++) set(x, 8, T.AIR);
+  assert.equal(K._debug.chamberAt(6, 10, get), null, 'an unsealed chamber is rejected, not flood-filled forever');
+
+  // and the scan is hard-capped either way
+  tiles.clear(); set(6, 10, T.KILN);
+  for(let x = -200; x <= 200; x++) for(let y = 0; y <= 9; y++) set(x, y, T.AIR);
+  assert.equal(K._debug.chamberAt(6, 10, get), null, 'a pathological open volume can never eat a frame');
+}
+
+// -------------------------------------------------------------------- fuelling
+{
+  K.reset(); buildChamber();
+  const k = { x: 6, y: 10 };
+  assert.equal(K._debug.heatRate(k, 0.1, get), 0, 'a cold kiln does nothing');
+
+  set(6, 11, T.LAVA);
+  assert.ok(K._debug.heatRate(k, 0.1, get) > 0, 'lava on a face fires the kiln');
+
+  buildChamber();
+  const savedFire = MM.fire;
+  MM.fire = { isBurning: (x, y) => x === 6 && y === 11 };
+  assert.ok(K._debug.heatRate(k, 0.1, get) > 0, 'a live flame fires it too');
+  MM.fire = savedFire;
+
+  // ...or the electrical grid, which is what gives power a real consumer
+  buildChamber();
+  const savedDyn = MM.dynamo;
+  MM.dynamo = { absorbNear: (x, y, amount) => ({ taken: amount }) };
+  assert.ok(K._debug.heatRate(k, 0.1, get) > 0, 'the grid can heat it instead (new power DEMAND)');
+  MM.dynamo = savedDyn;
+}
+
+// ------------------------------------------------------- it bakes real recipes
+{
+  K.reset(); buildChamber();
+  set(6, 11, T.LAVA);
+  // load the chamber with clay — reactions.js already knows clay -> brick
+  set(5, 8, T.CLAY); set(6, 8, T.CLAY); set(7, 8, T.CLAY);
+  K.noteKiln(6, 10);
+  assert.equal(K.metrics().kilns, 1, 'the kiln is tracked');
+
+  let ticks = 0;
+  while(ticks < 400 && K.metrics().fired < 3){ K.update(0.1, null, get, set); ticks++; }
+  assert.ok(K.metrics().fired >= 3, 'the kiln bakes every eligible tile in the chamber (' + K.metrics().fired + ')');
+  assert.equal(get(5, 8), T.BRICK, 'clay came out as brick — the SHARED recipe, not bespoke chemistry');
+  assert.equal(get(6, 8), T.BRICK, 'the whole batch fired, unattended');
+
+  // it is METERED, not instant: that is what makes it a station you walk away from
+  K.reset(); buildChamber();
+  set(6, 11, T.LAVA); set(5, 8, T.CLAY);
+  K.noteKiln(6, 10);
+  K.update(0.05, null, get, set);
+  assert.equal(get(5, 8), T.CLAY, 'a single brief tick does not transmute anything');
+}
+
+// ------------------------------------------------------------- nothing to bake
+{
+  K.reset(); buildChamber();
+  set(6, 11, T.LAVA);
+  K.noteKiln(6, 10);
+  for(let i = 0; i < 50; i++) K.update(0.1, null, get, set);
+  assert.equal(K.metrics().fired, 0, 'an empty chamber bakes nothing and does not spin');
+  assert.equal(K.metrics().lit, 1, 'but it does report itself lit');
+}
+
+// ------------------------------------------------------------------ lifecycle
+{
+  K.reset(); buildChamber();
+  K.noteKiln(6, 10);
+  set(6, 10, T.AIR);                      // mined out
+  K.update(0.1, null, get, set);
+  assert.equal(K.metrics().kilns, 0, 'a mined-out kiln stops being tracked');
+
+  K.reset();
+  for(let i = 0; i < 500; i++) K.noteKiln(i, 0);
+  assert.ok(K.metrics().kilns <= K.CFG.MAX_KILNS, 'tracked kilns are hard-bounded (' + K.metrics().kilns + ')');
+}
+
+// ----------------------------------------------------------------- persistence
+{
+  K.reset(); buildChamber();
+  K.noteKiln(6, 10);
+  const snap = K.snapshot();
+  assert.equal(snap.list.length, 1, 'kilns ride the save');
+  K.reset();
+  assert.equal(K.metrics().kilns, 0, 'reset clears them');
+  K.restore(snap);
+  assert.equal(K.metrics().kilns, 1, 'a reload keeps the kiln you built');
+  K.restore({ list: [{ x: 'x', y: 1 }, { x: 2, y: 3 }] });
+  assert.equal(K.metrics().kilns, 1, 'a hostile save row is rejected, not trusted');
+}
+
+// -------------------------------------------------------------- wiring contract
+{
+  const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const modSrc = await readFile(new URL('../src/engine/kiln.js', import.meta.url), 'utf8');
+  assert.match(mainSrc, /KILN\.update\(dt, player, getTile, setTile\)/, 'the kiln is ticked each frame');
+  assert.match(mainSrc, /KILN\.noteKiln\(tx,ty\)/, 'kilns register on the shared tile-change hook');
+  assert.match(mainSrc, /KILN\.clearKiln\(tx,ty\)/, '...and unregister the same way');
+  assert.match(mainSrc, /id:'kiln'/, 'the kiln is craftable');
+  assert.match(mainSrc, /kiln: timedSavePart/, 'kilns are saved');
+  // it must never invent chemistry: all transmutation goes through reactions.js
+  assert.match(modSrc, /R\.apply\('heat'/, 'transmutation routes through the shared reaction table');
+  assert.ok(!/resultTile|register\(/.test(modSrc), 'the kiln defines no recipes of its own');
+}
+
+console.log('kiln-sim: all assertions passed');

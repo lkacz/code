@@ -107,6 +107,7 @@ import { caveIn as CAVE_IN } from './engine/cave_in.js';
 import { forest as FOREST } from './engine/forest.js';
 import { attention as ATTENTION } from './engine/attention.js';
 import { glider as GLIDER } from './engine/glider.js';
+import { kiln as KILN } from './engine/kiln.js';
 import { mechs as MECHS } from './engine/mechs.js';
 import { altar as ALTAR } from './engine/altar.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
@@ -755,6 +756,13 @@ MM.onTileRenderChanged=function(tx,ty,old,next){
 		try{
 			if(next===T.PIT_PROP) CAVE_IN.noteProp(tx,ty);
 			else if(old===T.PIT_PROP) CAVE_IN.clearProp(tx,ty);
+		}catch(e){}
+	}
+	// kilns register on the same one-path hook as pit props
+	if(KILN && (old===T.KILN || next===T.KILN)){
+		try{
+			if(next===T.KILN) KILN.noteKiln(tx,ty);
+			else if(old===T.KILN) KILN.clearKiln(tx,ty);
 		}catch(e){}
 	}
 	noteHealingShelterTileChanged(tx,ty);
@@ -4116,6 +4124,7 @@ function buildSaveObject(opts){
 	// the world's memory of what you took must survive a reload, or the deeds
 	// axis resets every session and means nothing
 	attention: timedSavePart('attention',()=>((ATTENTION && ATTENTION.snapshot) ? ATTENTION.snapshot() : null),perf),
+	kiln: timedSavePart('kiln',()=>((KILN && KILN.snapshot) ? KILN.snapshot() : null),perf),
 	wind: timedSavePart('wind',()=>((WIND && WIND.snapshot) ? WIND.snapshot() : null),perf),
 	seasons: timedSavePart('seasons',()=>((SEASONS && SEASONS.snapshot) ? SEASONS.snapshot() : null),perf),
 	clouds: timedSavePart('clouds',()=>((CLOUDS && CLOUDS.snapshot) ? CLOUDS.snapshot() : null),perf),
@@ -4414,6 +4423,7 @@ function applyGameDataCore(data,opts){
 	try{ if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); }catch(e){}
 	try{ if(FOREST && FOREST.reset) FOREST.reset(); }catch(e){}
 	try{ if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); }catch(e){}
+	try{ if(KILN && KILN.reset) KILN.reset(); }catch(e){}
 	try{ if(TREES && TREES.reset) TREES.reset(); }catch(e){}
 	try{ if(GRASS && GRASS.reset) GRASS.reset(); }catch(e){}
 	try{ if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); }catch(e){}
@@ -4504,6 +4514,7 @@ function applyGameDataCore(data,opts){
 	try{ if(CAVE_IN && CAVE_IN.restore && data.caveIn!=null) CAVE_IN.restore(data.caveIn); }catch(e){}
 	try{ if(FOREST && FOREST.restore && data.forest!=null) FOREST.restore(data.forest); }catch(e){}
 	try{ if(ATTENTION && ATTENTION.restore && data.attention!=null) ATTENTION.restore(data.attention); }catch(e){}
+	try{ if(KILN && KILN.restore && data.kiln!=null) KILN.restore(data.kiln); }catch(e){}
 	restoreRequired('wind',data.wind!=null,()=>{ if(WIND && WIND.restore) return WIND.restore(data.wind); throw new Error('wind restorer unavailable'); });
 	restoreRequired('seasons',data.seasons!=null,()=>{ if(SEASONS && SEASONS.restore) return SEASONS.restore(data.seasons); throw new Error('seasons restorer unavailable'); });
 	restoreRequired('clouds',data.clouds!=null,()=>{ if(CLOUDS && CLOUDS.restore) return CLOUDS.restore(data.clouds); throw new Error('clouds restorer unavailable'); });
@@ -4992,6 +5003,7 @@ const RECIPES=[
 	{id:'arrows_grapple', name:'Strzaly hakowe x12', cost:{rope:2, steel:1}, make(){ inv.arrowGrapple+=12; msg('Strzaly hakowe +12 - hak ze stali na linie z pnaczy; wystrzel w teren i przyciagnij sie (przypnij "hakowe" w pasku strzal, skok = puszczasz line)'); }},
 	{id:'rope_from_vine', name:'Lina z pnaczy x2', cost:{vine:3}, make(){ inv.rope+=2; msg('Lina +2 - pnacza z bagiennych mangrowcow skrecone w mocna line (na hakowe strzaly i inny sprzet)'); }},
 	{id:'pit_prop', name:'Stemple x4', cost:{wood:6}, make(){ inv.pitProp+=4; msg('Stemple +4 - postaw je pod szerokim stropem, zanim zawal cie przygniecie (podpieraja skale dookola)'); }},
+	{id:'kiln', name:'Piec wypalowy', cost:{brick:12, steel:2}, make(){ inv.kiln+=1; msg('Piec wypalowy +1 - zamuruj komore z cegiel, wrzuc surowiec do srodka i podgrzej (lawa, ogien albo prad). Wypala partiami, sam.'); }},
 	{id:'glider', name:'Lotnia', cost:{lightWood:6, rope:3, glass:2}, make(){ inv.tools.glider=true; msg('Lotnia gotowa - trzymaj skok podczas spadania, zeby rozwinac skrzydlo. Wiatr cie poniesie, a cieple powietrze nad lawa i ogniem wyniesie w gore.'); }},
 	{id:'harpoon_bolts', name:'Harpuny x8', cost:{steel:1, wood:1}, make(){ inv.harpoonBolt+=8; msg('Harpuny +8 - ciezkie, odzyskiwalne groty do wyrzutni podwodnej'); }},
 	{id:'toxic_snowballs', name:'Toksyczne snieżki x8', cost:{toxicSnow:2}, make(){ inv.toxicSnowball+=8; msg('Toksyczne snieżki +8 - amunicja do luku; spowalnia i zatruwa cel'); }},
@@ -14712,7 +14724,7 @@ const HOT_SELECT_GROUPS=[
 	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','TIN_ORE','GOLD_ORE','SILVER_ORE','SILVER_INGOT','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL','MOTHER_ICE','MOTHER_LAVA','GRAPHITE','GRAPHENE']},
 	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
 	{id:'home',label:'Dom i wyposażenie',tiles:['CHAIR_WOOD','CHAIR_STONE','CHAIR_STEEL','RUSTIC_STOOL','PINE_TABLE','WALL_SHELF','OAK_CABINET','COZY_BED','BOOKCASE','PATCHWORK_SOFA','HAMMOCK','WOVEN_RUG','POTTED_FERN','WALL_CLOCK','MIRROR','AQUARIUM','TERRARIUM','CHANDELIER','INDOOR_FOUNTAIN','HOLOGRAM_ART','DESK_LAMP','RADIO','TELEVISION','GAME_CONSOLE','REFRIGERATOR','COFFEE_MACHINE','AIR_PURIFIER','MEDICAL_STATION','HEALING_POD','ZERO_G_LOUNGER','MEMORY_PROJECTOR','CHRONO_CLOCK','BIOLUM_GARDEN','MINIATURE_SUN','DREAM_SYNTH','COSMIC_ORRERY']},
-		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET','SMR_CELL']},
+		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','KILN','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET','SMR_CELL']},
 	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER','BEDROCK_LADDER','WATER_PUMP','TRANSISTOR','TORCH','WEATHERVANE','LIGHTNING_ROD','RESPAWN_TOTEM','PIT_PROP','SAPLING']},
 	{id:'food',label:'Jedzenie',tiles:['MEAT','ROTTEN_MEAT','BAKED_MEAT','GLOWSHROOM']},
 	{id:'chest',label:'Skrzynie',tiles:['CHEST_COMMON','CHEST_UNCOMMON','CHEST_RARE','CHEST_EPIC','CHEST_LEGENDARY']},
@@ -19259,6 +19271,7 @@ function runGameStep(dt,ts){
 	}
 	if(CAVE_IN && CAVE_IN.update) CAVE_IN.update(dt, player, getTile, setTile);
 	if(FOREST && FOREST.update) FOREST.update(dt, player, getTile, setTile);
+	if(KILN && KILN.update) KILN.update(dt, player, getTile, setTile);
 	// the layer slowly forgets a quiet player; a busy one keeps its attention
 	if(ATTENTION && SEASONS && SEASONS.metrics){ try{ const sm=SEASONS.metrics(); if(sm && Number.isFinite(sm.dayFloat)) ATTENTION.update(sm.dayFloat); }catch(e){} }
 	if(SEASONS && SEASONS.update) SEASONS.update(dt, getTile, setTile, player, seasonUpdateContext());

@@ -65,7 +65,10 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   // Passable so you can walk through your own gallery while it holds the roof.
   PIT_PROP:144,
   // Sadzonka — a sapling growing back into a real tree (engine/forest.js)
-  SAPLING:145
+  SAPLING:145,
+  // Piec wypałowy — a sealed brick chamber that bakes heat recipes in bulk
+  // (engine/kiln.js). Solid: it is the chamber's mouth, not a doorway.
+  KILN:146
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -304,6 +307,7 @@ INFO[T.HARD_WOOD]={hp:6,color:'#5e3a1c',drops:[{item:'hardWood',min:2,max:3}],pa
 INFO[T.VINE]={hp:1,color:'#3f7d3a',drop:'vine',passable:true,flammable:true,burnTime:1.2};
 INFO[T.PIT_PROP]={hp:4,color:'#8a6236',drop:'wood',passable:true,flammable:true,burnTime:2.2};
 INFO[T.SAPLING]={hp:1,color:'#5fae4a',drop:'wood',passable:true,flammable:true,burnTime:0.9};
+INFO[T.KILN]={hp:14,color:'#9c5b3a',drop:'brick',passable:false,machine:true};
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;

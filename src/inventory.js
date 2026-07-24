@@ -310,6 +310,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'arrowGrapple', label:'Strzaly hakowe', color:'#9a7b4a', tile:null},
     {key:'vine', label:'Pnacze', color:'#3f9a3f', tile:null},
     {key:'pitProp', label:'Stempel', color:'#8a6236', tile:'PIT_PROP'},
+    {key:'kiln', label:'Piec wypalowy', color:'#9c5b3a', tile:'KILN'},
     {key:'rope', label:'Lina', color:'#b79b5c', tile:null},
     {key:'harpoonBolt', label:'Harpuny', color:'#72c7d8', tile:null},
     {key:'leaf',    label:'Liść',    color:'#2faa2f', tile:'LEAF'},
