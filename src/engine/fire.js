@@ -25,6 +25,51 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   const MAX_BURNING=240;   // hard cap so a forest fire cannot grow unbounded
   const SPREAD_INTERVAL=0.45; // seconds between spread attempts per burning tile
   const SPREAD_CHANCE=0.5;    // per attempt, before per-neighbour filtering
+  // --- fire weather -----------------------------------------------------------
+  // Fire is no longer isotropic: it leans downwind, dries out in a hot summer and
+  // sulks in wet autumn litter, and rain knocks it down. Every input here already
+  // existed (wind.js, seasons.js, clouds.js) — this is the coupling, not new sim.
+  const EMBER_INTERVAL=2.6;   // seconds between ember-spotting attempts per tile
+  const EMBER_MIN_WIND=2.4;   // below this the air simply cannot loft a spark
+  const EMBER_MAX_DIST=7;     // hard clamp: a spot fire must stay griefing-proof
+  const RAIN_DOUSE_INTERVAL=1.1;
+  function windSpeedNow(){
+    try{ if(MM.wind && MM.wind.speed) return Number(MM.wind.speed())||0; }catch(e){}
+    return 0;
+  }
+  // 0 = tinder-dry (the neutral baseline), 1 = soaked. Deliberately a DEVIATION
+  // from dry, not an absolute: with no weather modules loaded (Node sim tests)
+  // this returns 0 so the pinned bare spread thresholds are untouched, and a hot
+  // dry summer likewise reads 0 — only genuinely wet conditions damp the fire.
+  function moistureAt(x){
+    let m=0;
+    try{
+      const p=MM.seasons && MM.seasons.profile ? MM.seasons.profile() : null;
+      if(p){
+        const warm=Number(p.temperatureDelta)||0;
+        const wet=Number(p.rainRateMult);
+        m += -warm*0.55 + ((Number.isFinite(wet)?wet:1)-1)*0.60;
+      }
+    }catch(e){}
+    try{ if(MM.clouds && MM.clouds.isRainingAt && MM.clouds.isRainingAt(x)) m+=0.55; }catch(e){}
+    return m<0?0:(m>1?1:m);
+  }
+  // Public 0..1 fire-danger index — the weathervane reads this.
+  function dangerIndex(x){
+    const wind=Math.min(1,Math.abs(windSpeedNow())/7.2);
+    const dry=1-moistureAt(Number.isFinite(x)?x:0);
+    const d=dry*0.68+wind*0.32;
+    return d<0?0:(d>1?1:d);
+  }
+  // Downwind bias: neighbours the wind points at catch far more readily than the
+  // ones it blows away from. Returns a multiplier on the base spread chance.
+  function windSpreadMult(dx){
+    const w=windSpeedNow();
+    if(!dx || Math.abs(w)<0.35) return 1;
+    const along=(w>0?1:-1)===dx;
+    const strength=Math.min(1,Math.abs(w)/7.2);
+    return along ? 1+strength*1.85 : Math.max(0.12,1-strength*0.85);
+  }
   const TORCH_HEAT_INTERVAL=0.35;
   const TORCH_HEAT_BUDGET=24;
   const TORCH_SMOKE_RATE=0.018;   // roughly 3.5% of a burning coal block
@@ -161,6 +206,37 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const phase=((Math.imul(x,73856093)^Math.imul(y,19349663))>>>0)/4294967296;
     torchHeat.set(k,{x,y,smokeAcc:phase*TORCH_SMOKE_PACKET,smokeAt:torchRuntime});
   }
+  // A roof overhead keeps the rain off — an underground or built-over fire is
+  // immune to weather dousing (scan is short and only runs on the rain tick).
+  function isSheltered(getTile,x,y){
+    for(let i=1;i<=6;i++){
+      const t=getTile(x,y-i);
+      if(t===undefined) break;
+      if(t!==T.AIR && t!==T.WATER && !(INFO[t] && INFO[t].flammable)) return true;
+    }
+    return false;
+  }
+  // Wind-borne ember: pick a landing cell downwind, verify it is legal fuel with
+  // open air above, then make exactly ONE ignite attempt there.
+  function trySpotFire(b,getTile,setTile){
+    const w=windSpeedNow();
+    if(Math.abs(w)<EMBER_MIN_WIND) return false;
+    const dry=1-moistureAt(b.x);
+    if(dry<0.35) return false;
+    const strength=Math.min(1,Math.abs(w)/7.2);
+    if(Math.random()>strength*dry*0.55) return false;
+    const dir=w>0?1:-1;
+    const dist=2+Math.floor(Math.random()*Math.min(EMBER_MAX_DIST-2,1+strength*EMBER_MAX_DIST));
+    const nx=b.x+dir*dist;
+    const ny=b.y+(Math.random()<0.5?0:-1)+(Math.random()<0.3?1:0);
+    if(!finiteTile(nx,ny)) return false;
+    try{ if(MM.fallingSolids && MM.fallingSolids.isProtectedBuild && MM.fallingSolids.isProtectedBuild(nx,ny)) return false; }catch(e){}
+    const t=getTile(nx,ny);
+    if(!(INFO[t] && INFO[t].flammable)) return false;
+    if(getTile(nx,ny-1)!==T.AIR) return false; // buried fuel cannot catch a spark
+    try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((nx+0.5)*TILE_PX,(ny+0.5)*TILE_PX,'common'); }catch(e){}
+    return ignite(nx,ny,getTile,setTile);
+  }
   function updateTorchHeat(getTile,setTile,dt){
     torchRuntime+=dt;
     if(!torchHeat.size) return;
@@ -208,6 +284,25 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       }
       b.left-=dt;
       if(b.left<=0){ burnOut(b,getTile,setTile); continue; }
+      // Rain knocks flames down: wet weather now actually fights a wildfire.
+      b.rainAcc=(b.rainAcc||0)+dt;
+      if(b.rainAcc>=RAIN_DOUSE_INTERVAL){
+        b.rainAcc=0;
+        let raining=false;
+        try{ raining=!!(MM.clouds && MM.clouds.isRainingAt && MM.clouds.isRainingAt(b.x)); }catch(e){}
+        if(raining && !isSheltered(getTile,b.x,b.y) && Math.random()<0.45){
+          burning.delete(key(b.x,b.y));
+          try{ if(MM.gases && MM.gases.add) MM.gases.add('steam',b.x+0.5,b.y-0.1,{power:0.16,cells:1,getTile,setTile}); }catch(e){}
+          continue;
+        }
+      }
+      // Ember spotting: a strong wind lofts sparks past firebreaks. Distance is
+      // hard-clamped and protected builds are never a landing site.
+      b.emberAcc=(b.emberAcc||0)+dt;
+      if(b.emberAcc>=EMBER_INTERVAL){
+        b.emberAcc=0;
+        trySpotFire(b,getTile,setTile);
+      }
       b.hotAcc=(b.hotAcc||0)+dt;
       if(b.hotAcc>=BURNING_HOT_AIR_INTERVAL){
         b.hotAcc=0;
@@ -235,6 +330,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
             let p = dy<0? 0.95 : (dy===0? 0.6 : 0.35);
             if(nt===T.GRASS) p*=0.3; // grass chains reluctantly — fire favours trees
             p*=spreadInMultiplier(nInfo);
+            // weather coupling: lean downwind, choke in wet air
+            p*=windSpreadMult(dx);
+            p*=1-moistureAt(nx)*0.85;
             if(Math.random()<p) ignite(nx,ny,getTile,setTile);
           } else if((nt===T.SNOW || nt===T.TOXIC_SNOW || nt===T.ICE || nt===T.GRASS_SNOW || isFrozenEarth(nt)) && Math.random()<0.5) thawAt(nx,ny,getTile,setTile);
         }
@@ -882,7 +980,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   function isBurning(x,y){ return burning.has(key(x|0,y|0)); }
   // Put out a single tile (water hose, rain, …) — the tile keeps whatever charring it had
   function extinguish(x,y){ return burning.delete(key(x|0,y|0)); }
-  MM.fire={ignite,extinguish,update,draw,reset,snapshot,restore,isBurning,thawAt,cookAt,heatAround,noteTorch,noteLava,wakeLavaAround,wakeVolcanoLeaksNear,count:()=>burning.size,lavaCount:()=>lavaSet.size,_debug:{coalHasAirAccess}};
+  MM.fire={ignite,extinguish,update,draw,reset,snapshot,restore,isBurning,thawAt,cookAt,heatAround,noteTorch,noteLava,wakeLavaAround,wakeVolcanoLeaksNear,count:()=>burning.size,lavaCount:()=>lavaSet.size,dangerIndex,_debug:{coalHasAirAccess,moistureAt,windSpreadMult,trySpotFire,isSheltered}};
 })();
 // ESM export (progressive migration)
 export const fire = (typeof window!=='undefined' && window.MM) ? window.MM.fire : undefined;

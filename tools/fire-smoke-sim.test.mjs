@@ -251,6 +251,98 @@ try{
   fire.draw(makeCtx(),20,0,0,42,42,getDenseLava,{visible:()=>true, seen:()=>true});
   globalThis.__mmFrameMs=oldFrameMs;
   assert.ok(tileReads<3000, 'low-FPS lava overlay limits neighbour probes on dense lava faces ('+tileReads+' tile reads)');
+  // --- fire weather: wind-driven spread, moisture, embers, rain ---------------
+  // The coupling contract. Every input is optional at runtime, so the NEUTRAL
+  // case (no weather modules) must leave the bare spread thresholds untouched —
+  // that is what keeps the pinned coal/wood rolls above valid.
+  fire.reset();
+  const dbg=fire._debug;
+  assert.equal(typeof dbg.moistureAt, 'function', 'fire exposes its moisture model');
+  assert.equal(typeof dbg.windSpreadMult, 'function', 'fire exposes its wind spread bias');
+  assert.equal(typeof fire.dangerIndex, 'function', 'fire publishes a 0..1 danger index');
+
+  const savedWind=MM.wind, savedSeasons=MM.seasons, savedClouds=MM.clouds;
+  try {
+    MM.wind=undefined; MM.seasons=undefined; MM.clouds=undefined;
+    assert.equal(dbg.moistureAt(0), 0, 'with no weather modules the world reads bone dry (neutral multiplier)');
+    assert.equal(dbg.windSpreadMult(1), 1, 'no wind module means no directional bias');
+
+    // downwind neighbours catch far more readily than upwind ones
+    MM.wind={ speed:()=>6 };
+    const downwind=dbg.windSpreadMult(1), upwind=dbg.windSpreadMult(-1);
+    assert.ok(downwind>1.5, 'a strong wind pushes fire downwind ('+downwind.toFixed(2)+')');
+    assert.ok(upwind<0.4, 'the same wind starves the upwind side ('+upwind.toFixed(2)+')');
+    assert.ok(downwind>upwind*4, 'the downwind/upwind asymmetry is decisive');
+    assert.equal(dbg.windSpreadMult(0), 1, 'vertical spread takes no horizontal wind bias');
+
+    // rain overhead soaks the fuel; a hot dry season stays neutral
+    MM.clouds={ isRainingAt:()=>true };
+    assert.ok(dbg.moistureAt(0)>0.5, 'live rain soaks the fuel');
+    MM.clouds={ isRainingAt:()=>false };
+    MM.seasons={ profile:()=>({temperatureDelta:0.14, rainRateMult:0.9}) };
+    assert.equal(dbg.moistureAt(0), 0, 'a hot dry summer never damps fire below the dry baseline');
+    MM.seasons={ profile:()=>({temperatureDelta:-0.35, rainRateMult:1.6}) };
+    assert.ok(dbg.moistureAt(0)>0.3, 'a cold wet season damps spread');
+
+    // danger index: dry + windy reads hot, wet + still reads cold
+    MM.seasons={ profile:()=>({temperatureDelta:0.14, rainRateMult:0.9}) };
+    MM.wind={ speed:()=>7 };
+    const hotDanger=fire.dangerIndex(0);
+    MM.wind={ speed:()=>0 };
+    MM.clouds={ isRainingAt:()=>true };
+    const coldDanger=fire.dangerIndex(0);
+    assert.ok(hotDanger>0.8, 'dry + gale = extreme fire danger ('+hotDanger.toFixed(2)+')');
+    // rain during high summer only PARTLY offsets: still smoulder-worthy, but
+    // roughly half the danger of the same season in a gale
+    assert.ok(coldDanger<0.45, 'still + raining = much lower fire danger ('+coldDanger.toFixed(2)+')');
+    assert.ok(coldDanger<hotDanger*0.55, 'rain and calm air more than halve the danger index');
+    assert.ok(hotDanger<=1 && coldDanger>=0, 'the danger index stays inside 0..1');
+
+    // embers never land on a protected build, and never beyond the hard clamp
+    MM.wind={ speed:()=>6.5 };
+    MM.clouds={ isRainingAt:()=>false };
+    const emberTiles=new Map();
+    const eKey=(x,y)=>x+','+y;
+    const getE=(x,y)=>emberTiles.has(eKey(x,y))?emberTiles.get(eKey(x,y)):T.AIR;
+    const setE=(x,y,t)=>emberTiles.set(eKey(x,y),t);
+    // one flat flammable row with open sky above it, wide enough to overshoot
+    for(let x=-30;x<=30;x++) setE(x,10,T.WOOD);
+    let protectedHits=0;
+    MM.fallingSolids={ isProtectedBuild:(x)=>{ if(x>=4){ protectedHits++; return true; } return false; } };
+    fire.reset();
+    // deterministic varied sequence: a fixed stub pins one landing cell forever
+    let seq=12345;
+    Math.random=()=>{ seq=(seq*1103515245+12345)&0x7fffffff; return seq/0x7fffffff; };
+    for(let i=0;i<400;i++) dbg.trySpotFire({x:0,y:10}, getE, setE);
+    assert.ok(protectedHits>0, 'ember landing sites are checked against protected builds');
+    const litX=fire.snapshot().list.map(b=>b.x);
+    assert.ok(litX.length>0, 'a dry gale does spot new fires downwind');
+    for(const bx of litX){
+      assert.ok(bx>0, 'embers only travel DOWNWIND (saw x='+bx+')');
+      assert.ok(bx<=7, 'no ember lands beyond the hard distance clamp (saw x='+bx+')');
+      assert.ok(bx<4, 'a protected build is never ignited by a spark (saw x='+bx+')');
+    }
+
+    // a still world spots no fires at all
+    fire.reset();
+    MM.wind={ speed:()=>0.2 };
+    assert.equal(dbg.trySpotFire({x:0,y:10}, getE, setE), false, 'calm air lofts no embers');
+    // ...nor does a soaked one, however hard it blows
+    MM.wind={ speed:()=>6.5 };
+    MM.clouds={ isRainingAt:()=>true };
+    MM.seasons={ profile:()=>({temperatureDelta:-0.35, rainRateMult:1.6}) };
+    assert.equal(dbg.trySpotFire({x:0,y:10}, getE, setE), false, 'a soaked world lofts no embers');
+
+    // a roof blocks the rain: sheltered fire ignores weather dousing
+    const roofTiles=new Map();
+    const getR=(x,y)=>roofTiles.has(x+','+y)?roofTiles.get(x+','+y):T.AIR;
+    roofTiles.set('5,3',T.STONE);
+    assert.equal(dbg.isSheltered(getR,5,6), true, 'stone overhead shelters a flame from rain');
+    assert.equal(dbg.isSheltered(getR,9,6), false, 'open sky does not shelter a flame');
+  } finally {
+    MM.wind=savedWind; MM.seasons=savedSeasons; MM.clouds=savedClouds;
+    MM.fallingSolids=undefined;
+  }
 } finally {
   Math.random = realRandom;
   globalThis.__mmFrameMs=undefined;

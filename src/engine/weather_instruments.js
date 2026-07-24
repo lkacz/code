@@ -188,6 +188,17 @@ window.MM = window.MM || {};
     const pips=Math.round(k*4);
     ctx.fillStyle='rgba(224,180,92,0.9)';
     for(let i=0;i<pips;i++) ctx.fillRect(px-6+i*4,base-TILE*0.16,2.5,2.5);
+    // fire-danger ember on the mast: dry + windy reads red before you strike a
+    // light. Same 0..1 index the wildfire spread uses (engine/fire.js).
+    let danger=0;
+    try{ if(MM.fire && MM.fire.dangerIndex) danger=Number(MM.fire.dangerIndex(c.x))||0; }catch(e){}
+    if(danger>0.55){
+      const hot=(danger-0.55)/0.45;
+      ctx.fillStyle='rgba('+Math.round(200+40*hot)+','+Math.round(120-70*hot)+',40,'+(0.35+0.5*hot).toFixed(2)+')';
+      ctx.beginPath();
+      ctx.arc(px,base-TILE*0.5,Math.max(1.6,TILE*(0.05+0.03*hot)),0,Math.PI*2);
+      ctx.fill();
+    }
   }
   function drawRod(ctx,TILE,c){
     const px=(c.x+0.5)*TILE, base=(c.y+1)*TILE;
