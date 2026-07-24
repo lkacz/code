@@ -65,6 +65,64 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     {id:'hardWood', label:'Twarde drewno ×12',  icon:'🪵', take:{hardWood:12},pay:1}
   ];
 
+  // --- demand ----------------------------------------------------------------
+  // Dump 300 stone on one caravan and the stone market sags: the trader still
+  // pays the same coin but now wants MORE units for it. Expressed as a take
+  // multiplier (never a pay cut) on purpose — arbitrage stays impossible BY
+  // CONSTRUCTION, because saturation can only ever move the buy-back further
+  // below the sell price the anti-arbitrage pin checks at base demand.
+  const DEMAND_FULL = 240;      // units of one resource that fully saturates it
+  const DEMAND_MAX_MULT = 2.5;  // hardest the trader can ever haggle you down
+  const DEMAND_DECAY_DAYS = 6;  // game days for a saturated market to recover
+  function demandUnits(key){
+    const d = S.demand && Number(S.demand[key]);
+    return Number.isFinite(d) && d>0 ? d : 0;
+  }
+  function demandMult(key){
+    const sat = Math.min(1, demandUnits(key)/DEMAND_FULL);
+    return 1 + sat*(DEMAND_MAX_MULT-1);
+  }
+  // the rate as the player actually sees and pays it today
+  function effectiveRate(rate){
+    if(!rate || !rate.take) return rate;
+    const take = {};
+    let worst = 1;
+    for(const k of Object.keys(rate.take)){
+      const m = demandMult(k);
+      if(m > worst) worst = m;
+      take[k] = Math.max(1, Math.ceil(rate.take[k]*m));
+    }
+    return Object.assign({}, rate, {take, demandMult:worst, saturated:worst>1.04});
+  }
+  function noteDemand(key, units){
+    if(typeof key!=='string' || !(units>0)) return;
+    S.demand = S.demand || {};
+    S.demand[key] = Math.min(DEMAND_FULL*2, demandUnits(key)+units);
+  }
+  // markets recover while the caravan is away as well as while it stands
+  function decayDemand(days){
+    if(!S.demand || !(days>0)) return;
+    const keep = Math.pow(0.5, days/DEMAND_DECAY_DAYS);
+    for(const k of Object.keys(S.demand)){
+      const next = S.demand[k]*keep;
+      if(next < 0.5) delete S.demand[k]; else S.demand[k] = next;
+    }
+  }
+
+  // --- gold as tender ---------------------------------------------------------
+  // Gold generated, dropped and sat in the bag with ZERO recipe costs. It is now
+  // the everyday coin for SERVICES — deliberately never gear, so the "gear is
+  // earned, not bought" house law holds.
+  const SERVICES = [
+    {id:'callCaravan', label:'Wezwij karawanę wcześniej', icon:'📯', gold:12,
+     desc:'Następna wizyta przyjdzie znacznie szybciej.'},
+    {id:'restock',     label:'Przetasuj dzisiejszy towar', icon:'🔄', gold:18,
+     desc:'Handlarz wykłada inny zestaw ofert i skupów.'},
+    {id:'marketCalm',  label:'Uspokój rynek',              icon:'⚖️', gold:25,
+     desc:'Nasycenie skupu wraca do normy — ceny jak na początku.'}
+  ];
+  function serviceById(id){ return SERVICES.find(s=>s.id===id) || null; }
+
   const GREETINGS = [
     'Świeży towar prosto z innych warstw symulacji!',
     'Diamenty są na drobiazgi. Iryd otwiera półkę z cudami.',
@@ -213,6 +271,9 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     // fallback clock for hosts without gameDayFloat (Node sims drive it directly)
     S._fallbackDay = (S._fallbackDay||0) + dt/600;
     const day = dayFloat(ctx);
+    // markets recover in real game-time, whether or not the stall is up
+    if(Number.isFinite(S._demandDay)){ if(day > S._demandDay) decayDemand(day - S._demandDay); }
+    S._demandDay = day;
     if(!S.active){
       if(day >= S.nextVisitDay) arrive(player, getTile, ctx);
       return;
@@ -335,22 +396,48 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
   }
   // Sell resources at rate `id` for diamonds. Returns {ok, reason}.
   function tradeSell(id, ctx){
-    const rate = S.active && S.stock && S.stock.rates.includes(id) ? rateById(id) : null;
-    if(!rate) return {ok:false, reason:'Nie skupuję tego dziś'};
+    const base = S.active && S.stock && S.stock.rates.includes(id) ? rateById(id) : null;
+    if(!base) return {ok:false, reason:'Nie skupuję tego dziś'};
+    // a saturated market asks for MORE units per coin — never fewer coins
+    const rate = effectiveRate(base);
     const inv = (ctx && ctx.inv) || root.inv;
     if(!inv) return {ok:false, reason:'Brak ekwipunku'};
     for(const k of Object.keys(rate.take)){
       if(countOf(inv,k) < rate.take[k]) return {ok:false, reason:'Za mało: '+k};
     }
-    Object.keys(rate.take).forEach(k=>{ inv[k]-=rate.take[k]; });
+    Object.keys(rate.take).forEach(k=>{ inv[k]-=rate.take[k]; noteDemand(k, rate.take[k]); });
     inv.diamond = countOf(inv,'diamond') + rate.pay;
-    say('🧺 Sprzedano: '+rate.label+' (+'+rate.pay+' 💎)');
+    say('🧺 Sprzedano: '+rate.label+' (+'+rate.pay+' 💎)'+(rate.saturated?' — rynek nasycony':''));
     playSound('chest',S.x,S.y);
     if(ctx && ctx.onInventoryChange){ try{ ctx.onInventoryChange(); }catch(e){} }
     if(ctx && ctx.onChange){ try{ ctx.onChange(); }catch(e){} }
     return {ok:true};
   }
 
+  // Gold buys SERVICES, never gear. Each one only mutates trader state, so this
+  // needs no world seam and stays safe for a guest to trigger through the npcs
+  // plane exactly like buying and selling already do.
+  function tradeService(id, ctx){
+    if(!S.active) return {ok:false, reason:'Handlarza tu nie ma'};
+    const svc = serviceById(id);
+    if(!svc) return {ok:false, reason:'Nie znam takiej usługi'};
+    const inv = (ctx && ctx.inv) || root.inv;
+    if(!inv) return {ok:false, reason:'Brak ekwipunku'};
+    if(countOf(inv,'gold') < svc.gold) return {ok:false, reason:'Za mało złota ('+svc.gold+')'};
+    inv.gold = countOf(inv,'gold') - svc.gold;
+    if(svc.id==='callCaravan'){
+      S.nextVisitDay = Math.min(S.nextVisitDay, dayFloat(ctx) + PERIOD_MIN*0.35);
+    } else if(svc.id==='restock'){
+      S.stock = rollStock((S.visitIndex|0)+101, 7717, S.x);
+    } else if(svc.id==='marketCalm'){
+      S.demand = {};
+    }
+    say('🪙 '+svc.label+' — zapłacono '+svc.gold+' złota.');
+    playSound('chest',S.x,S.y);
+    if(ctx && ctx.onInventoryChange){ try{ ctx.onInventoryChange(); }catch(e){} }
+    if(ctx && ctx.onChange){ try{ ctx.onChange(); }catch(e){} }
+    return {ok:true};
+  }
   function draw(ctx2d, TILE, canDrawTile){
     if(!S.active || !ctx2d) return;
     const tx = Math.floor(S.x), ty = Math.floor(S.y);
@@ -403,7 +490,9 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
       visitIndex:S.visitIndex|0, nextVisitDay:S.nextVisitDay,
       leaveDay:S.leaveDay, stock:S.stock ? {offers:S.stock.offers.slice(), rates:S.stock.rates.slice()} : null,
       greeted:!!S.greeted,
-      falloutNoted:!!S.falloutNoted
+      falloutNoted:!!S.falloutNoted,
+      // market saturation persists: selling 300 stone must still matter tomorrow
+      demand:S.demand ? Object.assign({},S.demand) : null
     };
   }
   function restore(data){
@@ -416,6 +505,15 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     S.leaveDay = Number.isFinite(data.leaveDay) ? data.leaveDay : 0;
     S.greeted = !!data.greeted;
     S.falloutNoted = !!data.falloutNoted;
+    // demand is untrusted on the wire (npcs plane) as well as in a save: keep
+    // only known resource keys and clamp every value into the tracked range
+    S.demand = {};
+    if(data.demand && typeof data.demand==='object'){
+      for(const k of Object.keys(data.demand).slice(0,64)){
+        const v = Number(data.demand[k]);
+        if(typeof k==='string' && k.length<=24 && Number.isFinite(v) && v>0) S.demand[k]=Math.min(DEMAND_FULL*2,v);
+      }
+    }
     S.stock = null;
     if(data.stock && Array.isArray(data.stock.offers) && Array.isArray(data.stock.rates)){
       S.stock = {
@@ -429,6 +527,7 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
   function reset(){
     S.active=false; S.x=0; S.y=0; S.visitIndex=0; S.nextVisitDay=FIRST_VISIT_DAY;
     S.leaveDay=0; S.stock=null; S.greeted=false; S.falloutNoted=false; S.bob=0; S._fallbackDay=0;
+    S.demand={}; S._demandDay=undefined;
   }
 
   const api = {
@@ -440,10 +539,14 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
       if(!S.active || !S.stock) return null;
       return {
         offers: S.stock.offers.map(offerById).filter(Boolean),
-        rates: S.stock.rates.map(rateById).filter(Boolean)
+        // rates carry TODAY's demand-adjusted take, so the panel shows the real price
+        rates: S.stock.rates.map(rateById).filter(Boolean).map(effectiveRate),
+        services: SERVICES.map(s=>Object.assign({},s))
       };
     },
-    tradeBuy, tradeSell,
+    tradeBuy, tradeSell, tradeService,
+    services: ()=>SERVICES.map(s=>Object.assign({},s)),
+    demandFor: (key)=>demandMult(key),
     formatCost,
     canAffordOffer: (offer, inv)=>!!offer && canAffordCost(inv,offer.cost),
     setOpenHandler(fn){ openHandler = typeof fn==='function' ? fn : null; },
@@ -455,6 +558,10 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     _goods: ()=>GOODS.slice(),
     _epicChest: ()=>Object.assign({},EPIC_CHEST),
     _rates: ()=>RATES.slice(),
+    _services: ()=>SERVICES.slice(),
+    _effectiveRate: effectiveRate,
+    _noteDemand: noteDemand,
+    _decayDemand: decayDemand,
     _diamondCost: diamondCost,
     forceArrive: (player,getTile,ctx)=>arrive(player,getTile,ctx),
     forceDepart: (ctx)=>depart(ctx)

@@ -266,4 +266,78 @@ assert.equal(trader.tradeSell('definitely-not-a-rate',{inv,player}).ok, false, '
   assert.equal(Math.floor(trader.position().y), fy+1, 'stall settles one tile down');
 }
 
+// 9) demand saturation + gold services -----------------------------------------
+// Selling floods the market: the trader keeps paying the same coin but asks for
+// MORE units. Expressed as a take multiplier on purpose, so anti-arbitrage can
+// only ever get STRONGER (the pin above checks it at base demand).
+{
+  trader.reset();
+  const base = trader._rates().find(r=>r.take && r.take.stone);
+  assert.ok(base, 'stone is a buy-back rate');
+  assert.equal(trader._effectiveRate(base).take.stone, base.take.stone, 'a fresh market charges the base rate');
+  assert.equal(trader.demandFor('stone'), 1, 'an untouched resource has no saturation');
+
+  trader._noteDemand('stone', 240);
+  const sat = trader._effectiveRate(base);
+  assert.ok(sat.take.stone > base.take.stone, 'a saturated market demands more units per coin');
+  assert.ok(sat.take.stone <= base.take.stone*2.5+1, 'saturation is capped, never unbounded');
+  assert.equal(sat.pay, base.pay, 'saturation NEVER cuts the coin paid (that is what keeps rates integral)');
+  assert.ok(sat.saturated, 'a saturated rate flags itself for the UI');
+
+  // the arbitrage invariant must hold at MAXIMUM saturation too, not just base
+  for(const g of trader._goods()){
+    if(!g.give) continue;
+    for(const rk of Object.keys(g.give)){
+      const r = trader._rates().find(x=>x.take && x.take[rk]!=null);
+      if(!r) continue;
+      const dc = trader._diamondCost(g.cost);
+      if(!dc) continue;
+      trader._noteDemand(rk, 480);
+      const eff = trader._effectiveRate(r);
+      assert.ok(dc/g.give[rk] > eff.pay/eff.take[rk], 'no arbitrage on '+rk+' even at full saturation');
+    }
+  }
+
+  // markets recover over game days
+  trader.reset();
+  trader._noteDemand('stone', 240);
+  const before = trader.demandFor('stone');
+  trader._decayDemand(6);
+  const after = trader.demandFor('stone');
+  assert.ok(after < before, 'a market recovers while the caravan is away');
+  assert.ok(after > 1, 'six days is a partial recovery, not a reset');
+  trader._decayDemand(60);
+  assert.equal(trader.demandFor('stone'), 1, 'a long absence clears saturation entirely');
+
+  // saturation survives the save/stream round trip, and is sanitised on the way in
+  trader._noteDemand('wood', 100);
+  const snap = trader.snapshot();
+  assert.ok(snap.demand && snap.demand.wood > 0, 'demand rides the save shape');
+  trader.reset();
+  trader.restore(Object.assign({}, snap, {demand:{wood:50, __proto__:'x', bad:'NaN', huge:1e9}}));
+  assert.ok(trader.demandFor('wood') > 1, 'restored demand is applied');
+  assert.ok(Number.isFinite(trader.demandFor('huge')), 'a hostile demand value is clamped, not trusted');
+
+  // gold finally has a sink: SERVICES (never gear — the gear-purity house law)
+  const svcs = trader.services();
+  assert.ok(svcs.length >= 3, 'the trader offers gold services');
+  for(const s of svcs){
+    assert.ok(Number.isFinite(s.gold) && s.gold > 0, 'every service costs gold ('+s.id+')');
+    assert.ok(!s.give && !s.item, 'a service never hands over gear or resources ('+s.id+')');
+  }
+  trader.reset();
+  const sInv = {gold:100, diamond:0};
+  assert.equal(trader.tradeService('marketCalm', {inv:sInv}).ok, false, 'services need the trader present');
+  trader.forceArrive({x:0,y:SURF-2}, getTile, {day:2});
+  assert.equal(trader.isActive(), true, 'the stall is up for the service test');
+  trader._noteDemand('stone', 240);
+  assert.ok(trader.demandFor('stone') > 1, 'market is saturated before the calm service');
+  const paid = trader.tradeService('marketCalm', {inv:sInv});
+  assert.equal(paid.ok, true, 'gold buys the market-calm service');
+  assert.equal(sInv.gold, 75, 'the service debits exactly its gold price');
+  assert.equal(trader.demandFor('stone'), 1, 'market-calm clears saturation');
+  assert.equal(trader.tradeService('marketCalm', {inv:{gold:1}}).ok, false, 'too little gold is refused');
+  assert.equal(trader.tradeService('nonsense', {inv:sInv}).ok, false, 'unknown service ids are refused');
+}
+
 console.log('trader-sim: all assertions passed');
