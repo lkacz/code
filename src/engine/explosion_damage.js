@@ -9,6 +9,10 @@ export function damageBlastCreatures(mm,x,y,r,dmg,opts){
   if(!Number.isFinite(wx) || !Number.isFinite(wy) || !Number.isFinite(radius) || radius<=0 || !Number.isFinite(amount) || amount<=0){
     return {mobs:0,invasions:0,mechs:0,total:0};
   }
+  // Every blast in the game funnels through this router, so it is the single
+  // emitter point for explosion noise (engine/noise.js): a detonation is the
+  // loudest thing you can do and wakes creatures well past its damage radius.
+  try{ if(root.noise && root.noise.emit) root.noise.emit(wx, wy, 'blast', Math.max(0.4, Math.min(1.6, radius/6))); }catch(e){}
   const input=opts && typeof opts==='object' && !Array.isArray(opts) ? opts : {};
   // Callers may add ownership/filter metadata, but this router always describes
   // an actual blast. Do not let a stale copied `kind`/`element` silently turn

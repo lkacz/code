@@ -2117,6 +2117,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       return;
     }
     if(a.splat==='rock'){
+      // A stone clattering off the rock is a DECOY (engine/noise.js): creatures
+      // that hear it walk over to look, which is the whole point of throwing one
+      // across a cavern. This is what promotes thrown stones from joke to tool.
+      try{ if(MM.noise && MM.noise.emit) MM.noise.emit(a.x,a.y,'decoy',1); }catch(e){}
       // survival roll: a hard rock often lands whole and can be picked back up;
       // the cheap stone shatters most of the time (per-tier chance)
       const survive=Number.isFinite(a.stoneSurvive)?a.stoneSurvive:0.45;

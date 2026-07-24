@@ -7839,14 +7839,27 @@ const mobs = (function(){
   // Morning fog shortens every creature's sight (sky_moods.mobSightMult):
   // dawn in a foggy valley is pretty AND survivable at closer quarters.
   const fogSight = (typeof MM!=='undefined' && MM.skyMoods && MM.skyMoods.mobSightMult) ? MM.skyMoods.mobSightMult() : 1;
-  const sight = (typeof spec.sightRange==='number'? spec.sightRange : 16) * fogSight;
+  // Sneaking (engine/noise.js): a body that moves slowly is spotted at half the
+  // range. Third row in the same expression that already carries fog and the
+  // antenna cloak — and it reads the BODY, so coop bodies sneak too.
+  const quietSight = (typeof MM!=='undefined' && MM.noise && MM.noise.sightMult) ? MM.noise.sightMult(heroForMob) : 1;
+  const sight = (typeof spec.sightRange==='number'? spec.sightRange : 16) * fogSight * quietSight;
   const pursue = ((typeof spec.pursueRange==='number'? spec.pursueRange : ((typeof spec.sightRange==='number'? spec.sightRange : 16)+6))) * fogSight;
   const combatTarget = combatTargetForMob(m,heroForMob,aggressive,Math.max(sight,pursue));
   const aimTarget = combatTarget && combatTarget.kind==='companion' ? companionTargetPoint(combatTarget) : combatTarget;
   const distToPlayer = (aimTarget && aimTarget!==heroForMob) ? Math.hypot(aimTarget.x-m.x, aimTarget.y-m.y) : distToHero;
   const canSee = distToPlayer <= sight;
   const shouldPursue = distToPlayer <= pursue;
+  // Hearing: a sound this creature can hear pulls it toward the NOISE, not the
+  // hero — that is what makes a thrown stone a decoy instead of a joke. Deaf
+  // specs opt out with keenEars:0; sharp-eared ones widen the ear.
+  if(!canSee && typeof MM!=='undefined' && MM.noise && MM.noise.heardBy){
+    const heard = MM.noise.heardBy(m.x, m.y, {keen: typeof spec.keenEars==='number' ? spec.keenEars : 1});
+    if(heard){ m._investigate = {x:heard.x, y:heard.y, until:(m._investigate && m._investigate.until) || 0}; m._investigateT = 3.2; }
+  }
+  if(m._investigateT > 0){ m._investigateT -= dt; if(m._investigateT <= 0) m._investigate = null; }
   const aggroNow = aggressive && (canSee || shouldPursue);
+  m._aggro = aggroNow;
   const fleeTarget=m._progressionOutmatched ? {x:m.x+(m.x>=player.x?10000:-10000),y:m.y} : null;
   m._combatTarget=fleeTarget || (aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : heroForMob);
   // Blinded (sand in the eyes): the AI perceives its target impossibly far away,
@@ -7856,7 +7869,14 @@ const mobs = (function(){
   // route this mob's damage to the guest body it is hunting (if any) for the duration
   // of its AI tick — every damagePlayer call inside updateMob honors it
   _mobTargetBody=(m._combatTarget && m._combatTarget.kind==='coop') ? m._combatTarget.body : null;
-  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : m._combatTarget), getTile, setTile, distToPlayer:(blindMob || m._progressionOutmatched ? 10000 : distToPlayer)});
+  // Investigating a sound reuses the ordinary approach AI with a target parked on
+  // the NOISE and aggressive still false: the creature walks over to look, it does
+  // not charge. That is what turns a thrown stone into a decoy.
+  const investigateAt = (!aggroNow && !blindMob && m._investigate) ? m._investigate : null;
+  const aiTarget = blindMob ? {x:m.x-10000, y:m.y} : (investigateAt || m._combatTarget);
+  const aiDist = (blindMob || m._progressionOutmatched) ? 10000
+    : (investigateAt ? Math.hypot(investigateAt.x-m.x, investigateAt.y-m.y) : distToPlayer);
+  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:aiTarget, getTile, setTile, distToPlayer:aiDist});
   _mobTargetBody=null;
       // This runs after every species-specific AI, overriding proximity shortcuts
       // that used to make weak wolves, vultures, worms, etc. lunge anyway.
@@ -11283,6 +11303,15 @@ const mobs = (function(){
     // (armor 0.5), sunder amplifies it (armor 1.5). ANY STATUS carrying an `armor`
     // field participates, so vulnerable/brittle effects are pure add-rows. Alloc-free.
     if(m.status){ for(const sid in m.status){ const s=m.status[sid]; if(s && s.t>0){ const def=STATUS[sid]; if(def && def.armor!=null) dealt*=def.armor; } } }
+    // Cios z zaskoczenia: striking a creature that has neither seen NOR heard you
+    // is a backstab — the payoff that makes sneaking worth its speed cost. Hero
+    // melee only; a mob ambushing another mob is not a player skill expression.
+    if(MM.noise && MM.noise.isUnaware && MM.noise.isUnaware(m) && opts && (opts.source==='hero' || opts.source==='hero_melee' || opts.source==='coop')){
+      dealt*=MM.noise.CFG.BACKSTAB_MULT;
+      applyStatus(m,'stun',{dur:MM.noise.CFG.BACKSTAB_STUN, source:opts.source, cause:'backstab'});
+      noteCombatEvent({kind:'crit', target:'mob', source:opts.source, x:m.x, y:m.y-0.3,
+        amount:dealt, cause:'backstab', major:true, power:1.5});
+    }
     const beforeHp=Number(m.hp)||0;
     const remoteWoundOnly=sourceIsRemoteWoundOnly(opts);
     // Fail closed before ANY species hook.  A guest can reduce a creature to a

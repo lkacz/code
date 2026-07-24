@@ -102,6 +102,7 @@ import { trader as TRADER } from './engine/trader.js';
 import { fishing as FISHING } from './engine/fishing.js';
 import { boats as BOATS } from './engine/boats.js';
 import { grapple as GRAPPLE } from './engine/grapple.js';
+import { noise as NOISE } from './engine/noise.js';
 import { mechs as MECHS } from './engine/mechs.js';
 import { altar as ALTAR } from './engine/altar.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
@@ -3092,6 +3093,16 @@ function notifyInvasionWeaponUse(item, detail){
 	}, detail||{}));
 }
 function notifyInvasionMining(tId,tx,ty){
+	// Sound (engine/noise.js): every break in the game passes through here, so it
+	// is the one emitter point for mining noise. Loudness scales with the tile's
+	// own hardness — which is what finally makes 150 INFO.hp values MEAN something:
+	// obsidian rings out, snow is nearly silent.
+	try{
+		if(NOISE && NOISE.emit){
+			const hp=(INFO[tId] && Number(INFO[tId].hp)) || 6;
+			NOISE.emit(tx+0.5, ty+0.5, 'mine', Math.max(0.25, Math.min(1.8, hp/22)));
+		}
+	}catch(e){}
 	return notifyInvasionHeroAction('hero_mine', {
 		x:tx+0.5,
 		y:ty+0.5,
@@ -11885,6 +11896,11 @@ function physics(dt){
 	const moveControl=movementControlState();
 	let input=moveControl.x;
 	if(input!==0) player.facing=Math.sign(input);
+	// Skradanie (Ctrl — Shift is already turbo): move at a crawl and you emit no
+	// footfall AND creatures spot you at half range (engine/noise.js). The cost is
+	// real speed, so sneaking past is a decision, not a free win.
+	player.quiet=!!(keys['control'] || keys['controlleft'] || keys['controlright']) && player.onGround;
+	if(player.quiet) input*=0.42;
 	// Aboard a floating raft the deck is the vehicle: each fresh tap of A/D is an
 	// oar stroke (energy-burning impulse on the boat), holding only shuffles the
 	// hero slowly across the deck. Beached rafts walk like ordinary ground.
@@ -19175,6 +19191,17 @@ function runGameStep(dt,ts){
 		const slowLavaWake=lastFrameMs>32;
 		volcanoLeakWakeT=slowLavaWake?0.65:0.28;
 		if(FIRE && FIRE.wakeVolcanoLeaksNear) FIRE.wakeVolcanoLeaksNear(player.x, player.y, getTile, {rx:slowLavaWake?36:56, ry:slowLavaWake?28:38, peekTile:WORLD.peekTile});
+	}
+	// Sound field: advance the clock, then let every ACTING body announce its own
+	// movement — the host hero plus every coop body (CLAUDE.md rule 3: world sim
+	// never reads window.player to decide for the acting player).
+	if(NOISE){
+		NOISE.tick(dt);
+		if(!MM.ghostHeroIntents){
+			NOISE.emitMovement(player);
+			const bodies=MM.coopBodies;
+			if(bodies && bodies.length){ for(const b of bodies) NOISE.emitMovement(b); }
+		}
 	}
 	if(SEASONS && SEASONS.update) SEASONS.update(dt, getTile, setTile, player, seasonUpdateContext());
 	if(FIRE && FIRE.update) FIRE.update(getTile, setTile, dt);
