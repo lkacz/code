@@ -15,7 +15,7 @@
 // cell because it is not T.AIR), so the seam is one conversion rule, not a
 // shared engine. Revisit only if lava ever needs waves/pressure of its own.
 import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE as TILE_PX, thawedEarthVariant, isFrozenEarth, isWood } from '../constants.js';
-import { isLavaExposureOpenTile, isLavaVentOpenTile } from './material_physics.js';
+import { isLavaExposureOpenTile, isLavaVentOpenTile, isGasTile } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
 import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } from './flame_fx.js';
 import { authoritativeBodyBlocksCell } from './body_footprint.js';
@@ -212,7 +212,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     for(let i=1;i<=6;i++){
       const t=getTile(x,y-i);
       if(t===undefined) break;
-      if(t!==T.AIR && t!==T.WATER && !(INFO[t] && INFO[t].flammable)) return true;
+      // a fire's OWN hot-air plume (and any drifting steam/smoke) is not a roof —
+      // without this every open-air fire shelters itself and rain never douses it
+      if(t!==T.AIR && t!==T.WATER && !isGasTile(t) && !(INFO[t] && INFO[t].flammable)) return true;
     }
     return false;
   }

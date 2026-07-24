@@ -110,6 +110,9 @@ const { challenge: C, CHALLENGE_MODS } = await import('../src/engine/challenge.j
   assert.match(finSrc, /state\.onNewGame/, 'and then takes the ordinary new-game path');
   assert.match(attSrc, /Math\.max\(floorFor\(\), descentFloor\(\)\)/,
     'exactly ONE writer composes both floors by max');
+  const mainSrc2 = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(mainSrc2, /ATTENTION\.refresh\(\)/,
+    'the composed floor is re-asserted at boot — a NEW game never runs ATTENTION.reset(), so without this the descent floor stays 0 through spawn worldgen');
   // boot-time law only: the descent must not write the world at runtime
   const chalSrc = await readFile(new URL('../src/engine/challenge.js', import.meta.url), 'utf8');
   const code = chalSrc.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');

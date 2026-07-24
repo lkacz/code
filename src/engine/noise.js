@@ -28,6 +28,8 @@ export const CFG = {
   QUIET_SIGHT: 0.5,    // moving slowly halves the range you are spotted at
   QUIET_SPEED: 2.2,    // tiles/s at or below which a body counts as sneaking
   SPRINT_SPEED: 5.4,   // above this a body is loud all by itself
+  STRIDE_WALK: 0.34,   // seconds between footfalls at a walk
+  STRIDE_SPRINT: 0.22, // a sprint drums faster — but still not once per frame
   BACKSTAB_MULT: 2.35, // damage multiplier when striking an unaware creature
   BACKSTAB_STUN: 0.85, // seconds of stun a backstab lands
   // Per-cause loudness in tiles. Hardness-scaled mining is the big one: 150 tile
@@ -149,8 +151,14 @@ export function emitMovement(body){
   if(!body || bodyQuiet(body)) return 0;
   const sp = Math.hypot(num(body.vx), num(body.vy));
   if(sp <= 0.05) return 0;
-  const cause = sp >= CFG.SPRINT_SPEED ? 'sprint' : 'step';
-  return emit(body.x, body.y, cause, sp >= CFG.SPRINT_SPEED ? 1 : 0.75);
+  const sprinting = sp >= CFG.SPRINT_SPEED;
+  // A STRIDE, not a frame. Emitting every frame filled the 48-slot ring with a
+  // single walking body's own footsteps within ~0.8s, so the TTL silently became
+  // "48 frames" and a blast was evicted before any creature could hear it.
+  const stride = sprinting ? CFG.STRIDE_SPRINT : CFG.STRIDE_WALK;
+  if(clock - (body._stepAt || -Infinity) < stride) return 0;
+  body._stepAt = clock;
+  return emit(body.x, body.y, sprinting ? 'sprint' : 'step', sprinting ? 1 : 0.75);
 }
 
 // A creature is unaware when it has neither seen nor heard you AND has not yet

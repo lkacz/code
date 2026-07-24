@@ -79,6 +79,19 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   assert.ok(N.emitMovement({x: 0, y: 0, vx: 3, vy: 0}) > 0, 'a walking body emits a footfall');
   assert.ok(N.heardBy(1, 0), '...which a nearby creature hears');
   assert.equal(N.emitMovement({x: 0, y: 0, vx: 0, vy: 0}), 0, 'a standing body emits nothing');
+  // A STRIDE, not a frame: emitting per frame filled the 48-slot ring with one
+  // walker's own footsteps in under a second, so a blast was evicted before any
+  // creature could hear it and the TTL silently became "48 frames".
+  {
+    N.reset();
+    const walker = {x: 0, y: 0, vx: 3, vy: 0};
+    N.emit(-20, 0, 'blast', 1);
+    let steps = 0;
+    for(let f = 0; f < 120; f++){ if(N.emitMovement(walker) > 0) steps++; N.tick(1 / 60); }
+    assert.ok(steps > 0, 'a walking body does emit footfalls');
+    assert.ok(steps < 20, 'but at a stride cadence, not once per frame (' + steps + ' in 2s)');
+    assert.ok(N.metrics().live < N.CFG.RING, 'one walker can never fill the whole ring');
+  }
   assert.equal(N.emitMovement(null), 0, 'a missing body is not a crash');
 }
 

@@ -1309,6 +1309,8 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'both tiers keep a real rate floor between drops');
 	// solo path exists and is bound to a key, so the verb works without a session
 	assert.ok(/function dropHeldResource/.test(mainSrc), 'solo players can drop without a multiplayer session');
+	assert.ok(/function dropHeldResource\(all\)\{\s*if\(MM\.ghostMode && !MM\.ghostHeroIntents\) return false;/.test(mainSrc),
+		'a non-hero viewer has no hands: the drop verb refuses before any local world write');
 	assert.ok(/id:'drop'/.test(readFileSync(new URL('../src/engine/keybinds.js', import.meta.url), 'utf8')),
 		'the drop verb is a rebindable action, not a hardcoded key');
 

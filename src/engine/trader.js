@@ -92,7 +92,12 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
       if(m > worst) worst = m;
       take[k] = Math.max(1, Math.ceil(rate.take[k]*m));
     }
-    return Object.assign({}, rate, {take, demandMult:worst, saturated:worst>1.04});
+    // The label is the ONLY price the panel shows ('Kamień ×20'), so a saturated
+    // market must rewrite it — otherwise the player is quoted the base amount and
+    // charged the adjusted one, which reads as the trader cheating.
+    const shown = Object.keys(take).map(k=>take[k]).join(' + ');
+    const label = worst>1.04 ? String(rate.label).replace(/×\s*\d+/, '×'+shown) : rate.label;
+    return Object.assign({}, rate, {take, label, demandMult:worst, saturated:worst>1.04});
   }
   function noteDemand(key, units){
     if(typeof key!=='string' || !(units>0)) return;
@@ -139,7 +144,8 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     stock:null,          // {offers:[ids], rates:[ids]}
     greeted:false,
     falloutNoted:false,
-    bob:0
+    bob:0,
+    rushNext:0           // paid callCaravan rush (days), consumed by depart()
   };
   let openHandler = null;   // main.js: show the trade panel
   let closeHandler = null;  // main.js: hide the trade panel (departure / distance)
@@ -245,6 +251,7 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     S.active = true;
     S.x = spot.x; S.y = spot.y;
     S.visitIndex++;
+    S._restockN = 0;
     S.stock = rollStock(S.visitIndex, worldSeed(ctx),S.x);
     S.leaveDay = day + VISIT_LENGTH;
     S.greeted = false;
@@ -261,6 +268,9 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     S.stock = null;
     const day = dayFloat(ctx);
     S.nextVisitDay = day + PERIOD_MIN + hash01(worldSeed(ctx), S.visitIndex*29+11) * PERIOD_SPAN;
+    // a paid callCaravan rush is consumed HERE, because depart() is the sole
+    // owner of nextVisitDay and would otherwise overwrite the purchase
+    if(S.rushNext > 0){ S.nextVisitDay = Math.max(day + 0.05, S.nextVisitDay - S.rushNext); S.rushNext = 0; }
     if(!silent) say('🧺 Handlarz zwinął kram i ruszył dalej. Wróci za parę dni.');
     if(closeHandler){ try{ closeHandler(); }catch(e){} }
     if(ctx && ctx.onChange){ try{ ctx.onChange(); }catch(e){} }
@@ -426,9 +436,15 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     if(countOf(inv,'gold') < svc.gold) return {ok:false, reason:'Za mało złota ('+svc.gold+')'};
     inv.gold = countOf(inv,'gold') - svc.gold;
     if(svc.id==='callCaravan'){
-      S.nextVisitDay = Math.min(S.nextVisitDay, dayFloat(ctx) + PERIOD_MIN*0.35);
+      // depart() is the SOLE owner of nextVisitDay and rewrites it unconditionally
+      // on every departure, so writing the date here was always discarded — the
+      // service was a paid no-op. Park the rush; depart() consumes it.
+      S.rushNext = PERIOD_MIN*0.35;
     } else if(svc.id==='restock'){
-      S.stock = rollStock((S.visitIndex|0)+101, 7717, S.x);
+      // rollStock is PURE: without a moving counter every repeat purchase
+      // returned a byte-identical stock, so the second 18 gold bought nothing
+      S._restockN = (S._restockN|0) + 1;
+      S.stock = rollStock((S.visitIndex|0)+101+S._restockN, worldSeed(ctx) ^ 0x1e27, S.x);
     } else if(svc.id==='marketCalm'){
       S.demand = {};
     }

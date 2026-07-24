@@ -844,7 +844,7 @@ assert.match(treeSource, /fallingWindResponseForMaterial\(t,false\)/, 'tree debr
 assert.match(ufoSource, /import \{ isObjectFootingTile, isReplaceableNaturalOpenTile \} from '\.\/material_physics\.js'/, 'UFO wreck salvage imports shared material support predicates');
 assert.match(ufoSource, /function dropCellSupported\(t\)\{\s*return isObjectFootingTile\(t\);\s*\}/, 'UFO wreck salvage does not keep a private solid-support rule');
 assert.match(ufoSource, /function dropCellFree\(t\)\{[\s\S]*isReplaceableNaturalOpenTile\(t,false\)/, 'UFO wreck salvage uses shared natural open-cell checks');
-assert.match(fireSource, /import \{ isLavaExposureOpenTile, isLavaVentOpenTile \} from '\.\/material_physics\.js'/, 'lava systems import shared exposure and vent predicates');
+assert.match(fireSource, /import \{ isLavaExposureOpenTile, isLavaVentOpenTile, isGasTile \} from '\.\/material_physics\.js'/, 'lava systems import shared exposure, vent and gas predicates');
 assert.match(fireSource, /function lavaOpenTile\(t\)\{\s*return isLavaExposureOpenTile\(t\);\s*\}/, 'lava exposure does not keep a private open-cell list');
 assert.match(fireSource, /if\(isLavaVentOpenTile\(t\)\) return true;/, 'lava wake scans use shared vent-open predicates');
 assert.match(meteoriteSource, /import \{[^}]*isGasTile[^}]*isMeteorForestSiteTile[^}]*isMeteorImpactGroundTile[^}]*isMeteorLifeSiteTile[^}]*isMeteorProtectedTile[^}]*isMeteorSettlementSiteTile[^}]*isMeteorWaterSiteTile[^}]*\} from '\.\/material_physics\.js'/, 'meteor impacts import shared gas, ground, site and protection predicates');
