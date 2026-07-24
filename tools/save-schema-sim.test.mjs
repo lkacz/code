@@ -311,8 +311,8 @@ assert.match(src, /function canMineTileWithCurrentTool\(t,tx,ty\)\{ return !isUn
 assert.match(src, /if\(!canMineTileWithCurrentTool\(t,tx,ty\)\)\{ if\(!quiet\) msg\(unmineableReason\(t,tx,ty\)\); return false; \}/, 'cursor mining rejects unmineable tiles before timers start');
 assert.match(src, /if\(t===T\.AIR \|\| !canMineTileWithCurrentTool\(t,mineTx,mineTy\)\)/, 'instant break cannot bypass unmineable tiles');
 assert.match(src, /if\(info\.unmineable && !canMineBedrockWithCurrentTool\(tId,mineTx,mineTy\)\) return false;/, 'breakMinedTile refuses unmineable terrain except the coordinate-aware bedrock pickaxe path');
-assert.match(src, /tools:\{stone:!!inv\.tools\.stone,\s*meteor:!!inv\.tools\.meteor,\s*diamond:!!inv\.tools\.diamond,\s*bedrock:!!inv\.tools\.bedrock,\s*bedrockDurability:bedrockPickDurability\(\)\}/, 'inventory snapshot persists the meteoric and bedrock pickaxes');
-assert.match(src, /inv\.tools\.stone=false;\s*inv\.tools\.meteor=false;\s*inv\.tools\.diamond=false;\s*inv\.tools\.bedrock=false;\s*inv\.bedrockPickDurability=0/, 'inventory restore clears the bedrock pickaxe before loading');
+assert.match(src, /tools:\{stone:!!inv\.tools\.stone,\s*meteor:!!inv\.tools\.meteor,\s*diamond:!!inv\.tools\.diamond,\s*bedrock:!!inv\.tools\.bedrock,\s*glider:!!inv\.tools\.glider,\s*bedrockDurability:bedrockPickDurability\(\)\}/, 'inventory snapshot persists the meteoric and bedrock pickaxes plus the crafted glider');
+assert.match(src, /inv\.tools\.stone=false;\s*inv\.tools\.meteor=false;\s*inv\.tools\.diamond=false;\s*inv\.tools\.bedrock=false;\s*inv\.tools\.glider=false;\s*inv\.bedrockPickDurability=0/, 'inventory restore clears the bedrock pickaxe and glider before loading');
 assert.match(src, /inv\.tools\.meteor=!!src\.tools\.meteor/, 'inventory restore loads the meteoric pickaxe flag');
 assert.match(src, /inv\.tools\.bedrock=!!src\.tools\.bedrock/, 'inventory restore loads the bedrock pickaxe flag');
 assert.match(src, /PICK_ORDER=\['basic','stone','meteor','diamond','bedrock'\]/, 'pickaxe cycling includes the bedrock pickaxe after diamond');

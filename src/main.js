@@ -106,6 +106,7 @@ import { noise as NOISE } from './engine/noise.js';
 import { caveIn as CAVE_IN } from './engine/cave_in.js';
 import { forest as FOREST } from './engine/forest.js';
 import { attention as ATTENTION } from './engine/attention.js';
+import { glider as GLIDER } from './engine/glider.js';
 import { mechs as MECHS } from './engine/mechs.js';
 import { altar as ALTAR } from './engine/altar.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
@@ -2129,6 +2130,7 @@ function gasSkyExposedTile(x,y){
 // Inventory counts for resources (+ tool unlock flags)
 const inv={tools:{stone:false,meteor:false,diamond:false}};
 inv.tools.bedrock=false;
+inv.tools.glider=false; // Lotnia (engine/glider.js) — a crafted verb, not a gear stat
 inv.bedrockPickDurability=0;
 RESOURCE_KEYS.forEach(k=>{ inv[k]=0; });
 // Expose inventory for cross-module loot insertion
@@ -3819,13 +3821,13 @@ function restoreReferencedChunks(refs){
 function restoreWorldChunks(worldData){ if(!worldData || typeof worldData!=='object') return []; if(Array.isArray(worldData.modified)) return restoreModifiedChunks(worldData.modified); if(Array.isArray(worldData.chunkRefs)) return restoreReferencedChunks(worldData.chunkRefs); return []; }
 // (legacy v4 export*/import* save helpers removed — v5 persists only blocks + player position)
 function snapshotInventory(){
-	const out={tools:{stone:!!inv.tools.stone, meteor:!!inv.tools.meteor, diamond:!!inv.tools.diamond, bedrock:!!inv.tools.bedrock, bedrockDurability:bedrockPickDurability()}};
+	const out={tools:{stone:!!inv.tools.stone, meteor:!!inv.tools.meteor, diamond:!!inv.tools.diamond, bedrock:!!inv.tools.bedrock, glider:!!inv.tools.glider, bedrockDurability:bedrockPickDurability()}};
 	RESOURCE_KEYS.forEach(k=>{ out[k]=Math.max(0, inv[k]|0); });
 	return out;
 }
 function restoreInventory(src){
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; });
-	inv.tools.stone=false; inv.tools.meteor=false; inv.tools.diamond=false; inv.tools.bedrock=false; inv.bedrockPickDurability=0;
+	inv.tools.stone=false; inv.tools.meteor=false; inv.tools.diamond=false; inv.tools.bedrock=false; inv.tools.glider=false; inv.bedrockPickDurability=0;
 	if(!src || typeof src!=='object') return;
 	RESOURCE_KEYS.forEach(k=>{
 		const v=src[k];
@@ -4990,6 +4992,7 @@ const RECIPES=[
 	{id:'arrows_grapple', name:'Strzaly hakowe x12', cost:{rope:2, steel:1}, make(){ inv.arrowGrapple+=12; msg('Strzaly hakowe +12 - hak ze stali na linie z pnaczy; wystrzel w teren i przyciagnij sie (przypnij "hakowe" w pasku strzal, skok = puszczasz line)'); }},
 	{id:'rope_from_vine', name:'Lina z pnaczy x2', cost:{vine:3}, make(){ inv.rope+=2; msg('Lina +2 - pnacza z bagiennych mangrowcow skrecone w mocna line (na hakowe strzaly i inny sprzet)'); }},
 	{id:'pit_prop', name:'Stemple x4', cost:{wood:6}, make(){ inv.pitProp+=4; msg('Stemple +4 - postaw je pod szerokim stropem, zanim zawal cie przygniecie (podpieraja skale dookola)'); }},
+	{id:'glider', name:'Lotnia', cost:{lightWood:6, rope:3, glass:2}, make(){ inv.tools.glider=true; msg('Lotnia gotowa - trzymaj skok podczas spadania, zeby rozwinac skrzydlo. Wiatr cie poniesie, a cieple powietrze nad lawa i ogniem wyniesie w gore.'); }},
 	{id:'harpoon_bolts', name:'Harpuny x8', cost:{steel:1, wood:1}, make(){ inv.harpoonBolt+=8; msg('Harpuny +8 - ciezkie, odzyskiwalne groty do wyrzutni podwodnej'); }},
 	{id:'toxic_snowballs', name:'Toksyczne snieżki x8', cost:{toxicSnow:2}, make(){ inv.toxicSnowball+=8; msg('Toksyczne snieżki +8 - amunicja do luku; spowalnia i zatruwa cel'); }},
 	{id:'snowballs', name:'Snieżki x8', cost:{snow:2}, make(){ inv.snowball+=8; msg('Snieżki +8 - rzut z reki (klawisz 3); chwilowo spowalniaja cel'); }},
@@ -12277,6 +12280,18 @@ function physics(dt){
 		const grRelease=jumpPressedNow;
 		const gr=GRAPPLE.step(player, dt, getTile, {release:grRelease});
 		if(grRelease && gr && gr.released) jumpBufferT=0; // the tap let go of the rope; don't also buffer a jump
+	}
+
+	// Lotnia (engine/glider.js): holding jump while falling opens the canopy —
+	// fall slows to a crawl, the weather carries you, and rising air over lava,
+	// fires and geothermal springs lifts you higher than you started. Sits in the
+	// same slot as the grapple: after gravity so it overrides the fall, before the
+	// sweep so the carry is collided properly. Self-movement, no world write.
+	if(GLIDER && GLIDER.step){
+		GLIDER.step(player, dt, getTile, {
+			holdingJump: !!movementControlState().jump,
+			inWater: !!player.inWater,
+		});
 	}
 
 	// Integrate & collisions — substepped so high speed multipliers / low FPS cannot tunnel through tiles
