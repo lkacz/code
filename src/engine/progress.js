@@ -153,6 +153,9 @@ window.MM = window.MM || {};
     if(state.guardians[kind]) return false;
     state.guardians[kind]=1;
     noteGuardianSlain(kind);
+    // the loudest deed in the game: taking a guardian's heart is what the layer
+    // notices most (engine/attention.js — the deeds axis)
+    try{ if(MM.attention && MM.attention.note) MM.attention.note('guardian'); }catch(e){}
     save();
     notify();
     return true;

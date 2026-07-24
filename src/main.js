@@ -105,6 +105,7 @@ import { grapple as GRAPPLE } from './engine/grapple.js';
 import { noise as NOISE } from './engine/noise.js';
 import { caveIn as CAVE_IN } from './engine/cave_in.js';
 import { forest as FOREST } from './engine/forest.js';
+import { attention as ATTENTION } from './engine/attention.js';
 import { mechs as MECHS } from './engine/mechs.js';
 import { altar as ALTAR } from './engine/altar.js';
 import { lighting as LIGHTING } from './engine/lighting.js';
@@ -3123,6 +3124,9 @@ function notifyInvasionMining(tId,tx,ty){
 			CAVE_IN.disturb(tx, ty, Math.max(0.3, Math.min(2, hp/12)), getTile);
 		}
 	}catch(e){}
+	// Uwaga Warstwy (engine/attention.js): stripping ORE is a deed the world
+	// notices. Plain digging is free — it is what you TAKE that raises the floor.
+	try{ if(ATTENTION && INFO[tId] && INFO[tId].ore) ATTENTION.note('ore'); }catch(e){}
 	return notifyInvasionHeroAction('hero_mine', {
 		x:tx+0.5,
 		y:ty+0.5,
@@ -4107,6 +4111,9 @@ function buildSaveObject(opts){
 	caveIn: timedSavePart('caveIn',()=>((CAVE_IN && CAVE_IN.snapshot) ? CAVE_IN.snapshot() : null),perf),
 	// saplings are a slow investment: a reload must not wipe a regrowing forest
 	forest: timedSavePart('forest',()=>((FOREST && FOREST.snapshot) ? FOREST.snapshot() : null),perf),
+	// the world's memory of what you took must survive a reload, or the deeds
+	// axis resets every session and means nothing
+	attention: timedSavePart('attention',()=>((ATTENTION && ATTENTION.snapshot) ? ATTENTION.snapshot() : null),perf),
 	wind: timedSavePart('wind',()=>((WIND && WIND.snapshot) ? WIND.snapshot() : null),perf),
 	seasons: timedSavePart('seasons',()=>((SEASONS && SEASONS.snapshot) ? SEASONS.snapshot() : null),perf),
 	clouds: timedSavePart('clouds',()=>((CLOUDS && CLOUDS.snapshot) ? CLOUDS.snapshot() : null),perf),
@@ -4404,6 +4411,7 @@ function applyGameDataCore(data,opts){
 	try{ if(MECHS && MECHS.reset) MECHS.reset(); }catch(e){}
 	try{ if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); }catch(e){}
 	try{ if(FOREST && FOREST.reset) FOREST.reset(); }catch(e){}
+	try{ if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); }catch(e){}
 	try{ if(TREES && TREES.reset) TREES.reset(); }catch(e){}
 	try{ if(GRASS && GRASS.reset) GRASS.reset(); }catch(e){}
 	try{ if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); }catch(e){}
@@ -4493,6 +4501,7 @@ function applyGameDataCore(data,opts){
 	restoreRequired('mechs',data.mechs!=null,()=>{ if(MECHS && MECHS.restore) return MECHS.restore(data.mechs,getTile); throw new Error('mechs restorer unavailable'); });
 	try{ if(CAVE_IN && CAVE_IN.restore && data.caveIn!=null) CAVE_IN.restore(data.caveIn); }catch(e){}
 	try{ if(FOREST && FOREST.restore && data.forest!=null) FOREST.restore(data.forest); }catch(e){}
+	try{ if(ATTENTION && ATTENTION.restore && data.attention!=null) ATTENTION.restore(data.attention); }catch(e){}
 	restoreRequired('wind',data.wind!=null,()=>{ if(WIND && WIND.restore) return WIND.restore(data.wind); throw new Error('wind restorer unavailable'); });
 	restoreRequired('seasons',data.seasons!=null,()=>{ if(SEASONS && SEASONS.restore) return SEASONS.restore(data.seasons); throw new Error('seasons restorer unavailable'); });
 	restoreRequired('clouds',data.clouds!=null,()=>{ if(CLOUDS && CLOUDS.restore) return CLOUDS.restore(data.clouds); throw new Error('clouds restorer unavailable'); });
@@ -19235,6 +19244,8 @@ function runGameStep(dt,ts){
 	}
 	if(CAVE_IN && CAVE_IN.update) CAVE_IN.update(dt, player, getTile, setTile);
 	if(FOREST && FOREST.update) FOREST.update(dt, player, getTile, setTile);
+	// the layer slowly forgets a quiet player; a busy one keeps its attention
+	if(ATTENTION && SEASONS && SEASONS.metrics){ try{ const sm=SEASONS.metrics(); if(sm && Number.isFinite(sm.dayFloat)) ATTENTION.update(sm.dayFloat); }catch(e){} }
 	if(SEASONS && SEASONS.update) SEASONS.update(dt, getTile, setTile, player, seasonUpdateContext());
 	if(FIRE && FIRE.update) FIRE.update(getTile, setTile, dt);
 	if(VOLCANO && VOLCANO.update) VOLCANO.update(dt, player, getTile, setTile);

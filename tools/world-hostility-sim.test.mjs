@@ -177,7 +177,14 @@ worldHostility.setTuning({intensity:1, reach:2});
 assert.ok(worldHostility.at(probeX).hostility < baseProbe, 'longer reach makes the ramp more gradual');
 const clamped = worldHostility.setTuning({intensity:99, reach:99});
 assert.ok(clamped.intensity <= 3 && clamped.reach <= 4, 'tuning is clamped to safe bounds the UI cannot exceed');
-worldHostility.setTuning({intensity:1, reach:1});
-assert.deepEqual(worldHostility.getTuning(), {intensity:1, reach:1}, 'tuning restores cleanly to defaults');
+worldHostility.setTuning({intensity:1, reach:1, floor:0});
+assert.deepEqual(worldHostility.getTuning(), {intensity:1, reach:1, floor:0}, 'tuning restores cleanly to defaults');
+// the deeds axis (engine/attention.js): a floor lifts the curve everywhere,
+// including at spawn where the distance ramp contributes nothing
+assert.equal(worldHostility.at(0).hostility, 0, 'spawn is safe at the default floor');
+worldHostility.setTuning({floor:1.5});
+assert.ok(worldHostility.at(0).hostility >= 1.5, 'a deeds floor makes spawn itself dangerous');
+assert.ok(worldHostility.setTuning({floor:99}).floor <= worldHostility.TUNING_BOUNDS.floor[1], 'the floor is clamped like every other tuning knob');
+worldHostility.setTuning({intensity:1, reach:1, floor:0});
 
 console.log('world-hostility-sim: all assertions passed');

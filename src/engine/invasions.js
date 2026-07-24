@@ -3797,6 +3797,8 @@ const invasions = (function(){
     if(!team || team.state === 'defeated') return false;
     team.state = 'defeated';
     team.defeatedAt = Date.now();
+    // breaking an invasion is a deed the layer notices (engine/attention.js)
+    try{ if(MM.attention && MM.attention.note) MM.attention.note('invasion'); }catch(e){}
     cleanupBuiltTiles(team,getTile,setTile,ctx);
     brains.delete(team.id);
     const reward = Math.max(60, team.xpReward || 160);

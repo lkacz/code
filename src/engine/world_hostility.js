@@ -24,9 +24,12 @@ function currentPlayerX(fallback){
 //   reach     — stretches the travel distance before the ramp bites (0.25 =
 //               steep/quick, 1 = default, 4 = very gradual).
 // These only re-shape the shared curve; every consumer keeps reading at().
-const TUNING_BOUNDS = { intensity: [0, 3], reach: [0.25, 4] };
-const tuning = { intensity: 1, reach: 1 };
-function getTuning(){ return { intensity: tuning.intensity, reach: tuning.reach }; }
+// `floor` is the DEEDS axis (engine/attention.js): distance alone used to decide
+// everything, so day 200 at spawn felt exactly like day 5. A floor lifts the
+// whole curve — including at the origin — without touching the distance ramp.
+const TUNING_BOUNDS = { intensity: [0, 3], reach: [0.25, 4], floor: [0, 2.5] };
+const tuning = { intensity: 1, reach: 1, floor: 0 };
+function getTuning(){ return { intensity: tuning.intensity, reach: tuning.reach, floor: tuning.floor }; }
 function setTuning(next){
   if(next && typeof next === 'object'){
     if(next.intensity !== undefined){
@@ -34,6 +37,9 @@ function setTuning(next){
     }
     if(next.reach !== undefined){
       tuning.reach = clamp(finiteNumber(next.reach, tuning.reach), TUNING_BOUNDS.reach[0], TUNING_BOUNDS.reach[1]);
+    }
+    if(next.floor !== undefined){
+      tuning.floor = clamp(finiteNumber(next.floor, tuning.floor), TUNING_BOUNDS.floor[0], TUNING_BOUNDS.floor[1]);
     }
   }
   return getTuning();
@@ -44,7 +50,9 @@ function at(x){
   const distance = Math.abs(wx);
   const reach = tuning.reach > 0 ? tuning.reach : 1;
   const ramp = smoothstep(RAMP_START * reach, RAMP_FULL * reach, distance);
-  const hostility = clamp(ramp * tuning.intensity, 0, 4);
+  // the deeds floor lifts the whole curve: what you have TAKEN raises the
+  // baseline everywhere, so a long, greedy run is dangerous even back at spawn
+  const hostility = clamp(Math.max(ramp * tuning.intensity, tuning.floor), 0, 4);
   const hot = wx > 0 ? hostility : 0;
   const cold = wx < 0 ? hostility : 0;
   const side = hostility <= 0.001 ? 'center' : (wx < 0 ? 'cold' : 'hot');
