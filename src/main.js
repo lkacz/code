@@ -1,6 +1,6 @@
 // Nowy styl / pełny ekran inspirowany Diamonds Explorer
 // Module entry: import constants (also hydrates window.MM via shim) and side-effect engine modules
-import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, TILE, HERO_BODY_W, HERO_BODY_H, T, INFO, MOVE, isAutumnLeaf, isLeaf, isFrozenEarth } from './constants.js';
+import { CHUNK_W, WORLD_H, WORLD_SECTION_H, WORLD_MIN_SECTION, WORLD_MAX_SECTION, WORLD_MIN_Y, WORLD_MAX_Y, TILE, HERO_BODY_W, HERO_BODY_H, T, INFO, MOVE, isAutumnLeaf, isLeaf, isWood, isFrozenEarth } from './constants.js';
 import { clearActiveGameStorage, normalizeWorldSeed, queueFreshWorldSeed, queueWorldSeed, randomWorldSeed } from './engine/new_game.js';
 // Ensure worldgen initializes before world (world.js reads MM.worldGen on load)
 import { worldGen as WORLDGEN } from './engine/worldgen.js';
@@ -4934,6 +4934,8 @@ const RECIPES=[
 	{id:'arrows_obsidian_bulk', name:'Strzaly obsydianowe x100', cost:{wood:10, obsidian:1}, make(){ inv.arrowObsidian+=100; msg('Strzaly obsydianowe +100'); }},
 	{id:'arrows_diamond_bulk', name:'Strzaly diamentowe x100', cost:{wood:10, diamond:1}, make(){ inv.arrowDiamond+=100; msg('Strzaly diamentowe +100'); }},
 	{id:'arrows_iridium_bulk', name:'Strzaly irydowe x100', cost:{wood:10, iridium:1}, make(){ inv.arrowIridium+=100; msg('Strzaly irydowe +100'); }},
+	{id:'arrows_hardwood_bulk', name:'Strzaly z twardego drewna x100', cost:{hardWood:10}, make(){ inv.arrowHardwood+=100; msg('Strzaly z twardego drewna +100'); }},
+	{id:'arrows_carbon_bulk', name:'Strzaly weglowe x100', cost:{graphene:2}, make(){ inv.arrowCarbon+=100; msg('Strzaly weglowe +100'); }},
 	{id:'harpoon_bolts', name:'Harpuny x8', cost:{steel:1, wood:1}, make(){ inv.harpoonBolt+=8; msg('Harpuny +8 - ciezkie, odzyskiwalne groty do wyrzutni podwodnej'); }},
 	{id:'toxic_snowballs', name:'Toksyczne snieżki x8', cost:{toxicSnow:2}, make(){ inv.toxicSnowball+=8; msg('Toksyczne snieżki +8 - amunicja do luku; spowalnia i zatruwa cel'); }},
 	{id:'snowballs', name:'Snieżki x8', cost:{snow:2}, make(){ inv.snowball+=8; msg('Snieżki +8 - rzut z reki (klawisz 3); chwilowo spowalniaja cel'); }},
@@ -4944,9 +4946,12 @@ const RECIPES=[
 	{id:'throwing_stones_basalt', name:'Kamienie bazaltowe x6', cost:{basalt:2}, make(){ inv.throwingStoneBasalt+=6; msg('Kamienie bazaltowe +6 - ciezki, twardy pocisk'); }},
 	{id:'throwing_stones_obsidian', name:'Kamienie obsydianowe x6', cost:{obsidian:2}, make(){ inv.throwingStoneObsidian+=6; msg('Kamienie obsydianowe +6 - ostre szklo wulkaniczne'); }},
 	{id:'throwing_stones_diamond', name:'Kamienie diamentowe x3', cost:{diamond:1}, make(){ inv.throwingStoneDiamond+=3; msg('Kamienie diamentowe +3 - niemal niezniszczalne pociski'); }},
+	{id:'throwing_stones_meteorite', name:'Kamienie meteorytowe x3', cost:{meteoricIron:1}, make(){ inv.throwingStoneMeteorite+=3; msg('Kamienie meteorytowe +3 - najtwardszy rzut, niemal zawsze wraca'); }},
 	{id:'halogen_bulb', name:'Żarówka halogenowa', cost:{steel:2, silverWire:2, glass:2}, make(){ inv.halogen+=1; msg('Halogen wkręcony - latarka w oczach świeci szerzej i dalej'); }},
 	{id:'water_balloons', name:'Balony wodne x4', cost:{water:2}, make(){ inv.waterBalloon+=4; msg('Balony wodne +4 - mocza wrogow (kombo: prad, mroz), gasza ogien'); }},
 	{id:'gas_grenades', name:'Granaty gazowe x3', cost:{rottenMeat:2, clay:1}, make(){ inv.gasGrenade+=3; msg('Granaty gazowe +3 - trujacy oblok; ogien go detonuje'); }},
+	{id:'frost_flasks', name:'Lodowe fiolki x4', cost:{snow:2}, make(){ inv.frostFlask+=4; msg('Lodowe fiolki +4 - rozpryskuja mroz (komb: mokry cel -> brya lodu)'); }},
+	{id:'molotovs', name:'Koktajle Molotowa x3', cost:{coal:2, wood:1}, make(){ inv.molotov+=3; msg('Koktajle Molotowa +3 - ognisty rozprysk, podpala teren'); }},
 	{id:'sticky_bombs', name:'Lepkie bomby x2', cost:{clay:1, coal:1}, make(){ inv.stickyBomb+=2; msg('Lepkie bomby +2 - przyklejaja sie i wybuchaja po chwili'); }},
 	{id:'obsidian_sword', name:'Miecz obsydianowy', cost:{obsidian:4, wood:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz obsydianowy',attackDamage:6,tier:'rare',desc:'Wykuty z hartowanej lawy'}); }},
 	// Bron wodna ma osobna fizyke w weapons.js: pod woda jest szybsza i mocniejsza,
@@ -4960,6 +4965,7 @@ const RECIPES=[
 	{id:'stick_weapon', name:'Patyk', cost:{wood:1}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Patyk',attackDamage:1,desc:'Najprostsza broń świata: kawałek drewna na pierwsze noce'}); }},
 	{id:'club_wood', name:'Maczuga', cost:{wood:4}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Maczuga',attackDamage:3,desc:'Wiązka patyków zbita w ciężką pałę'}); }},
 	{id:'axe_stone', name:'Topór kamienny', cost:{wood:2, stone:3}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Topór kamienny',attackDamage:4,meleeEffect:'stun',desc:'Kamienny obuch: szansa, że oszołomi trafionego'}); }},
+	{id:'maul_steel', name:'Młot bojowy', cost:{steel:4, wood:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Młot bojowy',attackDamage:6,meleeEffect:'sunder',tier:'rare',desc:'Ciężki obuch rozłupuje pancerz — trafiony przyjmuje przez chwilę więcej obrażeń'}); }},
 	{id:'axe_metal', name:'Topór metalowy', cost:{wood:2, steel:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Topór metalowy',attackDamage:6,meleeEffect:'bleed',tier:'rare',desc:'Stalowe ostrze otwiera krwawiące rany'}); }},
 	{id:'axe_diamond', name:'Topór diamentowy', cost:{wood:2, diamond:3}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Topór diamentowy',attackDamage:8,meleeEffect:'panic',tier:'epic',desc:'Błysk diamentu sieje panikę — trafieni uciekają'}); }},
 	{id:'spear_stone', name:'Dzida kamienna', cost:{wood:3, stone:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Dzida kamienna',attackDamage:3,fireRange:3,meleeEffect:'stun',desc:'Poziome pchnięcie na trzy pola; przytrzymaj LPM, aby zwiększyć siłę'}); }},
@@ -5084,12 +5090,16 @@ const CRAFT_RECIPE_META={
 	arrows_obsidian_bulk:{group:'weapons',icon:'🏹',out:'arrowObsidian',amount:100,desc:'Ostre groty z wulkanicznego szkla.'},
 	arrows_diamond_bulk:{group:'weapons',icon:'🏹',out:'arrowDiamond',amount:100,desc:'Droga, precyzyjna amunicja.'},
 	arrows_iridium_bulk:{group:'weapons',icon:'🏹',out:'arrowIridium',amount:100,desc:'Amunicja z materialu meteorytowego.'},
+	arrows_hardwood_bulk:{group:'weapons',icon:'🏹',out:'arrowHardwood',amount:100,desc:'Twardy, sprezysty drzewiec — rzadko peka po strzale.'},
+	arrows_carbon_bulk:{group:'weapons',icon:'🏹',out:'arrowCarbon',amount:100,desc:'Lekkie wlokno weglowe (z grafenu) — bardzo szybkie i niemal niezniszczalne.'},
 	harpoon_bolts:{group:'weapons',icon:'🔱',out:'harpoonBolt',amount:8,desc:'Ciezkie groty do wyrzutni; po trafieniu zwykle mozna je odzyskac.'},
 	toxic_snowballs:{group:'weapons',icon:'❄️',out:'toxicSnowball',amount:8,desc:'Snieżki ze skazonego sniegu: cel dostaje spowolnienie i zatrucie.'},
 	snowballs:{group:'weapons',icon:'⚪',out:'snowball',amount:8,desc:'Zwykle snieżki do rzucania: lekkie trafienie i krotki chlod.'},
 	throwing_stones:{group:'weapons',icon:'🪨',out:'throwingStone',amount:6,desc:'Dobrane w dloni kamienie: mocny rzut po stromym luku.'},
 	water_balloons:{group:'weapons',icon:'💧',out:'waterBalloon',amount:4,desc:'Moczy cel: mokry wrog przewodzi prad i zamarza od mrozu.'},
 	gas_grenades:{group:'weapons',icon:'☠️',out:'gasGrenade',amount:3,desc:'Przenosny oblok trucizny - podpal go dla eksplozji.'},
+	frost_flasks:{group:'weapons',icon:'🧊',out:'frostFlask',amount:4,desc:'Rozprysk mrozu — na mokrym celu zamraza go w bryle lodu.'},
+	molotovs:{group:'weapons',icon:'🔥',out:'molotov',amount:3,desc:'Ognisty rozprysk: podpala trafione cele i latwopalny teren.'},
 	sticky_bombs:{group:'weapons',icon:'🧨',out:'stickyBomb',amount:2,desc:'Klei sie do scian i mobow; krotki lont, maly krater.'},
 	obsidian_sword:{group:'weapons',icon:'🗡️',tint:'#7a5cc1',desc:'Craftowany ekwipunek trafia do torby i od razu sie zaklada.'},
 	trident_steel:{group:'weapons',icon:'🔱',tint:'#72c7d8',desc:'Trzytileowy zasieg. Pod woda szybszy i mocniejszy, na ladzie nieporeczny.'},
@@ -5098,6 +5108,7 @@ const CRAFT_RECIPE_META={
 	stick_weapon:{group:'weapons',icon:'🪵',tint:'#8b5a2b',desc:'Najtansza bron na pierwsze noce.'},
 	club_wood:{group:'weapons',icon:'🏏',tint:'#a9743c',desc:'Wiecej patykow, wiecej masy w zamachu.'},
 	axe_stone:{group:'weapons',icon:'🪓',tint:'#9aa0a8',desc:'Kamien oszalamia: trafiony wrog staje na chwile.'},
+	maul_steel:{group:'weapons',icon:'🔨',tint:'#8f98a3',desc:'Ciezki obuch lupie pancerz: trafiony przez chwile przyjmuje wiecej obrazen.'},
 	axe_metal:{group:'weapons',icon:'🪓',tint:'#9aa8b5',desc:'Metal tnie: szansa na krwawienie po kazdym ciosie.'},
 	axe_diamond:{group:'weapons',icon:'🪓',tint:'#3ef',desc:'Diament straszy: trafieni panikuja i uciekaja.'},
 	spear_stone:{group:'weapons',icon:'🔱',tint:'#9aa0a8',desc:'Poziome pchniecie na trzy pola; przytrzymanie zwieksza sile.'},
@@ -5135,6 +5146,7 @@ const CRAFT_RECIPE_META={
 	throwing_stones_basalt:{group:'weapons',icon:'🪨',out:'throwingStoneBasalt',amount:6,desc:'Bazaltowy pocisk: ciezki, twardy, rzadko sie kruszy.'},
 	throwing_stones_obsidian:{group:'weapons',icon:'🪨',out:'throwingStoneObsidian',amount:6,desc:'Obsydianowe ostrze w locie — tnie mocno i niemal zawsze wraca w calosci.'},
 	throwing_stones_diamond:{group:'weapons',icon:'💎',out:'throwingStoneDiamond',amount:3,desc:'Diamentowy grot rzutny: najtwardszy pocisk w grze, praktycznie niezniszczalny.'},
+	throwing_stones_meteorite:{group:'weapons',icon:'☄️',out:'throwingStoneMeteorite',amount:3,desc:'Odłamek meteorytu: najcięższy rzut, prawie zawsze do odzyskania.'},
 	halogen_bulb:{group:'survival',icon:'🔦',out:'halogen',amount:1,desc:'Halogenowa zarowka do lampy w oczach: szerszy stozek i dluzszy zasieg swiatla za wyzszy pobor energii.'},
 	weathervane:{group:'machines',icon:'🧭',out:'weathervane',amount:1,desc:'Kogucik na dach: strzalka pokazuje NA ZYWO kierunek i sile wiatru. Planuj zamiecie, zagle i burze piaskowe.'},
 	lightning_rod:{group:'machines',icon:'⚡',out:'lightningRod',amount:1,desc:'Maszt burzowy: pioruny biegna w niego zamiast w ciebie, a ladunek trafia do sieci elektrycznej. Burza = zniwa.'},
@@ -6358,7 +6370,7 @@ function smoothTerrainNoise(wx,y,scale){
 	return lerp(a,b,ty);
 }
 function isContinuousTerrainTile(t){
-	return t===T.GRASS || t===T.GRASS_SNOW || t===T.UNSTABLE_GRASS || t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.CHIMNEY || t===T.DIRT || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.SNOW || t===T.TOXIC_SNOW || t===T.ICE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.STEEL || t===T.TRACK || t===T.UFO_CONCRETE || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.GRAPHITE || t===T.GRAPHENE || t===T.GLASS || isLeaf(t) || t===T.LAVA;
+	return t===T.GRASS || t===T.GRASS_SNOW || t===T.UNSTABLE_GRASS || t===T.SAND || t===T.UNSTABLE_SAND || t===T.QUICKSAND || t===T.CLAY || t===T.WET_CLAY || t===T.BRICK || t===T.CHIMNEY || t===T.DIRT || t===T.FROZEN_DIRT || t===T.FROZEN_SAND || t===T.FROZEN_CLAY || t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.COAL || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.SNOW || t===T.TOXIC_SNOW || t===T.ICE || t===T.MOTHER_ICE || t===T.MOTHER_LAVA || t===T.MUD || t===T.OBSIDIAN || t===T.WOOD || t===T.GOLDEN_WOOD || t===T.LIGHT_WOOD || t===T.HARD_WOOD || t===T.STEEL || t===T.TRACK || t===T.UFO_CONCRETE || t===T.IRIDIUM || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.GRAPHITE || t===T.GRAPHENE || t===T.GLASS || isLeaf(t) || t===T.LAVA;
 }
 function tileShadeAmp(t){
 	if(t===T.DIRT) return 5;
@@ -6387,6 +6399,7 @@ function tileShadeAmp(t){
 	if(t===T.ANTIMATTER_CRYSTAL) return 4;
 	if(t===T.DIAMOND) return 0;
 	if(t===T.WOOD) return 8;
+	if(t===T.GOLDEN_WOOD || t===T.LIGHT_WOOD || t===T.HARD_WOOD) return 8;
 	if(t===T.GRASS || t===T.UNSTABLE_GRASS) return 8;
 	if(isLeaf(t)) return 9;
 	if(t===T.MUD) return 6;
@@ -6478,7 +6491,7 @@ function tileEdgeFamily(t){
 		case T.FROZEN_DIRT: case T.FROZEN_SAND: case T.FROZEN_CLAY: return EDGE_EARTH;
 		case T.SAND: case T.UNSTABLE_SAND: case T.QUICKSAND: return EDGE_SAND;
 		case T.SNOW: case T.TOXIC_SNOW: case T.ICE: case T.MOTHER_ICE: return EDGE_FROST;
-		case T.WOOD: return EDGE_WOOD;
+		case T.WOOD: case T.GOLDEN_WOOD: case T.LIGHT_WOOD: case T.HARD_WOOD: return EDGE_WOOD;
 		case T.LEAF: case T.AUTUMN_LEAF_ORANGE: case T.AUTUMN_LEAF_RED: return EDGE_LEAF;
 		case T.STEEL: case T.TRACK: case T.BRICK: case T.CHIMNEY: case T.GRAPHENE: return EDGE_BUILT;
 		case T.UFO_CONCRETE: return EDGE_METEOR;
@@ -8150,6 +8163,27 @@ function _drawMaterialTile(g,t,px,py,h){
 		dot(g,px,py,11+((h>>>11)&2),0,2,TILE,'rgba(58,32,13,0.24)');
 		strokePath(g,'rgba(235,173,91,0.32)',1,[[px+6,py+5],[px+11,py+7],[px+7,py+11],[px+13,py+14]]);
 		dot(g,px,py,8,8,4,3,'rgba(73,39,16,0.23)');
+	} else if(t===T.GOLDEN_WOOD){
+		// Golden trunk (drops, hover previews, felled-debris art): WOOD's grain in
+		// gilt tones with a bright highlight vein for a rich, magnificent look.
+		drawBlockBevel(g,px,py,'rgba(255,240,170,0.20)','rgba(96,64,8,0.28)');
+		dot(g,px,py,3+((h>>>7)&2),0,2,TILE,'rgba(150,102,18,0.32)');
+		dot(g,px,py,11+((h>>>11)&2),0,2,TILE,'rgba(120,80,10,0.26)');
+		strokePath(g,'rgba(255,238,150,0.55)',1,[[px+6,py+5],[px+11,py+7],[px+7,py+11],[px+13,py+14]]);
+		dot(g,px,py,8,8,3,3,'rgba(255,251,206,0.55)');
+	} else if(t===T.LIGHT_WOOD){
+		// Light wood (drops/previews): pale, airy grain — soft bevel, faint veins.
+		drawBlockBevel(g,px,py,'rgba(255,252,235,0.20)','rgba(120,100,66,0.18)');
+		dot(g,px,py,3+((h>>>7)&2),0,2,TILE,'rgba(150,130,90,0.20)');
+		dot(g,px,py,11+((h>>>11)&2),0,2,TILE,'rgba(170,150,110,0.16)');
+		strokePath(g,'rgba(255,252,235,0.34)',1,[[px+6,py+5],[px+11,py+7],[px+7,py+11],[px+13,py+14]]);
+	} else if(t===T.HARD_WOOD){
+		// Hard wood (drops/previews): dark, dense grain — deep bevel, heavy veins.
+		drawBlockBevel(g,px,py,'rgba(150,96,48,0.14)','rgba(20,10,4,0.34)');
+		dot(g,px,py,3+((h>>>7)&2),0,2,TILE,'rgba(20,10,4,0.34)');
+		dot(g,px,py,11+((h>>>11)&2),0,2,TILE,'rgba(30,16,7,0.30)');
+		strokePath(g,'rgba(120,74,36,0.32)',1,[[px+6,py+5],[px+11,py+7],[px+7,py+11],[px+13,py+14]]);
+		dot(g,px,py,8,8,4,3,'rgba(16,8,3,0.28)');
 	} else if(isDoorTile(t)){
 		drawDoorTile(g,t,px,py,h,0);
 	} else if(isTrapdoorTile(t)){
@@ -9143,6 +9177,18 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					}
 				}
 				if(t===T.WOOD){ cctx.fillStyle='rgba(0,0,0,0.05)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); }
+					// Light wood: pale airy grain (soft highlight vein). Hard wood: dark
+					// dense double-vein reading as tight heavy grain. Baked once per chunk.
+					if(t===T.LIGHT_WOOD){ cctx.fillStyle='rgba(255,252,235,0.30)'; cctx.fillRect(lx*TILE+5 + ((h>>5)&6), y*TILE, 1, TILE); cctx.fillStyle='rgba(150,130,90,0.16)'; cctx.fillRect(lx*TILE + ((h>>8)&4), y*TILE, 1, TILE); }
+					if(t===T.HARD_WOOD){ cctx.fillStyle='rgba(0,0,0,0.30)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); cctx.fillStyle='rgba(0,0,0,0.20)'; cctx.fillRect(lx*TILE+9 + ((h>>5)&4), y*TILE, 2, TILE); }
+				// Golden trunk: a magnificent gilt grain — a dark vein, a bright gilt
+				// highlight streak and an occasional sparkle. Baked once per chunk
+				// rebuild (not per frame), so the extra strokes are effectively free.
+				if(t===T.GOLDEN_WOOD){ const gx=lx*TILE, gy=y*TILE;
+					cctx.fillStyle='rgba(120,80,10,0.28)'; cctx.fillRect(gx + ((h>>8)&3), gy, 2, TILE);
+					cctx.fillStyle='rgba(255,238,150,0.55)'; cctx.fillRect(gx+5 + ((h>>5)&6), gy, 1, TILE);
+					if((h&3)===0){ cctx.fillStyle='rgba(255,251,206,0.92)'; cctx.fillRect(gx+3 + ((h>>6)&10), gy+3 + ((h>>10)&9), 2, 2); }
+				}
 				// Final neighbor-aware pass: sunlit rims, AO shadows, silhouette
 				// notching and material caps on every exposed face
 				drawTerrainEdgeFX(cctx,t,arr,cx,lx,y,originY,sectionH,wx,lx*TILE,y*TILE,h,surf);
@@ -11416,6 +11462,7 @@ const TRAPDOOR_DROP_BUFFER=0.22;
 let jumpBufferT=0, coyoteT=0, ladderReleaseT=0, trapdoorDropBufferT=0;
 // Rowing: rising-edge trackers for oar strokes + message throttle for empty energy
 let rowPrevLeft=false, rowPrevRight=false, rowNoEnergyMsgAt=0;
+let sailPrevUp=false, sailPrevDown=false;
 function heroRowStroke(dir){
 	if(!BOATS || !BOATS.row) return;
 	// hero-mode guest: the stroke becomes an INTENT — energy is spent HERE (the
@@ -11580,7 +11627,7 @@ function heroStandingOnTreeTopForSolar(){
 	const probes=[Math.floor(player.x),Math.floor(player.x-player.w*0.42),Math.floor(player.x+player.w*0.42)];
 	for(const tx of probes){
 		const under=getTile(tx,footY);
-		if((under===T.WOOD || isLeaf(under)) && getTile(tx,footY-1)===T.AIR && solarHeroSkyOpen()) return true;
+		if((isWood(under) || isLeaf(under)) && getTile(tx,footY-1)===T.AIR && solarHeroSkyOpen()) return true;
 	}
 	return false;
 }
@@ -11777,9 +11824,18 @@ function physics(dt){
 		if(leftNow && !rowPrevLeft) heroRowStroke(-1);
 		if(rightNow && !rowPrevRight) heroRowStroke(1);
 		rowPrevLeft=leftNow; rowPrevRight=rightNow;
+		// Up/Down raise/lower the sail (idle keys on open water). Solo/host only —
+		// a hero guest rows via intent and does not own the host's raft rigging.
+		const sailUpNow=moveControl.up, sailDownNow=moveControl.down;
+		if(BOATS && BOATS.raiseSail && !MM.ghostHeroIntents){
+			if(sailUpNow && !sailPrevUp){ const r=BOATS.raiseSail(true,{player}); if(r && r.ok){ msg('⛵ Żagiel w górę — łap wiatr!'); noteSaveActivity(); } }
+			if(sailDownNow && !sailPrevDown){ const r=BOATS.raiseSail(false,{player}); if(r && r.ok){ msg('Żagiel opuszczony'); noteSaveActivity(); } }
+		}
+		sailPrevUp=sailUpNow; sailPrevDown=sailDownNow;
 		input*=0.45;
 	} else {
 		rowPrevLeft=false; rowPrevRight=false;
+		sailPrevUp=false; sailPrevDown=false;
 		if(heroTrackNow) input=0;
 	}
 	const climbUpInput=moveControl.up;
@@ -12517,8 +12573,11 @@ function breakBoatPlank(){
 	if(!p){ stopMining(); return false; }
 	const res=BOATS.removeCellAt(p.x,p.y);
 	if(!res){ stopMining(); return false; }
-	awardTileDrops(INFO[T.WOOD]);
-	spawnBurst(p.x*TILE,p.y*TILE,0,{color:'#8b5a2b'});
+	// Refund exactly the ONE plank resource the hull is built from (wood, or the
+	// hull's own light wood) — not the multi-drop tree-mining yield.
+	const plankKey=(res && res.drop && RESOURCE_KEY_SET.has(res.drop)) ? res.drop : 'wood';
+	inv[plankKey]=(inv[plankKey]||0)+1;
+	spawnBurst(p.x*TILE,p.y*TILE,0,{color:RES_COLOR[plankKey]||'#8b5a2b'});
 	updateInventory(); updateHotbarCounts(); saveState();
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('break',{x:p.x,y:p.y}); }catch(e){}
 	stopMining();
@@ -12581,7 +12640,7 @@ function templeDisturbanceKindForTile(t){
 	const info=INFO[t];
 	if(info && info.chestTier) return 'treasure';
 	if(t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.DIAMOND) return 'treasure';
-	if(t===T.STONE || t===T.OBSIDIAN || t===T.TORCH || t===T.WOOD || isLeaf(t) || t===T.GLOWSHROOM) return 'structure';
+	if(t===T.STONE || t===T.OBSIDIAN || t===T.TORCH || isWood(t) || isLeaf(t) || t===T.GLOWSHROOM) return 'structure';
 	return null;
 }
 function notifyTempleDisturbance(kind,tx,ty,oldTile,newTile){
@@ -13389,7 +13448,7 @@ function breakTileByCompanion(tx,ty,expectedTile){
 	applyMaterialBreakPersonality(tId,tx,ty);
 	if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(tx,ty,getTile,{radius:22});
 	const drops=awardTileDrops(info,dropCtx);
-	if(tId===T.WOOD && getTile(tx,ty-1)===T.WOOD) startTreeFall(tx,ty-1);
+	if(isWood(tId) && isWood(getTile(tx,ty-1))) startTreeFall(tx,ty-1);
 	if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
 	if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
 	pushUndo(tx,ty,tId,T.AIR,'companionBreak',drops);
@@ -13469,7 +13528,7 @@ function breakMinedTile(){
 		awardTileDrops(info,dropCtx);
 		spawnBurst((mineTx+0.5)*TILE,(mineTy+0.5)*TILE,0,{color:'#a8ffc2'});
 	}
-	if(tId===T.WOOD && getTile(mineTx,mineTy-1)===T.WOOD) startTreeFall(mineTx,mineTy-1);
+	if(isWood(tId) && isWood(getTile(mineTx,mineTy-1))) startTreeFall(mineTx,mineTy-1);
 	if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(mineTx,mineTy);
 	if(WATER && WATER.onTileChanged) WATER.onTileChanged(mineTx,mineTy,getTile);
 	// a pick biting into (or right under) a deep snow slope can set it off
@@ -13773,7 +13832,7 @@ function layerToggleCommonBlocker(tx,ty){
 	return '';
 }
 function notifyForegroundTileRemovedForLayerToggle(tx,ty,id){
-	if(id===T.WOOD && getTile(tx,ty-1)===T.WOOD) startTreeFall(tx,ty-1);
+	if(isWood(id) && isWood(getTile(tx,ty-1))) startTreeFall(tx,ty-1);
 	if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(tx,ty,getTile,{radius:22});
 	if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
 	if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
@@ -14125,7 +14184,7 @@ function canPlaceAt(tx,ty){
 	// Wood built on water floats: it becomes (or extends) a raft entity instead of
 	// a tile. Air cells above water only float when no solid support would carry a
 	// normal build — planks against a dock keep behaving like ordinary tiles.
-	if(!chest && id===T.WOOD && !backgroundBuildMode && BOATS && BOATS.placementMode){
+	if(!chest && (id===T.WOOD || id===T.LIGHT_WOOD) && !backgroundBuildMode && BOATS && BOATS.placementMode){
 		let hasSupport=false;
 		if(cur===T.AIR){
 			if(FALLING && FALLING.canSupportPlacement){
@@ -14194,7 +14253,7 @@ function tryPlace(tx,ty){
 		return false;
 	}
 	if(v.boat){
-		const placed=(BOATS && BOATS.placeWood) ? BOATS.placeWood(tx,ty,getTile,{hasSupport:!!v.boatHasSupport,water:WATER}) : null;
+		const placed=(BOATS && BOATS.placeWood) ? BOATS.placeWood(tx,ty,getTile,{hasSupport:!!v.boatHasSupport,water:WATER,material:v.id}) : null;
 		if(!placed || !placed.ok){ if(placed && placed.reason) msg(placed.reason); return false; }
 		consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
 		if(placed.created) msg('⛵ Drewno nie tonie — masz tratwę! Dokładaj drewno, by ją powiększyć');
@@ -14494,7 +14553,7 @@ function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptio
 	types.forEach(t=>{ const b=document.createElement('button'); b.textContent=t.label; const baseBg='rgba(255,255,255,.08)'; const rareBg=t.col? t.col+'33': baseBg; const border=t.col? t.col+'88':'rgba(255,255,255,.15)'; b.style.cssText='text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;'; if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8'; b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' -> '+t.label); }); hotSelectOptions.appendChild(b); });
 	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='block'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
 const HOT_SELECT_GROUPS=[
-	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','CLAY','DIRT','STONE','WOOD','LEAF','SNOW','TOXIC_SNOW','WATER']},
+	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','CLAY','DIRT','STONE','WOOD','LIGHT_WOOD','HARD_WOOD','LEAF','SNOW','TOXIC_SNOW','WATER']},
 	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','GOLD_ORE','SILVER_ORE','SILVER_INGOT','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL','MOTHER_ICE','MOTHER_LAVA','GRAPHITE','GRAPHENE']},
 	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
 	{id:'home',label:'Dom i wyposażenie',tiles:['CHAIR_WOOD','CHAIR_STONE','CHAIR_STEEL','RUSTIC_STOOL','PINE_TABLE','WALL_SHELF','OAK_CABINET','COZY_BED','BOOKCASE','PATCHWORK_SOFA','HAMMOCK','WOVEN_RUG','POTTED_FERN','WALL_CLOCK','MIRROR','AQUARIUM','TERRARIUM','CHANDELIER','INDOOR_FOUNTAIN','HOLOGRAM_ART','DESK_LAMP','RADIO','TELEVISION','GAME_CONSOLE','REFRIGERATOR','COFFEE_MACHINE','AIR_PURIFIER','MEDICAL_STATION','HEALING_POD','ZERO_G_LOUNGER','MEMORY_PROJECTOR','CHRONO_CLOCK','BIOLUM_GARDEN','MINIATURE_SUN','DREAM_SYNTH','COSMIC_ORRERY']},
@@ -15206,6 +15265,9 @@ function minimapTileColor(t){
 	if(t===T.UNSTABLE_GRASS) return '#336d2f';
 	if(t===T.GRASS || t===T.MUD) return '#4a8f3a';
 	if(t===T.WOOD) return '#8b5a2b';
+	if(t===T.GOLDEN_WOOD) return '#e6b422';
+	if(t===T.LIGHT_WOOD) return '#d9c9a3';
+	if(t===T.HARD_WOOD) return '#5e3a1c';
 	if(t===T.AUTUMN_LEAF_RED) return '#8f5a2a';
 	if(t===T.AUTUMN_LEAF_ORANGE) return '#d7832f';
 	if(t===T.LEAF) return '#2faa2f';
@@ -18529,7 +18591,7 @@ MM.ghostBridge={
 		if(!setForegroundConfirmed(tx,ty,T.AIR)) return {ok:false, reason:'write'};
 		applyMaterialBreakPersonality(tId,tx,ty);
 		if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(tx,ty,getTile,{radius:22});
-		if(tId===T.WOOD && getTile(tx,ty-1)===T.WOOD) startTreeFall(tx,ty-1);
+		if(isWood(tId) && isWood(getTile(tx,ty-1))) startTreeFall(tx,ty-1);
 		if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
 		if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:tx+0.5,y:ty+0.5}); }catch(e){}
@@ -18804,7 +18866,7 @@ MM.ghostBridge={
 		if(tId===T.SPRING_PLATFORM && SPRING_PLATFORMS && SPRING_PLATFORMS.onTileChanged) SPRING_PLATFORMS.onTileChanged(tx,ty,tId,T.AIR,getTile);
 		applyMaterialBreakPersonality(tId,tx,ty);
 		if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(tx,ty,getTile,{radius:22});
-		if(tId===T.WOOD && getTile(tx,ty-1)===T.WOOD) startTreeFall(tx,ty-1);
+		if(isWood(tId) && isWood(getTile(tx,ty-1))) startTreeFall(tx,ty-1);
 		if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
 		if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
 		notifyTempleDisturbance(templeKind,tx,ty,tId,T.AIR);

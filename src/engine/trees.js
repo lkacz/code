@@ -1,5 +1,5 @@
 // Tree generation + falling system
-import { CHUNK_W, WORLD_H, T, SNOW_LINE, HERO_BODY_W, HERO_BODY_H, isAutumnLeaf, isLeaf } from '../constants.js';
+import { CHUNK_W, WORLD_H, T, SNOW_LINE, HERO_BODY_W, HERO_BODY_H, isAutumnLeaf, isLeaf, isWood } from '../constants.js';
 import { fallingWindResponseForMaterial, isPassableForFalling } from './material_physics.js';
 import { heroLoadWeight } from './hero_crush.js';
 import { authoritativeBodyBlocksCell, COOP_BODY_ONLY } from './body_footprint.js';
@@ -182,7 +182,7 @@ window.MM = window.MM || {};
     return 4;
   }
   function rawTile(arr,x,y){ return (x>=0 && x<CHUNK_W && y>=0 && y<WORLD_H) ? arr[y*CHUNK_W+x] : T.AIR; }
-  function rawTreeBase(arr,x,y){ return rawTile(arr,x,y)===T.WOOD && rawTile(arr,x,y+1)!==T.WOOD; }
+  function rawTreeBase(arr,x,y){ return isWood(rawTile(arr,x,y)) && !isWood(rawTile(arr,x,y+1)); }
   function canGrowTreeAt(arr,lx,s,variant){
     if(!arr) return false;
     const minTrunk=treeMinTrunkFor(variant);
@@ -253,7 +253,7 @@ window.MM = window.MM || {};
     for(let x=Math.max(0,lx-spacing); x<=Math.min(CHUNK_W-1,lx+spacing); x++){
       for(let y=Math.max(0,s-height-3); y<=Math.min(WORLD_H-2,s+1); y++){
         const t=rawTile(arr,x,y);
-        if(t===T.WOOD || rawTreeBase(arr,x,y) || isLeaf(t)) return false;
+        if(isWood(t) || rawTreeBase(arr,x,y) || isLeaf(t)) return false;
       }
     }
     return true;
@@ -299,9 +299,18 @@ window.MM = window.MM || {};
     if(randSeed(wx*4.71+61)>0.72) put(lx+1,s-2);
   }
 
-  function buildTree(arr,lx,s,variant,wx){
+  function buildTree(arr,lx,s,variant,wx,golden){
     function tileIndex(x,y){ return y*CHUNK_W+x; }
     const id=generatedTreeId(wx,s,variant);
+    // Special-wood variants reuse an existing tree SHAPE but mint a distinct trunk
+    // tile: golden megaOak (10 wood), lightwood mangrove (buoyant boat timber),
+    // hardwood conifer (tough arrow shafts). TRUNK resolves the species; the three
+    // host branches (megaOak/mangrove/conifer) emit TRUNK, every other variant
+    // stays ordinary wood. Trailing/optional param keeps existing callers valid.
+    const TRUNK = golden ? T.GOLDEN_WOOD
+      : variant==='lightwood' ? T.LIGHT_WOOD
+      : variant==='hardwood' ? T.HARD_WOOD
+      : T.WOOD;
     function put(localX,y,t){
       if(y>=0 && y<WORLD_H && localX>=0 && localX<CHUNK_W){
         const idx=tileIndex(localX,y);
@@ -313,28 +322,28 @@ window.MM = window.MM || {};
     }
     const snowy = s < SNOW_LINE;
     const randSeed = WG.randSeed;
-    if(variant==='conifer'){
+    if(variant==='conifer' || variant==='hardwood'){
       const trunkH=5+Math.floor(randSeed(wx+10)*4);
-      for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
+      for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,TRUNK); }
       // Solid interior with a jittered rim only, and just a one-row snow dusting:
       // random interior holes + a two-row white cap used to read as a beheaded
       // crown with floating leaf chunks against a bright winter sky.
       const crownH=trunkH+1; for(let dy=0; dy<crownH; dy++){ const radius=Math.max(0, Math.floor((crownH-dy)/3)); const cy=s-1-trunkH+1 - dy; if(cy<0) break; for(let dx=-radius; dx<=radius; dx++){ if(Math.abs(dx)<radius || randSeed(wx*3.1 + dy*7 + dx*11) < 0.85){ put(lx+dx,cy, (snowy && dy<1)?T.SNOW:T.LEAF); } } }
       if(snowy) put(lx, s-1-trunkH, T.SNOW);
     } else if(variant==='megaOak'){
-      const trunkH=6+Math.floor(randSeed(wx+20)*5); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
+      const trunkH=6+Math.floor(randSeed(wx+20)*5); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,TRUNK); }
       // dist<=spread-1 keeps the canopy core solid; jitter shapes only the rim
       const spread=3+Math.floor(randSeed(wx+40)*2); const top=s-1-trunkH; for(let dy=-spread; dy<=spread; dy++){ for(let dx=-spread; dx<=spread; dx++){ const dist=Math.abs(dx)+Math.abs(dy)*0.7; if(dist<=spread-1 || dist<=spread+ (randSeed(wx+dx*13+dy*17)-0.35)){ put(lx+dx, top+dy, T.LEAF); } } }
     } else if(variant==='tallOak'){
       const trunkH=7+Math.floor(randSeed(wx+60)*4); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
       const top=s-1-trunkH; const spread=2; for(let dy=-2; dy<=2; dy++){ for(let dx=-spread; dx<=spread; dx++){ if(Math.abs(dx)+Math.abs(dy)*0.9<=spread+0.3){ put(lx+dx, top+dy, T.LEAF); } } }
-    } else if(variant==='mangrove'){
+    } else if(variant==='mangrove' || variant==='lightwood'){
       const trunkH=3+Math.floor(randSeed(wx+73)*3);
-      for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
-      put(lx-1,s-1,T.WOOD); put(lx+1,s-1,T.WOOD);
-      put(lx-2,s-1,T.WOOD); put(lx+2,s-1,T.WOOD);
-      if(randSeed(wx+75)>0.38) put(lx-3,s-1,T.WOOD);
-      if(randSeed(wx+76)>0.38) put(lx+3,s-1,T.WOOD);
+      for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,TRUNK); }
+      put(lx-1,s-1,TRUNK); put(lx+1,s-1,TRUNK);
+      put(lx-2,s-1,TRUNK); put(lx+2,s-1,TRUNK);
+      if(randSeed(wx+75)>0.38) put(lx-3,s-1,TRUNK);
+      if(randSeed(wx+76)>0.38) put(lx+3,s-1,TRUNK);
       const top=s-1-trunkH;
       for(let dy=-3; dy<=2; dy++){
         for(let dx=-4; dx<=4; dx++){
@@ -361,7 +370,7 @@ window.MM = window.MM || {};
     }
   }
 
-  function isTreeBase(getTile,x,y){ if(getTile(x,y)!==T.WOOD) return false; if(getTile(x,y-1)!==T.WOOD) return false; const below=getTile(x,y+1); return below!==T.WOOD; }
+  function isTreeBase(getTile,x,y){ if(!isWood(getTile(x,y))) return false; if(!isWood(getTile(x,y-1))) return false; const below=getTile(x,y+1); return !isWood(below); }
 
   function isCrownSnow(x,y){
     const surface = (WG && typeof WG.surfaceHeight==='function') ? WG.surfaceHeight(x) : WORLD_H;
@@ -375,18 +384,22 @@ window.MM = window.MM || {};
   }
 
   function findStem(getTile,x,y){
-    if(getTile(x,y)!==T.WOOD) return null;
+    if(!isWood(getTile(x,y))) return null;
     let top=y, bottom=y;
-    while(top>0 && getTile(x,top-1)===T.WOOD) top--;
-    while(bottom<WORLD_H-1 && getTile(x,bottom+1)===T.WOOD) bottom++;
+    while(top>0 && isWood(getTile(x,top-1))) top--;
+    while(bottom<WORLD_H-1 && isWood(getTile(x,bottom+1))) bottom++;
     const tiles=[];
-    for(let ty=top; ty<=bottom; ty++) tiles.push({x,y:ty,t:T.WOOD});
+    // Carry each trunk cell's REAL id (WOOD or GOLDEN_WOOD) — the walk above
+    // guarantees top..bottom is wood-family, and the inferred-fall path copies
+    // these .t verbatim, so a felled golden trunk keeps its gold render + 10-wood
+    // drop. Hardcoding T.WOOD here would silently downgrade golden logs.
+    for(let ty=top; ty<=bottom; ty++) tiles.push({x,y:ty,t:getTile(x,ty)});
     return {x,top,bottom,height:bottom-top+1,tiles};
   }
 
   function hasWoodRun(getTile,x,yMin,yMax){
     for(let y=Math.max(0,yMin); y<Math.min(WORLD_H-1,yMax); y++){
-      if(getTile(x,y)===T.WOOD && getTile(x,y+1)===T.WOOD) return true;
+      if(isWood(getTile(x,y)) && isWood(getTile(x,y+1))) return true;
     }
     return false;
   }
@@ -411,8 +424,8 @@ window.MM = window.MM || {};
     return true;
   }
 
-  function isTreeMaterial(t,x,y){ return t===T.WOOD || isFoliage(t,x,y); }
-  function isFallenTreeMaterial(t){ return t===T.WOOD || isLeaf(t) || t===T.SNOW; }
+  function isTreeMaterial(t,x,y){ return isWood(t) || isFoliage(t,x,y); }
+  function isFallenTreeMaterial(t){ return isWood(t) || isLeaf(t) || t===T.SNOW; }
   function fallsAsTreeDebris(t){ return isFallenTreeMaterial(t); }
 
   function collectRegisteredTreeTiles(getTile,setTile,id,stem){
@@ -431,7 +444,7 @@ window.MM = window.MM || {};
       if(cy<yMin || cy>yMax) continue;
       const t=getTile(cx,cy);
       if(!isTreeMaterial(t,cx,cy)){ unmarkTreeTile(cx,cy); continue; }
-      if(t===T.WOOD && cy>stem.bottom) continue;
+      if(isWood(t) && cy>stem.bottom) continue;
       vis.add(k);
       out.push({x:cx,y:cy,t});
       stack.push([cx+1,cy],[cx-1,cy],[cx,cy+1],[cx,cy-1],[cx,cy-2]);
@@ -609,10 +622,10 @@ window.MM = window.MM || {};
   function treeWindResponse(t){
     if(isLeaf(t) || t===T.SNOW) return 0.55;
     const base=fallingWindResponseForMaterial(t,false);
-    if(t===T.WOOD) return Math.max(0.10,base*2.0);
+    if(isWood(t)) return Math.max(0.10,base*2.0);
     return Math.max(0.08,Math.min(0.55,base*2.5));
   }
-  function pileRollBudget(t){ return t===T.WOOD ? 4 : 6; }
+  function pileRollBudget(t){ return isWood(t) ? 4 : 6; }
   function makeFallingPiece(x,y,t,dir,hBudget){
     return {
       x:Math.floor(x),
@@ -657,7 +670,7 @@ window.MM = window.MM || {};
   function nearbyWoodRun(getTile,x,y,rx,up,down){
     for(let tx=x-rx; tx<=x+rx; tx++){
       for(let ty=Math.max(0,y-up); ty<=Math.min(WORLD_H-1,y+down); ty++){
-        if(getTile(tx,ty)===T.WOOD && (getTile(tx,ty-1)===T.WOOD || getTile(tx,ty+1)===T.WOOD)) return true;
+        if(isWood(getTile(tx,ty)) && (isWood(getTile(tx,ty-1)) || isWood(getTile(tx,ty+1)))) return true;
       }
     }
     return false;
@@ -678,7 +691,7 @@ window.MM = window.MM || {};
     if(!isTreeMaterial(t,x,y)) return false;
     if(tileTreeIds.has(k)) return true;
     if(isFoliage(t,x,y)) return true;
-    return t===T.WOOD && nearbyWoodRun(getTile,x,y,1,2,2) && nearbyFoliage(getTile,x,y,4,6,2);
+    return isWood(t) && nearbyWoodRun(getTile,x,y,1,2,2) && nearbyFoliage(getTile,x,y,4,6,2);
   }
   function rollDepth(getTile,occ,x,y){
     let depth=0, cy=y;
@@ -790,7 +803,7 @@ window.MM = window.MM || {};
       while(piece.y>0 && !passThrough(getTile(piece.x,piece.y))) piece.y--;
       while(piece.y<WORLD_H-1 && passThrough(getTile(piece.x,piece.y+1))) piece.y++;
       if(standingTreeSupportAt(getTile,piece.x,piece.y+1)){
-        if(piece.t===T.WOOD && crushStandingFoliage(getTile,setTile,piece.x,piece.y+1)) continue;
+        if(isWood(piece.t) && crushStandingFoliage(getTile,setTile,piece.x,piece.y+1)) continue;
         if(trySlideOffStandingTree(getTile,piece,null)) continue;
         return false;
       }
@@ -880,7 +893,7 @@ window.MM = window.MM || {};
       if(y+1>=WORLD_H) continue;
       if(passThrough(getTile(x,y+1))) releaseFallenTreeTile(getTile,setTile,x,y,t);
       else if(standingTreeSupportAt(getTile,x,y+1)) releaseFallenTreeTile(getTile,setTile,x,y,t);
-      else if(t===T.WOOD && pileSupportAt(null,x,y+1)){
+      else if(isWood(t) && pileSupportAt(null,x,y+1)){
         const probe=makeFallingPiece(x,y,t,0);
         const dir=choosePileRollDir(getTile,probe,null);
         if(dir) releaseFallenTreeTile(getTile,setTile,x,y,t,dir);
@@ -947,7 +960,7 @@ window.MM = window.MM || {};
     const seen=new Set();
     let best=null;
     for(const tile of component){
-      if(tile.t!==T.WOOD) continue;
+      if(!isWood(tile.t)) continue;
       const stem=findStem(getTile,tile.x,tile.y);
       if(!stem || stem.height<2) continue;
       const stemKey=stem.x+':'+stem.top+':'+stem.bottom;
@@ -999,9 +1012,9 @@ window.MM = window.MM || {};
     return stem ? collectInferredStandingTiles(getTile,stem) : raw;
   }
   function terrainSupportsTreeComponent(getTile,component,componentKeys){
-    const hasWood=component.some(tile=>tile.t===T.WOOD);
+    const hasWood=component.some(tile=>isWood(tile.t));
     for(const tile of component){
-      if(hasWood && tile.t!==T.WOOD) continue;
+      if(hasWood && !isWood(tile.t)) continue;
       if(tile.y+1>=WORLD_H) return true;
       const bx=tile.x, by=tile.y+1, bk=key(bx,by);
       if(componentKeys.has(bk)) continue;
@@ -1227,7 +1240,7 @@ window.MM = window.MM || {};
         }
         const oldKey=key(b.x,b.y);
         if(standingTreeSupportAt(getTile,b.x,belowY)){
-          if(b.t===T.WOOD && crushStandingFoliage(getTile,setTile,b.x,belowY)){
+          if(isWood(b.t) && crushStandingFoliage(getTile,setTile,b.x,belowY)){
             occ.delete(oldKey);
             b.y++;
             occ.add(key(b.x,b.y));
@@ -1366,8 +1379,22 @@ window.MM = window.MM || {};
       let plantedTree=false;
       if(WG.randSeed(wx*1.777) <= Math.min(0.95, chance * densityMul)){
         const variant = island? 'palm' : (biome===2?'conifer': biome===4?'mangrove': biome===1? (WG.randSeed(wx+300)>0.5?'oak':'tallOak') : (WG.randSeed(wx+500)<0.80?'megaOak':'oak'));
+        // Rare golden tree: an independent seeded HIGH-roll on a fresh salt (distinct
+        // from every other roll for this column) upgrades a mega-oak into a
+        // magnificent golden-trunked variant — ~0.4% of mega-oaks (~1 in a few
+        // hundred trees overall). WG.randSeed keeps host + every guest byte-identical;
+        // a high-roll means a stubbed randSeed()=>0 never selects golden (test-safe).
+        const golden = variant==='megaOak' && WG.randSeed(wx*7.919+131) > 0.996;
         if(canGrowTreeAt(arr,lx,s,variant)){
-          buildTree(arr,lx,s,variant,wx);
+          // Uncommon wood species (~6% of that biome's trees): light wood swaps a
+          // swamp MANGROVE (pale, buoyant boat timber growing by water), hard wood
+          // swaps a snow CONIFER (dense, slow-grown arrow grain). Fresh salts + a
+          // HIGH-roll => a stubbed randSeed()=>0 never swaps (test-safe); canGrowTreeAt
+          // keeps the base mangrove/conifer footprint — only the trunk tile changes.
+          let species = variant;
+          if(variant==='mangrove' && WG.randSeed(wx*6.271+211) > 0.94) species='lightwood';
+          else if(variant==='conifer' && WG.randSeed(wx*8.537+307) > 0.94) species='hardwood';
+          buildTree(arr,lx,s,species,wx,golden);
           plantedTree=true;
         }
       }

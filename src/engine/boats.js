@@ -24,6 +24,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     WATER_DRAG: 0.5,        // 1/s hull drag in water
     GROUND_DRAG: 9,         // 1/s when beached
     WIND_COUPLING: 0.30,    // accel toward wind speed — a raft catches the weather
+    SAIL_MULT: 3.0,         // a raised sail multiplies wind thrust into a fuel-free drive
     ROW_IMPULSE: 2.4,       // tiles/s per energetic oar stroke
     ROW_WEAK_MULT: 0.3,     // stroke strength when the hero is out of energy
     ROW_ENERGY: 1.2,        // hero energy per stroke
@@ -38,6 +39,18 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     MAX_PROPULSION_PROVIDERS: 32,
     MAX_ABS_X: 30000000
   };
+
+  // Per-hull wood quality. A raft remembers the ONE wood it is built from; light
+  // wood is excellent for boats — it floats higher (lower draft), catches the wind
+  // harder, rows faster and has a higher top speed. Plain wood is the 1.0 baseline.
+  // Any material not in this table falls back to WOOD (see boatQ + restore clamp),
+  // which keeps the boat gate/quiver orthogonal to the arrow woods (hard/golden).
+  const BOAT_QUALITY = {
+    [T.WOOD]:       { speed:1.00, wind:1.00, row:1.00, draft:1.00 },
+    [T.LIGHT_WOOD]: { speed:1.25, wind:1.25, row:1.20, draft:0.85 }
+  };
+  function boatQ(b){ return (b && BOAT_QUALITY[b.material]) || BOAT_QUALITY[T.WOOD]; }
+  function boatWoodMaterial(m){ return BOAT_QUALITY[m] ? m : T.WOOD; }
 
   let boats = [];
   let nextId = 1;
@@ -243,8 +256,9 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
   function topCells(b){ return b.cells.filter(c=>!hasCell(b,c.dx,c.dy-1)); }
   function bottomCells(b){ return b.cells.filter(c=>!hasCell(b,c.dx,c.dy+1)); }
 
-  function makeBoat(tx,ty){
+  function makeBoat(tx,ty,material){
     return {id:nextId++, x:tx, y:ty, vx:0, vy:0, cells:[{dx:0,dy:0}],
+      material:boatWoodMaterial(material), sail:false,
       grounded:false, inWater:false, bob:Math.random()*Math.PI*2,
       wakeT:0, rowFxT:0, rowFxDir:1, _bounds:null, _set:null};
   }
@@ -353,9 +367,10 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
       const cx=Math.floor(b.x+(bb.minDx+bb.maxDx)/2+0.5);
       const deckY=Math.floor(b.y+bb.minDy);
       const w=c.wind.speedAt(cx,deckY,c.getTile);
-      // Wider rafts present more freeboard to the wind
+      // Wider rafts present more freeboard to the wind; light-wood hulls catch it
+      // harder (boatQ.wind).
       const sail=0.75+0.25*Math.min(1,bb.w/6);
-      return (w-b.vx)*CFG.WIND_COUPLING*sail;
+      return (w-b.vx)*CFG.WIND_COUPLING*sail*boatQ(b).wind*(b.sail?CFG.SAIL_MULT:1);
     }
   });
 
@@ -452,7 +467,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
       b.grounded=false;
       b.vy=0;
       const surface=surfSum/surfN;
-      const targetY=surface + bb.h*CFG.DRAFT - (bb.maxDy+1);
+      const targetY=surface + bb.h*CFG.DRAFT*boatQ(b).draft - (bb.maxDy+1);
       let dy=(targetY-b.y)*Math.min(1,dt*CFG.FLOAT_SPRING);
       dy=clamp(dy,-CFG.MAX_FLOAT_STEP,CFG.MAX_FLOAT_STEP);
       if(dy<0){
@@ -504,7 +519,8 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     }
     b.vx+=accel*dt;
     b.vx-=b.vx*Math.min(1,(b.grounded?CFG.GROUND_DRAG:(b.inWater?CFG.WATER_DRAG:0.05))*dt);
-    b.vx=clamp(b.vx,-CFG.MAX_SPEED,CFG.MAX_SPEED);
+    const maxV=CFG.MAX_SPEED*boatQ(b).speed;
+    b.vx=clamp(b.vx,-maxV,maxV);
     if(Math.abs(b.vx)<0.004) b.vx=0;
     // Horizontal move against terrain (leading-edge tile check per cell)
     if(b.vx!==0){
@@ -729,7 +745,8 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     if(!b.inWater || b.grounded) return {ok:false, reason:'aground'};
     const energy=opts.heroEnergy || (root.MM && root.MM.heroEnergy);
     const strong=opts.godMode ? true : !!(energy && energy.spend && energy.spend(CFG.ROW_ENERGY));
-    b.vx=clamp(b.vx + dir*CFG.ROW_IMPULSE*(strong?1:CFG.ROW_WEAK_MULT), -CFG.ROW_MAX_SPEED, CFG.ROW_MAX_SPEED);
+    const q=boatQ(b);
+    b.vx=clamp(b.vx + dir*CFG.ROW_IMPULSE*q.row*(strong?1:CFG.ROW_WEAK_MULT), -CFG.ROW_MAX_SPEED*q.speed, CFG.ROW_MAX_SPEED*q.speed);
     b.rowFxT=0.18;
     b.rowFxDir=dir;
     const water=lastCtx && lastCtx.water;
@@ -762,6 +779,9 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     if(mode==='extend'){
       const b=boatAdjacentTo(tx,ty);
       if(!b) return {ok:false};
+      // A hull stays ONE wood so it drops cleanly and carries one quality: you can
+      // only extend a raft with the same wood it is already built from.
+      if(b.material!==boatWoodMaterial(opts && opts.material)) return {ok:false, reason:'Inny rodzaj drewna — nie łączy się z tą tratwą'};
       if(b.cells.length>=CFG.MAX_CELLS) return {ok:false, reason:'Łódź jest już ogromna'};
       const dx=Math.round(tx-b.x), dy=Math.round(ty-b.y);
       if(hasCell(b,dx,dy)) return {ok:false};
@@ -772,7 +792,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     if(boats.length>=CFG.MAX_BOATS) return {ok:false, reason:'Za duzo lodzi w swiecie'};
     const waterHere=buildWaterAt(tx,ty,getTile,opts);
     if(!waterHere) return {ok:false, reason:'Za plytko na lodke'};
-    const b=makeBoat(tx,waterHere.surface + CFG.DRAFT - 1);
+    const b=makeBoat(tx,waterHere.surface + CFG.DRAFT - 1, opts && opts.material);
     b.inWater=true;
     boats.push(b);
     return {ok:true, boat:b, created:true};
@@ -809,7 +829,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     if(!b.cells.length){
       boats=boats.filter(x=>x!==b);
       if(heroBoatId===b.id) heroBoatId=null;
-      return {drop:'wood'};
+      return {drop: b.material===T.LIGHT_WOOD?'lightWood':'wood'};
     }
     // An articulation plank can split a hull into more than two components.
     // Preserve every component while keeping the entity-count guard intact.
@@ -825,7 +845,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
           markDirty(b);
           continue;
         }
-        const nb=makeBoat(b.x,b.y);
+        const nb=makeBoat(b.x,b.y,b.material);
         nb.cells=groups[i].map(c=>({dx:c.dx,dy:c.dy}));
         nb.vx=b.vx;
         nb.vy=b.vy;
@@ -835,7 +855,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
         boats.push(nb);
       }
     }
-    return {drop:'wood'};
+    return {drop: b.material===T.LIGHT_WOOD?'lightWood':'wood'};
   }
 
   // ---------------- Rendering ----------------
@@ -850,7 +870,7 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
         const tx=Math.floor(b.x+c.dx), ty=Math.floor(b.y+c.dy);
         if(visible && !visible(tx,ty)) continue;
         const px=(b.x+c.dx)*TILE, py=(b.y+c.dy+yOff)*TILE;
-        ctx2.fillStyle='#8b5a2b';
+        ctx2.fillStyle=(b.material===T.LIGHT_WOOD)?'#d9c9a3':'#8b5a2b';
         ctx2.fillRect(px,py,TILE,TILE);
         ctx2.fillStyle='rgba(0,0,0,0.22)';
         ctx2.fillRect(px,py+TILE*0.62,TILE,TILE*0.38);   // wet lower hull
@@ -867,6 +887,25 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
           ctx2.fillStyle='rgba(255,225,170,0.30)';       // sun-bleached deck line
           ctx2.fillRect(px,py,TILE,Math.max(1,TILE*0.12));
         }
+      }
+      if(b.sail){
+        // A raised sail: a mast on the top-centre cell and a canvas that billows
+        // toward the raft's heading (fuller the faster it runs).
+        const sb=bounds(b);
+        const cx=(b.x+(sb.minDx+sb.maxDx)/2+0.5)*TILE;
+        const baseY=(b.y+sb.minDy+yOff)*TILE;
+        const mastH=TILE*1.7, topY=baseY-mastH;
+        ctx2.strokeStyle='#6b4a24'; ctx2.lineWidth=Math.max(1.5,TILE*0.09);
+        ctx2.beginPath(); ctx2.moveTo(cx,baseY); ctx2.lineTo(cx,topY); ctx2.stroke();
+        const dir=b.vx<-0.02?-1:1;
+        const bell=TILE*(0.45+Math.min(0.55, Math.abs(b.vx)/(CFG.MAX_SPEED||9.5)*0.7));
+        ctx2.fillStyle='rgba(245,238,220,0.92)';
+        ctx2.beginPath();
+        ctx2.moveTo(cx,topY+TILE*0.12);
+        ctx2.quadraticCurveTo(cx+dir*bell, baseY-mastH*0.5, cx+dir*TILE*0.12, baseY-TILE*0.18);
+        ctx2.lineTo(cx,baseY-TILE*0.18);
+        ctx2.closePath(); ctx2.fill();
+        ctx2.strokeStyle='rgba(120,100,70,0.5)'; ctx2.lineWidth=1; ctx2.stroke();
       }
       if(b.rowFxT>0){
         // oar splash streak on the stroke side
@@ -907,6 +946,10 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
         vx:Number.isFinite(b.vx)?+clamp(b.vx,-CFG.MAX_SPEED,CFG.MAX_SPEED).toFixed(3):0,
         cells
       };
+      // Only non-default hulls carry a material, so plain-wood save records stay
+      // byte-identical to the pre-material format (pin-safe).
+      if(b.material && b.material!==T.WOOD) record.material=b.material;
+      if(b.sail) record.sail=1;
       if(connectedCellGroups(cells.map(c=>({dx:c[0],dy:c[1]}))).length>1) record.disconnected=1;
       saved.push(record);
     }
@@ -931,8 +974,11 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
       const groups=s.disconnected===1 && cells.length ? [cells] : connectedCellGroups(cells);
       for(const group of groups){
         if(boats.length>=CFG.MAX_BOATS) break;
-        const b=makeBoat(s.x,s.y);
+        // makeBoat -> boatWoodMaterial whitelist-clamps s.material: hostile saves
+        // feeding Infinity/NaN/garbage fall back to plain WOOD, never an unknown key.
+        const b=makeBoat(s.x,s.y,s.material);
         b.vx=Number.isFinite(s.vx)?clamp(s.vx,-CFG.MAX_SPEED,CFG.MAX_SPEED):0;
+        b.sail=!!s.sail;
         b.cells=group;
         markDirty(b);
         boats.push(b);
@@ -953,8 +999,20 @@ import { isReplaceableNaturalOpenTile, isSolidCollisionTile } from './material_p
     };
   }
 
+  // Raise/lower the sail on the hero's current raft. A raised sail turns the
+  // ambient weather wind into a strong fuel-free drive (CFG.SAIL_MULT) — no oar
+  // energy needed while the wind blows your way; drop it for precise oar control.
+  function raiseSail(on, opts){
+    const b=(opts && opts.player ? heroOnBoat(opts.player) : null) || heroBoat();
+    if(!b) return {ok:false, reason:'no-boat'};
+    const next=!!on;
+    if(b.sail===next) return {ok:false, reason:'no-change', sail:b.sail};
+    b.sail=next;
+    return {ok:true, sail:b.sail};
+  }
+
   const api={
-    update, draw, collideHero, heroBoat, heroOnBoat, heroTouchingBoat, boardHeroFromWater, row,
+    update, draw, collideHero, heroBoat, heroOnBoat, heroTouchingBoat, boardHeroFromWater, row, raiseSail,
     placementMode, placeWood, removeCellAt, cellAt, boatAdjacentTo,
     registerPropulsion,
     snapshot, restore, reset, metrics,

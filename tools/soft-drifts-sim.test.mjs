@@ -131,7 +131,7 @@ function reset(){
 }
 
 // --- 0. the wire material order is a pinned contract -------------------------
-assert.deepEqual(softDrifts.materials, ['snow', 'leaves', 'soot', 'sand'],
+assert.deepEqual(softDrifts.materials, ['snow', 'leaves', 'soot', 'sand', 'pollen'],
   'the drift-plane wire ids are indices into this pinned material order (append-only)');
 assert.equal(softDrifts.UNITS, 10, 'sub-tile levels per cell');
 assert.ok(INFO[T.LEAF_PILE] && INFO[T.LEAF_PILE].passable && INFO[T.LEAF_PILE].flammable

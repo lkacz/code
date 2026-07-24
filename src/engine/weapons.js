@@ -57,13 +57,20 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   //   diamond — pierces CREATURES (overpenetration, up to 3 targets)
   //   obsidian — ignites when fired at FULL draw (volcanic glass edge)
   //   stone — staggers: the hit target briefly stops (hard chill tap)
-  //   every real arrow can be recovered if it survives impact; break chance
-  //   descends evenly from wood (80%) to iridium (20%)
+  //   every real arrow can be recovered if it survives impact; break chance runs
+  //   from wood (80%, most fragile) down to carbon fibre (10%, most durable).
+  //   Two craft-material tiers sit off the mineral ladder: hard wood is a tough
+  //   shaft (0.40 break — far sturdier than plain wood) and carbon fibre is a
+  //   light, fast (speed 1.40) near-unbreakable shaft crafted from graphene.
   const ARROW_TIERS=[
     {id:'iridium',  key:'arrowIridium',  label:'irydowe',     damage:2.80, speed:1.32, life:1.55, spread:0.004, color:'#b8d7ff', head:'#f0f7ff', breakChance:0.20},
     {id:'diamond',  key:'arrowDiamond',  label:'diamentowe',  damage:2.15, speed:1.18, life:1.35, spread:0.012, color:'#48f1ff', head:'#dffcff', mobPierce:3, breakChance:0.35},
     {id:'obsidian', key:'arrowObsidian', label:'obsydianowe', damage:1.65, speed:1.08, life:1.15, spread:0.020, color:'#7a5cc1', head:'#c7b8ff', igniteOnFull:true, breakChance:0.50},
     {id:'stone',    key:'arrowStone',    label:'kamienne',    damage:1.25, speed:1.00, life:1.00, spread:0.032, color:'#9aa0a8', head:'#e1e5ea', stagger:0.6, breakChance:0.65},
+    // Carbon fibre: light + very fast + almost never breaks (recover-and-reuse).
+    {id:'carbon',   key:'arrowCarbon',   label:'weglowe',     damage:1.15, speed:1.40, life:1.15, spread:0.010, color:'#3a3f47', head:'#8b95a3', breakChance:0.10},
+    // Hard wood: a tough shaft — modest speed but far sturdier than plain wood.
+    {id:'hardwood', key:'arrowHardwood', label:'z twardego drewna', damage:1.10, speed:0.96, life:0.95, spread:0.042, color:'#7a5a34', head:'#caa06a', breakChance:0.40},
     {id:'wood',     key:'arrowWood',     label:'drewniane',   damage:1.00, speed:0.92, life:0.85, spread:0.050, color:'#caa472', head:'#dfe6f1', breakChance:0.80},
     // Utility ammo, deliberately below wood so 'auto' never wastes real arrows on
     // it — pin it from the HUD pips. Splats on impact: poison + chill instead of
@@ -87,6 +94,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     waterBalloon:  {key:'waterBalloon',  label:'Balony wodne',      color:'#7cc4ff', head:'#dff2ff', speed:14.5, lob:-2.0, life:2.4, splat:'wet', ball:true},
     gasGrenade:    {key:'gasGrenade',    label:'Granaty gazowe',    color:'#9dbf5a', head:'#e2f0b8', speed:14.0, lob:-2.4, life:2.6, splat:'gascloud', ball:true},
     stickyBomb:    {key:'stickyBomb',    label:'Lepkie bomby',      color:'#b0703c', head:'#ffd9a8', speed:14.5, lob:-2.4, life:3.0, splat:'bomb', ball:true, sticky:true, fuse:1.5},
+    // Frost flask: a chill cloud, no direct damage — the reliable half of the
+    // wet+chill -> frozen-solid combo. Molotov: a lobbed incendiary that ignites
+    // creatures AND flammable terrain (host-only world write, like the bomb).
+    frostFlask:    {key:'frostFlask',    label:'Lodowe fiolki',     color:'#bfe8ff', head:'#eaffff', speed:14.5, lob:-2.1, life:2.4, splat:'frost', ball:true},
+    molotov:       {key:'molotov',       label:'Koktajle Mołotowa', color:'#ff7a3a', head:'#ffd08a', speed:14.0, lob:-2.2, life:2.5, splat:'fire',  ball:true},
     // Improvised fun weapons have deliberately strong utility identities:
     //   sand — a loose spray of fine grains: zero damage, BLIND + short STUN
     //   spit — one small saliva droplet; its ult becomes toxic green saliva
@@ -701,7 +713,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     return null;
   }
   // HUD contract: everything the weapon bar shows about the bow in one call.
-  // The five REAL arrow tiers always render as pips; utility ammo (toxic
+  // The seven REAL arrow tiers always render as pips; utility ammo (toxic
   // snowballs) only joins the row while the player owns some or pinned it —
   // an empty novelty tier must not widen the bar (pinned in stream-sim).
   function arrowInfo(){
@@ -1968,7 +1980,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   const MELEE_EFFECTS={
     bleed:{chance:0.35, dur:4,   dps:2, note:['melee_bleed','Metalowa krawędź otwiera rany — cel krwawi!']},
     stun: {chance:0.25, dur:1.1, dps:0, note:['melee_stun','Kamienny cios oszałamia cel!']},
-    panic:{chance:0.30, dur:3.0, dps:0, note:['melee_panic','Błysk diamentu sieje panikę — wróg ucieka!']}
+    panic:{chance:0.30, dur:3.0, dps:0, note:['melee_panic','Błysk diamentu sieje panikę — wróg ucieka!']},
+    // Sunder cracks armor (mobs STATUS 'sunder', armor 1.5 → target takes +50%
+    // damage). note id is intentionally NOT in the discovery CATALOG, so the toast
+    // no-ops and the structured-XP arc-balance economy is untouched.
+    sunder:{chance:0.30, dur:3.0, dps:0, note:['melee_sunder','Ciężki obuch pęka pancerz — cel przyjmuje więcej obrażeń!']}
   };
   // Spears own the long three-tile lane even when loaded from an older save that
   // still stores fireRange:2; everything else keeps its configured/classic reach.
@@ -2003,7 +2019,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     venom:  {chance:0.35, dur:4,   dps:2, status:'poison', note:['merge_venom','Jadowa fuzja zatruwa cel!']},
     frost:  {chance:0.35, dur:2.5, dps:0, status:'chill',  note:['merge_frost','Szron fuzji spowalnia cel!']},
     storm:  {chance:0.30, dur:0.9, dps:0, status:'stun',   note:['merge_storm','Burzowa iskra wstrząsa celem!']},
-    fury:   {chance:0.22, note:['merge_fury','Furia fuzji uderza drugi raz!']}
+    fury:   {chance:0.22, note:['merge_fury','Furia fuzji uderza drugi raz!']},
+    ember:  {chance:0.30, dur:2.5, dps:2, status:'burn',   note:['merge_ember','Żar fuzji podpala cel!']}
   };
   function applyMergePerkAt(perk,tx,ty,dmg,opts){
     const spec=MERGE_PERKS[perk];
@@ -2065,6 +2082,16 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       try{ if(MM.mobs && MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,1.1,{dur:1.4,source:'hero',cause:'snowball_chill'}); }catch(e){}
       try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.1,'chill',{dur:1.4,source:'hero',cause:'snowball_chill'}); }catch(e){}
       try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.7,element:'chill_splat'}); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
+      return;
+    }
+    if(a.splat==='frost'){
+      // A frost flask: a wide, lasting chill cloud — the reliable setup half of
+      // the wet+chill -> frozen-solid reaction. Creature-only, so guest-safe (and
+      // the coop guard above already blocks a network-owned frost splat).
+      try{ if(MM.mobs && MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,1.8,{dur:3.2,source:'hero',cause:'frost_flask'}); }catch(e){}
+      try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.8,'chill',{dur:3.2,source:'hero',cause:'frost_flask'}); }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.9,element:'chill_splat'}); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
       return;
     }
@@ -2158,6 +2185,20 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       if(gt && st) explodeAt(a.x,a.y,gt,st,{force:true,radius:1.6});
       return;
     }
+    if(a.splat==='fire'){
+      // Molotov: burns creatures in the splash AND sets flammable terrain alight.
+      // World-writing (tile ignite) — never for a guest projectile.
+      if(a.coopOwner) return;
+      try{ if(MM.mobs && MM.mobs.statusRadius) MM.mobs.statusRadius(a.x,a.y,1.6,'burn',{dur:4,dps:2,source:'hero',cause:'molotov'}); }catch(e){}
+      try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.6,'burn',{dur:4,dps:2,source:'hero',cause:'molotov'}); }catch(e){}
+      try{
+        const gt=(typeof getTile==='function') ? getTile : lastGetTile;
+        if(FIRE && FIRE.ignite && gt){ const bx=Math.floor(a.x), by=Math.floor(a.y); for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) FIRE.ignite(bx+dx,by+dy,gt); }
+      }catch(e){}
+      try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:1.0,element:'fire'}); }catch(e){}
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('gas',{x:a.x,y:a.y}); }catch(e){}
+      return;
+    }
   }
   function thrownSpec(w){ return (w && THROWN_KINDS[w.thrownKind]) || null; }
   // Throwing-rock material ladder (mirrors the arrow-tier idea): every stone
@@ -2168,7 +2209,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     {id:'granite',  key:'throwingStoneGranite',  label:'Granit',   color:'#8d8f97', head:'#c3c6ce', dmg:8,  survive:0.58},
     {id:'basalt',   key:'throwingStoneBasalt',   label:'Bazalt',   color:'#40444d', head:'#6a707c', dmg:10, survive:0.70},
     {id:'obsidian', key:'throwingStoneObsidian', label:'Obsydian', color:'#7a5cc1', head:'#a98df0', dmg:13, survive:0.82},
-    {id:'diamond',  key:'throwingStoneDiamond',  label:'Diament',  color:'#48f1ff', head:'#c9fbff', dmg:17, survive:0.93}
+    {id:'diamond',  key:'throwingStoneDiamond',  label:'Diament',  color:'#48f1ff', head:'#c9fbff', dmg:17, survive:0.93},
+    {id:'meteorite',key:'throwingStoneMeteorite',label:'Meteoryt', color:'#b0763f', head:'#e8c39a', dmg:22, survive:0.96}
   ];
   function bestStoneTier(){
     for(let i=STONE_TIERS.length-1;i>=0;i--){ if(resourceCount(STONE_TIERS[i].key)>0) return STONE_TIERS[i]; }

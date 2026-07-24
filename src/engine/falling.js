@@ -3,7 +3,7 @@
 // per-frame processor releases unstable tiles into moving entities. Sand obeys an
 // angle-of-repose rule (a grain topples when a side and the cell below it are open),
 // so piles relax into natural 45° slopes and avalanches propagate frame by frame.
-import { CHUNK_W, T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, HERO_BODY_W, HERO_BODY_H } from '../constants.js';
+import { CHUNK_W, T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, HERO_BODY_W, HERO_BODY_H, isWood } from '../constants.js';
 import {
   buildMaterialProfile as sharedBuildMaterialProfile,
   fallingWindResponseForMaterial,
@@ -246,10 +246,10 @@ window.MM = window.MM || {};
     return false;
   }
   function likelyTreeWood(x,y){
-    if(getTile(x,y)!==T.WOOD || knownTreeTile(x,y)) return knownTreeTile(x,y);
+    if(!isWood(getTile(x,y)) || knownTreeTile(x,y)) return knownTreeTile(x,y);
     let vertical=1;
-    for(let yy=y-1; yy>=y-4 && getTile(x,yy)===T.WOOD; yy--) vertical++;
-    for(let yy=y+1; yy<=y+4 && getTile(x,yy)===T.WOOD; yy++) vertical++;
+    for(let yy=y-1; yy>=y-4 && isWood(getTile(x,yy)); yy--) vertical++;
+    for(let yy=y+1; yy<=y+4 && isWood(getTile(x,yy)); yy++) vertical++;
     if(vertical<2) return false;
     for(let yy=y-5; yy<=y+2; yy++){
       for(let xx=x-4; xx<=x+4; xx++){
@@ -266,7 +266,7 @@ window.MM = window.MM || {};
     if(!getTile || !legacyBuildMaterial(t) || !isPlayerBuiltMaterial(t)) return false;
     if(!aboveGeneratedSurface(x,y)) return false;
     if(isNaturalSkyCohesionAt(x,y,t)) return false;
-    if(t===T.WOOD && likelyTreeWood(x,y)) return false;
+    if(isWood(t) && likelyTreeWood(x,y)) return false;
     if(knownTreeTile(x,y)) return false;
     const k=key(x,y);
     if(playerBuilt.size>PLAYER_BUILT_SAVE_CAP) playerBuilt.clear();

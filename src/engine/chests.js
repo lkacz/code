@@ -118,7 +118,7 @@ import { rollChestFurnishing } from './furnishings.js';
   const NAME_BASES={cape:'Peleryna', eyes:'Oczy', outfit:'Strój', weapon:'Ostrze', pickaxe:'Kilof', charm:'Talizman', antenna:'Antenka'};
   const WEAPON_NAME_BASES={melee:'Ostrze', bow:'Łuk', flame:'Miotacz', hose:'Sikawka', gas:'Emiter', electric:'Elektromiotacz'};
   const ANTENNA_NAME_BASES={vision:'Antenka radarowa', attack:'Antenka bojowa', guard:'Antenka ochronna',
-    cloak:'Antenka kameleona', surge:'Antenka burzowa', echo:'Antenka echolokacyjna'};
+    cloak:'Antenka kameleona', surge:'Antenka burzowa', echo:'Antenka echolokacyjna', magnet:'Antenka łowcy'};
   const NAME_SUFFIXES=['wiatru','cienia','głębin','świtu','gór','burzy','lasu','żaru','echa','mrozu','otchłani','słońca'];
 
   function randInt(r,min,max){ return Math.floor(r()*(max-min+1))+min; }
@@ -219,7 +219,7 @@ import { rollChestFurnishing } from './furnishings.js';
       // name (antennas.js ACTIVES owns every number, keyed by the item tier).
       // Actives join the pool above common so the Q-power stays a real find.
       const low= tier==='common';
-      const pool= low? ['vision','vision','attack','guard'] : ['vision','attack','guard','cloak','surge','echo'];
+      const pool= low? ['vision','vision','attack','guard'] : ['vision','attack','guard','cloak','surge','echo','magnet'];
       const p=pool.includes(opts.profile)?opts.profile:pick(r,pool);
       if(p==='vision') item.visionRadius=randInt(r, td.antVision[0], td.antVision[1]);
       else if(p==='attack') item.attackDamage=randInt(r, td.antAttack[0], td.antAttack[1]);
@@ -270,6 +270,7 @@ import { rollChestFurnishing } from './furnishings.js';
     if(item.antennaActive==='cloak') item.desc='Moc pod [Q]: kilka sekund niewidzialności — zwykłe stwory tracą cel (kontakt wciąż boli, strażnicy i najeźdźcy mają sensory).';
     else if(item.antennaActive==='surge') item.desc='Moc pod [Q]: krótkie przepięcie napędza nogi — zryw prędkości na kilka sekund.';
     else if(item.antennaActive==='echo') item.desc='Moc pod [Q]: sonar — pobliskie istoty pulsują przez ściany, póki echo trwa.';
+    else if(item.antennaActive==='magnet') item.desc='Moc pod [Q]: zryw łowcy — na kilka sekund przyciąga cały pobliski łup prosto do ręki.';
     return item;
   }
 

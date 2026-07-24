@@ -88,11 +88,11 @@ for(let biome=0; biome<BIOME_NAMES.length; biome++){
 }
 
 assert.ok(count(samples[0],T.GRASS)>=35, 'forest exposes grass surface even when a surface temple lands in the sample');
-assert.ok(countAny(samples[0],[T.WOOD,T.LEAF])>=180, 'forest generates dense tree material');
+assert.ok(countAny(samples[0],[T.WOOD,T.GOLDEN_WOOD,T.LEAF])>=180, 'forest generates dense tree material');
 
 assert.ok(count(samples[1],T.GRASS)>=35, 'plains expose broad grassland');
 assert.ok(count(samples[1],T.DIRT)>=80, 'plains have a diggable dirt subsoil under grass');
-assert.ok(countAny(samples[0],[T.WOOD,T.LEAF]) > countAny(samples[1],[T.WOOD,T.LEAF])*4,
+assert.ok(countAny(samples[0],[T.WOOD,T.GOLDEN_WOOD,T.LEAF]) > countAny(samples[1],[T.WOOD,T.GOLDEN_WOOD,T.LEAF])*4,
   'forests are materially denser with trees than plains');
 
 assert.ok(count(samples[2],T.SNOW)>=55, 'snow biome has durable snow cover');
@@ -104,7 +104,7 @@ assert.equal(countAny(samples[3],[T.WATER,T.ICE]),0, 'desert representative stay
 assert.ok(count(samples[4],T.MUD)>=120, 'swamp generates natural mud banks');
 assert.ok(count(samples[4],T.CLAY)>=8, 'swamp exposes clay sediment lenses');
 assert.ok(count(samples[4],T.WATER)>=25, 'swamp keeps shallow pools');
-assert.ok(countAny(samples[4],[T.WOOD,T.LEAF])>=70, 'swamp generates sparse mangrove material');
+assert.ok(countAny(samples[4],[T.WOOD,T.LIGHT_WOOD,T.LEAF])>=70, 'swamp generates sparse mangrove material (light wood is legitimately mangrove now)');
 
 assert.ok(count(samples[5],T.WATER)>=650, 'sea representative contains open water');
 // Oceans now sit in sealed bedrock basins: a clay/dirt floor over an

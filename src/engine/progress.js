@@ -121,14 +121,30 @@ window.MM = window.MM || {};
     if(changed) save();
     return changed;
   }
+  // Bestiary: the first time a guardian falls (its heart is claimed) it earns a
+  // one-shot journal card via the discovery module (player-local knowledge).
+  const GUARDIAN_DISCOVERY={
+    fire:['slain_guardian_fire','Bestiariusz: ukojony Strażnik Ognia'],
+    ice:['slain_guardian_ice','Bestiariusz: rozmrożony Strażnik Lodu'],
+    earth:['slain_guardian_earth','Bestiariusz: uśpiony Trzeci Kret'],
+    air:['slain_guardian_air','Bestiariusz: ściągnięty Strażnik Nieba'],
+    mother:['slain_guardian_mother','Bestiariusz: cisza w środku świata'],
+  };
+  function noteGuardianSlain(kind){
+    try{
+      const d=GUARDIAN_DISCOVERY[kind];
+      const D=(typeof window!=='undefined') && window.MM && window.MM.discovery;
+      if(d && D && D.note) D.note(d[0], d[1]);
+    }catch(e){}
+  }
   function markGuardianHearts(inv){
     if(!inv || typeof inv!=='object') return false;
     let changed=false;
-    if(!state.guardians.fire && (Number(inv.heartFire)||0)>0){ state.guardians.fire=1; changed=true; }
-    if(!state.guardians.ice && (Number(inv.heartIce)||0)>0){ state.guardians.ice=1; changed=true; }
-    if(!state.guardians.earth && (Number(inv.heartEarth)||0)>0){ state.guardians.earth=1; changed=true; }
-    if(!state.guardians.air && (Number(inv.heartAir)||0)>0){ state.guardians.air=1; changed=true; }
-    if(!state.guardians.mother && (Number(inv.heartMother)||0)>0){ state.guardians.mother=1; changed=true; }
+    if(!state.guardians.fire && (Number(inv.heartFire)||0)>0){ state.guardians.fire=1; changed=true; noteGuardianSlain('fire'); }
+    if(!state.guardians.ice && (Number(inv.heartIce)||0)>0){ state.guardians.ice=1; changed=true; noteGuardianSlain('ice'); }
+    if(!state.guardians.earth && (Number(inv.heartEarth)||0)>0){ state.guardians.earth=1; changed=true; noteGuardianSlain('earth'); }
+    if(!state.guardians.air && (Number(inv.heartAir)||0)>0){ state.guardians.air=1; changed=true; noteGuardianSlain('air'); }
+    if(!state.guardians.mother && (Number(inv.heartMother)||0)>0){ state.guardians.mother=1; changed=true; noteGuardianSlain('mother'); }
     if(changed) save();
     return changed;
   }
@@ -136,6 +152,7 @@ window.MM = window.MM || {};
     if(GUARDIAN_KEYS.indexOf(kind)<0) return false;
     if(state.guardians[kind]) return false;
     state.guardians[kind]=1;
+    noteGuardianSlain(kind);
     save();
     notify();
     return true;
@@ -302,6 +319,9 @@ window.MM = window.MM || {};
     {id:'boss5',     desc:'Łowca tytanów: pokonaj 5 bossów', check:(c)=>c.bossKilled>=5, xp:500, chest:true},
     {id:'berry5',    desc:'Ogrodnik: zbierz 5 razy jagody', check:(c)=>c.berries>=5, xp:150},
     {id:'obsidian10',desc:'Obsydianowy magnat: zdobądź 10 obsydianu', check:(c)=>((c.inv&&c.inv.obsidian)||0)>=10, xp:200},
+    {id:'depth200',  desc:'Otchłaniowiec: zejdź poniżej poziomu 180', check:(c)=>c.player.y>=180, xp:250, chest:true},
+    {id:'gold50',    desc:'Krezus: nazbieraj 50 złota', check:(c)=>((c.inv&&c.inv.gold)||0)>=50, xp:250},
+    {id:'discover30',desc:'Odkrywca: odkryj 30 tajemnic świata', check:()=>{ try{ const D=(typeof window!=='undefined')&&window.MM&&window.MM.discovery; return !!(D && D.count && D.count()>=30); }catch(e){ return false; } }, xp:200},
     {id:'season_spring_trophy', desc:'Tropiciel wiosny: zdobadz poroze wiosny', check:(c)=>hasSeasonalTrophy(c,'springAntler'), xp:180},
     {id:'season_summer_trophy', desc:'Tropiciel lata: zdobadz rog lata', check:(c)=>hasSeasonalTrophy(c,'summerHorn'), xp:180},
     {id:'season_autumn_trophy', desc:'Tropiciel jesieni: zdobadz jesienna twardziel', check:(c)=>hasSeasonalTrophy(c,'autumnHeartwood'), xp:180},

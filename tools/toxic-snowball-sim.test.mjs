@@ -109,8 +109,8 @@ assert.equal(weapons.arrowInfo().activeId, 'toxicSnowball', 'the snowball tier c
 
 // --- material durability: weakest breaks most, strongest breaks least -------
 const durability=Object.fromEntries(weapons._debug.arrowTiers.filter(t=>t.breakChance!=null).map(t=>[t.id,t.breakChance]));
-assert.deepEqual(durability,{iridium:0.20,diamond:0.35,obsidian:0.50,stone:0.65,wood:0.80},
-  'break chance descends evenly from wood (80%) to iridium (20%)');
+assert.deepEqual(durability,{carbon:0.10,iridium:0.20,diamond:0.35,hardwood:0.40,obsidian:0.50,stone:0.65,wood:0.80},
+  'break chance runs from wood (80%, most fragile) to carbon fibre (10%, most durable); hard wood is a sturdy 0.40');
 for(const [tier,chance] of Object.entries(durability)){
   assert.equal(weapons._debug.arrowBreaksOnImpact({tier},chance-0.001),true,tier+' breaks below its threshold');
   assert.equal(weapons._debug.arrowBreaksOnImpact({tier},chance),false,tier+' survives at or above its threshold');

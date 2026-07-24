@@ -26,7 +26,7 @@ const { antennas } = await import('../src/engine/antennas.js');
 assert.ok(antennas, 'antennas module exports');
 
 // --- ACTIVES: the module's own power levels (multiplayer trust anchor) -------
-assert.deepEqual(Object.keys(antennas.ACTIVES), ['cloak', 'surge', 'echo'], 'active roster is pinned — a new active means new host validation');
+assert.deepEqual(Object.keys(antennas.ACTIVES), ['cloak', 'surge', 'echo', 'magnet'], 'active roster is pinned — a new active means new host validation (magnet is client-local: loot pickup is hero-local truth, so no host mirror)');
 assert.deepEqual(antennas.TIER_KEYS, ['common', 'uncommon', 'rare', 'epic', 'legendary'], 'tier ladder pinned');
 for (const [id, spec] of Object.entries(antennas.ACTIVES)) {
   assert.ok(spec.cd > 0 && spec.energy > 0, id + ' carries a cooldown and an energy cost');
@@ -112,7 +112,7 @@ const INV = globalThis.MM.inventory;
 const { chests } = await import('../src/engine/chests.js');
 assert.ok(INV.SLOTS.some(s => s.id === 'antenna' && s.accepts === 'antenna' && !s.required), 'antenna equip slot exists and is optional');
 assert.deepEqual(INV.KIND_STAT_PRIORITY.antenna, ['visionRadius', 'attackDamage', 'damageReductionBonus'], 'antenna job stats pinned');
-assert.deepEqual(Object.keys(INV.ANTENNA_ACTIVE_LABELS), ['cloak', 'surge', 'echo'], 'inventory active whitelist mirrors the module roster');
+assert.deepEqual(Object.keys(INV.ANTENNA_ACTIVE_LABELS), ['cloak', 'surge', 'echo', 'magnet'], 'inventory active whitelist mirrors the module roster');
 const RNG = seed => { let st = seed >>> 0; return () => { st = (st * 1664525 + 1013904223) >>> 0; return (st >>> 8) / 0xFFFFFF; }; };
 const NUM_FIELDS = ['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus','damageReductionBonus'];
 let actives = 0, passives = 0;

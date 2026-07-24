@@ -352,6 +352,7 @@ import { fallingWindResponseForMaterial, isFoliageTile, isVisualOpenFluidTile, i
     if(t===T.BRICK) return tuneMaterialDescriptor(t,{kind:'grit', color:'#b86442', size:0.054, lift:0.026, line:0.20});
     if(t===T.GRASS || isLeafTile(t)) return tuneMaterialDescriptor(t,{kind:'dust', color:t===T.GRASS?'#7fa65a':'#9a7a52', size:0.055+Math.min(0.04,mag*0.007), lift:0.035, line:0.22});
     if(t===T.WOOD) return tuneMaterialDescriptor(t,{kind:'grit', color:Math.random()<0.5?'#a8783d':'#7f552e', size:0.075, lift:0.045, line:0.28});
+    if(t===T.GOLDEN_WOOD) return tuneMaterialDescriptor(t,{kind:'grit', color:Math.random()<0.5?'#e6c24a':'#c79a2e', size:0.075, lift:0.045, line:0.28});
     if(t===T.COAL || t===T.OBSIDIAN) return tuneMaterialDescriptor(t,{kind:'grit', color:'#2b2b31', size:0.062, lift:0.035, line:0.22});
     if(t===T.STONE || t===T.GRANITE || t===T.BASALT || t===T.BEDROCK || t===T.STEEL || t===T.METEORIC_IRON || t===T.IRIDIUM || t===T.GLASS || t===T.WIRE || t===T.COPPER_WIRE || t===T.SILVER_WIRE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT){
       const rockColor=t===T.BASALT || t===T.BEDROCK ? '#5d6573' : (t===T.GRANITE ? '#b3aca8' : '#a4aab2');

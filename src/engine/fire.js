@@ -14,7 +14,7 @@
 // only at tile boundaries (LAVA+WATER→OBSIDIAN here; water never enters a LAVA
 // cell because it is not T.AIR), so the seam is one conversion rule, not a
 // shared engine. Revisit only if lava ever needs waves/pressure of its own.
-import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE as TILE_PX, thawedEarthVariant, isFrozenEarth } from '../constants.js';
+import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, TILE as TILE_PX, thawedEarthVariant, isFrozenEarth, isWood } from '../constants.js';
 import { isLavaExposureOpenTile, isLavaVentOpenTile } from './material_physics.js';
 import { reactions as REACTIONS } from './reactions.js';
 import { getFlamePuffSprites, flamePuffFrame, flamePuffAlpha, flamePuffRadius } from './flame_fx.js';
@@ -136,7 +136,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(burntTile===T.MEAT && cookAt(b.x,b.y,getTile,setTile)) return;
     setTile(b.x,b.y,T.AIR);
     // A burned log behaves like a mined log: the unsupported tree section above detaches.
-    if(burntTile===T.WOOD){
+    if(isWood(burntTile)){
       try{ if(MM.trees && MM.trees.startTreeFall) MM.trees.startTreeFall(getTile,setTile,1,b.x,b.y-1); }catch(e){}
     }
     // Stability + fluids react like after mining
@@ -339,7 +339,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   }
   function burningSmokeRate(t){
     if(t===T.COAL) return 0.52;
-    if(t===T.WOOD || t===T.WOOD_DOOR || t===T.WOOD_TRAPDOOR) return 0.28;
+    if(isWood(t) || t===T.WOOD_DOOR || t===T.WOOD_TRAPDOOR) return 0.28;
     if(t===T.ALIEN_BIOMASS) return 0.36;
     if(t===T.LEAF || t===T.AUTUMN_LEAF_ORANGE || t===T.AUTUMN_LEAF_RED || t===T.GRASS || t===T.GRASS_SNOW || t===T.UNSTABLE_GRASS) return 0.12;
     if(t===T.MEAT || t===T.ROTTEN_MEAT) return 0.20;

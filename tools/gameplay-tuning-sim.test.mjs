@@ -94,9 +94,9 @@ const src = (p) => readFileSync(join(here, '..', p), 'utf8');
   MM.TILE = 20;
   const { weapons } = await import('../src/engine/weapons.js');
   const info = weapons.stoneInfo();
-  assert.equal(info.tiers.length, 5, 'five rock materials knap into throwing stones');
+  assert.equal(info.tiers.length, 6, 'six rock materials knap into throwing stones');
   const ids = info.tiers.map(t => t.id);
-  assert.deepEqual(ids, ['stone', 'granite', 'basalt', 'obsidian', 'diamond'], 'the material ladder order is pinned');
+  assert.deepEqual(ids, ['stone', 'granite', 'basalt', 'obsidian', 'diamond', 'meteorite'], 'the material ladder order is pinned');
   for(let i = 1; i < info.tiers.length; i++){
     assert.ok(info.tiers[i].dmg > info.tiers[i-1].dmg, 'harder rock hits harder (' + info.tiers[i].id + ')');
     assert.ok(info.tiers[i].surviveChance > info.tiers[i-1].surviveChance, 'harder rock survives impacts more often');

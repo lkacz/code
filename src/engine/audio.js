@@ -279,7 +279,7 @@ window.MM = window.MM || {};
       case T.SAND: case T.UNSTABLE_SAND: case T.QUICKSAND: return 'sand';
       case T.MUD: case T.WET_CLAY: return 'mud';
       case T.DIRT: case T.CLAY: case T.FROZEN_DIRT: case T.FROZEN_CLAY: return 'earth';
-      case T.WOOD: case T.WOOD_DOOR: case T.WOOD_TRAPDOOR: case T.CHAIR_WOOD: return 'wood';
+      case T.WOOD: case T.GOLDEN_WOOD: case T.WOOD_DOOR: case T.WOOD_TRAPDOOR: case T.CHAIR_WOOD: return 'wood';
       case T.ICE: case T.MOTHER_ICE: case T.FROZEN_SAND: case T.GLASS:
       case T.DIAMOND: case T.ANTIMATTER_CRYSTAL: return 'ice';
       case T.STEEL: case T.STEEL_DOOR: case T.STEEL_TRAPDOOR: case T.CHAIR_STEEL:

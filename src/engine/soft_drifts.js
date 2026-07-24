@@ -36,7 +36,7 @@ window.MM = window.MM || {};
   const UNITS = 10;               // sub-tile levels per cell (mirrors water UNITS)
   // Wire ids for the ghost 'drift' plane are indices into this order (pinned;
   // new materials append at the END — the ids ride the wire).
-  const MAT_ORDER = ['snow', 'leaves', 'soot', 'sand'];
+  const MAT_ORDER = ['snow', 'leaves', 'soot', 'sand', 'pollen'];
   const MATS = {
     snow: {
       wire: 0,
@@ -81,6 +81,17 @@ window.MM = window.MM || {};
       // zamieć piaskowa: the desert gale — the fine fraction of the sandstorm
       // system, so it also adopts a live (natural or FIRE_SHAMAN) storm's power
       storm: { windMin: 4.2, windFull: 7.2, climate: 0.72, haze: [214,178,96], hazeMax: 0.22, flakeRate: 10, discovery: 'sand_gale' },
+    },
+    pollen: {
+      wire: 4,
+      fullTile: null,             // a golden dusting that never solidifies — it just fades
+      maxUnits: 6,
+      heightScale: 0.5,           // a thin film
+      base: '#e9d97a', top: '#f6ec9e', speck: '#c9b24e', ink: '#8f7a2a',
+      // wiosenna zamieć: a spring/early-summer bloom gale carries pollen off the
+      // flowering ground (leafGrowStrength peaks only in spring & summer)
+      storm: { windMin: 3.4, windFull: 6.2, seasonKey: 'leafGrowStrength', seasonMin: 0.5,
+        haze: [230, 220, 120], hazeMax: 0.18, flakeRate: 7, discovery: 'pollen_gale' },
     },
   };
 

@@ -22,6 +22,10 @@ import { isGasTile, isPlantSpaceTile } from './material_physics.js';
     fern:     { stages:3, growEvery:[8,14],  growCost:0.25, decay:0.014, lifespan:[110,200], soil:[T.GRASS,T.MUD] },
     cactus:   { stages:4, growEvery:[14,24], growCost:0.18, decay:0.003, lifespan:[320,520], soil:[T.SAND], dryTolerant:true },
     alienbloom:{ stages:4, growEvery:[10,18], growCost:0.16, decay:0.006, lifespan:[420,720], soil:[T.ALIEN_BIOMASS,T.METEOR_DUST,T.GRASS,T.MUD], alien:true },
+    // Cold-hardy bloom that brings life to the sparse snow biome (slow, low-thirst).
+    snowdrop:  { stages:3, growEvery:[10,18], growCost:0.20, decay:0.006, lifespan:[220,360], soil:[T.SNOW,T.GRASS_SNOW,T.FROZEN_DIRT] },
+    // Bog flower for swamp ambiance — roots in mud and moist grass.
+    marshflower:{ stages:3, growEvery:[8,14],  growCost:0.26, decay:0.010, lifespan:[180,300], soil:[T.MUD,T.GRASS] },
   };
   const TYPES=Object.keys(SPECIES);
   const MAX_PLANTS=160;
@@ -359,6 +363,28 @@ import { isGasTile, isPlantSpaceTile } from './material_physics.js';
         if(st>=4 && !p.withered){
           ctx.fillStyle='#c2284b';
           ctx.fillRect(baseX-r*0.6,baseY-r,2.4,2.4); ctx.fillRect(baseX+r*0.3,baseY-r*0.7,2.4,2.4); ctx.fillRect(baseX-2,baseY-r*1.5,2.4,2.4);
+        }
+      } else if(p.type==='snowdrop'){
+        const stem=o?o.a:'#4f7a52', bell=o?o.c:'#eef6ff', leaf=o?o.b:'#5f8a62';
+        const h=TILE*(0.3+st*0.28);
+        ctx.strokeStyle=stem; ctx.lineWidth=1.6;
+        ctx.beginPath(); ctx.moveTo(baseX,baseY); ctx.quadraticCurveTo(baseX,baseY-h*0.7,baseX+sw*0.6,baseY-h); ctx.stroke();
+        ctx.fillStyle=leaf; ctx.fillRect(baseX-4,baseY-h*0.35,4,2); ctx.fillRect(baseX+1,baseY-h*0.5,4,2);
+        if(st>=2 && !p.withered){
+          ctx.fillStyle=bell;
+          ctx.beginPath(); ctx.ellipse(baseX+sw*0.6,baseY-h+2,2.4,3.2,0,0,Math.PI*2); ctx.fill();
+          if(st>=3){ ctx.fillStyle='#dfeaf7'; ctx.fillRect(baseX+sw*0.6-1,baseY-h+4,2,2); }
+        }
+      } else if(p.type==='marshflower'){
+        const stem=o?o.a:'#5a7a48', petal=o?o.c:'#a06bd6', heart=o?o.b:'#ffd66a';
+        const h=TILE*(0.28+st*0.3);
+        ctx.strokeStyle=stem; ctx.lineWidth=1.8;
+        ctx.beginPath(); ctx.moveTo(baseX,baseY); ctx.quadraticCurveTo(baseX,baseY-h*0.6,baseX+sw*0.7,baseY-h); ctx.stroke();
+        if(st>=2 && !p.withered){
+          const cx=baseX+sw*0.7, cy=baseY-h, r=st===3?3.2:2.2;
+          ctx.fillStyle=petal;
+          for(let i=0;i<5;i++){ const a=i/5*Math.PI*2; ctx.beginPath(); ctx.arc(cx+Math.cos(a)*r, cy+Math.sin(a)*r, r*0.6,0,Math.PI*2); ctx.fill(); }
+          ctx.fillStyle=heart; ctx.beginPath(); ctx.arc(cx,cy,r*0.5,0,Math.PI*2); ctx.fill();
         }
       } else if(p.type==='reed'){
         const stalk=o?o.a:'#5d9b46', head=o?o.b:'#6e4a22';

@@ -876,7 +876,7 @@ let ainfo=weapons.arrowInfo();
 assert.equal(ainfo.pref, 'auto', 'arrow preference defaults to auto');
 assert.equal(ainfo.activeId, 'iridium', 'auto preference fires the strongest owned tier');
 assert.equal(ainfo.total, 10, 'arrowInfo totals every tier');
-assert.equal(ainfo.tiers.length, 5, 'arrowInfo lists all five tiers for the HUD pips');
+assert.equal(ainfo.tiers.length, 7, 'arrowInfo lists all seven real tiers for the HUD pips');
 fireBowTap(6, 0.5);
 assert.equal(inv.arrowIridium, 1, 'firing consumes the active (strongest) tier');
 for(let i=0;i<30;i++) weapons.update(1/60, getTile, setTile); // clear bow cooldown

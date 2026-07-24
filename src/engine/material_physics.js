@@ -28,6 +28,15 @@ export const BUILD_MATERIAL_PROFILES = Object.freeze({
   [T.STONE_DOOR]: Object.freeze({strength:8.9, support:7.4, weight:0.92, compression:0.43, lateral:1.14, flex:0.86, down:0.25, warn:0.25, fail:0.890, wind:0.030, rubbleRoll:3}),
   [T.STONE_TRAPDOOR]: Object.freeze({strength:8.0, support:6.7, weight:0.86, compression:0.46, lateral:1.18, flex:0.82, down:0.25, warn:0.24, fail:0.875, wind:0.034, rubbleRoll:3}),
   [T.WOOD]: Object.freeze({strength:6.2, weight:0.72, compression:0.26, lateral:0.90, flex:1.12, down:0.17, warn:0.42, fail:0.925, wind:0.060, rubbleRoll:4}),
+  // Golden trunk shares WOOD's exact structural profile so felling/crush/stability
+  // physics are identical; only its color and 10-wood drop differ.
+  [T.GOLDEN_WOOD]: Object.freeze({strength:6.2, weight:0.72, compression:0.26, lateral:0.90, flex:1.12, down:0.17, warn:0.42, fail:0.925, wind:0.060, rubbleRoll:4}),
+  // Light wood: lighter + bendier than plain wood — the low weight is the same
+  // property that makes a light-wood raft float higher (see engine/boats.js).
+  [T.LIGHT_WOOD]: Object.freeze({strength:5.6, weight:0.58, compression:0.26, lateral:0.90, flex:1.22, down:0.15, warn:0.44, fail:0.915, wind:0.070, rubbleRoll:4}),
+  // Hard wood: stronger + stiffer + heavier — dense grain, the same toughness
+  // that makes it a superior arrow shaft.
+  [T.HARD_WOOD]: Object.freeze({strength:7.6, weight:0.86, compression:0.24, lateral:0.94, flex:0.96, down:0.19, warn:0.38, fail:0.940, wind:0.045, rubbleRoll:4}),
   [T.WOOD_DOOR]: Object.freeze({strength:5.2, support:4.6, weight:0.52, compression:0.24, lateral:0.84, flex:1.22, down:0.15, warn:0.46, fail:0.900, wind:0.082, rubbleRoll:4}),
   [T.WOOD_TRAPDOOR]: Object.freeze({strength:4.8, support:4.2, weight:0.48, compression:0.24, lateral:0.80, flex:1.18, down:0.15, warn:0.47, fail:0.890, wind:0.090, rubbleRoll:4}),
   [T.COAL]: Object.freeze({strength:6.8, weight:0.86, compression:0.48, lateral:1.20, flex:0.76, down:0.22, warn:0.20, fail:0.830, wind:0.045, rubbleRoll:3}),
@@ -238,7 +247,7 @@ export function isMeteorWaterSiteTile(t){
 }
 
 export function isMeteorForestSiteTile(t){
-  return t===T.WOOD || isFoliageTile(t);
+  return t===T.WOOD || t===T.GOLDEN_WOOD || t===T.LIGHT_WOOD || t===T.HARD_WOOD || isFoliageTile(t);
 }
 
 export function isMeteorLifeSiteTile(t){
@@ -283,7 +292,7 @@ export function isRockStructuralMaterial(t){
 }
 
 export function isLightStructuralMaterial(t){
-  return t===T.WOOD || t===T.WOOD_DOOR || t===T.WOOD_TRAPDOOR || t===T.ALIEN_BIOMASS;
+  return t===T.WOOD || t===T.GOLDEN_WOOD || t===T.LIGHT_WOOD || t===T.HARD_WOOD || t===T.WOOD_DOOR || t===T.WOOD_TRAPDOOR || t===T.ALIEN_BIOMASS;
 }
 
 export function isWeakFillMaterial(t){
@@ -478,7 +487,7 @@ export function isStableMachineSupportTile(t){
 
 export function isSafeLandingFloorTile(t){
   if(isDoorTile(t)) return false;
-  if(t===T.WOOD || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
+  if(t===T.WOOD || t===T.GOLDEN_WOOD || t===T.LIGHT_WOOD || t===T.HARD_WOOD || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE) return false;
   return isObjectFootingTile(t);
 }
 

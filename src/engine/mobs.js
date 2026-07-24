@@ -1,4 +1,4 @@
-import { T, INFO, MOVE, isLeaf, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
+import { T, INFO, MOVE, isLeaf, isWood, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 import { isBlastProtectedTile, isCreatureRockFloorTile, isSolidCollisionTile as isSolid } from './material_physics.js';
 import WORLD from './world.js';
 import { worldGen as WORLDGEN } from './worldgen.js';
@@ -1884,6 +1884,49 @@ const mobs = (function(){
   onUpdate(m,spec,{player,dt,now,aggressive,speed}){ const dx=player.x-m.x; const adx=Math.abs(dx); if(!aggressive && adx<8){ // flee
     const sp = (speed||spec.speed||2);
     const dir = dx>0?-1:1; m.vx += dir*sp*0.6; m.facing = m.vx>=0?1:-1; } }
+  });
+
+  registerSpecies({ // Heartwood treant: slow forest apex that guards clusters of the special woods
+    id:'HEARTWOOD_TREANT', displayName:'Heartwood treant',
+    max:2, localMax:1, spawnChance:0.5,
+    hp:120, dmg:14, speed:1.2, wanderInterval:[3.0,6.0], xp:80, ground:true,
+    sightRange:14, pursueRange:20, alwaysAggro:false,
+    move:{jumpVel:-2.2, maxClimb:1, avoidWater:true},
+    body:{w:1.6,h:2.4},
+    variant:{shift:1, from:'#5e3a1c', to:'#6f4a24'},
+    loot:[{item:'hardWood', min:2, max:5, chance:0.7},{item:'wood', min:3, max:8, chance:1},{item:'leaf', min:2, max:4, chance:0.6}],
+    // Only rises where a rare golden/hard/light-wood trunk stands nearby — the new
+    // woods now have a guardian worth respecting. Needs headroom for its bulk.
+    spawnTest(x,y,getTile){
+      const here=getTile(x,y), below=getTile(x,y+1);
+      if(here!==T.AIR || !(below===T.GRASS || below===T.GRASS_SNOW || below===T.MUD || isWood(below))) return false;
+      if(getTile(x,y-1)!==T.AIR || getTile(x,y-2)!==T.AIR) return false;
+      for(let dx=-4;dx<=4;dx++) for(let dy=-5;dy<=2;dy++){ const t=getTile(x+dx,y+dy); if(t===T.GOLDEN_WOOD || t===T.HARD_WOOD || t===T.LIGHT_WOOD) return true; }
+      return false;
+    },
+    biome:'any'
+  });
+
+  registerSpecies({ // Bark beetle: tiny skittish critter scuttling on trunks/leaves
+    id:'BARK_BEETLE', max:16, hp:3, dmg:1, speed:2.6, wanderInterval:[1.0,3.0], xp:4, ground:true,
+    sightRange:9, pursueRange:12,
+    move:{jumpVel:-2.6, maxClimb:2, avoidWater:true, preferLeaf:true},
+    body:{w:0.5,h:0.4},
+    loot:[{item:'leaf', min:1, max:1, chance:0.4}],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); return here===T.AIR && (isWood(below) || isLeaf(below)); },
+    biome:'forest',
+    onUpdate(m,spec,{speed}){ if(Math.random()<0.03){ m.vx=(Math.random()<0.5?-1:1)*(speed||spec.speed)*(0.5+Math.random()*0.5); m.facing=m.vx>=0?1:-1; } }
+  });
+
+  registerSpecies({ // Snow hare: fast skittish herbivore of the cold biome; flees the hero
+    id:'SNOW_HARE', max:14, hp:8, dmg:1, speed:3.6, wanderInterval:[1.5,4.0], xp:8, ground:true,
+    sightRange:16, pursueRange:20,
+    move:{jumpVel:-3.8, maxClimb:1, avoidWater:true},
+    body:{w:0.7,h:0.6},
+    loot:[{item:'meat', min:1, max:1, chance:0.55}],
+    spawnTest(x,y,getTile){ const here=getTile(x,y); const below=getTile(x,y+1); if(here!==T.AIR) return false; if(below!==T.SNOW && below!==T.GRASS_SNOW) return false; return getTile(x,y-1)===T.AIR; },
+    biome:'snow',
+    onUpdate(m,spec,{player,aggressive,speed}){ const dx=player.x-m.x; if(!aggressive && Math.abs(dx)<8){ const dir=dx>0?-1:1; m.vx += dir*(speed||spec.speed||3)*0.6; m.facing=m.vx>=0?1:-1; } }
   });
 
   registerSpecies({
@@ -10892,6 +10935,10 @@ const mobs = (function(){
     bleed: { tickEvery:0.5, organicOnly:true,  curedByWater:false },
     stun:  { tickEvery:0.5, organicOnly:false, curedByWater:false, defaultDps:0, immobile:true },
     panic: { tickEvery:0.5, organicOnly:true,  curedByWater:false, defaultDps:0, fleeSpeed:3.4 },
+    // Sunder: a heavy blunt blow cracks the target's defense so it takes MORE
+    // damage (armor>1) for a few seconds. No DoT — pure vulnerability, works on
+    // anything. Read by the damage-taken armor scan in damageMob.
+    sunder:{ tickEvery:0.5, organicOnly:false, curedByWater:false, defaultDps:0, armor:1.5 },
     // A face full of thrown sand: the creature can't see the hero — the per-frame
     // aggro gate in update() treats a blinded mob as non-aggressive. Water rinses it.
     blind: { tickEvery:0.5, organicOnly:true,  curedByWater:true,  defaultDps:0 },
@@ -11232,7 +11279,10 @@ const mobs = (function(){
     const thermalBonus=mobThermalDamageBonus(m,spec,opts);
     let dealt=Math.max(0.5, (Number(amount)||0.5) * (thermalBonus ? thermalBonus.mult : 1));
     // Frozen shell shields the creature — crack it (or melt it with fire) first.
-    if(m.status && m.status.frozen && m.status.frozen.t>0) dealt*=STATUS.frozen.armor||1;
+    // Active status shells scale incoming damage multiplicatively: frozen halves it
+    // (armor 0.5), sunder amplifies it (armor 1.5). ANY STATUS carrying an `armor`
+    // field participates, so vulnerable/brittle effects are pure add-rows. Alloc-free.
+    if(m.status){ for(const sid in m.status){ const s=m.status[sid]; if(s && s.t>0){ const def=STATUS[sid]; if(def && def.armor!=null) dealt*=def.armor; } } }
     const beforeHp=Number(m.hp)||0;
     const remoteWoundOnly=sourceIsRemoteWoundOnly(opts);
     // Fail closed before ANY species hook.  A guest can reduce a creature to a

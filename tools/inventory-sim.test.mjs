@@ -421,10 +421,12 @@ assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 'second press rot
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_toxic', 'third press = toxic snowballs');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sticky', 'fourth press = sticky bombs');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_snowball', 'fifth press = plain snowballs');
-assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_balloon', 'sixth press = water balloons');
-assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_gas', 'seventh press = gas grenades');
-assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_spit', 'eighth press = damaging saliva');
-assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sand', 'ninth press = damage-free sand utility');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_molotov', 'sixth press = molotov cocktails (dmg 2 ties snowball, sorts after it)');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_balloon', 'seventh press = water balloons');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_gas', 'eighth press = gas grenades');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_frost', 'ninth press = frost flasks');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_spit', 'tenth press = damaging saliva');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sand', 'eleventh press = damage-free sand utility');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'bow_wood', 'rotation wraps back to the bow');
 // Session memory: after leaving for melee, the ranged key returns to the LAST
 // USED ranged weapon instead of restarting at the strongest.
@@ -439,7 +441,7 @@ INV.restore(shortcutMemory,{persist:false,silent:true});
 INV.unequip('weapon');
 assert.equal(INV.selectedWeaponForCategory('bow').id, 'throw_stone', 'saved ranged slot content survives reload while tools are active');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 'first press after reload restores without advancing');
-const THROW_IDS=['throw_stone','throw_toxic','throw_sticky','throw_snowball','throw_balloon','throw_gas','throw_sand','throw_spit'];
+const THROW_IDS=['throw_stone','throw_toxic','throw_sticky','throw_snowball','throw_molotov','throw_balloon','throw_gas','throw_frost','throw_sand','throw_spit'];
 INV.setShortcut('bow_wood', false);
 THROW_IDS.forEach(id => INV.setShortcut(id, false));
 INV.unequip('weapon');

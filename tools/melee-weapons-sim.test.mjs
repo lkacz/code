@@ -171,7 +171,7 @@ for(const [effect, forced, expectProc] of [
   coolDown();
 }
 const fx = weapons._debug.meleeEffects;
-assert.deepEqual(Object.keys(fx).sort(), ['bleed','panic','stun'], 'exactly three material identities');
+assert.deepEqual(Object.keys(fx).sort(), ['bleed','panic','stun','sunder'], 'four material identities (metal bleed, stone stun, diamond panic, blunt sunder)');
 assert.ok(fx.bleed.dps>0 && fx.stun.dps===0 && fx.panic.dps===0, 'only bleed carries a DoT');
 
 // --- improvised throws: distinct utility, effects and projectile identity ---

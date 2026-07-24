@@ -39,7 +39,19 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   // Weather instruments (engine/weather_instruments.js): the WEATHERVANE shows
   // the live wind (direction + strength) on a rooftop rod; the LIGHTNING_ROD
   // attracts storm bolts and banks their charge for the electric network.
-  LIGHTNING_ROD:137, WEATHERVANE:138
+  LIGHTNING_ROD:137, WEATHERVANE:138,
+  // Golden tree trunk (engine/trees.js): a rare, magnificent variant of an
+  // ordinary tree. Mechanically identical to WOOD (fells, burns, falls, crushes
+  // — see the isWood predicate below), but each block drops 10 wood. Natural-only
+  // like THIN_ICE — never crafted or placed; the player collects plain 'wood'.
+  GOLDEN_WOOD:139,
+  // Light wood (engine/trees.js): pale, buoyant swamp timber. Fells/burns like
+  // wood (isWood below) but drops its own 'lightWood' resource — excellent for
+  // BOATS (a light-wood raft is faster, floats higher and rows better; see
+  // engine/boats.js). Hard wood: dense, dark, slow-grown snow-conifer timber,
+  // drops 'hardWood' — superior for ARROWS (a much tougher shaft that rarely
+  // breaks on impact; see ARROW_TIERS in engine/weapons.js). Both are placeable.
+  LIGHT_WOOD:140, HARD_WOOD:141
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -262,6 +274,16 @@ INFO[T.THIN_ICE]={hp:3,color:'#cfe8f2',drop:null,passable:false,thinIce:true};
 // charge feeds the same networks that drink from dynamos/solar/SMR.
 INFO[T.LIGHTNING_ROD]={hp:6,color:'#9fb2c4',drop:'lightningRod',passable:true,machine:'lightningRod',powerSource:true,conductor:true,energyCapacity:120};
 INFO[T.WEATHERVANE]={hp:4,color:'#c8a860',drop:'weathervane',passable:true,machine:'weathervane'};
+// Golden tree trunk: clone of WOOD (INFO[5]) so fire/collision/crush/HP behave
+// identically, but a rich gold color and a 10-wood yield. Uses `drops:[…]` (not
+// `drop`) so awardTileDrops grants exactly 10 — setting both would award 11.
+INFO[T.GOLDEN_WOOD]={hp:4,color:'#e6b422',drops:[{item:'wood',min:10,max:10}],passable:false,flammable:true,burnTime:60};
+// Light wood: pale, mines fast (low hp), burns quick — drops its own 'lightWood'.
+// Hard wood: dark, dense, tougher to mine (high hp), slow burn — drops 'hardWood'.
+// Both use drops:[…] with their OWN key (NOT generic 'wood') so they feed their
+// own boat / arrow recipes. isWood() (below) keeps them felling/burning like wood.
+INFO[T.LIGHT_WOOD]={hp:3,color:'#d9c9a3',drops:[{item:'lightWood',min:2,max:3}],passable:false,flammable:true,burnTime:52};
+INFO[T.HARD_WOOD]={hp:6,color:'#5e3a1c',drops:[{item:'hardWood',min:2,max:3}],passable:false,flammable:true,burnTime:80};
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;
@@ -272,6 +294,11 @@ export const BLINK_DUR = 160;
 export const isSolid = t => t !== T.AIR && !INFO[t].passable;
 export const isAutumnLeaf = t => t === T.AUTUMN_LEAF_ORANGE || t === T.AUTUMN_LEAF_RED;
 export const isLeaf = t => t === T.LEAF || isAutumnLeaf(t);
+// Trunk family: ordinary wood and the rare golden variant share every
+// felling/stability/fire/crush behavior. Systems that key off "this tile is a
+// tree trunk" must use isWood, not a bare t===T.WOOD, or golden trunks are
+// invisible to them (won't fell, won't hold the tree up, won't crush).
+export const isWood = t => t === T.WOOD || t === T.GOLDEN_WOOD || t === T.LIGHT_WOOD || t === T.HARD_WOOD;
 // Temperature-system tile families. Frozen earth is the permafrost variant of a
 // diggable soil; both directions of the mapping stay here so worldgen, seasons,
 // fire and reactions never invent their own pairs.
@@ -307,6 +334,7 @@ if (typeof window !== 'undefined') {
     isSolid,
     isAutumnLeaf,
     isLeaf,
+    isWood,
     isFrozenEarth,
     frozenEarthVariant,
     thawedEarthVariant,

@@ -95,9 +95,9 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(typeof item.fireRange==='number')
       chips.push({icon:'↔️', label:'Zasięg', text:String(item.fireRange), good:true});
     if(item.meleeEffect && MELEE_EFFECT_LABELS[item.meleeEffect])
-      chips.push({icon:item.meleeEffect==='bleed'?'🩸':item.meleeEffect==='stun'?'💫':'😱', label:'Efekt', text:MELEE_EFFECT_LABELS[item.meleeEffect]+' (szansa)', good:true});
+      chips.push({icon:item.meleeEffect==='bleed'?'🩸':item.meleeEffect==='stun'?'💫':item.meleeEffect==='sunder'?'🔨':'😱', label:'Efekt', text:MELEE_EFFECT_LABELS[item.meleeEffect]+' (szansa)', good:true});
     if(item.antennaActive && ANTENNA_ACTIVE_LABELS[item.antennaActive])
-      chips.push({icon:item.antennaActive==='cloak'?'🫥':item.antennaActive==='surge'?'⚡':'📡', label:'Moc aktywna', text:ANTENNA_ACTIVE_LABELS[item.antennaActive]+' (Q)', good:true});
+      chips.push({icon:item.antennaActive==='cloak'?'🫥':item.antennaActive==='surge'?'⚡':item.antennaActive==='magnet'?'🧲':'📡', label:'Moc aktywna', text:ANTENNA_ACTIVE_LABELS[item.antennaActive]+' (Q)', good:true});
     if(item.pickPerk && PICK_PERK_LABELS[item.pickPerk])
       chips.push({icon:item.pickPerk==='lucky'?'🍀':item.pickPerk==='double'?'✌️':'⛓️', label:'Perk kilofa', text:PICK_PERK_LABELS[item.pickPerk]+' (szansa)', good:true});
     if(item.mergePerk && MERGE_PERK_LABELS[item.mergePerk])
@@ -248,6 +248,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {id:'throw_balloon',  kind:'weapon', weaponType:'thrown', thrownKind:'waterBalloon',  name:'Rzut: Balony wodne',       attackDamage:1, fireCooldown:0.45, desc:'Rozprysk moczy wrogów (paliwo komb: prąd, mróz), gasi ogień i podlewa uprawy'},
     {id:'throw_gas',      kind:'weapon', weaponType:'thrown', thrownKind:'gasGrenade',    name:'Rzut: Granaty gazowe',     attackDamage:1, fireCooldown:0.65, desc:'Uwalnia trujący obłok tam, gdzie upadnie — ogień go detonuje'},
     {id:'throw_sticky',   kind:'weapon', weaponType:'thrown', thrownKind:'stickyBomb',    name:'Rzut: Lepkie bomby',       attackDamage:3, fireCooldown:0.75, desc:'Przykleja się do ściany i po chwili wybucha — otwiera skały i gniazda'},
+    {id:'throw_frost',    kind:'weapon', weaponType:'thrown', thrownKind:'frostFlask',    name:'Rzut: Lodowe fiolki',      attackDamage:1, fireCooldown:0.50, desc:'Rozprysk mrozu chłodzi cele; na mokrym wrogu zamraża go w bryłę lodu; PPM = salwa'},
+    {id:'throw_molotov',  kind:'weapon', weaponType:'thrown', thrownKind:'molotov',       name:'Rzut: Koktajle Mołotowa',  attackDamage:2, fireCooldown:0.70, desc:'Rozbija się w ognisty rozprysk: podpala trafione cele i łatwopalny teren'},
     {id:'throw_sand',     kind:'weapon', weaponType:'thrown', thrownKind:'sand',          name:'Rzut: Piasek w oczy',      attackDamage:0, fireCooldown:0.40, desc:'Drobny piasek nie zadaje obrażeń, ale na kilka sekund oślepia i oszołamia trafione cele'},
     {id:'throw_spit',     kind:'weapon', weaponType:'thrown', thrownKind:'spit',          name:'Plucie',                    attackDamage:1, fireCooldown:0.50, desc:'Mała kropla śliny moczy cel; ULT wypluwa serię toksycznej zielonej śliny'},
     {id:'flamethrower', kind:'weapon', weaponType:'flame', name:'Miotacz ognia',   fireDps:6, fireRange:6.5, desc:'Strumień ognia (przytrzymaj LPM): podpala wrogów, trawę i drzewa; PPM = ult'},
@@ -285,6 +287,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'bedrock', label:'Skała macierzysta', color:'#454d5c', tile:null},
     {key:'meteorDust', label:'Pyl meteorytowy', color:'#c8a6ff', tile:'METEOR_DUST'},
     {key:'wood',    label:'Drewno',  color:'#8b5a2b', tile:'WOOD'},
+    {key:'lightWood', label:'Lekkie drewno', color:'#d9c9a3', tile:'LIGHT_WOOD'},
+    {key:'hardWood', label:'Twarde drewno', color:'#5e3a1c', tile:'HARD_WOOD'},
     {key:'ladder',  label:'Drabinka', color:'#b98243', tile:'LADDER'},
     {key:'bedrockLadder', label:'Drabinka macierzysta', color:'#6f7890', tile:'BEDROCK_LADDER'},
     {key:'woodDoor', label:'Drzwi drewniane', color:'#9b6730', tile:'WOOD_DOOR'},
@@ -298,6 +302,9 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'arrowObsidian', label:'Strzaly obsydianowe', color:'#7a5cc1', tile:null},
     {key:'arrowDiamond', label:'Strzaly diamentowe', color:'#48f1ff', tile:null},
     {key:'arrowIridium', label:'Strzaly irydowe', color:'#b8d7ff', tile:null},
+    {key:'throwingStoneMeteorite', label:'Kamienie meteorytowe', color:'#b0763f', tile:null},
+    {key:'arrowHardwood', label:'Strzaly z twardego drewna', color:'#7a5a34', tile:null},
+    {key:'arrowCarbon', label:'Strzaly weglowe', color:'#3a3f47', tile:null},
     {key:'harpoonBolt', label:'Harpuny', color:'#72c7d8', tile:null},
     {key:'leaf',    label:'Liść',    color:'#2faa2f', tile:'LEAF'},
     {key:'snow',    label:'Śnieg',   color:'#e6f1ff', tile:'SNOW'},
@@ -313,6 +320,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'waterBalloon', label:'Balony wodne', color:'#7cc4ff', tile:null},
     {key:'gasGrenade', label:'Granaty gazowe', color:'#9dbf5a', tile:null},
     {key:'stickyBomb', label:'Lepkie bomby', color:'#b0703c', tile:null},
+    {key:'frostFlask', label:'Lodowe fiolki', color:'#bfe8ff', tile:null},
+    {key:'molotov', label:'Koktajle Mołotowa', color:'#ff7a3a', tile:null},
     {key:'water',   label:'Woda',    color:'#2477ff', tile:'WATER'},
     {key:'obsidian',label:'Obsydian',color:'#7a5cc1', tile:'OBSIDIAN'},
     {key:'glass',   label:'Szklo',   color:'#9deeff', tile:'GLASS'},
@@ -497,16 +506,16 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode','antennaActive','pickPerk','mergePerk'];
   // Material identity of a crafted hand weapon (weapons.js MELEE_EFFECTS holds
   // the numbers) — anything else smuggled into meleeEffect is dropped on ingest.
-  const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika'};
+  const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika', sunder:'Rozłupanie pancerza'};
   // Active-power identity of an antenna (antennas.js ACTIVES holds the numbers —
   // durations/cooldowns/ranges never ride the item, exactly like meleeEffect).
-  const ANTENNA_ACTIVE_LABELS={cloak:'Kamuflaż', surge:'Przepięcie', echo:'Echolokacja'};
+  const ANTENNA_ACTIVE_LABELS={cloak:'Kamuflaż', surge:'Przepięcie', echo:'Echolokacja', magnet:'Zryw łowcy'};
   // Pickaxe perk identity (main.js PICK_PERKS holds the numbers): lucky = every
   // so often a strike finishes the block at once, double = extra yield chance,
   // vein = a matching neighbour sometimes shatters along.
   const PICK_PERK_LABELS={lucky:'Szczęśliwy przebój', double:'Podwójny urobek', vein:'Pękająca żyła'};
   // Merge-forged weapon perk identity (weapons.js MERGE_PERKS holds the numbers).
-  const MERGE_PERK_LABELS={vampire:'Wampiryzm', venom:'Jad', frost:'Szron', storm:'Burza', fury:'Furia'};
+  const MERGE_PERK_LABELS={vampire:'Wampiryzm', venom:'Jad', frost:'Szron', storm:'Burza', fury:'Furia', ember:'Żar'};
   const AQUATIC_STYLES={trident:'melee',crossbow:'bow',harpoon:'harpoon'};
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','pickaxe','charm','antenna']);
   function sanitizeLootItem(raw,fallbackKind){

@@ -19,6 +19,8 @@ const crafting = (function(){
     silver: 'przetapiaj rudę srebra ogniem albo szukaj sztabek w skrzyniach',
     silverWire: 'craft: sztabki srebra + plastik (Maszyny)',
     wood: 'ścinaj drzewa',
+    hardWood: 'ścinaj rzadkie twarde drzewa w zaśnieżonych borach',
+    lightWood: 'ścinaj rzadkie lekkie drzewa na bagnach (świetne na łodzie)',
     leaf: 'korony drzew',
     grass: 'kop trawiaste bloki',
     dirt: 'kop ziemię tuż pod trawą',

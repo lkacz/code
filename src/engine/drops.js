@@ -70,7 +70,9 @@ const drops = (function(){
     arrowStone:{color:'#9aa0a8',head:'#e1e5ea'},
     arrowObsidian:{color:'#7a5cc1',head:'#c7b8ff'},
     arrowDiamond:{color:'#48f1ff',head:'#dffcff'},
-    arrowIridium:{color:'#b8d7ff',head:'#f0f7ff'}
+    arrowIridium:{color:'#b8d7ff',head:'#f0f7ff'},
+    arrowHardwood:{color:'#7a5a34',head:'#caa06a'},
+    arrowCarbon:{color:'#3a3f47',head:'#8b95a3'}
   };
 
   // --- Thematic gear loot: EVERY species sheds what it plausibly carries -----
@@ -97,6 +99,9 @@ const drops = (function(){
     // Meadow & forest wildlife: hides, charms of their signature trait
     SQUIRREL:  {chance:0.04, tiers:T_TRASH, options:[{kind:'charm',name:'Wiewiórczy ogon',desc:'Podobno daje zwinność. Wiewiórce nie dał.'}]},
     RABBIT:    {chance:0.05, tiers:T_TRASH, options:[{kind:'charm',name:'Królicza łapka',desc:'Na szczęście. Królika akurat opuściło.'}]},
+    BARK_BEETLE:{chance:0.04, tiers:T_TRASH, options:[{kind:'charm',name:'Pancerzyk kornika',desc:'Twardy jak kora, którą przeżuł.'}]},
+    SNOW_HARE: {chance:0.05, tiers:T_TRASH, options:[{kind:'charm',name:'Łapka śnieżnego zająca',desc:'Na szczęście w mrozie. Zającowi nie wyszło.'}]},
+    HEARTWOOD_TREANT:{chance:0.35, tiers:T_ELITE, options:[{kind:'weapon',weaponType:'melee',name:'Konar serca puszczy',desc:'Ciężki jak wiekowe drzewo, twardy jak jego rdzeń.'},{kind:'charm',name:'Rdzeń heartwoodu',desc:'Bije wolno, jak drzewo liczące swoje lata.'}]},
     DEER:      {chance:0.05, tiers:T_COMMON, options:[{kind:'outfit',name:'Strój z jeleniej skóry',desc:'Jeleń by się obraził, gdyby mógł.'}]},
     GOAT:      {chance:0.06, tiers:T_COMMON, options:[{kind:'charm',name:'Górski róg',desc:'Twardy jak upór kozicy na krawędzi.'}]},
     ZABA:      {chance:0.06, tiers:T_TRASH, options:[{kind:'charm',name:'Żabia łapka',desc:'Skacz jak żaba. Tylko wyżej i bez rechotu.'}]},
@@ -229,7 +234,10 @@ const drops = (function(){
   function setAutoPickup(on){ return setDebugAutoPickup(on); }
   function lootMagnetLevel(){
     const raw=MM.activeModifiers && MM.activeModifiers.lootMagnetLevel;
-    return typeof raw==='number' && isFinite(raw) ? Math.max(0,Math.min(4,Math.trunc(raw))) : 0;
+    let lvl=typeof raw==='number' && isFinite(raw) ? Math.max(0,Math.min(4,Math.trunc(raw))) : 0;
+    // The scavenger-surge antenna active adds a temporary magnet ring (client-local).
+    try{ if(MM.antennas && MM.antennas.magnetBoost) lvl+=MM.antennas.magnetBoost()|0; }catch(e){}
+    return Math.max(0,Math.min(4,lvl));
   }
   function inAutoPickupReach(d,player,level){
     if(!d || !player) return false;

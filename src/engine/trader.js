@@ -44,7 +44,9 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     {id:'obsidian', label:'Obsydian ×2',               icon:'🟣', cost:{iridium:1}, give:{obsidian:2}},
     {id:'heal',     label:'Eliksir życia (+40 HP)',    icon:'🧪', cost:{diamond:1}, effect:'heal'},
     {id:'speed',    label:'Mikstura szybkości (60 s, maks. ×3)', icon:'💨', cost:{diamond:1}, effect:'speed'},
-    {id:'strength', label:'Mikstura siły (60 s, maks. ×3)',      icon:'💪', cost:{iridium:1}, effect:'strength'}
+    {id:'strength', label:'Mikstura siły (60 s, maks. ×3)',      icon:'💪', cost:{iridium:1}, effect:'strength'},
+    {id:'arrowsHard',label:'Strzały z twardego drewna ×15',       icon:'🏹', cost:{iridium:1}, give:{arrowHardwood:15}},
+    {id:'lightWood', label:'Lekkie drewno ×8',                   icon:'🛶', cost:{diamond:1}, give:{lightWood:8}}
   ];
   const EPIC_CHEST = {id:'chest', label:'Skrzynia handlarza (epicka)', icon:'🎁', cost:{iridium:2}, effect:'epicChest'};
   // Buy-back rates (trader pays diamonds). Per-unit value must stay below the
@@ -57,7 +59,10 @@ import { furnishingTraderOffer, furnishingTraderOffersForDistance, getByKey as g
     {id:'obsidian', label:'Obsydian ×4',        icon:'🟣', take:{obsidian:4}, pay:1},
     {id:'bakedMeat',label:'Pieczone mięso ×6',  icon:'🍖', take:{bakedMeat:6},pay:1},
     {id:'glass',    label:'Szkło ×10',          icon:'🧊', take:{glass:10},   pay:1},
-    {id:'fish',     label:'Ryby ×8',            icon:'🐟', take:{fish:8},     pay:1}
+    {id:'fish',     label:'Ryby ×8',            icon:'🐟', take:{fish:8},     pay:1},
+    {id:'graphite', label:'Grafit ×6',          icon:'⬛', take:{graphite:6}, pay:1},
+    {id:'silverWire',label:'Srebrny drut ×5',   icon:'🔗', take:{silverWire:5},pay:1},
+    {id:'hardWood', label:'Twarde drewno ×12',  icon:'🪵', take:{hardWood:12},pay:1}
   ];
 
   const GREETINGS = [

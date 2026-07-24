@@ -147,6 +147,7 @@ function breathColor(side){
 export const SPECIES_LOOK={
   // --- prey & critters: never express weapons, only size and coat -------------
   SQUIRREL:{family:'beast'}, RABBIT:{family:'beast'}, ZABA:{family:'amorph'},
+  BARK_BEETLE:{family:'beast'}, SNOW_HARE:{family:'beast'}, HEARTWOOD_TREANT:{family:'beast'},
   FIREFLY:{family:'wisp'},
   JASZCZUR:{family:'beast', pred:true, eye:[5,-7], withers:[2,-6], jaw:[8,-4]},
   FISH:{family:'aquatic'},

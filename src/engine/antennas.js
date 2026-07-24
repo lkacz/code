@@ -40,7 +40,12 @@ window.MM = window.MM || {};
       dur:{common:4,   uncommon:5,   rare:6,   epic:7,    legendary:8},
       // A ping shorter than ~20 tiles read as noise, not information (owner
       // ruling): even the common aerial reaches a usable scouting radius now.
-      range:{common:20, uncommon:24, rare:27,  epic:31,   legendary:36} }
+      range:{common:20, uncommon:24, rare:27,  epic:31,   legendary:36} },
+    // Scavenger surge: a few seconds of a strong loot-magnet ring. Purely
+    // CLIENT-LOCAL (drop pickup is hero-local truth), so it needs NO host mirror
+    // like cloak does. The module owns the boost; drops.js reads magnetBoost().
+    magnet:{ label:'Zryw łowcy',  icon:'🧲', cd:22, energy:9,
+      dur:{common:3, uncommon:3.5, rare:4, epic:4.5, legendary:5} }
   };
   const UNIQUE_CD_MULT = 0.75; // a unique find cools down faster (its only boost)
 
@@ -160,6 +165,9 @@ window.MM = window.MM || {};
   function moveMult(){
     return activeNow() === 'surge' ? ACTIVES.surge.moveMult : 1;
   }
+  // Extra loot-magnet ring level while the scavenger surge runs (drops.js adds it
+  // to the passive gear level). Client-local, so no host truth is involved.
+  function magnetBoost(){ return activeNow() === 'magnet' ? 4 : 0; }
 
   // --- rod physics (verlet chain, stiff at the base, whippy at the tip) ------
   const SEGS = 8;
@@ -440,6 +448,7 @@ window.MM = window.MM || {};
   api.cloaked = cloaked;
   api.heroAlpha = heroAlpha;
   api.moveMult = moveMult;
+  api.magnetBoost = magnetBoost;
   api.active = () => !!equipped();
   api.activeNow = activeNow;
   api._points = points;

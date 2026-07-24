@@ -314,4 +314,66 @@ for(let i=0;i<boats.config.MAX_PROPULSION_PROVIDERS;i++) boats.registerPropulsio
 assert.equal(boats.metrics().propulsion.length,boats.config.MAX_PROPULSION_PROVIDERS,'propulsion registry has a hard provider cap');
 assert.equal(boats.registerPropulsion({id:'one-too-many',thrust:()=>0}),false,'propulsion provider flood is refused at the cap');
 
+// --- Light wood is excellent for boats ---------------------------------------
+// A raft remembers its wood, refunds it, rejects mixed hulls, floats higher, and
+// the material survives (and is clamped on) persistence.
+boats.reset();
+const lightPlaced=boats.placeWood(5,13,getTile,{material:T.LIGHT_WOOD});
+assert.equal(lightPlaced.ok, true, 'light wood builds a raft');
+const lb=boats._debug.boats()[0];
+assert.equal(lb.material, T.LIGHT_WOOD, 'the raft remembers it is built from light wood');
+assert.equal(boats.placeWood(6,Math.round(lb.y),getTile,{material:T.WOOD}).ok, false, 'a light-wood raft rejects a plain-wood plank (hull stays one wood)');
+assert.equal(boats.placeWood(6,Math.round(lb.y),getTile,{material:T.LIGHT_WOOD}).ok, true, 'same-wood extension is allowed');
+
+// Light hull rides higher (lower draft) than a plain hull in the same water.
+boats.reset();
+boats.placeWood(5,13,getTile,{material:T.LIGHT_WOOD});
+boats.placeWood(30,13,getTile);
+const [lightBoat, plainBoat]=boats._debug.boats();
+step(180, calm);
+assert.ok(lightBoat.y < plainBoat.y - 1e-3, 'a light-wood raft floats higher than a plain-wood raft');
+
+// Breaking a plank refunds the hull's own wood.
+boats.reset();
+boats.placeWood(5,13,getTile,{material:T.LIGHT_WOOD});
+const ldrop=boats._debug.boats()[0];
+assert.equal(boats.removeCellAt(ldrop.x+0.5, ldrop.y+0.5).drop, 'lightWood', 'breaking a light-wood plank refunds lightWood');
+boats.reset();
+boats.placeWood(5,13,getTile);
+const pdrop=boats._debug.boats()[0];
+assert.equal(boats.removeCellAt(pdrop.x+0.5, pdrop.y+0.5).drop, 'wood', 'a plain raft still refunds plain wood');
+
+// Material survives snapshot/restore, and hostile/unknown materials clamp to wood.
+boats.reset();
+boats.placeWood(5,13,getTile,{material:T.LIGHT_WOOD});
+const lsnap=boats.snapshot();
+boats.reset();
+boats.restore(lsnap);
+assert.equal(boats._debug.boats()[0].material, T.LIGHT_WOOD, 'light-wood material survives snapshot/restore');
+boats.restore({v:1,boats:[{x:12,y:9.55,vx:0,cells:[[0,0]]},{x:20,y:9.55,vx:0,cells:[[0,0]],material:999999}]});
+const restoredMats=boats._debug.boats();
+assert.equal(restoredMats[0].material, T.WOOD, 'a record with no material defaults to plain wood');
+assert.equal(restoredMats[1].material, T.WOOD, 'an unknown saved material is clamped to plain wood');
+
+// --- Sail: a raised sail turns the weather wind into a stronger fuel-free drive
+boats.reset();
+boats.placeWood(5,13,getTile);
+const bareWindBoat=boats._debug.boats()[0];
+step(150, breeze);
+const bareWindReach=Math.abs(bareWindBoat.vx);
+boats.reset();
+boats.placeWood(5,13,getTile);
+const sailBoat=boats._debug.boats()[0];
+sailBoat.sail=true;
+step(150, breeze);
+assert.ok(Math.abs(sailBoat.vx) > bareWindReach + 0.4, 'a raised sail drives the raft faster downwind than bare wind (' + Math.abs(sailBoat.vx).toFixed(2) + ' vs ' + bareWindReach.toFixed(2) + ')');
+// The sail flag survives snapshot/restore (and defaults off elsewhere).
+const sailSnap=boats.snapshot();
+boats.reset();
+boats.restore(sailSnap);
+assert.equal(boats._debug.boats()[0].sail, true, 'a raised sail persists through snapshot/restore');
+boats.reset();
+boats.placeWood(5,13,getTile);
+assert.ok(!boats._debug.boats()[0].sail, 'a fresh raft starts with its sail down');
+
 console.log('boats-sim: all assertions passed');

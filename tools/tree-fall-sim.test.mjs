@@ -188,6 +188,97 @@ worldGen.randSeed = ()=>0;
   assert.equal(trees._fallenTreeTiles.has('4,5'), true, 'save-settled rotating tree upper block is tracked as debris');
 }
 
+// Golden tree: identical geometry to the wood test above, but the felled trunk
+// must KEEP its GOLDEN_WOOD identity end-to-end (fell -> rotate -> settle), or it
+// silently downgrades to ordinary wood and loses both its gold render and its 10x
+// drop. This locks the findStem identity fix + every isWood() felling broadening.
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){} };
+  MM.water={};
+
+  setTile(3,6,T.STONE);
+  setTile(4,6,T.STONE);
+  setTile(3,3,T.GOLDEN_WOOD);
+  setTile(3,2,T.GOLDEN_WOOD);
+
+  assert.equal(trees.isTreeBase(getTile,3,3), true, 'golden trunk base is recognized as a tree base');
+  assert.equal(trees.startTreeFall(getTile,setTile,1,3,3), true, 'golden tree fells exactly like ordinary wood');
+  trees.settleAll(getTile,setTile);
+  assert.equal(getTile(3,5), T.GOLDEN_WOOD, 'felled golden trunk keeps its golden identity on settle (not downgraded to wood)');
+  assert.equal(getTile(4,5), T.GOLDEN_WOOD, 'rotated golden trunk block also stays golden');
+  assert.equal(trees._fallenTreeTiles.has('3,5'), true, 'settled golden block is tracked as tree debris');
+}
+
+// buildTree golden flag mints an all-golden trunk with a plain (non-golden) leaf
+// canopy; the non-golden megaOak stays ordinary wood.
+{
+  const arr=new Uint8Array(CHUNK_W*WORLD_H);
+  trees.buildTree(arr,5,30,'megaOak',5,true);
+  assert.equal(arr[29*CHUNK_W+5], T.GOLDEN_WOOD, 'golden buildTree emits a GOLDEN_WOOD trunk base');
+  let hasGolden=false, hasWood=false, hasLeaf=false;
+  for(let i=0;i<arr.length;i++){ const t=arr[i]; if(t===T.GOLDEN_WOOD) hasGolden=true; else if(t===T.WOOD) hasWood=true; else if(t===T.LEAF) hasLeaf=true; }
+  assert.equal(hasGolden, true, 'golden tree contains golden trunk blocks');
+  assert.equal(hasWood, false, 'golden tree trunk is ALL golden — no ordinary wood mixed in');
+  assert.equal(hasLeaf, true, 'golden tree keeps a plain leaf canopy (no seasonal autumn leaves)');
+
+  const arr2=new Uint8Array(CHUNK_W*WORLD_H);
+  trees.buildTree(arr2,5,30,'megaOak',5,false);
+  assert.equal(arr2[29*CHUNK_W+5], T.WOOD, 'a non-golden megaOak trunk stays ordinary wood');
+}
+
+// The 10x yield + natural-only wiring lives entirely in the INFO shape.
+{
+  assert.deepEqual(INFO[T.GOLDEN_WOOD].drops, [{item:'wood',min:10,max:10}], 'each golden wood block drops 10 wood');
+  assert.equal(INFO[T.GOLDEN_WOOD].drop, undefined, 'golden wood uses drops[] only — a `drop` field too would award 11');
+  assert.equal(INFO[T.GOLDEN_WOOD].flammable, true, 'golden wood burns like wood');
+  assert.equal(INFO[T.GOLDEN_WOOD].passable, false, 'golden wood is solid like wood');
+}
+
+// Light wood (mangrove shape) and hard wood (conifer shape) mint their own trunk
+// tile, drop their own resource, and fell/keep identity exactly like golden wood.
+{
+  const arr=new Uint8Array(CHUNK_W*WORLD_H);
+  trees.buildTree(arr,5,30,'lightwood',5);
+  let hasLight=false, hasPlain=false;
+  for(let i=0;i<arr.length;i++){ if(arr[i]===T.LIGHT_WOOD) hasLight=true; else if(arr[i]===T.WOOD) hasPlain=true; }
+  assert.equal(hasLight, true, 'lightwood tree mints LIGHT_WOOD trunk/roots');
+  assert.equal(hasPlain, false, 'lightwood tree has no ordinary wood mixed in');
+
+  const arr2=new Uint8Array(CHUNK_W*WORLD_H);
+  trees.buildTree(arr2,5,30,'hardwood',5);
+  let hasHard=false, hasPlain2=false;
+  for(let i=0;i<arr2.length;i++){ if(arr2[i]===T.HARD_WOOD) hasHard=true; else if(arr2[i]===T.WOOD) hasPlain2=true; }
+  assert.equal(hasHard, true, 'hardwood tree mints HARD_WOOD trunk');
+  assert.equal(hasPlain2, false, 'hardwood tree has no ordinary wood mixed in');
+}
+
+// A felled hard-wood trunk keeps its HARD_WOOD identity (fells via isWood).
+{
+  resetTiles();
+  resetTreeSystem();
+  worldGen.surfaceHeight = ()=>20;
+  MM.fallingSolids={ onTileRemoved(){} };
+  MM.water={};
+  setTile(3,6,T.STONE); setTile(4,6,T.STONE);
+  setTile(3,3,T.HARD_WOOD); setTile(3,2,T.HARD_WOOD);
+  assert.equal(trees.isTreeBase(getTile,3,3), true, 'hard-wood trunk base is a tree base');
+  assert.equal(trees.startTreeFall(getTile,setTile,1,3,3), true, 'hard-wood tree fells like wood');
+  trees.settleAll(getTile,setTile);
+  assert.equal(getTile(3,5), T.HARD_WOOD, 'felled hard-wood trunk stays hard wood (not downgraded)');
+}
+
+// Each new wood drops its OWN resource key (not generic 'wood') so it can feed its
+// own boat / arrow recipes.
+{
+  assert.deepEqual(INFO[T.LIGHT_WOOD].drops, [{item:'lightWood',min:2,max:3}], 'light wood drops lightWood');
+  assert.deepEqual(INFO[T.HARD_WOOD].drops, [{item:'hardWood',min:2,max:3}], 'hard wood drops hardWood');
+  assert.equal(INFO[T.LIGHT_WOOD].drop, undefined, 'light wood uses drops[] only');
+  assert.equal(INFO[T.HARD_WOOD].drop, undefined, 'hard wood uses drops[] only');
+}
+
 {
   resetTiles();
   resetTreeSystem();
@@ -1380,7 +1471,7 @@ worldGen.randSeed = ()=>0;
 
 {
   const mainSource=readFileSync(new URL('../src/main.js', import.meta.url),'utf8');
-  assert.match(mainSource,/tId===T\.WOOD && getTile\(mineTx,mineTy-1\)===T\.WOOD\) startTreeFall\(mineTx,mineTy-1\)/,'mining only starts a tree fall when another trunk block remains above the removed wood');
+  assert.match(mainSource,/isWood\(tId\) && isWood\(getTile\(mineTx,mineTy-1\)\)\) startTreeFall\(mineTx,mineTy-1\)/,'mining only starts a tree fall when another trunk block (wood or golden) remains above the removed trunk');
 }
 
 {

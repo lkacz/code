@@ -347,7 +347,9 @@ for(const [raw] of Object.entries(BUILD_MATERIAL_PROFILES)){
   assertProfileShape(name,t);
 }
 // Winter turf is the same soil as grass/dirt — only its surface state differs.
-const intentionalProfileAliases=new Set(['DIRT/GRASS','GRASS/GRASS_SNOW']);
+// Golden wood is a rare cosmetic + high-yield variant of ordinary wood and shares
+// its structural profile verbatim by design (it must fell/crush/fall like wood).
+const intentionalProfileAliases=new Set(['DIRT/GRASS','GRASS/GRASS_SNOW','GOLDEN_WOOD/WOOD']);
 const profileSignatureFields=['strength','support','weight','compression','lateral','flex','down','warn','fail','wind','rubbleWind','rubbleRoll'];
 const profileSignatures=new Map();
 for(const [raw,p] of Object.entries(BUILD_MATERIAL_PROFILES)){
