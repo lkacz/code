@@ -52,16 +52,22 @@ const SCENE = `(async()=>{
 	const gt=MM.world && MM.world.getTile, st=MM.world && MM.world.setTile;
 
 	// --- day/night: cycle import must flip every consumer-facing readout ---
-	MM.background.importState({cycleT:0.25});
+	MM.background.importState({cycleT:0.25}); // 0.25 < min dayFrac (8/24) -> day in every season
 	await sleep(400);
 	const noon=MM.background.timeInfo();
-	MM.background.importState({cycleT:0.62});
+	// Night must come from the LIVE daylight model, never a fixed constant. Worlds
+	// open in summer, where dayHours clamps to 16 and dayFrac reaches 16/24 = 0.667 —
+	// so the old hardcoded 0.62 was still DAYTIME and these checks failed for the
+	// wrong reason. Halfway between sunset and the cycle end is night in any season.
+	const dayFrac=Number.isFinite(noon.dayFrac) ? noon.dayFrac : 0.5;
+	const nightT=dayFrac+(1-dayFrac)*0.5;
+	MM.background.importState({cycleT:nightT});
 	await sleep(600); // getCycleInfo caches from the live draw: give it frames
 	const night=MM.background.timeInfo();
 	const nightCached=MM.background.getCycleInfo();
 	const solarNight=MM.solar && MM.solar.metrics ? MM.solar.metrics().sun : null;
 	R.dayNight={noonIsDay:noon.isDay, noonHour:noon.hour, nightIsDay:night.isDay,
-		cachedNightIsDay:nightCached.isDay, solarNight};
+		cachedNightIsDay:nightCached.isDay, solarNight, dayFrac, nightT};
 	MM.background.importState({cycleT:0.25});
 	await sleep(400);
 
