@@ -1,0 +1,13 @@
+#!/bin/sh
+# The repo contract (CLAUDE.md): npm run check must be exit 0 before a commit
+# lands — and a push to main deploys to GitHub Pages, whose workflow also
+# gates on the dependency audit. Running both HERE means a red gate stops the
+# push on this machine instead of silently breaking the deploy (which is
+# exactly how the site once went stale for a day: audit:deps failed only in
+# CI, after the push).
+set -e
+echo "[pre-push] npm run audit:deps"
+npm run audit:deps
+echo "[pre-push] npm run check (pelny lancuch ~4 min)"
+npm run check
+echo "[pre-push] gates green - pushing"

@@ -553,3 +553,25 @@ Configured locally:
 - rebase.updateRefs = true
 - fetch.prune = true
 - rerere.enabled = true
+
+### Commit & push gates (hooks)
+`npm install` (any local one — the `prepare` script) wires committed hooks
+from `.githooks/` plus the `.gitmessage` commit template into local git
+config; CI installs with `--ignore-scripts`, so runners never run them.
+- **pre-commit** — `lint` + `check:modules`: seconds, catches style and
+  import/export drift before a commit exists.
+- **pre-push** — `audit:deps` + full `npm run check` (~4 min): the same
+  gates the Pages workflow runs, so a red gate stops the push HERE instead
+  of silently breaking the deploy after it (a failed `audit:deps` once kept
+  the live site stale for a day because it only ran in CI).
+
+Commit messages follow the template: a `<=72`-char "Area: what" summary in
+the repo's narrative style, a body explaining WHY and which contracts move
+(pinned-shape updates belong in the same commit), and a closing
+`Verified:` line with what was actually run.
+
+### Housekeeping
+`npm run clean` removes disposable ignored artifacts — server logs, the
+staged `.pages-artifact/`, QA screenshots under `tools/` — via git's own
+ignore list, so it can never touch a tracked file; `node_modules/` and
+`.cache/` are excluded. Add `-- --dry-run` to preview.

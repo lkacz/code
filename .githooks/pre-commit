@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fast gates before a commit exists: style + the import/export graph.
+# Seconds, not minutes — the full 152-suite chain runs in pre-push and in CI.
+set -e
+echo "[pre-commit] npm run lint"
+npm run lint
+echo "[pre-commit] npm run check:modules"
+npm run check:modules

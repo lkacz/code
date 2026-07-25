@@ -11,6 +11,12 @@ the orphan `gh-pages` branch: `index.html` + `src/**` + `.nojekyll`).
 - `npm run check` = lint + ~130 Node suites. Must be exit 0 before a commit
   lands. Check exit codes directly (`cmd > log 2>&1; echo $?`) — never through
   a pipe. Known random flake: clouds-sim snowfall (rerun before investigating).
+- Local hooks enforce this (`.githooks/`, wired by `npm run prepare`):
+  pre-commit = lint + modcheck (fast); pre-push = `audit:deps` + full check —
+  the same gates the Pages deploy workflow runs, so a red gate stops the push
+  locally instead of breaking the deploy in CI. Never bypass with --no-verify.
+  `npm run clean` sweeps disposable ignored artifacts (logs, .pages-artifact,
+  tools/ QA screenshots); it never touches node_modules/.cache or tracked files.
 - **Tests regex-pin SOURCE shapes** (exact function names, message strings,
   CSS values). Changing a pinned shape REQUIRES updating the pin in the same
   commit — that is the contract mechanism of this repo, not an annoyance.

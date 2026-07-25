@@ -1,0 +1,14 @@
+
+
+# --- Repo commit convention (delete these comments before saving) -----------
+# Summary line, <= 72 chars, "Area: what changed" in the repo's narrative
+# style, e.g.:
+#   Grafika Ultra: twelve opt-in render components, one toggle each
+#   Deps: bump brace-expansion override to 5.0.8
+#
+# Body: explain WHY the change exists and which contracts it keeps or moves
+# (multiplayer three-questions, pinned SOURCE shapes, storage lockdown...).
+# A changed pinned shape MUST update its pin in this same commit.
+#
+# End with the verification you actually ran, e.g.:
+#   Verified: npm run check (exit 0); tools/gfx-ultra-qa.mjs 23/23 PASS.

@@ -6,6 +6,8 @@
   "private": true,
   "scripts": {
     "start": "node tools/server.mjs",
+    "clean": "node tools/clean.mjs",
+    "prepare": "node tools/setup-hooks.mjs",
     "start:qa": "node tools/server.mjs --qa --port 8124",
     "preview": "node tools/live-preview.mjs",
     "build:pages": "node tools/deploy-stage.mjs",
