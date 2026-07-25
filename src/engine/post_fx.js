@@ -184,11 +184,11 @@ export function shadowParams(time){
 	const dir = Math.cos(t * Math.PI); // +1 rise (light source left, shadow right) .. -1 set
 	const day = !time || time.isDay !== false;
 	if(day){
-		return { skew: dir * (0.6 + 1.3 * (1 - arc)), stretch: 0.4 + 1.5 * (1 - arc), alpha: 0.10 + 0.15 * arc };
+		return { skew: dir * (0.6 + 1.3 * (1 - arc)), stretch: 0.5 + 1.9 * (1 - arc), alpha: 0.18 + 0.14 * arc };
 	}
 	const moon = time && Number.isFinite(time.moonlight) ? Math.max(0, Math.min(0.22, time.moonlight)) : 0;
 	if(moon <= 0.005) return { skew: 0, stretch: 0, alpha: 0 };
-	return { skew: dir * 1.1, stretch: 1.1, alpha: 0.055 * (moon / 0.22) };
+	return { skew: dir * 1.1, stretch: 1.1, alpha: 0.10 * (moon / 0.22) };
 }
 
 let treeShadows = [];
@@ -403,8 +403,8 @@ const api = {
 			const spr = glowSpriteFor(e.color);
 			if(!spr) break;
 			const pulse = 0.82 + 0.18 * Math.sin(tSec * 2.1 + e.x * 0.73 + e.y * 0.41);
-			const r = TILE * (0.55 + e.level * 0.16) * pulse;
-			ctx.globalAlpha = Math.min(0.5, 0.22 + e.level * 0.014);
+			const r = TILE * (0.7 + e.level * 0.2) * pulse;
+			ctx.globalAlpha = Math.min(0.68, 0.3 + e.level * 0.018);
 			ctx.drawImage(spr, e.x * TILE + TILE * 0.5 - r, e.y * TILE + TILE * 0.5 - r, r * 2, r * 2);
 			drawn++;
 		}
@@ -436,9 +436,9 @@ const api = {
 		ctx.globalCompositeOperation = 'lighter';
 		const s = sheenStops;
 		const grad = ctx.createLinearGradient(0, by, 0, by + bh);
-		grad.addColorStop(0, 'rgba(' + s.top[0] + ',' + s.top[1] + ',' + s.top[2] + ',0.20)');
-		grad.addColorStop(0.55, 'rgba(' + s.mid[0] + ',' + s.mid[1] + ',' + s.mid[2] + ',0.13)');
-		grad.addColorStop(1, 'rgba(' + s.bot[0] + ',' + s.bot[1] + ',' + s.bot[2] + ',0.16)');
+		grad.addColorStop(0, 'rgba(' + s.top[0] + ',' + s.top[1] + ',' + s.top[2] + ',0.36)');
+		grad.addColorStop(0.55, 'rgba(' + s.mid[0] + ',' + s.mid[1] + ',' + s.mid[2] + ',0.24)');
+		grad.addColorStop(1, 'rgba(' + s.bot[0] + ',' + s.bot[1] + ',' + s.bot[2] + ',0.29)');
 		ctx.fillStyle = grad;
 		ctx.fillRect(bx, by, bw, bh);
 		// travelling diagonal highlight: the "coat catches the light" beat
@@ -446,7 +446,7 @@ const api = {
 		const hx = bx - bw * 0.6 + bw * 2.2 * phase;
 		const hg = ctx.createLinearGradient(hx, by, hx + bw * 0.55, by + bh);
 		hg.addColorStop(0, 'rgba(255,255,255,0)');
-		hg.addColorStop(0.5, 'rgba(255,255,255,0.16)');
+		hg.addColorStop(0.5, 'rgba(255,255,255,0.30)');
 		hg.addColorStop(1, 'rgba(255,255,255,0)');
 		ctx.fillStyle = hg;
 		ctx.fillRect(bx - bw, by, bw * 3, bh);
@@ -476,7 +476,7 @@ const api = {
 		if(p.alpha <= 0.005) return 1;
 		const rx = Math.max(bw * 0.35, bw * 0.5 + bh * p.stretch * 0.45) * size;
 		ctx.fillStyle = 'rgba(6,8,16,' + (p.alpha * k).toFixed(3) + ')';
-		ctx.beginPath(); ctx.ellipse(fx + p.skew * bh * 0.45 * size, gy, rx, 3.6 * size, 0, 0, Math.PI * 2); ctx.fill();
+		ctx.beginPath(); ctx.ellipse(fx + p.skew * bh * 0.45 * size, gy, rx, 4.4 * size, 0, 0, Math.PI * 2); ctx.fill();
 		metrics.shadowDraws++;
 		return 1;
 	},
@@ -515,7 +515,7 @@ const api = {
 			if(visibleAt && !visibleAt(tr.x, tr.surf)) continue;
 			const reach = Math.max(TILE * 0.5, tr.h * p.stretch * 0.55 * TILE);
 			ctx.beginPath();
-			ctx.ellipse((tr.x + 0.5) * TILE + p.skew * tr.h * 0.35 * TILE, tr.surf * TILE + 2, reach, 3.4, 0, 0, Math.PI * 2);
+			ctx.ellipse((tr.x + 0.5) * TILE + p.skew * tr.h * 0.35 * TILE, tr.surf * TILE + 2, reach, 4.4, 0, 0, Math.PI * 2);
 			ctx.fill();
 			drawn++;
 		}
@@ -549,7 +549,7 @@ const api = {
 			const spr = glowSpriteFor(e.color);
 			if(!spr) break;
 			const r = TILE * (2.6 + e.level * 0.4);
-			ctx.globalAlpha = Math.min(0.16, 0.05 + e.level * 0.007);
+			ctx.globalAlpha = Math.min(0.26, 0.08 + e.level * 0.010);
 			ctx.drawImage(spr, e.x * TILE + TILE * 0.5 - r, e.y * TILE + TILE * 0.5 - r, r * 2, r * 2);
 			drawn++;
 		}
@@ -568,7 +568,7 @@ const api = {
 		const t = time && Number.isFinite(time.tDay) ? Math.max(0, Math.min(1, time.tDay)) : 0.5;
 		const arc = Math.sin(t * Math.PI);
 		const daylight = Math.max(0, Math.min(1, Number.isFinite(opts.daylight) ? opts.daylight : 1));
-		const alpha = daylight * (0.05 + 0.09 * (1 - arc));
+		const alpha = daylight * (0.11 + 0.15 * (1 - arc));
 		if(alpha <= 0.01) return 0;
 		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
 		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
@@ -599,7 +599,7 @@ const api = {
 			const gx0 = b.x0 * TILE, gx1 = (b.x1 + 1) * TILE;
 			const grad = ctx.createLinearGradient(0, topPx, 0, groundPx);
 			grad.addColorStop(0, 'rgba(255,244,200,' + alpha.toFixed(3) + ')');
-			grad.addColorStop(1, 'rgba(255,244,200,' + (alpha * 0.3).toFixed(3) + ')');
+			grad.addColorStop(1, 'rgba(255,244,200,' + (alpha * 0.45).toFixed(3) + ')');
 			ctx.fillStyle = grad;
 			ctx.beginPath();
 			ctx.moveTo(gx0, topPx);
@@ -655,7 +655,7 @@ const api = {
 				const sxDev = m.a * wxPx + m.e, swDev = m.a * TILE;
 				const syDev = m.d * wyPx + m.f, shDev = m.d * 4;
 				if(sxDev < 0 || sxDev + swDev > srcCanvas.width || syDev < 0 || syDev + shDev > srcCanvas.height) continue;
-				const wob = Math.sin(now * 0.006 + i * 1.7 + s.x * 0.9) * (1.6 - i * 0.4);
+				const wob = Math.sin(now * 0.006 + i * 1.7 + s.x * 0.9) * (2.6 - i * 0.6);
 				ctx.drawImage(srcCanvas, sxDev, syDev, swDev, shDev, wxPx + wob, wyPx, TILE, 4);
 				slices++;
 			}
@@ -681,7 +681,7 @@ const api = {
 		if(wetness <= 0.02) return 0;
 		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
 		const daylight = Math.max(0, Math.min(1, Number.isFinite(opts.daylight) ? opts.daylight : 1));
-		const alpha = (0.06 + 0.16 * wetness) * (0.35 + 0.65 * daylight);
+		const alpha = (0.10 + 0.26 * wetness) * (0.35 + 0.65 * daylight);
 		const skipWet = typeof opts.skipWetTile === 'function' ? opts.skipWetTile : null;
 		const visibleAt = typeof opts.visibleAt === 'function' ? opts.visibleAt : null;
 		const x0 = Math.floor(opts.sx), x1 = Math.ceil(opts.sx + opts.viewX);
@@ -696,7 +696,7 @@ const api = {
 			if(t === T.AIR || t === T.WATER) continue;
 			if(skipWet && skipWet(t)) continue;
 			if(visibleAt && !visibleAt(x, surf)) continue;
-			ctx.fillRect(x * TILE, surf * TILE, TILE, 1);
+			ctx.fillRect(x * TILE, surf * TILE, TILE, 2);
 			cols++;
 		}
 		if(raining && cols){
@@ -725,7 +725,7 @@ const api = {
 		if(daylight <= 0.25) return 0;
 		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
 		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
-		const budget = (Number.isFinite(opts.frameMs) && opts.frameMs > 28) ? 16 : 36;
+		const budget = (Number.isFinite(opts.frameMs) && opts.frameMs > 28) ? 20 : 48;
 		const visibleAt = typeof opts.visibleAt === 'function' ? opts.visibleAt : null;
 		const epoch = Math.floor(now / 9000);
 		// mote identity is WORLD-anchored (hash of the world column, not a
@@ -747,8 +747,8 @@ const api = {
 			const py = y * TILE + ((h >>> 12) % TILE) + Math.cos(now * 0.0003 + k * 1.3) * 6;
 			const tw = 0.5 + 0.5 * Math.sin(now * 0.001 + k * 2.7);
 			if(tw < 0.25) continue;
-			ctx.fillStyle = 'rgba(255,248,220,' + (0.16 * tw * daylight).toFixed(3) + ')';
-			ctx.fillRect(px, py, 1.4, 1.4);
+			ctx.fillStyle = 'rgba(255,248,220,' + (0.30 * tw * daylight).toFixed(3) + ')';
+			ctx.fillRect(px, py, 2.2, 2.2);
 			drawn++;
 		}
 		ctx.restore();
@@ -784,7 +784,7 @@ const api = {
 		let cols = 0;
 		ctx.save();
 		ctx.imageSmoothingEnabled = true;
-		ctx.globalAlpha = 0.14;
+		ctx.globalAlpha = 0.24;
 		for(const run of iceRuns){
 			if(visibleAt && !visibleAt(run.x, run.surf)) continue;
 			const wxPx = run.x * TILE, topPx = run.surf * TILE;
@@ -795,7 +795,7 @@ const api = {
 			if(syDev < 0){ shDev += syDev; syDev = 0; }
 			if(!(shDev > 1) || syDev >= srcCanvas.height || sxDev < 0 || sxDev + swDev > srcCanvas.width) continue;
 			const visPx = shDev / m.d;
-			const destH = Math.min(TILE * 0.85, visPx * 0.3);
+			const destH = Math.min(TILE * 0.85, visPx * 0.45);
 			if(!(destH > 1)) continue;
 			ctx.save();
 			ctx.beginPath();

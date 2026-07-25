@@ -6588,12 +6588,12 @@ function drawCaveContactShade(g,px,py,sU,sD,sL,sR){
 	// two faces meet — cave interiors gain corner depth from the same four
 	// solidity bits the standard pass already receives (no extra tile reads).
 	if(gfxUltraOn('ao')){
-		g.fillStyle='rgba(0,0,0,0.045)';
+		g.fillStyle='rgba(0,0,0,0.08)';
 		if(sU) g.fillRect(px,py+3,TILE,3);
 		if(sD) g.fillRect(px,py+TILE-6,TILE,3);
 		if(sL) g.fillRect(px+3,py,3,TILE);
 		if(sR) g.fillRect(px+TILE-6,py,3,TILE);
-		g.fillStyle='rgba(0,0,0,0.07)';
+		g.fillStyle='rgba(0,0,0,0.13)';
 		if(sU&&sL){ g.fillRect(px,py,5,5); g.fillRect(px,py,3,3); }
 		if(sU&&sR){ g.fillRect(px+TILE-5,py,5,5); g.fillRect(px+TILE-3,py,3,3); }
 		if(sD&&sL){ g.fillRect(px,py+TILE-5,5,5); g.fillRect(px,py+TILE-3,3,3); }
@@ -6863,15 +6863,15 @@ function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
 	// faint top pocket underground. Bake-time only, gated so standard bakes
 	// stay byte-identical (the diagonal re-reads run only in ultra).
 	if(gfxUltraOn('ao') && fam!==EDGE_LEAF && fam!==EDGE_LAVA){
-		g.fillStyle='rgba(8,10,18,0.09)';
+		g.fillStyle='rgba(8,10,18,0.15)';
 		if(!oU && !oL && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx-1,y-1,originY,sectionH))){ g.fillRect(px,py,5,2); g.fillRect(px,py+2,2,3); }
 		if(!oU && !oR && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx+1,y-1,originY,sectionH))){ g.fillRect(px+TILE-5,py,5,2); g.fillRect(px+TILE-2,py+2,2,3); }
 		if(!oD && !oL && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx-1,y+1,originY,sectionH))){ g.fillRect(px,py+TILE-2,5,2); g.fillRect(px,py+TILE-5,2,3); }
 		if(!oD && !oR && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx+1,y+1,originY,sectionH))){ g.fillRect(px+TILE-5,py+TILE-2,5,2); g.fillRect(px+TILE-2,py+TILE-5,2,3); }
-		if(oD){ g.fillStyle='rgba(6,8,16,0.06)'; g.fillRect(px,py+TILE-5,TILE,2); g.fillStyle='rgba(6,8,16,0.03)'; g.fillRect(px,py+TILE-7,TILE,2); }
-		if(oL){ g.fillStyle='rgba(8,10,18,0.05)'; g.fillRect(px+2,py+2,2,TILE-4); }
-		if(oR){ g.fillStyle='rgba(8,10,18,0.06)'; g.fillRect(px+TILE-4,py+2,2,TILE-4); }
-		if(oU && y>surf+2){ g.fillStyle='rgba(8,10,18,0.05)'; g.fillRect(px,py+2,TILE,2); }
+		if(oD){ g.fillStyle='rgba(6,8,16,0.10)'; g.fillRect(px,py+TILE-5,TILE,2); g.fillStyle='rgba(6,8,16,0.05)'; g.fillRect(px,py+TILE-7,TILE,2); }
+		if(oL){ g.fillStyle='rgba(8,10,18,0.09)'; g.fillRect(px+2,py+2,2,TILE-4); }
+		if(oR){ g.fillStyle='rgba(8,10,18,0.10)'; g.fillRect(px+TILE-4,py+2,2,TILE-4); }
+		if(oU && y>surf+2){ g.fillStyle='rgba(8,10,18,0.09)'; g.fillRect(px,py+2,TILE,2); }
 	}
 	// cave dressing: mossy growth on rock faces that touch underground air
 	if(fam===EDGE_ROCK && y>surf+4 && t!==T.OBSIDIAN && t!==T.BASALT && t!==T.BEDROCK){
@@ -9332,7 +9332,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				if(gfxUltraOn('specular') && SPEC_GLINT_TILES.has(t)){
 					if((h%5)<2) entry.spec.push({x:wx,y,t});
 					const shx=lx*TILE+3+((h>>>7)%(TILE-8)), shy=y*TILE+3+((h>>>11)%(TILE-8));
-					cctx.fillStyle=(t===T.GOLD_ORE||t===T.GOLDEN_WOOD)?'rgba(255,232,170,0.20)':'rgba(240,250,255,0.16)';
+					cctx.fillStyle=(t===T.GOLD_ORE||t===T.GOLDEN_WOOD)?'rgba(255,232,170,0.32)':'rgba(240,250,255,0.26)';
 					cctx.fillRect(shx,shy,4,1);
 					cctx.fillRect(shx+1,shy-1,2,3);
 				}
@@ -9705,13 +9705,15 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 		}
 		// Ultra specular: budgeted twinkle glints over the bake-collected points.
 		// Wall-clock phase like the chest pulse; the hash offset de-syncs neighbors
-		// so ore fields shimmer instead of blinking in unison. Skipped wholesale on
-		// stressed frames (same signal the grass gloss pass throttles on).
-		if(gfxUltraOn('specular') && !(lastFrameMs>32)){
+		// so ore fields shimmer instead of blinking in unison. Stressed frames
+		// shrink the budget instead of skipping outright — a ~30 fps machine keeps
+		// the component visible (a hard skip made it silently vanish there).
+		if(gfxUltraOn('specular')){
 			// specScan bounds the WALK, not just the draws: a frost/ore band can bake
 			// thousands of glint points into visible sections, and without a scan cap
 			// every fog-hidden point still costs a visibility lookup per frame
-			let specBudget=120, specDrawn=0, specScan=1500;
+			const specStressed=lastFrameMs>32;
+			let specBudget=specStressed?48:120, specDrawn=0, specScan=specStressed?600:1500;
 			ctx.save();
 			ctx.globalCompositeOperation='lighter';
 			for(let cx3=minChunk; cx3<=maxChunk && specBudget>0 && specScan>0; cx3++){
@@ -9726,8 +9728,8 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 						if(!worldFxVisible(wx,y)) continue;
 						const h=hash32(wx,y);
 						const tw=Math.sin(nowA*0.0028+(h%628)*0.01);
-						if(tw<0.86) continue;
-						const a=(tw-0.86)/0.14*0.85;
+						if(tw<0.80) continue;
+						const a=(tw-0.80)/0.20*0.95;
 						const gx=(localLayer?(wx-camDrawX):wx)*TILE+3+((h>>>5)%(TILE-6));
 						const gy=(localLayer?(y-camDrawY):y)*TILE+3+((h>>>9)%(TILE-6));
 						const warm=sp.t===T.GOLD_ORE || sp.t===T.GOLDEN_WOOD;

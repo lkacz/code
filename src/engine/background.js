@@ -1132,6 +1132,21 @@
     ctx.beginPath();
     ctx.arc(cx,cy,haloR,0,Math.PI*2);
     ctx.fill();
+    // Ultra bloom: the celestial pass is screen-space, so the sun is the one
+    // emitter the post_fx tile scan can never find — an extra wide soft halo
+    // makes the bloom component read on every daytime surface scene. Gated on
+    // the live flag (kill/force QA switches included); standard stays intact.
+    if(typeof window!=='undefined' && window.MM && MM.postFx && MM.postFx.on && MM.postFx.on('bloom')){
+      const bloomR=haloR*1.85;
+      const bloom=ctx.createRadialGradient(cx,cy,r*0.3,cx,cy,bloomR);
+      bloom.addColorStop(0,hexToRgba(state.halo,0.32));
+      bloom.addColorStop(0.45,hexToRgba(state.ray,0.14));
+      bloom.addColorStop(1,hexToRgba(state.ray,0));
+      ctx.fillStyle=bloom;
+      ctx.beginPath();
+      ctx.arc(cx,cy,bloomR,0,Math.PI*2);
+      ctx.fill();
+    }
     drawSunMotes(ctx,cx,cy,r,state,now);
     drawSunCorona(ctx,cx,cy,r,state,now);
     drawSunSeasonAura(ctx,cx,cy,r,state,now);
@@ -1308,6 +1323,19 @@
     ctx.beginPath();
     ctx.arc(cx,cy,haloR,0,Math.PI*2);
     ctx.fill();
+    // Ultra bloom: cool counterpart of the sun halo (see drawSunObject) — a
+    // wider, fainter glow so moonlit nights visibly react to the toggle too.
+    if(typeof window!=='undefined' && window.MM && MM.postFx && MM.postFx.on && MM.postFx.on('bloom')){
+      const bloomR=haloR*1.7;
+      const bloom=ctx.createRadialGradient(cx,cy,r*0.32,cx,cy,bloomR);
+      bloom.addColorStop(0,hexToRgba(state.halo,0.22));
+      bloom.addColorStop(0.45,hexToRgba(state.accent,0.09));
+      bloom.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=bloom;
+      ctx.beginPath();
+      ctx.arc(cx,cy,bloomR,0,Math.PI*2);
+      ctx.fill();
+    }
     drawMoonMotes(ctx,cx,cy,r,state,now);
     drawMoonSeasonAura(ctx,cx,cy,r,state,now);
     const body=ctx.createRadialGradient(cx-r*0.34,cy-r*0.42,r*0.10,cx+r*0.16,cy+r*0.20,r*1.04);

@@ -333,8 +333,8 @@ const contactShadeStart = mainSrc.indexOf('function drawCaveContactShade(');
 const contactShadeEnd = mainSrc.indexOf('// ---- Tile art v2: neighbor-aware edge lighting', contactShadeStart);
 assert.ok(contactShadeStart > 0 && contactShadeEnd > contactShadeStart, 'cave contact shade pass is present');
 assert.match(mainSrc.slice(contactShadeStart, contactShadeEnd), /gfxUltraOn\('ao'\)/, 'ultra AO widens the cave contact shade behind the same gate');
-assert.match(mainSrc, /if\(gfxUltraOn\('specular'\) && !\(lastFrameMs>32\)\)/, 'live specular glints skip stressed frames');
-assert.match(mainSrc, /let specBudget=120, specDrawn=0, specScan=1500;/, 'specular pass bounds the point WALK, not just the draws');
+assert.match(mainSrc, /const specStressed=lastFrameMs>32;/, 'live specular glints degrade (not vanish) on stressed frames');
+assert.match(mainSrc, /let specBudget=specStressed\?48:120, specDrawn=0, specScan=specStressed\?600:1500;/, 'specular pass bounds the point WALK, with a reduced stressed-frame budget');
 assert.match(mainSrc, /if\(\(cx3\+1\)\*CHUNK_W<sx-1 \|\| cx3\*CHUNK_W>sx\+viewX\+2\) continue;/, 'off-screen chunk columns are culled from the glint walk');
 assert.match(mainSrc, /POST_FX\.metrics\.specGlints\+=specDrawn;/, 'specular pass reports its draw count');
 assert.match(mainSrc, /POST_FX\.drawBloomPass\(ctx,\{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:\(x,y\)=>furnishingPoweredAt\(x,y\),frameMs:lastFrameMs\}\)/, 'bloom pass receives the fog predicate, the furnishing power gate, and the frame-health signal');
@@ -400,6 +400,12 @@ assert.match(mainSrc, /submerged:waterLevelUnitsAt\(sheenPx,Math\.floor\(player\
 assert.match(mainSrc, /if\(gfxName==='ao' \|\| gfxName==='specular'\) invalidateAllChunkRenderCaches\(\);/, 'baked components force a re-bake when toggled');
 assert.match(mainSrc, /panel\.querySelectorAll\('\[data-gfx-toggle\]'\)\.forEach\(chk=>\{ chk\.checked=!!\(POST_FX && POST_FX\.config && POST_FX\.config\[chk\.dataset\.gfxToggle\]\); \}\);/, 'panel reopen resyncs component checkboxes');
 for(const name of GFX_COMPONENTS) assert.ok(mainSrc.includes("'" + name + "'"), 'component ' + name + ' has a UI mapping in main.js');
+
+// Celestial bloom: the sun/moon are screen-space (no tile the emitter scan can
+// find), so background.js carries its own gated halo — one per body.
+const backgroundSrc = readFileSync(new URL('../src/engine/background.js', import.meta.url), 'utf8');
+const celestialBloomGates = backgroundSrc.match(/MM\.postFx\.on && MM\.postFx\.on\('bloom'\)/g) || [];
+assert.equal(celestialBloomGates.length, 2, 'sun AND moon each carry one gated ultra bloom halo');
 
 // Water reflections: inside the source-atop clip, drawImage-only, fog-guarded.
 assert.match(waterSrc, /postFx\.on && postFx\.on\('reflections'\)/, 'water reflections gate on the ultra flag');

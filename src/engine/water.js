@@ -1653,7 +1653,7 @@ window.MM = window.MM || {};
         try{ m=(ctx.getTransform && typeof ctx.getTransform==='function') ? ctx.getTransform() : null; }catch(e){ m=null; }
         if(srcCanvas && srcCanvas.width>0 && m && Number.isFinite(m.a) && m.a>0 && Number.isFinite(m.d) && m.d>0){
           let reflCols=0;
-          g.globalAlpha=0.26;
+          g.globalAlpha=0.36;
           for(let xi=0; xi<n && reflCols<220; xi++){
             const segs=cols[xi]; if(!segs) continue;
             const s0=segs[0]; if(!s0.open) continue;
