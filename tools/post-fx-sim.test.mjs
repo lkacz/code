@@ -36,7 +36,7 @@ const {
 	postFx, GFX_ULTRA_KEY, GFX_COMPONENTS,
 	normalizeGfxConfig, parseGfxConfig, bloomScanIntervalMs,
 	bloomSourceFor, collectBloomEmitters, BLOOM_MIN_LEVEL, BLOOM_MAX_EMITTERS,
-	heroSheenPalette, HERO_SHEEN_BIOME_PALETTES, shadowParams,
+	heroSheenEnvSample, shadowParams,
 	wetGroundStep, collectCanopyGaps, collectIceRuns
 } = await import('../src/engine/post_fx.js');
 const { T, INFO } = await import('../src/constants.js');
@@ -142,20 +142,42 @@ assert.ok(onCtx.calls.includes('drawImage') && onCtx.calls[0] === 'save' && onCt
 assert.ok(postFx.metrics.bloomScans >= 1 && postFx.metrics.bloomDraws >= 2, 'bloom metrics record scans and draws');
 delete window.__mmForceGfxUltra;
 
-// --- hero sheen palette (matcap model) ----------------------------------------
-assert.equal(Object.keys(HERO_SHEEN_BIOME_PALETTES).length, 9, 'every BIOME_NAMES id 0-8 has a sheen palette');
-const noonForest = heroSheenPalette({ biome: 0, daylight: 1, depth: 0, submerged: false });
-assert.ok(noonForest.top && noonForest.mid && noonForest.bot, 'palette returns three stops');
-assert.ok(noonForest.top[2] > noonForest.bot[2], 'forest coat reflects sky above and ground below (blue fades downward)');
-const midnightForest = heroSheenPalette({ biome: 0, daylight: 0, depth: 0, submerged: false });
-assert.ok(midnightForest.top[0] < noonForest.top[0], 'night dims the coat');
-assert.ok(midnightForest.top.every(v => v > 0), 'the coat never goes fully black — a mirror finish still catches something');
-const deepCave = heroSheenPalette({ biome: 0, daylight: 1, depth: 30, submerged: false });
-assert.ok(deepCave.top[2] < noonForest.top[2] * 0.5, 'depth blends the coat toward the cave palette');
-const diving = heroSheenPalette({ biome: 1, daylight: 1, depth: 0, submerged: true });
-const dry = heroSheenPalette({ biome: 1, daylight: 1, depth: 0, submerged: false });
-assert.ok(diving.bot[2] > dry.bot[2], 'submersion shifts the coat toward water blue');
-assert.deepEqual(heroSheenPalette({ biome: 99, daylight: 1, depth: 0 }), heroSheenPalette({ biome: 1, daylight: 1, depth: 0 }), 'unknown biome falls back to plains');
+// --- hero sheen environment probe (2D matcap) ---------------------------------
+// The coat samples the ACTUAL world through the caller's tile->color table:
+// ground color under the feet, walls beside, sky or ceiling above, plus the
+// strongest glow emitter in reach (power-gated exactly like bloom).
+const sheenColor = (t) => {
+	if(t === T.GRASS) return '#4a8f3a';
+	if(t === T.DIRT) return '#73543a';
+	if(t === T.TORCH) return '#ffc24b';
+	return '#686d78';
+};
+const meadow = (x, y) => (y >= 20 ? T.GRASS : T.AIR);
+const noonMeadow = heroSheenEnvSample({ getTile: meadow, tileColor: sheenColor, px: 0, py: 19, daylight: 1, submerged: false });
+assert.ok(noonMeadow.top && noonMeadow.mid && noonMeadow.bot, 'probe returns three stops');
+assert.ok(noonMeadow.bot[1] > noonMeadow.bot[0] && noonMeadow.bot[1] > noonMeadow.bot[2], 'standing on grass, the legs pick up GREEN from the actual ground');
+assert.ok(noonMeadow.top[2] > noonMeadow.top[1] && noonMeadow.top[2] > noonMeadow.top[0], 'open sky above reflects blue in the crown');
+const nightMeadow = heroSheenEnvSample({ getTile: meadow, tileColor: sheenColor, px: 0, py: 19, daylight: 0, submerged: false });
+assert.ok(nightMeadow.bot[1] < noonMeadow.bot[1], 'night dims the coat');
+assert.ok(nightMeadow.bot.every(v => v > 0), 'the coat never goes fully black — a mirror finish still catches something');
+const caveWorld = (x, y) => ((Math.abs(x) > 2 || y < 8 || y > 11) ? T.STONE : T.AIR); // sealed 5x4 pocket
+const cavePocket = heroSheenEnvSample({ getTile: caveWorld, tileColor: sheenColor, px: 0, py: 10, daylight: 1, submerged: false });
+assert.ok(Math.abs(cavePocket.mid[0] - cavePocket.mid[2]) < 30 && Math.abs(cavePocket.mid[0] - cavePocket.mid[1]) < 30, 'a stone pocket reflects the rock hue, not a biome palette');
+const caveTorch = (x, y) => ((x === 2 && y === 10) ? T.TORCH : caveWorld(x, y));
+const torched = heroSheenEnvSample({ getTile: caveTorch, tileColor: sheenColor, px: 0, py: 10, daylight: 1, submerged: false });
+assert.ok(torched.mid[0] > cavePocket.mid[0] + 10, 'a torch in reach warms the coat like a glint of light');
+const caveSun = (x, y) => ((x === 2 && y === 10) ? T.MINIATURE_SUN : caveWorld(x, y));
+const unpoweredSun = heroSheenEnvSample({ getTile: caveSun, tileColor: sheenColor, px: 0, py: 10, daylight: 1, submerged: false });
+const poweredSun = heroSheenEnvSample({ getTile: caveSun, tileColor: sheenColor, px: 0, py: 10, daylight: 1, submerged: false, poweredAt: () => true });
+assert.ok(poweredSun.mid[0] > unpoweredSun.mid[0], 'a powered furnishing warms the coat only while it runs (fails closed, bloom parity)');
+const divingProbe = heroSheenEnvSample({ getTile: meadow, tileColor: sheenColor, px: 0, py: 19, daylight: 1, submerged: true });
+assert.ok(divingProbe.mid[2] > noonMeadow.mid[2], 'submersion shifts the coat toward water blue');
+// a tall shaft deep underground: no ceiling in probe reach, but the crown must
+// read cave-dark — noon blue may not glow on a hero 200 tiles down
+const shaftWorld = (x, y) => ((Math.abs(x) > 2 && y >= 195) || y > 232 ? T.STONE : T.AIR);
+const shaft = heroSheenEnvSample({ getTile: shaftWorld, tileColor: sheenColor, surfaceHeight: () => 20, px: 0, py: 231, daylight: 1, submerged: false });
+assert.ok(shaft.top[2] < 60, 'an open shaft underground reflects darkness, not the sky');
+assert.equal(heroSheenEnvSample({ tileColor: sheenColor, px: 0, py: 0 }), null, 'no world access -> no probe (pass falls back to its neutral finish)');
 
 // --- dynamic shadows (solar model) ---------------------------------------------
 // The sun rises on the SCREEN LEFT (background.js celestialPosition), so
@@ -260,7 +282,7 @@ const mSurf = () => 21;
 const mBase = { TILE: 20, sx: -8, sy: 5, viewX: 40, viewY: 25, getTile: mTile, surfaceHeight: mSurf, frameMs: 16 };
 const PASS_MATRIX = [
 	['bloom', ctx => postFx.drawBloomPass(ctx, { ...mBase })],
-	['heroSheen', ctx => postFx.drawHeroSheenPass(ctx, { bx: 0, by: 0, bw: 18, bh: 28, biome: 0, daylight: 1, depth: 0, submerged: false })],
+	['heroSheen', ctx => postFx.drawHeroSheenPass(ctx, { bx: 0, by: 0, bw: 18, bh: 28, getTile: mTile, tileColor: sheenColor, px: 20, py: 16, daylight: 1, submerged: false })],
 	['shadows', ctx => postFx.drawTreeShadowsPass(ctx, { ...mBase, isTrunk: t => t === T.WOOD, time: { tDay: 0.4, isDay: true } })],
 	['godRays', ctx => postFx.drawGodRaysPass(ctx, { ...mBase, isCanopy: t => t === T.LEAF, time: { tDay: 0.3, isDay: true }, daylight: 1 })],
 	['lightTint', ctx => postFx.drawLightTintPass(ctx, { ...mBase })],
@@ -396,6 +418,8 @@ assert.match(mobsSrc, /if\(spec && spec\.ground && !ultraShadowDrawn\)\{/, 'the 
 assert.match(mobsSrc, /if\(mgy<=msurf\)\{/, 'only sunlit surface mobs switch to the directional shadow (caves keep the blob)');
 assert.ok(!mainSrc.includes('worldFxVisible(stx,sgy)'), 'the old main.js mob-shadow loop is gone (mobs.js owns mob shadows)');
 assert.match(mainSrc, /if\(!deathTravelFx && heroCloakA>=0\.98 && POST_FX && POST_FX\.drawHeroSheenPass && POST_FX\.on\('heroSheen'\)\)/, 'hero coating skips death travel and cloak, and computes its inputs only when enabled');
+assert.match(mainSrc, /tileColor:minimapTileColor,/, 'hero coating samples through the minimap palette by REFERENCE (one shared table keeps the rgb cache warm)');
+assert.match(mainSrc, /px:sheenPx, py:Math\.floor\(player\.y\),/, 'hero coating probes the world at the hero tile');
 assert.match(mainSrc, /submerged:waterLevelUnitsAt\(sheenPx,Math\.floor\(player\.y\)\)>0/, 'hero coating reads submersion from the water ledger');
 assert.match(mainSrc, /if\(gfxName==='ao' \|\| gfxName==='specular'\) invalidateAllChunkRenderCaches\(\);/, 'baked components force a re-bake when toggled');
 assert.match(mainSrc, /panel\.querySelectorAll\('\[data-gfx-toggle\]'\)\.forEach\(chk=>\{ chk\.checked=!!\(POST_FX && POST_FX\.config && POST_FX\.config\[chk\.dataset\.gfxToggle\]\); \}\);/, 'panel reopen resyncs component checkboxes');

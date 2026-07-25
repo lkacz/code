@@ -15161,9 +15161,12 @@ function draw(){ // Background first
 	 const sheenPx=Math.floor(player.x);
 	 POST_FX.drawHeroSheenPass(ctx,{
 		 bx:(player.x-player.w/2)*TILE, by:(player.y-player.h/2)*TILE, bw:player.w*TILE, bh:player.h*TILE,
-		 biome:(WORLDGEN && WORLDGEN.biomeType)?WORLDGEN.biomeType(sheenPx):1,
+		 getTile,
+		 tileColor:minimapTileColor,
+		 poweredAt:(x,y)=>furnishingPoweredAt(x,y),
+		 surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,
+		 px:sheenPx, py:Math.floor(player.y),
 		 daylight:currentDaylight(),
-		 depth:Math.max(0,Math.floor(player.y)-((WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight(sheenPx):0)),
 		 submerged:waterLevelUnitsAt(sheenPx,Math.floor(player.y))>0
 	 });
  }

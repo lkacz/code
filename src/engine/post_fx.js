@@ -123,52 +123,146 @@ export function collectBloomEmitters(opts){
 }
 
 // --- hero sheen (środowiskowa powłoka bohatera) ------------------------------
-// A faked environment reflection: instead of re-rendering the world, the coat
-// is a three-stop vertical "matcap" gradient derived from what WOULD reflect —
-// biome palette (sky / horizon tint / ground), scaled by daylight, blended
-// toward a cave palette with depth and toward water blue when submerged.
-// One gradient + one highlight band per frame; no readbacks, no second render.
-// Biome ids follow main.js BIOME_NAMES: 0 Las, 1 Równiny, 2 Śnieg/Lód,
-// 3 Pustynia, 4 Bagno, 5 Morze, 6 Jezioro, 7 Góry, 8 Zniszczone miasto.
-export const HERO_SHEEN_BIOME_PALETTES = Object.freeze({
-	0: [[126, 178, 255], [96, 168, 110], [62, 88, 54]],
-	1: [[140, 190, 255], [150, 196, 120], [104, 86, 58]],
-	2: [[168, 208, 255], [214, 232, 248], [150, 176, 205]],
-	3: [[160, 200, 255], [236, 204, 130], [168, 136, 84]],
-	4: [[120, 160, 210], [110, 150, 100], [70, 84, 52]],
-	5: [[130, 190, 255], [90, 160, 220], [40, 90, 150]],
-	6: [[135, 190, 250], [110, 170, 215], [60, 100, 140]],
-	7: [[150, 195, 255], [160, 170, 185], [95, 100, 110]],
-	8: [[135, 170, 220], [150, 140, 135], [80, 75, 72]]
-});
-const HERO_SHEEN_CAVE = [[26, 30, 44], [44, 38, 40], [18, 16, 22]];
-const HERO_SHEEN_WATER = [90, 150, 220];
-
+// A faked environment reflection built like a 2D matcap: each body zone gets
+// the color it WOULD mirror — the crown reflects the sky or the cave ceiling,
+// the torso reflects walls/vegetation beside the hero, the legs reflect the
+// actual ground stood on. Zone colors are SAMPLED from the world model through
+// the caller's tile->color table (the minimap palette) — never from the
+// framebuffer (the getImageData taboo holds). Nearby glow emitters (the bloom
+// table, power-gated like bloom) tint the whole coat the way a torch tints a
+// breastplate. The drawn stops CHASE the sampled target exponentially, so a
+// biome border, a cave descent or the passing of dawn glides the finish
+// instead of snapping between patterns. Cave darkness needs no special case:
+// the lighting overlay draws over the hero later in the frame and dims the
+// coat together with everything else.
+const HERO_SHEEN_WATER = [70, 140, 220];
+const HERO_SHEEN_SKY_DAY = [126, 178, 255];
+const HERO_SHEEN_SKY_NIGHT = [18, 24, 44];
+// rgb cache per tile->color TABLE (WeakMap keyed on the function): the live
+// call site passes the same minimapTileColor reference every frame, so parses
+// happen once per tile id; a test may bring its own table without poisoning.
+const heroSheenRgbCaches = new WeakMap();
+function heroSheenTileRgb(tileColor, t){
+	let cache = heroSheenRgbCaches.get(tileColor);
+	if(!cache){ cache = new Map(); heroSheenRgbCaches.set(tileColor, cache); }
+	if(cache.has(t)) return cache.get(t);
+	let rgb = null;
+	const hex = tileColor(t);
+	if(typeof hex === 'string'){
+		const m = hex.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+		if(m){
+			const s = m[1];
+			rgb = s.length === 3
+				? [parseInt(s[0] + s[0], 16), parseInt(s[1] + s[1], 16), parseInt(s[2] + s[2], 16)]
+				: [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
+		}
+	}
+	cache.set(t, rgb);
+	return rgb;
+}
 function mixRgb(a, b, t){
 	return [
-		Math.round(a[0] + (b[0] - a[0]) * t),
-		Math.round(a[1] + (b[1] - a[1]) * t),
-		Math.round(a[2] + (b[2] - a[2]) * t)
+		a[0] + (b[0] - a[0]) * t,
+		a[1] + (b[1] - a[1]) * t,
+		a[2] + (b[2] - a[2]) * t
 	];
 }
-export function heroSheenPalette(opts){
+function avgRgb(list){
+	if(!list.length) return null;
+	const out = [0, 0, 0];
+	for(const c of list){ out[0] += c[0]; out[1] += c[1]; out[2] += c[2]; }
+	return [out[0] / list.length, out[1] / list.length, out[2] / list.length];
+}
+// One environment probe (~200 tile reads, cadence-limited by the pass): three
+// zone averages + the strongest glow emitter in reach. Pure and unit-tested.
+export function heroSheenEnvSample(opts){
 	const o = opts || {};
-	const biome = HERO_SHEEN_BIOME_PALETTES[o.biome] || HERO_SHEEN_BIOME_PALETTES[1];
+	if(typeof o.getTile !== 'function' || typeof o.tileColor !== 'function') return null;
+	const px = o.px | 0, py = o.py | 0;
 	const daylight = Math.max(0, Math.min(1, Number.isFinite(o.daylight) ? o.daylight : 1));
-	const depth = Math.max(0, Number.isFinite(o.depth) ? o.depth : 0);
-	const caveT = Math.min(1, Math.max(0, (depth - 4) / 8));
-	// the coat never goes fully black — a mirror finish still catches SOMETHING
-	const light = 0.3 + 0.7 * daylight * (1 - caveT * 0.6);
-	const stops = biome.map((stop, i) => {
-		let c = mixRgb(stop, HERO_SHEEN_CAVE[i], caveT);
-		if(o.submerged) c = mixRgb(c, HERO_SHEEN_WATER, 0.35);
-		return [Math.round(c[0] * light), Math.round(c[1] * light), Math.round(c[2] * light)];
-	});
-	return { top: stops[0], mid: stops[1], bot: stops[2] };
+	// what an OPEN column above the head reflects: the sky — unless the hero is
+	// well below the surface, where a tall shaft must read as cave dark, not as
+	// a patch of noon blue glowing on the crown
+	const surf = (typeof o.surfaceHeight === 'function') ? o.surfaceHeight(px) : null;
+	const underground = Number.isFinite(surf) && (py - surf) > 6;
+	const sky = underground ? [16, 16, 22] : mixRgb(HERO_SHEEN_SKY_NIGHT, HERO_SHEEN_SKY_DAY, daylight);
+	const colorAt = (x, y) => {
+		const t = o.getTile(x, y);
+		if(t === T.AIR) return null;
+		if(t === T.WATER) return HERO_SHEEN_WATER;
+		return heroSheenTileRgb(o.tileColor, t);
+	};
+	// crown: first thing over the head per column — a cave ceiling arrives as
+	// its rock color, an open column reflects the sky of the moment
+	const above = [];
+	for(let dx = -2; dx <= 2; dx++){
+		let hit = null;
+		for(let dy = 2; dy <= 9 && !hit; dy++) hit = colorAt(px + dx, py - dy);
+		above.push(hit || sky);
+	}
+	// torso: nearest wall/vegetation within reach on either side
+	const beside = [];
+	for(let dy = -1; dy <= 1; dy++){
+		for(const dir of [-1, 1]){
+			let hit = null;
+			for(let dx = 1; dx <= 5 && !hit; dx++) hit = colorAt(px + dir * dx, py + dy);
+			if(hit) beside.push(hit);
+		}
+	}
+	// legs: the actual ground stood on (grass field -> green boots)
+	const below = [];
+	for(let dx = -2; dx <= 2; dx++){
+		let hit = null;
+		for(let dy = 1; dy <= 6 && !hit; dy++) hit = colorAt(px + dx, py + dy);
+		if(hit) below.push(hit);
+	}
+	let top = avgRgb(above) || sky;
+	let bot = avgRgb(below) || [46, 42, 40];
+	let mid = avgRgb(beside) || mixRgb(top, bot, 0.55);
+	// open-air ambient: the coat dims with dusk (floor 0.3 — a mirror finish
+	// still catches SOMETHING at night); emitters shine AFTER this scaling
+	const light = 0.3 + 0.7 * daylight;
+	top = [top[0] * light, top[1] * light, top[2] * light];
+	mid = [mid[0] * light, mid[1] * light, mid[2] * light];
+	bot = [bot[0] * light, bot[1] * light, bot[2] * light];
+	// strongest glow emitter in reach tints the coat (bloom table + the same
+	// home-power gate bloom uses; fails CLOSED without a predicate)
+	let warm = null, warmW = 0;
+	for(let dy = -4; dy <= 4; dy++){
+		for(let dx = -5; dx <= 5; dx++){
+			const t = o.getTile(px + dx, py + dy);
+			if(t === T.AIR || t === T.WATER) continue;
+			const src = bloomSourceFor(t);
+			if(!src) continue;
+			if(INFO[t] && INFO[t].requiresHomePower && !(typeof o.poweredAt === 'function' && o.poweredAt(px + dx, py + dy, t))) continue;
+			const w = (src.level / 15) * (1 - Math.max(Math.abs(dx), Math.abs(dy)) / 7);
+			if(w > warmW){
+				warmW = w;
+				const p = src.color.split(',');
+				warm = [+p[0], +p[1], +p[2]];
+			}
+		}
+	}
+	if(warm){
+		const k = Math.min(0.55, warmW * 0.8);
+		top = mixRgb(top, warm, k * 0.6);
+		mid = mixRgb(mid, warm, k);
+		bot = mixRgb(bot, warm, k * 0.8);
+	}
+	if(o.submerged){
+		top = mixRgb(top, HERO_SHEEN_WATER, 0.45);
+		mid = mixRgb(mid, HERO_SHEEN_WATER, 0.45);
+		bot = mixRgb(bot, HERO_SHEEN_WATER, 0.45);
+	}
+	const fin = (c) => [Math.round(Math.max(0, Math.min(255, c[0]))), Math.round(Math.max(0, Math.min(255, c[1]))), Math.round(Math.max(0, Math.min(255, c[2])))];
+	return { top: fin(top), mid: fin(mid), bot: fin(bot) };
 }
 
-let sheenSig = '';
-let sheenStops = null;
+let sheenCur = null;      // drawn stops (floats) chasing the sampled target
+let sheenTarget = null;   // last sampled environment
+let sheenKey = '';
+let sheenSampleAt = 0;
+let sheenChaseAt = 0;
 
 // --- dynamic shadows (dynamiczne cienie) -------------------------------------
 // Sun-driven ground shadows. The solar model matches the visible celestial
@@ -383,6 +477,16 @@ const api = {
 		if(!config.heatShimmer && !config.iceReflections){ selfBlitCanvas = null; selfBlitCtx = null; return true; }
 		return false;
 	},
+	// QA seam: the current (chased) coat stops, rounded — lets a live driver
+	// assert "green over grass / warm near a torch" without pixel readbacks.
+	_sheenState(){
+		if(!sheenCur) return null;
+		return {
+			top: sheenCur.top.map(Math.round),
+			mid: sheenCur.mid.map(Math.round),
+			bot: sheenCur.bot.map(Math.round)
+		};
+	},
 	// Bloom frame driver. Runs in WORLD space (main.js calls it under the world
 	// transform, after the darkness overlay and before fog): emitter list is
 	// rescanned on a frame-health cadence or when the tile window moves; halos
@@ -413,40 +517,62 @@ const api = {
 		return drawn;
 	},
 	// Hero coating frame driver. Runs in WORLD space right after the hero
-	// sprite: a capsule-clipped matcap gradient plus one slow travelling
-	// highlight band. The palette recomputes only when its environment
-	// signature changes (biome / daylight bucket / depth band / submersion);
-	// per frame the cost is two gradients and two fills.
+	// sprite. Environment is resampled on a short cadence (or when the hero
+	// changes tile / dives), the drawn stops chase it exponentially, and the
+	// coat is painted in two layers: a source-over tint that carries the REAL
+	// hue of the surroundings (additive-only washed everything toward white)
+	// and an additive gloss (crown rim + one slow travelling highlight).
 	drawHeroSheenPass(ctx, opts){
 		if(!api.on('heroSheen')) return 0;
 		if(!ctx || !opts || !(opts.bw > 0) || !(opts.bh > 0)) return 0;
-		const sig = (opts.biome | 0) + '|' + Math.round((opts.daylight || 0) * 24) + '|' + Math.min(12, Math.max(0, opts.depth | 0)) + '|' + (opts.submerged ? 1 : 0);
-		if(sig !== sheenSig || !sheenStops){
-			sheenStops = heroSheenPalette(opts);
-			sheenSig = sig;
-		}
-		const bx = opts.bx, by = opts.by, bw = opts.bw, bh = opts.bh;
 		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+		const key = (opts.px | 0) + '|' + (opts.py | 0) + '|' + (opts.submerged ? 1 : 0);
+		if(!sheenTarget || key !== sheenKey || now - sheenSampleAt > 240){
+			const sampled = heroSheenEnvSample(opts);
+			if(sampled) sheenTarget = sampled;
+			sheenKey = key; sheenSampleAt = now;
+		}
+		// neutral steel finish until the first successful probe (headless mocks)
+		const target = sheenTarget || { top: [150, 170, 200], mid: [120, 130, 150], bot: [90, 95, 105] };
+		if(!sheenCur){
+			sheenCur = { top: target.top.slice(), mid: target.mid.slice(), bot: target.bot.slice() };
+		} else {
+			const dt = Math.min(0.25, Math.max(0, (now - sheenChaseAt) / 1000));
+			const k = 1 - Math.exp(-dt / 0.4);
+			for(const zone of ['top', 'mid', 'bot']){
+				const cur = sheenCur[zone], tgt = target[zone];
+				for(let i = 0; i < 3; i++) cur[i] += (tgt[i] - cur[i]) * k;
+			}
+		}
+		sheenChaseAt = now;
+		const bx = opts.bx, by = opts.by, bw = opts.bw, bh = opts.bh;
+		const rgb = (z) => Math.round(sheenCur[z][0]) + ',' + Math.round(sheenCur[z][1]) + ',' + Math.round(sheenCur[z][2]);
 		ctx.save();
 		// capsule clip approximating the hero silhouette (slightly inset)
 		ctx.beginPath();
 		if(typeof ctx.roundRect === 'function') ctx.roundRect(bx + bw * 0.06, by + bh * 0.03, bw * 0.88, bh * 0.94, Math.min(bw, bh) * 0.32);
 		else ctx.rect(bx + bw * 0.06, by + bh * 0.03, bw * 0.88, bh * 0.94);
 		ctx.clip();
-		ctx.globalCompositeOperation = 'lighter';
-		const s = sheenStops;
 		const grad = ctx.createLinearGradient(0, by, 0, by + bh);
-		grad.addColorStop(0, 'rgba(' + s.top[0] + ',' + s.top[1] + ',' + s.top[2] + ',0.36)');
-		grad.addColorStop(0.55, 'rgba(' + s.mid[0] + ',' + s.mid[1] + ',' + s.mid[2] + ',0.24)');
-		grad.addColorStop(1, 'rgba(' + s.bot[0] + ',' + s.bot[1] + ',' + s.bot[2] + ',0.29)');
+		grad.addColorStop(0, 'rgba(' + rgb('top') + ',0.42)');
+		grad.addColorStop(0.52, 'rgba(' + rgb('mid') + ',0.34)');
+		grad.addColorStop(1, 'rgba(' + rgb('bot') + ',0.40)');
 		ctx.fillStyle = grad;
 		ctx.fillRect(bx, by, bw, bh);
-		// travelling diagonal highlight: the "coat catches the light" beat
-		const phase = (now * 0.00045) % 1;
+		ctx.globalCompositeOperation = 'lighter';
+		const daylight = Math.max(0, Math.min(1, Number.isFinite(opts.daylight) ? opts.daylight : 1));
+		const rim = ctx.createLinearGradient(0, by, 0, by + bh * 0.45);
+		rim.addColorStop(0, 'rgba(255,255,255,' + (0.10 + 0.14 * daylight).toFixed(3) + ')');
+		rim.addColorStop(1, 'rgba(255,255,255,0)');
+		ctx.fillStyle = rim;
+		ctx.fillRect(bx, by, bw, bh * 0.45);
+		// travelling diagonal highlight: the "coat catches the light" beat —
+		// slow enough to read as a gloss sweep, not a pattern change
+		const phase = (now * 0.00028) % 1;
 		const hx = bx - bw * 0.6 + bw * 2.2 * phase;
 		const hg = ctx.createLinearGradient(hx, by, hx + bw * 0.55, by + bh);
 		hg.addColorStop(0, 'rgba(255,255,255,0)');
-		hg.addColorStop(0.5, 'rgba(255,255,255,0.30)');
+		hg.addColorStop(0.5, 'rgba(255,255,255,0.20)');
 		hg.addColorStop(1, 'rgba(255,255,255,0)');
 		ctx.fillStyle = hg;
 		ctx.fillRect(bx - bw, by, bw * 3, bh);
