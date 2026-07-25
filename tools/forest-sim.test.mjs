@@ -188,7 +188,7 @@ try {
     assert.equal(F.metrics().saplings, 0, 'reset clears them');
     F.restore(snap);
     assert.equal(F.metrics().saplings, 1, 'a reload keeps a regrowing forest');
-    F.restore({ list: [{ x: 'x', y: 3 }, { x: 5, y: 1e9 }, { x: 7, y: 58, age: 'NaN', variant: 'x'.repeat(90) }] });
+    F.restore({ list: [{ x: 'x', y: 3 }, { x: 5, y: 1e9 }, { x: 9e9, y: 58 }, { x: 7, y: 58, age: 'NaN', variant: 'x'.repeat(90) }] });
     assert.ok(F.metrics().saplings <= 1, 'hostile save rows are rejected, not trusted');
     for(const s of F._debug.saplings().values()){
       assert.ok(Number.isFinite(s.age), 'a restored age is always finite');

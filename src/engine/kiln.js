@@ -137,7 +137,7 @@ import { T } from '../constants.js';
       for(const raw of data.list.slice(0, CFG.MAX_KILNS)){
         if(!raw) continue;
         const x = Number(raw.x), y = Number(raw.y);
-        if(Number.isFinite(x) && Number.isFinite(y)) noteKiln(x, y);
+        if(Number.isFinite(x) && Number.isFinite(y) && Math.abs(x) <= 30000000 && y > -1000 && y < 1000) noteKiln(x, y);
       }
     }
     return true;

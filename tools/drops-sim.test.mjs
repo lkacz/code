@@ -748,4 +748,12 @@ assert.match(bossesSrc, /id:'BLOCK_BOSS'[\s\S]{0,220}\},\{boss:true,hp:hpBudget/
 const centerGuardianSrc = readFileSync(new URL('../src/engine/center_guardian.js', import.meta.url), 'utf8');
 assert.match(centerGuardianSrc, /id:'CENTER_GUARDIAN'[\s\S]{0,180}\{boss:true,hp:mimic\.maxHp,dmg:30,xp:700\}/, 'center guardian receives a boss jewel roll');
 
+// merged piles stay inside the 99 wire envelope: guest pickup acks clamp qty to
+// 99 but remove the WHOLE drop, so an uncapped merge (150-pile) paid 99 and
+// destroyed the rest. Piles that would overflow stay separate.
+{
+  const src = await (await import('node:fs/promises')).readFile(new URL('../src/engine/drops.js', import.meta.url), 'utf8');
+  if(!/if\(a\.qty\+b\.qty>99\) continue;/.test(src)) throw new Error('pile merging must be capped at the 99 wire envelope');
+}
+
 console.log('drops-sim: all assertions passed');

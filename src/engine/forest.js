@@ -259,6 +259,7 @@ import { T, CHUNK_W, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, isAutumnLeaf } from '../
         if(!raw) continue;
         const x = Number(raw.x), y = Number(raw.y), age = Number(raw.age);
         if(!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if(Math.abs(x) > 30000000) continue; // same |x| envelope every restorer uses
         if(y <= WORLD_TOP || y >= WORLD_BOTTOM) continue;
         const variant = typeof raw.variant === 'string' && raw.variant.length <= 16 ? raw.variant : null;
         saplings.set(key(x | 0, y | 0), {

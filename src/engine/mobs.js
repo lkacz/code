@@ -7858,13 +7858,22 @@ const mobs = (function(){
     if(heard){ m._investigate = {x:heard.x, y:heard.y, until:(m._investigate && m._investigate.until) || 0}; m._investigateT = 3.2; }
   }
   if(m._investigateT > 0){ m._investigateT -= dt; if(m._investigateT <= 0) m._investigate = null; }
-  const aggroNow = aggressive && (canSee || shouldPursue);
-  m._aggro = aggroNow;
+  // Sight ACQUIRES, pursue only RETAINS. The old form (canSee || shouldPursue)
+  // made pursue an acquisition range too, and since every species declares
+  // pursueRange > sightRange, canSee — the only carrier of fogSight/quietSight —
+  // could never decide anything: perception was a pure distance test and the
+  // sneak/backstab window could not open on any creature within melee reach.
+  // A sneaking body must also be in FRONT of the creature to be spotted;
+  // contact always gives it away. Retention reads the PREVIOUS perception, so a
+  // creature keeps tracking a target it already noticed out to pursue range.
+  const quietTarget = !!(typeof MM!=='undefined' && MM.noise && MM.noise.bodyQuiet && MM.noise.bodyQuiet(heroForMob));
+  const facingTarget = ((aimTarget && aimTarget.x>=m.x) ? 1 : -1) === ((m.facing>=0) ? 1 : -1);
+  const spotted = canSee && (!quietTarget || facingTarget || distToPlayer<=1.0);
   // PERCEPTION, tracked apart from hostility: a peaceful, pacified or spooked
-  // creature still NOTICES a body at sight/pursue range. The ambush check must
-  // ask "did it notice me", never "is it hostile" — otherwise every
-  // non-aggressive creature would be permanently ambushable.
-  m._noticed = canSee || shouldPursue;
+  // creature still notices you — hostility only weaponizes the same awareness.
+  m._noticed = spotted || (shouldPursue && !!m._noticed);
+  const aggroNow = aggressive && m._noticed;
+  m._aggro = aggroNow;
   const fleeTarget=m._progressionOutmatched ? {x:m.x+(m.x>=player.x?10000:-10000),y:m.y} : null;
   m._combatTarget=fleeTarget || (aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : heroForMob);
   // Blinded (sand in the eyes): the AI perceives its target impossibly far away,

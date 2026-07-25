@@ -340,4 +340,35 @@ assert.equal(trader.tradeSell('definitely-not-a-rate',{inv,player}).ok, false, '
   assert.equal(trader.tradeService('nonsense', {inv:sInv}).ok, false, 'unknown service ids are refused');
 }
 
+// 10) the services shelf must be REACHABLE — it shipped implemented, tested and
+// dead, because no UI ever called tradeService.
+{
+  const { readFile } = await import('node:fs/promises');
+  const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(mainSrc, /TRADER\.tradeService\(s\.id,tradeCtx\)/, 'the trade panel actually calls tradeService');
+  assert.match(mainSrc, /'Usługi \(złoto\)'/, 'the gold services section renders in the panel');
+  // callCaravan must survive depart() — depart is the sole owner of nextVisitDay
+  trader.reset();
+  trader.forceArrive({x:0,y:SURF-2}, getTile, {day:2});
+  const rInv={gold:100, diamond:0};
+  assert.equal(trader.tradeService('callCaravan',{inv:rInv}).ok, true, 'callCaravan is purchasable');
+  trader.forceDepart({day:2.6});
+  const rushed = trader.snapshot().nextVisitDay;
+  trader.reset();
+  trader.forceArrive({x:0,y:SURF-2}, getTile, {day:2});
+  trader.forceDepart({day:2.6});
+  const normal = trader.snapshot().nextVisitDay;
+  assert.ok(rushed < normal, 'a paid rush actually shortens the next visit ('+rushed.toFixed(2)+' < '+normal.toFixed(2)+')');
+  // restock must actually change the stock — rollStock is pure, so without a
+  // moving counter the second purchase returned byte-identical stock
+  trader.reset();
+  trader.forceArrive({x:0,y:SURF-2}, getTile, {day:2});
+  const s0=JSON.stringify(trader.stock().offers.map(o=>o.id));
+  trader.tradeService('restock',{inv:{gold:100}});
+  const s1=JSON.stringify(trader.stock().offers.map(o=>o.id));
+  trader.tradeService('restock',{inv:{gold:100}});
+  const s2=JSON.stringify(trader.stock().offers.map(o=>o.id));
+  assert.ok(s1!==s0 || s2!==s1, 'consecutive restocks are not byte-identical');
+}
+
 console.log('trader-sim: all assertions passed');

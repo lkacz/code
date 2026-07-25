@@ -15719,7 +15719,7 @@ if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateIn
 		panel.innerHTML='';
 		const head=document.createElement('div'); head.className='tradeHead';
 		const title=document.createElement('strong'); title.textContent='🧺 Wędrowny Handlarz';
-		const wallet=document.createElement('span'); wallet.className='tradeWallet'; wallet.textContent='💎 × '+(inv.diamond|0)+'   Ir × '+(inv.iridium|0);
+		const wallet=document.createElement('span'); wallet.className='tradeWallet'; wallet.textContent='💎 × '+(inv.diamond|0)+'   Ir × '+(inv.iridium|0)+'   🪙 × '+(inv.gold|0);
 		const close=document.createElement('button'); close.className='tradeClose'; close.type='button'; close.textContent='✕'; close.title='Zamknij (Esc)';
 		close.addEventListener('click',closePanel);
 		head.appendChild(title); head.appendChild(wallet); head.appendChild(close);
@@ -15736,6 +15736,26 @@ if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateIn
 		stock.rates.forEach(r=>sellSec.appendChild(tradeRow(r,'sell')));
 		cols.appendChild(buySec); cols.appendChild(sellSec);
 		panel.appendChild(cols);
+		// Usługi za złoto (trader.tradeService): without this section the whole
+		// services shelf was UNREACHABLE — implemented, tested, and dead, because
+		// nothing in any UI ever called tradeService. Gold buys services, never gear.
+		const svcs=(stock.services||[]);
+		if(svcs.length){
+			const svcSec=document.createElement('div'); svcSec.className='tradeSection tradeServices';
+			const svcTitle=document.createElement('b'); svcTitle.textContent='Usługi (złoto)'; svcSec.appendChild(svcTitle);
+			svcs.forEach(s=>{
+				const row=document.createElement('div'); row.className='tradeRow';
+				const name=document.createElement('span'); name.className='tName';
+				name.textContent=s.icon+' '+s.label; name.title=s.desc||s.label;
+				const price=document.createElement('span'); price.className='tPrice'; price.textContent=s.gold+' 🪙';
+				const btn=document.createElement('button'); btn.type='button'; btn.textContent='Kup';
+				btn.disabled=(inv.gold|0)<s.gold;
+				btn.addEventListener('click',()=>{ const r=TRADER.tradeService(s.id,tradeCtx); if(!r.ok && r.reason) msg('🧺 '+r.reason); renderPanel(); });
+				row.appendChild(name); row.appendChild(price); row.appendChild(btn);
+				svcSec.appendChild(row);
+			});
+			panel.appendChild(svcSec);
+		}
 		const foot=document.createElement('div'); foot.className='tradeFoot';
 		foot.textContent='Kram zwija się po pół dnia. Im dalej od centrum świata, tym bardziej zaawansowany katalog wyposażenia.';
 		panel.appendChild(foot);

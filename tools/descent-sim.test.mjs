@@ -104,7 +104,7 @@ const { challenge: C, CHALLENGE_MODS } = await import('../src/engine/challenge.j
 {
   const finSrc = await readFile(new URL('../src/engine/finale.js', import.meta.url), 'utf8');
   const attSrc = await readFile(new URL('../src/engine/attention.js', import.meta.url), 'utf8');
-  assert.match(finSrc, /descentFor\(depth \+ 2/, 'the finale offers the NEXT layer down');
+  assert.match(finSrc, /descentFor\(depth \+ 1/, 'the finale offers the NEXT layer down (unlock() already counted this world in completions, so +2 skipped a layer)');
   assert.match(finSrc, /C\.queueNext\(\{ seed: plan\.seed, mods: plan\.mods \}\)/,
     'the descent rides the existing one-shot challenge handoff — no new protocol');
   assert.match(finSrc, /state\.onNewGame/, 'and then takes the ordinary new-game path');

@@ -788,6 +788,10 @@ const drops = (function(){
         if(b.kind!=='resource' || !b.settled || b.res!==a.res) continue;
         const dx=a.x-b.x, dy=a.y-b.y;
         if(dx*dx+dy*dy<=MERGE_DIST*MERGE_DIST){
+          // 99 is the wire envelope: guest pickup acks clamp qty to 99 but remove
+          // the WHOLE drop, so a merged 150-pile would pay 99 and destroy 51.
+          // Piles that would overflow simply stay separate.
+          if(a.qty+b.qty>99) continue;
           a.qty+=b.qty; a.age=Math.min(a.age,b.age);
           list.splice(j,1); j--;
         }

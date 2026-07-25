@@ -172,6 +172,14 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   assert.match(mobsSrc, /MM\.noise\.sightMult\(heroForMob\)/, 'sneaking feeds the mob sight test');
   assert.match(mobsSrc, /MM\.noise\.heardBy\(m\.x, m\.y/, 'creatures consult the sound field');
   assert.match(mobsSrc, /MM\.noise\.isUnaware\(m\)/, 'the melee entry checks for a backstab');
+  // Sight ACQUIRES, pursue only RETAINS: every species declares pursueRange >
+  // sightRange, so (canSee || shouldPursue) was a pure distance test — the only
+  // carrier of quietSight (canSee) could never decide anything and the ambush
+  // window could not open on any creature within melee reach.
+  assert.match(mobsSrc, /const spotted = canSee && \(!quietTarget \|\| facingTarget \|\| distToPlayer<=1\.0\)/,
+    'a sneaking body must also be in FRONT of the creature to be spotted');
+  assert.match(mobsSrc, /m\._noticed = spotted \|\| \(shouldPursue && !!m\._noticed\)/,
+    'sight acquires, pursue only retains');
   assert.match(mainSrc, /NOISE\.emitMovement\(player\)/, 'the hero announces its own movement');
   assert.match(mainSrc, /for\(const b of bodies\) NOISE\.emitMovement\(b\)/, 'and so does every coop body');
   assert.match(mainSrc, /NOISE\.emit\(tx\+0\.5, ty\+0\.5, 'mine'/, 'mining emits through the shared break hook');

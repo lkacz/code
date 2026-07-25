@@ -661,13 +661,16 @@ const finale = (function(){
     // existing one-shot sessionStorage handoff, then takes the ordinary new-game
     // path. Boot-time law only: no runtime world writes, no stream plane.
     const depth = completions();
-    const descend = node('button', 'fnSecondary', '⬇ Zejdź głębiej (warstwa ' + (depth + 2) + ')');
+    // unlock() has ALREADY counted this world in completions() by the time the
+    // ceremony builds its buttons, so the next layer down is depth+1 — depth+2
+    // silently skipped a layer (and its curse count) on every descent.
+    const descend = node('button', 'fnSecondary', '⬇ Zejdź głębiej (warstwa ' + (depth + 1) + ')');
     descend.type = 'button';
     descend.title = 'Świat wyprowadzony z tej warstwy: te same klątwy co zawsze, ale coraz więcej naraz.';
     descend.addEventListener('click', ()=>{
       const C = root.MM && root.MM.challenge;
       if(!C || !C.descentFor){ descend.disabled = true; descend.textContent = 'zejście niedostępne'; return; }
-      const plan = C.descentFor(depth + 2, report().seed || 0);
+      const plan = C.descentFor(depth + 1, report().seed || 0);
       const names = (plan.mods || []).map(m => (C.MODS[m] && C.MODS[m].label) || m).join(', ');
       const ok = root.confirm ? root.confirm(
         'Zejść na warstwę ' + plan.layer + '?\n\n' +
@@ -680,7 +683,7 @@ const finale = (function(){
         C.queueNext({ seed: plan.seed, mods: plan.mods });
         if(typeof state.onNewGame === 'function') started = !!state.onNewGame();
       }catch(e){ started = false; }
-      if(!started){ descend.disabled = false; descend.textContent = '⬇ Zejdź głębiej (warstwa ' + (depth + 2) + ')'; }
+      if(!started){ descend.disabled = false; descend.textContent = '⬇ Zejdź głębiej (warstwa ' + (depth + 1) + ')'; }
     });
     btns.appendChild(descend);
     const keep = node('button', 'fnSecondary', '📸 Pamiątka warstwy');
