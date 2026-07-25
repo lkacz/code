@@ -15307,6 +15307,13 @@ function draw(){ // Background first
  // Ultra heat shimmer: sine-offset self-blit slices above open-air lava and
  // geothermal pools distort the already-drawn scene before darkness applies.
  if(gfxUltraOn('heatShimmer') && POST_FX.drawHeatShimmerPass) POST_FX.drawHeatShimmerPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),pools:(GEOTHERMAL && GEOTHERMAL.poolsNear)?GEOTHERMAL.poolsNear(player.x,Math.ceil(viewX*0.6)+4):null,frameMs:lastFrameMs});
+ // Ultra hero coating: with the world complete (creatures, projectiles, fire,
+ // gases, water, machines all drawn) grab the field around the hero for the
+ // NEXT frame's coat. Here, before the darkness/fog overlays, because the coat
+ // is dimmed by those itself — a pre-dimmed source would double the effect.
+ if(!deathTravelFx && heroCloakA>=0.98 && POST_FX && POST_FX.captureHeroScene && POST_FX.on('heroSheen')){
+	 POST_FX.captureHeroScene(ctx);
+ }
  // Cave darkness overlay: darkens unlit underground before UI-ish indicators,
  // so the ghost preview, mining progress and fog (final occlusion) stay on top.
  drawLightingOverlay(sx,sy,viewX,viewY,{camX:camRenderX,camY:camRenderY,shake:screenShake});

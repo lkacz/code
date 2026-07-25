@@ -431,12 +431,20 @@ function snapshotSceneCanvas(srcCanvas){
 const HERO_MIRROR_SPREAD_X = 5;
 const HERO_MIRROR_SPREAD_Y = 3;
 const HERO_MIRROR_MAX_PX = 256;
-let heroMirrorCanvas = null;
+let heroMirrorCanvas = null;   // grab taken BEFORE the sprite (hero-free)
 let heroMirrorCtx = null;
-let heroMirrorFresh = false;
+let heroMirrorAt = 0;
+let heroSceneCanvas = null;    // grab of the FINISHED world, hero patched out
+let heroSceneCtx = null;
+let heroSceneAt = 0;
+let heroGrabRect = null;       // device rect of the grab + the patch sub-rect
 let heroMirrorUsed = false;
+let heroSceneUsed = false;
 let heroCoatCanvas = null;
 let heroCoatCtx = null;
+// A grab older than this is stale (pause, teleport, a frame that drew no hero)
+// and the coat falls back to the sampled tint rather than showing a ghost.
+const HERO_GRAB_TTL_MS = 250;
 // Barrel mapping from a destination band (0..1 down the body) to the source
 // band of the grab. Exponent > 1 keeps the middle of the field large and
 // squeezes the periphery — the signature look of a curved mirror. Exported for
@@ -553,7 +561,12 @@ const api = {
 	// needs it (settings handlers call this on toggle-off; the gated call
 	// sites cannot, because an off pass is never invoked).
 	releaseScratch(){
-		if(!config.heroSheen){ heroMirrorCanvas = null; heroMirrorCtx = null; heroCoatCanvas = null; heroCoatCtx = null; heroMirrorFresh = false; }
+		if(!config.heroSheen){
+			heroMirrorCanvas = null; heroMirrorCtx = null;
+			heroSceneCanvas = null; heroSceneCtx = null;
+			heroCoatCanvas = null; heroCoatCtx = null;
+			heroGrabRect = null; heroMirrorAt = 0; heroSceneAt = 0;
+		}
 		if(!config.heatShimmer && !config.iceReflections){ selfBlitCanvas = null; selfBlitCtx = null; return true; }
 		return false;
 	},
@@ -566,7 +579,8 @@ const api = {
 			top: sheenCur.top.map(Math.round),
 			mid: sheenCur.mid.map(Math.round),
 			bot: sheenCur.bot.map(Math.round),
-			mirrored: heroMirrorUsed
+			mirrored: heroMirrorUsed,
+			full: heroSceneUsed
 		};
 	},
 	// Grab the world behind the hero. MUST be called in world space BEFORE the
@@ -574,7 +588,6 @@ const api = {
 	// drawHeroSheenPass and then invalidated, so a pass without a fresh grab
 	// (mock contexts, screenshot tools) falls back to the sampled tint alone.
 	captureHeroBackdrop(ctx, opts){
-		heroMirrorFresh = false;
 		if(!api.on('heroSheen')) return 0;
 		if(typeof document === 'undefined') return 0;
 		if(!ctx || !ctx.canvas || !opts || !(opts.bw > 0) || !(opts.bh > 0)) return 0;
@@ -608,7 +621,58 @@ const api = {
 		heroMirrorCtx.clearRect(0, 0, cw, ch);
 		heroMirrorCtx.imageSmoothingEnabled = true;
 		heroMirrorCtx.drawImage(src, sx, sy, sw, sh, 0, 0, cw, ch);
-		heroMirrorFresh = true;
+		// Remember the exact rect so the full-scene grab later in the frame can
+		// sample the SAME field, plus where the hero sits inside it (with a
+		// margin for the cape and the held weapon) — that is the patch the
+		// full-scene grab replaces with this hero-free copy.
+		const gk = cw / sw;
+		const bdx = (m.a * opts.bx + m.e - sx) * gk, bdy = (m.d * opts.by + m.f - sy) * gk;
+		const bdw = m.a * opts.bw * gk, bdh = m.d * opts.bh * gk;
+		const mx = bdw * 0.55, my = bdh * 0.15;
+		const px = Math.max(0, Math.min(cw, bdx - mx)), py = Math.max(0, Math.min(ch, bdy - my));
+		heroGrabRect = {
+			sx, sy, sw, sh, cw, ch,
+			px, py,
+			pw: Math.max(0, Math.min(cw - px, bdw + 2 * mx)),
+			ph: Math.max(0, Math.min(ch - py, bdh + 2 * my))
+		};
+		heroMirrorAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+		return 1;
+	},
+	// Grab the FINISHED world (mobs, creatures, projectiles, fire, gases,
+	// water, machines — everything drawn after the hero), then paste the
+	// pre-sprite grab back over the hero's own footprint so the coat never
+	// mirrors the hero, his cape or his blade. Call it once per frame at the
+	// end of the world pass, BEFORE the darkness/fog overlays: the coat is
+	// dimmed by those overlays itself, and a pre-dimmed source would double it.
+	// The result feeds the NEXT frame's coat — one frame of lag is invisible in
+	// a reflection compressed to a 14x19px sprite, and it keeps the coat drawn
+	// in its proper layer (fog and darkness still cover the hero).
+	captureHeroScene(ctx){
+		if(!api.on('heroSheen')) return 0;
+		if(typeof document === 'undefined') return 0;
+		if(!ctx || !ctx.canvas || !heroGrabRect || !heroMirrorCanvas) return 0;
+		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+		if(!(heroMirrorAt > 0) || now - heroMirrorAt > HERO_GRAB_TTL_MS) return 0; // no matching backdrop this frame
+		const r = heroGrabRect;
+		const src = ctx.canvas;
+		if(!(src.width > 0) || !(src.height > 0)) return 0;
+		if(!heroSceneCanvas){
+			heroSceneCanvas = document.createElement('canvas');
+			heroSceneCtx = heroSceneCanvas.getContext('2d');
+		}
+		if(!heroSceneCtx) return 0;
+		if(heroSceneCanvas.width !== r.cw || heroSceneCanvas.height !== r.ch){
+			heroSceneCanvas.width = r.cw;
+			heroSceneCanvas.height = r.ch;
+		}
+		const g = heroSceneCtx;
+		g.setTransform(1, 0, 0, 1, 0, 0);
+		g.clearRect(0, 0, r.cw, r.ch);
+		g.imageSmoothingEnabled = true;
+		g.drawImage(src, r.sx, r.sy, r.sw, r.sh, 0, 0, r.cw, r.ch);
+		if(r.pw > 0 && r.ph > 0) g.drawImage(heroMirrorCanvas, r.px, r.py, r.pw, r.ph, r.px, r.py, r.pw, r.ph);
+		heroSceneAt = now;
 		return 1;
 	},
 	// Bloom frame driver. Runs in WORLD space (main.js calls it under the world
@@ -671,9 +735,15 @@ const api = {
 		sheenChaseAt = now;
 		const bx = opts.bx, by = opts.by, bw = opts.bw, bh = opts.bh;
 		const rgb = (z) => Math.round(sheenCur[z][0]) + ',' + Math.round(sheenCur[z][1]) + ',' + Math.round(sheenCur[z][2]);
-		const mirror = (heroMirrorFresh && heroMirrorCanvas && heroMirrorCanvas.width > 0) ? heroMirrorCanvas : null;
+		// Prefer the full-scene grab (everything the world drew last frame);
+		// fall back to this frame's pre-sprite grab on the very first frame or
+		// right after a resize, and to the sampled tint when both went stale.
+		const fresh = (t) => t > 0 && (now - t) < HERO_GRAB_TTL_MS;
+		const mirror = (fresh(heroSceneAt) && heroSceneCanvas && heroSceneCanvas.width > 0)
+			? heroSceneCanvas
+			: ((fresh(heroMirrorAt) && heroMirrorCanvas && heroMirrorCanvas.width > 0) ? heroMirrorCanvas : null);
+		heroSceneUsed = mirror === heroSceneCanvas;
 		heroMirrorUsed = !!mirror;
-		heroMirrorFresh = false; // one grab feeds exactly one draw
 		const daylight = Math.max(0, Math.min(1, Number.isFinite(opts.daylight) ? opts.daylight : 1));
 		ctx.save();
 		// The outfit is a plain filled RECT with a 1px outline (inventory.js

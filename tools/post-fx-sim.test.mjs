@@ -200,9 +200,14 @@ postFx.set('heroSheen', false);
 assert.equal(postFx.captureHeroBackdrop(makeMirrorCtx(), { bx: 100, by: 100, bw: 14, bh: 19 }), 0, 'no grab while the coat is off');
 postFx.set('heroSheen', true);
 assert.equal(postFx.captureHeroBackdrop(makeMirrorCtx(), { bx: 100, by: 100, bw: 14, bh: 19 }), 1, 'the coat grabs the scene behind the hero');
+// the full-scene grab reuses the backdrop's rect and patches the hero out of it
+assert.equal(postFx.captureHeroScene(makeMirrorCtx()), 1, 'the finished world is grabbed for the next frame');
 const offscreen = makeMirrorCtx();
 assert.equal(postFx.captureHeroBackdrop(offscreen, { bx: -9000, by: -9000, bw: 14, bh: 19 }), 0, 'a hero past the screen edge grabs nothing (no bogus blit)');
 postFx.set('heroSheen', false);
+assert.equal(postFx.captureHeroScene(makeMirrorCtx()), 0, 'no full-scene grab while the coat is off');
+postFx.releaseScratch();
+assert.equal(postFx.captureHeroScene(makeMirrorCtx()), 0, 'without a matching backdrop grab there is nothing to patch the hero out with');
 
 // --- dynamic shadows (solar model) ---------------------------------------------
 // The sun rises on the SCREEN LEFT (background.js celestialPosition), so
@@ -461,6 +466,14 @@ assert.match(mainSrc, /if\(!remoteBody\) heroEyeReplay=\{bodyX,bodyY,bw,bh,style
 assert.match(mainSrc, /if\(heroEyeReplay\) drawHeroEyes\(heroEyeReplay\.bodyX,heroEyeReplay\.bodyY,heroEyeReplay\.bw,heroEyeReplay\.bh,heroEyeReplay\.style,heroEyeReplay\.c\);/, 'the coat replays the eyes on top of its reflection');
 const iEyeReplay = mainSrc.indexOf('if(heroEyeReplay) drawHeroEyes(');
 assert.ok(iEyeReplay > iSheen, 'the eye replay lands AFTER the coat pass (eyes on top, never mirrored over)');
+// The full-scene grab must sit after the world content (so creatures, fire and
+// water are in the reflection) but BEFORE the darkness overlay (the coat is
+// dimmed by that overlay itself — grabbing after it would double the dimming).
+assert.match(mainSrc, /POST_FX\.captureHeroScene\(ctx\);/, 'the coat grabs the finished world once per frame');
+const iSceneGrab = mainSrc.indexOf('POST_FX.captureHeroScene(ctx);');
+const iMobsDraw = mainSrc.indexOf('if(MOBS && MOBS.draw) MOBS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,viewX,viewY);');
+const iDark = mainSrc.indexOf('drawLightingOverlay(sx,sy,viewX,viewY,{camX:camRenderX');
+assert.ok(iMobsDraw > 0 && iSceneGrab > iMobsDraw && iDark > iSceneGrab, 'scene grab: after the creatures/effects, before the darkness overlay');
 // The coat covers the WHOLE outfit rect (inventory.js drawOutfit fills a plain
 // rect + 1px outline). ANY inset is world-space, so it grows with zoom into a
 // visible ring of bare outfit colour between the outline and the coat.

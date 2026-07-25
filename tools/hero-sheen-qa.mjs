@@ -230,6 +230,12 @@ async function main(){
 				['grass: the grabbed backdrop is mirrored onto the hero', grass.st.mirrored === true],
 				['cave: the grabbed backdrop is mirrored onto the hero', cave.after.mirrored === true],
 				['underwater: the grabbed backdrop is mirrored onto the hero', water.st.mirrored === true],
+				// the source must be the FULL world grab (creatures, fire, water,
+				// machines), not the pre-sprite fallback
+				['snow: the reflection sources the finished world', snow.full === true],
+				['grass: the reflection sources the finished world', grass.st.full === true],
+				['cave: the reflection sources the finished world', cave.after.full === true],
+				['underwater: the reflection sources the finished world', water.st.full === true],
 				['snow spawn: coat is bright (winter white reflects)', (snow.bot[0] + snow.bot[1] + snow.bot[2]) / 3 > 110],
 				['grass field: legs pick up GREEN from the ground', grass.st.bot[1] > grass.st.bot[0] && grass.st.bot[1] > grass.st.bot[2]],
 				['grass field: probe really stood on grass', grass.ground === 1],
