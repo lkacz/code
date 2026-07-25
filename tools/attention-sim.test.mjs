@@ -154,4 +154,16 @@ const { attention: A } = await import('../src/engine/attention.js');
   }
 }
 
+// Developer testing: every feature in this wave must be reachable from the
+// debug menu — several of this wave's bugs were only cheap to find once you
+// could TRIGGER the state (a glider that never opened, a forest that never sowed).
+{
+  const uiSrc = await (await import('node:fs/promises')).readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
+  const mainDbg = await (await import('node:fs/promises')).readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  if(!uiSrc.includes('function injectLayerDebugPanel(actions, menuPanel)')) throw new Error('injectLayerDebugPanel must exist');
+  if(!/box\.id=spec\.id/.test(uiSrc)) throw new Error('feature debug panels keep a stable DOM id');
+  if(!uiSrc.includes("id:'layerDebugBox'")) throw new Error('layerDebugBox must have its stable DOM id');
+  if(!mainDbg.includes('MM.ui.injectLayerDebugPanel(')) throw new Error('injectLayerDebugPanel must be wired from main.js');
+}
+
 console.log('attention-sim: all assertions passed');

@@ -2262,13 +2262,187 @@ MM.ui = (function(){
   }
   // Radar pulse helper (the treasure scan lives in the menu; the mobile rail
   // uses its former slot for the explicit mine/build/combat mode switch).
+  // --- 2026-07 feature wave debug panels --------------------------------------
+  // Eight systems shipped in one wave (noise, wildfire, cave-ins, forest
+  // regrowth, kiln, glider, the layer/deeds difficulty axis, and the economy
+  // verbs). They share one scaffold instead of eight hand-rolled copies: the
+  // per-panel differences are only the DOM id, the label and the button table,
+  // and every panel keeps a stable id so its own sim test can pin it.
+  function buildFeatureDebugPanel(spec, actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById(spec.id)) return;
+    actions = actions || {};
+    const box=document.createElement('div');
+    box.id=spec.id;
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent=spec.label;
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+    const metrics=document.createElement('div');
+    metrics.id=spec.id+'Metrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      let text='';
+      try{ text=(typeof actions.metrics==='function') ? String(actions.metrics()||'') : ''; }catch(e){ text='blad metryk'; }
+      metrics.textContent=text || spec.emptyMetrics || 'brak metryk';
+    }
+    (spec.buttons||[]).forEach(([act,txt,color,tip])=>{
+      const b=document.createElement('button');
+      b.textContent=txt;
+      b.title=tip||txt;
+      b.style.cssText='flex:1 1 100px; font-size:11px; padding:3px 6px; border:1px solid '+color+'99;';
+      b.addEventListener('click',()=>{
+        try{
+          const ok=(typeof actions[act]==='function') ? actions[act]() : false;
+          msg(ok!==false && ok!==0 ? (spec.tag+': '+txt) : (spec.tag+': '+txt+' — brak celu'));
+          refreshMetrics();
+        }catch(e){ msg(spec.tag+': blad'); }
+      });
+      box.appendChild(b);
+    });
+    box.appendChild(metrics);
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+    panel.appendChild(box);
+  }
+  // Hałas (engine/noise.js): emit test sounds, toggle the sneak flag, and read
+  // back what a creature standing here would actually hear.
+  function injectNoiseDebugPanel(actions, menuPanel){
+    return buildFeatureDebugPanel({
+      id:'noiseDebugBox', tag:'Halas',
+      label:'Halas: dzwiek, skradanie, wabik, cios z zaskoczenia (debug):',
+      emptyMetrics:'brak metryk halasu',
+      buttons:[
+        ['blast','Huk (wybuch)','#ff9a5c','Emituje najglosniejszy dzwiek w miejscu bohatera'],
+        ['decoy','Rzuc wabik','#c8e6f8','Kamien 12 kratek dalej — stwory ida sprawdzic'],
+        ['mine','Stuk kilofa','#c9ced6','Emituje dzwiek wydobycia (glosnosc wg twardosci)'],
+        ['quiet','Prze/wlacz skradanie','#a8d7a8','Wymusza flage quiet bohatera (polowa zasiegu wzroku)'],
+        ['deafen','Wycisz swiat','#3a3d44','Czysci bufor dzwiekow — nikt juz nic nie slyszy'],
+        ['unaware','Policz niesw. stwory','#e0b45c','Ile poblizu stworow da sie teraz zajsc od tylu']
+      ]
+    }, actions, menuPanel);
+  }
+  // Pożar (engine/fire.js wildfire coupling): wind-driven spread, embers, rain.
+  function injectWildfireDebugPanel(actions, menuPanel){
+    return buildFeatureDebugPanel({
+      id:'wildfireDebugBox', tag:'Pozar',
+      label:'Pozar: wiatr, wilgoc, iskry, deszcz (debug):',
+      emptyMetrics:'brak metryk pozaru',
+      buttons:[
+        ['forest','Zasadz suchy las','#2faa2f','Stawia pas drzew obok bohatera na podpalke'],
+        ['ignite','Podpal','#e25822','Zapala najblizszy palny kafel'],
+        ['galeE','Wichura ->','#dfe7ec','Wymusza silny wiatr w prawo (ogien leci z wiatrem)'],
+        ['galeW','Wichura <-','#dfe7ec','Wymusza silny wiatr w lewo'],
+        ['calm','Cisza','#9fc4dd','Zdejmuje wymuszenie wiatru'],
+        ['rain','Zacznij deszcz','#7cc4ff','Wstrzykuje pare — chmura zaraz zgasi ogien'],
+        ['ember','Wymus iskre','#ffe27a','Prubuje przerzucic iskre z najblizszego ognia']
+      ]
+    }, actions, menuPanel);
+  }
+  // Zawał (engine/cave_in.js): gallery, disturb, props.
+  function injectCaveInDebugPanel(actions, menuPanel){
+    return buildFeatureDebugPanel({
+      id:'caveInDebugBox', tag:'Zawal',
+      label:'Zawal: strop, wstrzas, stemple (debug):',
+      emptyMetrics:'brak metryk zawalu',
+      buttons:[
+        ['gallery','Wydraz chodnik','#888a90','Wycina szeroki nieporadny chodnik nad bohaterem'],
+        ['disturb','Wstrzasnij stropem','#c9a06a','Uderza w strop — powinien zaczac trzeszczec'],
+        ['collapseNow','Zawal natychmiast','#e25822','Skraca ostrzezenie do zera'],
+        ['props','Daj stemple','#8a6236','Dorzuca 20 stempli do ekwipunku'],
+        ['propHere','Postaw stempel','#c8a860','Wbija stempel pod bohaterem (odwoluje zawal)']
+      ]
+    }, actions, menuPanel);
+  }
+  // Żywy las (engine/forest.js): sowing, sprouting, maturity.
+  function injectForestDebugPanel(actions, menuPanel){
+    return buildFeatureDebugPanel({
+      id:'forestDebugBox', tag:'Las',
+      label:'Zywy las: nasiona, sadzonki, sukcesja (debug):',
+      emptyMetrics:'brak metryk lasu',
+      buttons:[
+        ['stand','Postaw drzewostan','#2faa2f','Sadzi kilka dojrzalych pni obok — zrodlo nasion'],
+        ['seed','Zasiej nasiono','#5fae4a','Reczne zasianie obok bohatera'],
+        ['disperse','Wymus rozsiew','#8de6b8','Uruchamia skan rodzicow i rozsiew'],
+        ['sprout','Przyspiesz kielkowanie','#c8e6f8','Przewija czas do wzejscia sadzonek'],
+        ['mature','Przyspiesz dojrzewanie','#e0b45c','Przewija czas — sadzonki staja sie drzewami'],
+        ['clear','Wytnij las','#3a3d44','Kasuje pnie i lisc w poblizu (test odrostu)']
+      ]
+    }, actions, menuPanel);
+  }
+  // Piec wypałowy (engine/kiln.js): chamber, fuel, batch.
+  function injectKilnDebugPanel(actions, menuPanel){
+    return buildFeatureDebugPanel({
+      id:'kilnDebugBox', tag:'Piec',
+      label:'Piec wypalowy: komora, opal, wsad (debug):',
+      emptyMetrics:'brak metryk pieca',
+      buttons:[
+        ['build','Zbuduj piec z komora','#9c5b3a','Stawia zamknieta komore ceglana z wlotem obok bohatera'],
+        ['load','Zaladuj glina','#8f7a62','Wypelnia komore glina (glina -> cegla)'],
+        ['lava','Podpal lawa','#e25822','Wlewa lawe pod wlot — piec rusza'],
+        ['grid','Podepnij prad','#e0b45c','Stawia dynamo obok i zasila piec z sieci'],
+        ['kilnItem','Daj piec do reki','#c8a860','Dorzuca 3 piece do ekwipunku']
+      ]
+    }, actions, menuPanel);
+  }
+  // Lotnia (engine/glider.js): canopy, wind carry, thermals.
+  function injectGliderDebugPanel(actions, menuPanel){
+    return buildFeatureDebugPanel({
+      id:'gliderDebugBox', tag:'Lotnia',
+      label:'Lotnia: skrzydlo, wiatr, kominy termiczne (debug):',
+      emptyMetrics:'brak metryk lotni',
+      buttons:[
+        ['grant','Daj lotnie','#cfe8f2','Odblokowuje skrzydlo (inv.tools.glider)'],
+        ['drop','Wznies i puszczaj','#dfe7ec','Teleportuje bohatera 40 kratek w gore'],
+        ['thermal','Zbuduj komin','#e25822','Wylewa jezioro lawy pod bohaterem (silny wznos)'],
+        ['galeE','Wichura ->','#8de6b8','Silny wiatr w prawo — lotnia niesie'],
+        ['calm','Cisza','#9fc4dd','Zdejmuje wymuszenie wiatru']
+      ]
+    }, actions, menuPanel);
+  }
+  // Uwaga Warstwy + Zejście Warstw (attention.js / challenge.js descentFor):
+  // one difficulty axis, so one panel.
+  function injectLayerDebugPanel(actions, menuPanel){
+    return buildFeatureDebugPanel({
+      id:'layerDebugBox', tag:'Warstwa',
+      label:'Uwaga i Zejscie Warstw: os czynow + glebokosc (debug):',
+      emptyMetrics:'brak metryk warstwy',
+      buttons:[
+        ['ore','+ Czyn: ruda','#a5aca0','Dopisuje 50 wydobytych rud do uwagi warstwy'],
+        ['guardian','+ Czyn: serce straznika','#b9a6ff','Najglosniejszy czyn — mocno podnosi uwage'],
+        ['invasion','+ Czyn: rozbita inwazja','#ff9a5c','Dopisuje zlamana inwazje'],
+        ['relieve','Ulzyj warstwie','#8de6b8','Zdejmuje polowe uwagi (sink ekonomiczny)'],
+        ['reset','Wyzeruj uwage','#3a3d44','Czysci os czynow'],
+        ['descent','Podglad zejscia','#e0b45c','Pokazuje klatwy i podloge nastepnej warstwy']
+      ]
+    }, actions, menuPanel);
+  }
+  // Ekonomia: the drop verb (engine drop intent) + trader demand saturation.
+  function injectEconomyDebugPanel(actions, menuPanel){
+    return buildFeatureDebugPanel({
+      id:'economyDebugBox', tag:'Ekonomia',
+      label:'Ekonomia: odkladanie, popyt handlarza, uslugi za zloto (debug):',
+      emptyMetrics:'brak metryk ekonomii',
+      buttons:[
+        ['drop','Odloz stos','#c2b280','Wyrzuca caly zaznaczony stos na ziemie'],
+        ['stock','Napelnij plecak','#e0b45c','Daje surowce, zloto i diamenty do testow'],
+        ['trader','Przywolaj handlarza','#c8a860','Natychmiastowa wizyta karawany'],
+        ['saturate','Nasyc rynek','#9c5b3a','Zapycha skup kamienia (ceny leca)'],
+        ['calmMarket','Uspokoj rynek','#8de6b8','Kasuje nasycenie skupu']
+      ]
+    }, actions, menuPanel);
+  }
   function setRadarPulsing(active){
     const b = document.getElementById('radarMenuBtn');
     if(!b) return;
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, injectNoiseDebugPanel, injectWildfireDebugPanel, injectCaveInDebugPanel, injectForestDebugPanel, injectKilnDebugPanel, injectGliderDebugPanel, injectLayerDebugPanel, injectEconomyDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

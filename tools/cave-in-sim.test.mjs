@@ -188,4 +188,16 @@ try {
   assert.match(invSrc, /key:'pitProp'/, 'the prop is a real inventory resource');
 }
 
+// Developer testing: every feature in this wave must be reachable from the
+// debug menu — several of this wave's bugs were only cheap to find once you
+// could TRIGGER the state (a glider that never opened, a forest that never sowed).
+{
+  const uiSrc = await (await import('node:fs/promises')).readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
+  const mainDbg = await (await import('node:fs/promises')).readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  if(!uiSrc.includes('function injectCaveInDebugPanel(actions, menuPanel)')) throw new Error('injectCaveInDebugPanel must exist');
+  if(!/box\.id=spec\.id/.test(uiSrc)) throw new Error('feature debug panels keep a stable DOM id');
+  if(!uiSrc.includes("id:'caveInDebugBox'")) throw new Error('caveInDebugBox must have its stable DOM id');
+  if(!mainDbg.includes('MM.ui.injectCaveInDebugPanel(')) throw new Error('injectCaveInDebugPanel must be wired from main.js');
+}
+
 console.log('cave-in-sim: all assertions passed');

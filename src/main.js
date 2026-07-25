@@ -17701,6 +17701,255 @@ if(MM.ui && MM.ui.injectCompanionDebugPanel) MM.ui.injectCompanionDebugPanel({
 	metrics:()=> (COMPANIONS && COMPANIONS.metrics) ? COMPANIONS.metrics() : null,
 	list:debugCompanionList
 }, menuPanel);
+
+// --- 2026-07 feature wave: developer test panels -----------------------------
+// Every system shipped in the wave gets a one-click way to reach its interesting
+// state, because several of these bugs (a glider that never opened, a forest
+// that never sowed) were only cheap to find once you could TRIGGER them.
+function debugSurfaceRow(x){
+	try{ if(WORLDGEN && WORLDGEN.surfaceHeight){ const s=WORLDGEN.surfaceHeight(Math.floor(x)); if(Number.isFinite(s)) return s; } }catch(e){}
+	return null;
+}
+// SEASONS.advanceDays is the only relative day jump that keeps every consumer's
+// clock coherent (setDay is absolute and would desync the calendar).
+function debugAdvanceGameDays(days){
+	try{ if(SEASONS && SEASONS.advanceDays){ SEASONS.advanceDays(days); return true; } }catch(e){}
+	return false;
+}
+function debugTraderCtx(){
+	return { inv, player, getTile, setTile, worldGen:WORLDGEN,
+		onInventoryChange:()=>{ try{ updateInventory(); updateHotbarCounts(); }catch(e){} },
+		onChange:()=>{} };
+}
+function debugFrontTile(dist){
+	const dir=player.facing<0?-1:1;
+	return {x:Math.floor(player.x)+dir*(dist||2), y:Math.floor(player.y), dir};
+}
+function debugFillArea(x0,y0,x1,y1,tile,onlyAir){
+	let n=0;
+	for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+		if(onlyAir && getTile(x,y)!==T.AIR) continue;
+		setTile(x,y,tile);
+		if(getTile(x,y)===tile) n++;
+	}
+	if(n) noteSaveActivity();
+	return n;
+}
+if(MM.ui && MM.ui.injectNoiseDebugPanel) MM.ui.injectNoiseDebugPanel({
+	blast:()=> NOISE && NOISE.emit ? (NOISE.emit(player.x, player.y, 'blast', 1.4)>0) : false,
+	decoy:()=>{ const p=debugFrontTile(12); return NOISE && NOISE.emit ? (NOISE.emit(p.x, p.y, 'decoy', 1)>0) : false; },
+	mine:()=> NOISE && NOISE.emit ? (NOISE.emit(player.x, player.y, 'mine', 1.6)>0) : false,
+	quiet:()=>{ player.quiet=!player.quiet; msg(player.quiet?'Skradanie: WLACZONE':'Skradanie: wylaczone'); return true; },
+	deafen:()=>{ if(NOISE && NOISE.reset){ NOISE.reset(); return true; } return false; },
+	unaware:()=>{
+		if(!MOBS || !MOBS._debug || !NOISE || !NOISE.isUnaware) return false;
+		const list=(MOBS._debug.mobs ? MOBS._debug.mobs() : [])||[];
+		let n=0;
+		for(const m of list){ if(Math.abs(m.x-player.x)<30 && NOISE.isUnaware(m)) n++; }
+		msg('Niesw. stworow w poblizu: '+n);
+		return true;
+	},
+	metrics:()=>{
+		if(!NOISE || !NOISE.metrics) return '';
+		const m=NOISE.metrics();
+		const floor=NOISE.floorLevel ? Math.round(NOISE.floorLevel()*100) : 0;
+		const q=NOISE.bodyQuiet ? (NOISE.bodyQuiet(player)?'TAK':'nie') : '?';
+		return 'dzwieki '+m.live+'/'+NOISE.CFG.RING+' | ostatni '+(m.last||'-')+' | tlo '+floor+'% | skradanie '+q;
+	}
+}, menuPanel);
+if(MM.ui && MM.ui.injectWildfireDebugPanel) MM.ui.injectWildfireDebugPanel({
+	forest:()=>{
+		const p=debugFrontTile(3);
+		let n=0;
+		for(let i=0;i<10;i++){
+			const x=p.x+p.dir*i, top=debugSurfaceRow(x);
+			if(top==null) continue;
+			for(let d=1;d<=4;d++){ if(getTile(x,top-d)===T.AIR){ setTile(x,top-d,T.WOOD); n++; } }
+			if(getTile(x,top-5)===T.AIR){ setTile(x,top-5,T.LEAF); n++; }
+		}
+		if(n) noteSaveActivity();
+		return n;
+	},
+	ignite:()=>{
+		if(!FIRE || !FIRE.ignite) return false;
+		for(let r=1;r<=8;r++) for(const dx of [r,-r]) for(let dy=-4;dy<=2;dy++){
+			const x=Math.floor(player.x)+dx, y=Math.floor(player.y)+dy;
+			const info=INFO[getTile(x,y)];
+			if(info && info.flammable && FIRE.ignite(x,y,getTile,setTile)) return true;
+		}
+		return false;
+	},
+	galeE:()=>{ if(WIND && WIND.setOverride){ WIND.setOverride(7.0); return true; } return false; },
+	galeW:()=>{ if(WIND && WIND.setOverride){ WIND.setOverride(-7.0); return true; } return false; },
+	calm:()=>{ if(WIND && WIND.setOverride){ WIND.setOverride(null); return true; } return false; },
+	rain:()=>{ if(CLOUDS && CLOUDS.injectVapor){ for(let i=0;i<6;i++) CLOUDS.injectVapor(player.x+(i-3)*12, 5); return true; } return false; },
+	ember:()=>{ if(!FIRE || !FIRE._debug || !FIRE._debug.trySpotFire) return false;
+		return !!FIRE._debug.trySpotFire({x:Math.floor(player.x), y:Math.floor(player.y)}, getTile, setTile); },
+	metrics:()=>{
+		if(!FIRE) return '';
+		const danger=FIRE.dangerIndex ? Math.round(FIRE.dangerIndex(player.x)*100) : 0;
+		const wet=FIRE._debug && FIRE._debug.moistureAt ? Math.round(FIRE._debug.moistureAt(player.x)*100) : 0;
+		const w=WIND && WIND.speed ? WIND.speed().toFixed(1) : '?';
+		return 'ogniska '+(FIRE.count?FIRE.count():0)+' | zagrozenie '+danger+'% | wilgoc '+wet+'% | wiatr '+w;
+	}
+}, menuPanel);
+if(MM.ui && MM.ui.injectCaveInDebugPanel) MM.ui.injectCaveInDebugPanel({
+	gallery:()=>{
+		const y=Math.floor(player.y);
+		const n=debugFillArea(Math.floor(player.x)-9, y-1, Math.floor(player.x)+9, y, T.AIR, false);
+		return n;
+	},
+	disturb:()=>{ if(!CAVE_IN || !CAVE_IN.disturb) return false;
+		return CAVE_IN.disturb(Math.floor(player.x), Math.floor(player.y), 2, getTile)>0; },
+	collapseNow:()=>{ if(!CAVE_IN || !CAVE_IN.update) return false;
+		CAVE_IN.update(CAVE_IN.CFG.WARN_TIME+0.1, player, getTile, setTile); return true; },
+	props:()=>{ inv.pitProp=(inv.pitProp|0)+20; updateInventory(); updateHotbarCounts(); return true; },
+	propHere:()=>{
+		const x=Math.floor(player.x), y=Math.floor(player.y);
+		if(getTile(x,y)!==T.AIR) return false;
+		setTile(x,y,T.PIT_PROP);
+		return getTile(x,y)===T.PIT_PROP;
+	},
+	metrics:()=>{
+		if(!CAVE_IN || !CAVE_IN.metrics) return '';
+		const m=CAVE_IN.metrics();
+		return 'trzeszczy '+m.watching+' | stemple '+m.props+' | wzbudzen '+m.started+' | zawalow '+m.collapsed;
+	}
+}, menuPanel);
+if(MM.ui && MM.ui.injectForestDebugPanel) MM.ui.injectForestDebugPanel({
+	stand:()=>{
+		const p=debugFrontTile(6);
+		let n=0;
+		for(const off of [0,10,20,30]){
+			const x=p.x+p.dir*off, top=debugSurfaceRow(x);
+			if(top==null) continue;
+			for(let d=1;d<=4;d++){ if(getTile(x,top-d)===T.AIR){ setTile(x,top-d,T.WOOD); n++; } }
+		}
+		if(n) noteSaveActivity();
+		return n;
+	},
+	seed:()=> FOREST && FOREST.plantSeed ? !!FOREST.plantSeed(player.x, Math.floor(player.y), getTile) : false,
+	disperse:()=> FOREST && FOREST._debug && FOREST._debug.disperse
+		? FOREST._debug.disperse(player.x, Math.floor(player.y), getTile)>0 : false,
+	sprout:()=>{ if(!FOREST || !FOREST.update) return false;
+		FOREST.update(0.1, player, getTile, setTile);
+		debugAdvanceGameDays(FOREST.CFG.SPROUT_DAYS+0.05);
+		FOREST.update(0.1, player, getTile, setTile); return true; },
+	mature:()=>{ if(!FOREST || !FOREST.update) return false;
+		debugAdvanceGameDays(FOREST.CFG.MATURE_DAYS+0.05);
+		FOREST.update(0.1, player, getTile, setTile); return true; },
+	clear:()=>{
+		let n=0;
+		for(let dx=-24;dx<=24;dx++) for(let dy=-14;dy<=6;dy++){
+			const x=Math.floor(player.x)+dx, y=Math.floor(player.y)+dy;
+			const t=getTile(x,y);
+			if(t===T.WOOD||t===T.LEAF||t===T.LIGHT_WOOD||t===T.HARD_WOOD||t===T.GOLDEN_WOOD||t===T.SAPLING){ setTile(x,y,T.AIR); n++; }
+		}
+		if(n) noteSaveActivity();
+		return n;
+	},
+	metrics:()=>{
+		if(!FOREST || !FOREST.metrics) return '';
+		const m=FOREST.metrics();
+		return 'sadzonki '+m.saplings+' | zasiane '+m.sown+' | wzeszle '+m.sprouted+' | dojrzale '+m.matured;
+	}
+}, menuPanel);
+if(MM.ui && MM.ui.injectKilnDebugPanel) MM.ui.injectKilnDebugPanel({
+	build:()=>{
+		const p=debugFrontTile(4);
+		const x0=p.x-2, x1=p.x+2, y1=Math.floor(player.y), y0=y1-5;
+		debugFillArea(x0,y0,x1,y1,T.BRICK,false);
+		debugFillArea(x0+1,y0+2,x1-1,y1-2,T.AIR,false);
+		setTile(p.x, y1, T.KILN);
+		return getTile(p.x,y1)===T.KILN;
+	},
+	load:()=>{
+		const p=debugFrontTile(4);
+		return debugFillArea(p.x-1, Math.floor(player.y)-4, p.x+1, Math.floor(player.y)-2, T.CLAY, true)>0;
+	},
+	lava:()=>{ const p=debugFrontTile(4); setTile(p.x, Math.floor(player.y)+1, T.LAVA); return getTile(p.x,Math.floor(player.y)+1)===T.LAVA; },
+	grid:()=>{
+		const p=debugFrontTile(7);
+		// setTile already fires the machine lifecycle hooks through world.js —
+		// main.js must never invoke a module's tile-change hook itself (pinned).
+		setTile(p.x, Math.floor(player.y), T.DYNAMO);
+		return getTile(p.x,Math.floor(player.y))===T.DYNAMO;
+	},
+	kilnItem:()=>{ inv.kiln=(inv.kiln|0)+3; updateInventory(); updateHotbarCounts(); return true; },
+	metrics:()=>{
+		if(!KILN || !KILN.metrics) return '';
+		const m=KILN.metrics();
+		return 'piece '+m.kilns+' | rozpalone '+m.lit+' | wypalen '+m.fired;
+	}
+}, menuPanel);
+if(MM.ui && MM.ui.injectGliderDebugPanel) MM.ui.injectGliderDebugPanel({
+	grant:()=>{ inv.tools.glider=true; updateInventory(); return true; },
+	drop:()=>{ player.y-=40; player.vy=0; centerOnPlayer(); return true; },
+	thermal:()=>{
+		const y=Math.floor(player.y)+8;
+		return debugFillArea(Math.floor(player.x)-5, y, Math.floor(player.x)+5, y+2, T.LAVA, false)>0;
+	},
+	galeE:()=>{ if(WIND && WIND.setOverride){ WIND.setOverride(7.0); return true; } return false; },
+	calm:()=>{ if(WIND && WIND.setOverride){ WIND.setOverride(null); return true; } return false; },
+	metrics:()=>{
+		if(!GLIDER) return '';
+		const open=GLIDER.isOpen && GLIDER.isOpen();
+		const has=GLIDER.hasGlider ? GLIDER.hasGlider(player) : false;
+		const lift=GLIDER._debug && GLIDER._debug.thermalAt ? GLIDER._debug.thermalAt(player.x, player.y, getTile).toFixed(2) : '?';
+		return 'lotnia '+(has?'jest':'brak')+' | skrzydlo '+(open?'OTWARTE':'zlozone')+' | wznos '+lift+' | vy '+(player.vy||0).toFixed(2);
+	}
+}, menuPanel);
+if(MM.ui && MM.ui.injectLayerDebugPanel) MM.ui.injectLayerDebugPanel({
+	ore:()=> ATTENTION && ATTENTION.note ? (ATTENTION.note('ore',50), true) : false,
+	guardian:()=> ATTENTION && ATTENTION.note ? (ATTENTION.note('guardian'), true) : false,
+	invasion:()=> ATTENTION && ATTENTION.note ? (ATTENTION.note('invasion'), true) : false,
+	relieve:()=> ATTENTION && ATTENTION.relieve ? (ATTENTION.relieve(0.5), true) : false,
+	reset:()=> ATTENTION && ATTENTION.reset ? (ATTENTION.reset(), true) : false,
+	descent:()=>{
+		const C=MM.challenge;
+		if(!C || !C.descentFor) return false;
+		const done=(FINALE && FINALE.layers) ? (FINALE.layers().completions|0) : 0;
+		const plan=C.descentFor(done+1, (WORLDGEN && WORLDGEN.worldSeed)||0);
+		const names=(plan.mods||[]).map(m=>(C.MODS[m]&&C.MODS[m].label)||m).join(', ')||'brak';
+		msg('Warstwa '+plan.layer+' · ziarno '+plan.seed+' · klatwy: '+names+' · podloga '+plan.hostilityFloor.toFixed(2));
+		return true;
+	},
+	metrics:()=>{
+		if(!ATTENTION || !ATTENTION.metrics) return '';
+		const m=ATTENTION.metrics();
+		const done=(FINALE && FINALE.layers) ? (FINALE.layers().completions|0) : 0;
+		const host=(MM.worldHostility && MM.worldHostility.at) ? MM.worldHostility.at(player.x) : null;
+		return 'uwaga '+Math.round(m.level*100)+'% | podloga czynow '+m.floor.toFixed(2)
+			+' | zejscie '+(ATTENTION.descentFloor?ATTENTION.descentFloor().toFixed(2):'?')+' (warstw '+done+')'
+			+' | wrogosc tu '+(host?host.hostility.toFixed(2):'?');
+	}
+}, menuPanel);
+if(MM.ui && MM.ui.injectEconomyDebugPanel) MM.ui.injectEconomyDebugPanel({
+	drop:()=> dropHeldResource(true),
+	stock:()=>{
+		inv.gold=(inv.gold|0)+120; inv.diamond=(inv.diamond|0)+20; inv.iridium=(inv.iridium|0)+10;
+		inv.stone=(inv.stone|0)+400; inv.wood=(inv.wood|0)+200;
+		updateInventory(); updateHotbarCounts(); return true;
+	},
+	trader:()=>{
+		if(!TRADER || !TRADER.forceArrive) return false;
+		return !!TRADER.forceArrive(player, getTile, debugTraderCtx());
+	},
+	saturate:()=>{ if(!TRADER || !TRADER._noteDemand) return false; TRADER._noteDemand('stone', 240); return true; },
+	calmMarket:()=>{ if(!TRADER || !TRADER.tradeService) return false;
+		inv.gold=Math.max(inv.gold|0, 40);
+		const r=TRADER.tradeService('marketCalm', {inv, player});
+		return !!(r && r.ok);
+	},
+	metrics:()=>{
+		if(!TRADER) return '';
+		const dm=TRADER.demandFor ? TRADER.demandFor('stone').toFixed(2) : '?';
+		const active=TRADER.isActive && TRADER.isActive();
+		return 'handlarz '+(active?'na miejscu':'w drodze')+' | popyt kamien x'+dm
+			+' | zloto '+(inv.gold|0)+' | diamenty '+(inv.diamond|0);
+	}
+}, menuPanel);
+
 // Regeneracja świata z nowym ziarnem
 document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); if(MM.ui && MM.ui.closeMenu) MM.ui.closeMenu(); });
 function regenWorld(){
