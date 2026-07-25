@@ -1638,6 +1638,58 @@ window.MM = window.MM || {};
     // 4c. Effects clipped to the water shape
     if(anyWater){
       g.globalCompositeOperation='source-atop';
+      // Ultra reflections (MM.postFx): mirror the already-rendered scene into
+      // the water body. Per column, the strip above the rest surface is drawn
+      // flipped below it with a sine offset phase-coherent with the ambient
+      // wave sum. Source pixels come from the live game canvas via drawImage
+      // only (the render-health taboo is getImageData, not canvas-as-texture);
+      // source-atop clips the strip to the exact wave silhouette for free.
+      // Columns whose airspace fails the caller's visibility predicate shorten
+      // their band, so unexplored terrain can never leak into a visible pool.
+      const postFx=(typeof window!=='undefined' && window.MM && MM.postFx) ? MM.postFx : null;
+      if(!SIMPLE && postFx && postFx.on && postFx.on('reflections')){
+        const srcCanvas=ctx.canvas;
+        let m=null;
+        try{ m=(ctx.getTransform && typeof ctx.getTransform==='function') ? ctx.getTransform() : null; }catch(e){ m=null; }
+        if(srcCanvas && srcCanvas.width>0 && m && Number.isFinite(m.a) && m.a>0 && Number.isFinite(m.d) && m.d>0){
+          let reflCols=0;
+          g.globalAlpha=0.26;
+          for(let xi=0; xi<n && reflCols<220; xi++){
+            const segs=cols[xi]; if(!segs) continue;
+            const s0=segs[0]; if(!s0.open) continue;
+            const depthPx=(s0.bot+1)*TILE - s0.rest;
+            if(depthPx < TILE*0.8) continue; // shallow films don't mirror
+            const wx=x0+xi;
+            let bandTiles=0;
+            for(let k3=1;k3<=5;k3++){
+              const ty=s0.top-k3;
+              if(ty<WORLD_TOP || !tileVisible(wx,ty)) break;
+              bandTiles++;
+            }
+            if(!bandTiles) continue;
+            const bandPx=bandTiles*TILE;
+            const wxPx=wx*TILE;
+            const sxDev=m.a*wxPx+m.e, swDev=m.a*TILE;
+            if(sxDev<0 || sxDev+swDev>srcCanvas.width) continue; // screen-edge columns skip
+            let syDev=m.d*(s0.rest-bandPx)+m.f;
+            let shDev=m.d*bandPx;
+            if(syDev<0){ shDev+=syDev; syDev=0; }
+            if(!(shDev>1) || syDev>=srcCanvas.height) continue;
+            const visPx=shDev/m.d;
+            const destH=Math.min(visPx*0.9, depthPx);
+            if(!(destH>1)) continue;
+            const ripple=Math.sin(wx*0.5+tSec*1.6)*1.2;
+            g.save();
+            g.translate(wxPx+ripple, s0.rest);
+            g.scale(1,-1);
+            g.drawImage(srcCanvas, sxDev, syDev, swDev, shDev, 0, -destH, TILE, destH);
+            g.restore();
+            reflCols++;
+          }
+          g.globalAlpha=1;
+          if(reflCols && postFx.metrics) postFx.metrics.reflectionColumns+=reflCols;
+        }
+      }
       let causticBudget = SIMPLE? 0 : 1000;
       for(let xi=0; xi<n; xi++){
         const segs=cols[xi]; if(!segs) continue;

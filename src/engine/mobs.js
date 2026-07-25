@@ -8546,6 +8546,11 @@ const mobs = (function(){
   function draw(ctx, TILE, camX,camY, zoom, canDrawTile, viewX,viewY){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const mobVisible = (m)=> !visibleTile || visibleTile(Math.floor(m.x), Math.floor(m.y));
+    // Grafika Ultra shadows: hoisted per frame — on the sunlit surface the
+    // directional sun shadow REPLACES the contact blob below (the hero's
+    // replace-semantics); caves and standard mode keep the classic ellipse.
+    const ultraShadows=(typeof window!=='undefined' && window.MM && MM.postFx && MM.postFx.on && MM.postFx.on('shadows') && MM.postFx.drawCasterShadow) ? MM.postFx : null;
+    const ultraShadowTime=(ultraShadows && MM.background && MM.background.timeInfo) ? MM.background.timeInfo() : null;
     ctx.save(); ctx.imageSmoothingEnabled=false; const now=performance.now();
   // View bounds expressed in tile coordinates (camX/camY already in tiles)
   const tilesWide=Math.max(0,viewX), tilesHigh=Math.max(0,viewY);
@@ -8559,10 +8564,31 @@ const mobs = (function(){
         screenY += halfHpx - currentBottom;
       }
       ctx.save();
+      // Ultra directional shadow: drawn BEFORE the per-entity scale transform,
+      // in plain world pixels (m.scale folded into the caster size instead).
+      // Only sunlit surface mobs switch over; failure to find ground within
+      // the probe (airborne, cave floors below the probe) keeps the blob.
+      let ultraShadowDrawn=false;
+      if(ultraShadows && spec && spec.ground){
+        const mtx=Math.floor(m.x);
+        const mfoot=m.y+(spec.body?(spec.body.h||1):1)*0.5*(m.scale||1);
+        let mgy=-1;
+        for(let i=0;i<5;i++){ const yy=Math.floor(mfoot)+i; const tt=(MM.world && MM.world.peekTile)?MM.world.peekTile(mtx,yy,0):0; if(isSolid(tt)){ mgy=yy; break; } }
+        if(mgy>=0){
+          const msurf=(MM.worldGen && MM.worldGen.surfaceHeight)?MM.worldGen.surfaceHeight(mtx):Infinity;
+          if(mgy<=msurf){
+            const mk=Math.max(0,1-(mgy-mfoot)/5);
+            if(mk>0.05){
+              ultraShadows.drawCasterShadow(ctx,{TILE,x:m.x,w:(spec.body?(spec.body.w||1):0.9)*(m.scale||1),h:(spec.body?(spec.body.h||1):1)*(m.scale||1),groundY:mgy,k:mk,sunlit:true,time:ultraShadowTime});
+              ultraShadowDrawn=true;
+            }
+          }
+        }
+      }
       // Apply visual scale per entity
       if((m.scale||1)!==1){ ctx.translate(screenX, screenY); ctx.scale(m.scale, m.scale); ctx.translate(-screenX, -screenY); }
       // Simple shadow ellipse for ground mobs to reinforce contact
-      if(spec && spec.ground){
+      if(spec && spec.ground && !ultraShadowDrawn){
         ctx.fillStyle='rgba(0,0,0,0.18)'; const shW = (spec.body? (spec.body.w||1)*TILE*0.6 : TILE*0.6); const shH=Math.max(2, shW*0.22); ctx.beginPath(); ctx.ellipse(screenX, screenY+ (spec.body? (spec.body.h||1)*0.5*TILE -2 : 6), shW*0.5, shH*0.5, 0, 0, Math.PI*2); ctx.fill();
       }
       if(window.__mobDebug){ // simple origin marker

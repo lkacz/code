@@ -123,6 +123,7 @@ import { ghostHost as GHOST_HOST } from './engine/ghost_host.js';
 import { ghostClient as GHOST_CLIENT } from './engine/ghost_client.js';
 import './engine/party_hud.js'; // co-op roster + off-screen teammate arrows (MM.partyHud)
 import { createRenderHealth, blitProbe as renderBlitProbe, HINTS as RENDER_HINTS } from './engine/render_health.js';
+import { postFx as POST_FX } from './engine/post_fx.js';
 import './engine/ui.js';
 import './inventory_ui.js';
 // boot_watchdog marks non-local framed production loads before this module runs.
@@ -240,6 +241,13 @@ function worldChunkArrayFor(ref,generate){
 // const CAPE = MM.cape;
 // Visual enhancement config
 const VISUAL={animations:true, atmoTint:true};
+// Grafika Ultra (engine/post_fx.js): per-component opt-in cosmetic passes.
+// Every ultra hook below early-outs through this helper, so with every
+// toggle off the pipeline stays byte-identical to standard mode.
+function gfxUltraOn(name){ return !!(POST_FX && POST_FX.on && POST_FX.on(name)); }
+// Frozen surfaces never take the wet-rain sheen (snow soaks invisibly; ice is
+// already glazed — and gets its own reflection pass instead).
+function gfxWetSkipTile(t){ return t===T.SNOW || t===T.GRASS_SNOW || t===T.TOXIC_SNOW || t===T.ICE || t===T.MOTHER_ICE || t===T.THIN_ICE || isFrozenEarth(t); }
 // Biome ID to name mapping used for the HUD pill + debug overlay (UI language: Polish)
 const BIOME_NAMES = [
 	'Las',
@@ -6281,9 +6289,17 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 		if(gy>=0){
 			const k=Math.max(0, 1-(gy-footY)/6);
 			if(k>0.05){
-				ctx.fillStyle='rgba(0,0,0,'+(0.25*k).toFixed(3)+')';
-				const shw=bw*0.6*(0.55+0.45*k);
-				ctx.beginPath(); ctx.ellipse(player.x*TILE, gy*TILE+2, shw/2, 4*(0.55+0.45*k), 0, 0, Math.PI*2); ctx.fill();
+				// Ultra dynamic shadow: on sunlit ground the sun's arc drives the
+				// skew/length/density (post_fx solar model, faint moon at night);
+				// underground the same call keeps the classic ambient blob.
+				if(gfxUltraOn('shadows') && POST_FX.drawCasterShadow){
+					const shSurf=(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight(tx):gy;
+					POST_FX.drawCasterShadow(ctx,{TILE,x:player.x,w:player.w,h:player.h,groundY:gy,k,sunlit:gy<=shSurf,time:(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null});
+				}else{
+					ctx.fillStyle='rgba(0,0,0,'+(0.25*k).toFixed(3)+')';
+					const shw=bw*0.6*(0.55+0.45*k);
+					ctx.beginPath(); ctx.ellipse(player.x*TILE, gy*TILE+2, shw/2, 4*(0.55+0.45*k), 0, 0, Math.PI*2); ctx.fill();
+				}
 			}
 		}
 	}
@@ -6425,6 +6441,13 @@ function trimChunkCanvasCache(centerCx, keep, centerSy){
 		chunkRenderDirty.delete(key); // record is only meaningful while its canvas lives
 	}
 }
+// Ultra AO and specular are baked INTO the chunk canvases, so flipping those
+// toggles must drop every cached section for an immediate full re-bake (the
+// same one-time cost as a world regen; version<0 entries bypass the budget).
+function invalidateAllChunkRenderCaches(){ chunkCanvases.clear(); chunkRenderDirty.clear(); }
+// Ultra specular: reflective materials whose bake collects per-chunk glint
+// points (the entry.chests pattern) for the budgeted live twinkle pass.
+const SPEC_GLINT_TILES=new Set([T.GOLD_ORE,T.SILVER_ORE,T.SILVER_INGOT,T.DIAMOND,T.ICE,T.MOTHER_ICE,T.GLASS,T.STEEL,T.IRIDIUM,T.METEORIC_IRON,T.OBSIDIAN,T.ANTIMATTER_CRYSTAL,T.GOLDEN_WOOD]);
 function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
 const shadeColorCache=new Map(); // (hex,delta) pairs recur thousands of times per section bake
 function shadeColor(hex,delta){ // hex like #rgb or #rrggbb (we use rrggbb)
@@ -6561,6 +6584,21 @@ function drawCaveContactShade(g,px,py,sU,sD,sL,sR){
 	if(sD){ g.fillStyle='rgba(0,0,0,0.12)'; g.fillRect(px,py+TILE-1,TILE,1); g.fillStyle='rgba(0,0,0,0.05)'; g.fillRect(px,py+TILE-3,TILE,2); }
 	if(sL){ g.fillStyle='rgba(0,0,0,0.13)'; g.fillRect(px,py,1,TILE); g.fillStyle='rgba(0,0,0,0.06)'; g.fillRect(px+1,py,2,TILE); }
 	if(sR){ g.fillStyle='rgba(0,0,0,0.13)'; g.fillRect(px+TILE-1,py,1,TILE); g.fillStyle='rgba(0,0,0,0.06)'; g.fillRect(px+TILE-3,py,2,TILE); }
+	// Ultra AO: a wider falloff band per contact face plus darker pockets where
+	// two faces meet — cave interiors gain corner depth from the same four
+	// solidity bits the standard pass already receives (no extra tile reads).
+	if(gfxUltraOn('ao')){
+		g.fillStyle='rgba(0,0,0,0.045)';
+		if(sU) g.fillRect(px,py+3,TILE,3);
+		if(sD) g.fillRect(px,py+TILE-6,TILE,3);
+		if(sL) g.fillRect(px+3,py,3,TILE);
+		if(sR) g.fillRect(px+TILE-6,py,3,TILE);
+		g.fillStyle='rgba(0,0,0,0.07)';
+		if(sU&&sL){ g.fillRect(px,py,5,5); g.fillRect(px,py,3,3); }
+		if(sU&&sR){ g.fillRect(px+TILE-5,py,5,5); g.fillRect(px+TILE-3,py,3,3); }
+		if(sD&&sL){ g.fillRect(px,py+TILE-5,5,5); g.fillRect(px,py+TILE-3,3,3); }
+		if(sD&&sR){ g.fillRect(px+TILE-5,py+TILE-5,5,5); g.fillRect(px+TILE-3,py+TILE-3,3,3); }
+	}
 }
 // ---- Tile art v2: neighbor-aware edge lighting ------------------------------
 // Tiles of one family render as continuous mass (no seams inside a dirt patch or
@@ -6819,6 +6857,21 @@ function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
 		g.fillStyle='rgba(8,10,18,0.20)';
 		if(oU&&oL) g.fillRect(px,py,1,1);
 		if(oU&&oR) g.fillRect(px+TILE-1,py,1,1);
+	}
+	// Ultra AO: deeper crevice shading — wider inner-corner wedges over the
+	// standard ones, an extra face-inward falloff band on exposed faces, and a
+	// faint top pocket underground. Bake-time only, gated so standard bakes
+	// stay byte-identical (the diagonal re-reads run only in ultra).
+	if(gfxUltraOn('ao') && fam!==EDGE_LEAF && fam!==EDGE_LAVA){
+		g.fillStyle='rgba(8,10,18,0.09)';
+		if(!oU && !oL && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx-1,y-1,originY,sectionH))){ g.fillRect(px,py,5,2); g.fillRect(px,py+2,2,3); }
+		if(!oU && !oR && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx+1,y-1,originY,sectionH))){ g.fillRect(px+TILE-5,py,5,2); g.fillRect(px+TILE-2,py+2,2,3); }
+		if(!oD && !oL && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx-1,y+1,originY,sectionH))){ g.fillRect(px,py+TILE-2,5,2); g.fillRect(px,py+TILE-5,2,3); }
+		if(!oD && !oR && tileOpenForEdge(fam,chunkTileAt(arr,cx,lx+1,y+1,originY,sectionH))){ g.fillRect(px+TILE-5,py+TILE-2,5,2); g.fillRect(px+TILE-2,py+TILE-5,2,3); }
+		if(oD){ g.fillStyle='rgba(6,8,16,0.06)'; g.fillRect(px,py+TILE-5,TILE,2); g.fillStyle='rgba(6,8,16,0.03)'; g.fillRect(px,py+TILE-7,TILE,2); }
+		if(oL){ g.fillStyle='rgba(8,10,18,0.05)'; g.fillRect(px+2,py+2,2,TILE-4); }
+		if(oR){ g.fillStyle='rgba(8,10,18,0.06)'; g.fillRect(px+TILE-4,py+2,2,TILE-4); }
+		if(oU && y>surf+2){ g.fillStyle='rgba(8,10,18,0.05)'; g.fillRect(px,py+2,TILE,2); }
 	}
 	// cave dressing: mossy growth on rock faces that touch underground air
 	if(fam===EDGE_ROCK && y>surf+4 && t!==T.OBSIDIAN && t!==T.BASALT && t!==T.BEDROCK){
@@ -8812,7 +8865,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 		// each cached chunk holds a full-height canvas (megabytes of pixels) — evict the
 		// chunks farthest from the current view so a long trek can't accumulate them forever
 		trimChunkCanvasCache(Number.isFinite(centerCx)?centerCx:cx, CHUNK_CANVAS_MAX_KEEP-1, sy);
-		const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=sectionH*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1,sy,chests:[],doorways:[]}; chunkCanvases.set(key,entry); }
+		const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=sectionH*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1,sy,chests:[],doorways:[],spec:[]}; chunkCanvases.set(key,entry); }
 	const currentVersion=WORLD.chunkVersion(cx,sy); if(entry.version===currentVersion && !entry.edgeStale){ chunkRenderDirty.delete(key); return; }
 	// Version-only sync: the shared base-section version moved but no pixels in
 	// THIS section changed (empty dirty band) — adopt the version, skip repainting
@@ -8834,10 +8887,12 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 		cctx.clearRect(0,redrawY0*TILE,cctx.canvas.width,(redrawY1-redrawY0+1)*TILE);
 		entry.chests=(entry.chests||[]).filter(o=>o.y<redrawWorldY0 || o.y>redrawWorldY1);
 		entry.doorways=(entry.doorways||[]).filter(o=>o.y<redrawWorldY0 || o.y>redrawWorldY1);
+		entry.spec=(entry.spec||[]).filter(o=>o.y<redrawWorldY0 || o.y>redrawWorldY1);
 	}else{
 		cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height);
 		entry.chests=[];
 		entry.doorways=[];
+		entry.spec=[];
 	}
 	cctx.save();
 	cctx.translate(0,-originY*TILE);
@@ -9270,6 +9325,17 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					entry.chests.push({x:wx,y,t});
 					drawChestTile(cctx,lx*TILE,y*TILE,t,h);
 				}
+				// Ultra specular: reflective materials collect glint points for the
+				// budgeted live twinkle pass (hash-thinned so ore fields shimmer in
+				// scattered points instead of blinking wall-to-wall), plus a static
+				// baked sheen streak so the material reads glossy between twinkles.
+				if(gfxUltraOn('specular') && SPEC_GLINT_TILES.has(t)){
+					if((h%5)<2) entry.spec.push({x:wx,y,t});
+					const shx=lx*TILE+3+((h>>>7)%(TILE-8)), shy=y*TILE+3+((h>>>11)%(TILE-8));
+					cctx.fillStyle=(t===T.GOLD_ORE||t===T.GOLDEN_WOOD)?'rgba(255,232,170,0.20)':'rgba(240,250,255,0.16)';
+					cctx.fillRect(shx,shy,4,1);
+					cctx.fillRect(shx+1,shy-1,2,3);
+				}
 				if(t===T.INVASION_CACHE){
 					drawInvasionCacheTile(cctx,lx*TILE,y*TILE,h);
 				}
@@ -9636,6 +9702,46 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 					if(chestDebug){ ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.strokeRect((localLayer?(wx-camDrawX):wx)*TILE+1,(localLayer?(y-camDrawY):y)*TILE+1,TILE-2,TILE-2); }
 				}
 			}
+		}
+		// Ultra specular: budgeted twinkle glints over the bake-collected points.
+		// Wall-clock phase like the chest pulse; the hash offset de-syncs neighbors
+		// so ore fields shimmer instead of blinking in unison. Skipped wholesale on
+		// stressed frames (same signal the grass gloss pass throttles on).
+		if(gfxUltraOn('specular') && !(lastFrameMs>32)){
+			// specScan bounds the WALK, not just the draws: a frost/ore band can bake
+			// thousands of glint points into visible sections, and without a scan cap
+			// every fog-hidden point still costs a visibility lookup per frame
+			let specBudget=120, specDrawn=0, specScan=1500;
+			ctx.save();
+			ctx.globalCompositeOperation='lighter';
+			for(let cx3=minChunk; cx3<=maxChunk && specBudget>0 && specScan>0; cx3++){
+				if((cx3+1)*CHUNK_W<sx-1 || cx3*CHUNK_W>sx+viewX+2) continue; // off-screen chunk columns never twinkle
+				for(let section=minSection; section<=maxSection && specBudget>0 && specScan>0; section++){
+					const entry=chunkCanvases.get(worldRenderSectionKey(cx3,section));
+					const specs=entry && Array.isArray(entry.spec) ? entry.spec : [];
+					for(const sp of specs){
+						if(specBudget<=0 || --specScan<=0) break;
+						const wx=sp.x, y=sp.y;
+						if(y<y0 || y>=y1) continue;
+						if(!worldFxVisible(wx,y)) continue;
+						const h=hash32(wx,y);
+						const tw=Math.sin(nowA*0.0028+(h%628)*0.01);
+						if(tw<0.86) continue;
+						const a=(tw-0.86)/0.14*0.85;
+						const gx=(localLayer?(wx-camDrawX):wx)*TILE+3+((h>>>5)%(TILE-6));
+						const gy=(localLayer?(y-camDrawY):y)*TILE+3+((h>>>9)%(TILE-6));
+						const warm=sp.t===T.GOLD_ORE || sp.t===T.GOLDEN_WOOD;
+						ctx.fillStyle=warm?('rgba(255,226,150,'+a.toFixed(3)+')'):('rgba(235,248,255,'+a.toFixed(3)+')');
+						ctx.fillRect(gx-2,gy-0.5,5,1.4);
+						ctx.fillRect(gx-0.5,gy-2,1.4,5);
+						ctx.fillStyle='rgba(255,255,255,'+Math.min(1,a*1.2).toFixed(3)+')';
+						ctx.fillRect(gx-0.5,gy-0.5,1.5,1.5);
+						specBudget--; specDrawn++;
+					}
+				}
+			}
+			ctx.restore();
+			if(POST_FX && POST_FX.metrics) POST_FX.metrics.specGlints+=specDrawn;
 		}
 		if(chestDebug){ const pcx=Math.floor(player.x/CHUNK_W); const cnt=countChestsAround(pcx,4); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(sx*TILE+6, sy*TILE+6, 140,24); ctx.fillStyle='#fff'; ctx.font='14px system-ui'; ctx.fillText('Skrzynie ±4: '+cnt, sx*TILE+12, sy*TILE+24); }
 	if(localLayer) ctx.restore();
@@ -10036,6 +10142,47 @@ function ensurePausePanel(){
 	const fpsToggle=document.createElement('input'); fpsToggle.type='checkbox'; fpsToggle.dataset.frameCapToggle='player'; fpsToggle.checked=frameCapUnlocked;
 	fpsToggle.addEventListener('change',()=>{ setFrameCapUnlocked(fpsToggle.checked); resetFrameTiming('fps-cap-player'); });
 	fpsRow.appendChild(fpsToggle); pausePanel.appendChild(fpsRow);
+	// Grafika Ultra: master switch + four per-component toggles (engine/post_fx.js).
+	// AO and specular are baked into the chunk canvases, so any change here clears
+	// the render cache for an immediate visual switch; bloom and reflections are
+	// live passes that just start/stop drawing.
+	const gfxComponentRows=[
+		['💡 Bloom (poświata)','bloom'],
+		['🌑 Okluzja otoczenia (AO)','ao'],
+		['💠 Refleksy materiałów','specular'],
+		['🌊 Odbicia w wodzie','reflections'],
+		['🪞 Powłoka bohatera','heroSheen'],
+		['🌗 Dynamiczne cienie','shadows'],
+		['☀️ Promienie słoneczne','godRays'],
+		['🔥 Temperatura światła','lightTint'],
+		['🌫️ Drganie powietrza','heatShimmer'],
+		['🌧️ Mokra nawierzchnia','wetGround'],
+		['✨ Pyłki w świetle','dustMotes'],
+		['🧊 Odbicia na lodzie','iceReflections']
+	];
+	const gfxAllOn=()=>gfxComponentRows.every(([,name])=>!!(POST_FX && POST_FX.config && POST_FX.config[name]));
+	const syncGfxMaster=()=>{ const all=pausePanel.querySelector('[data-gfx-toggle-all]'); if(all) all.checked=gfxAllOn(); };
+	const ultraAllRow=buildPauseRow('✨ Grafika Ultra (wszystko)');
+	const ultraAll=document.createElement('input'); ultraAll.type='checkbox'; ultraAll.dataset.gfxToggleAll='1'; ultraAll.checked=gfxAllOn();
+	ultraAll.addEventListener('change',()=>{
+		for(const [,name] of gfxComponentRows){ if(POST_FX && POST_FX.set) POST_FX.set(name,ultraAll.checked); }
+		pausePanel.querySelectorAll('[data-gfx-toggle]').forEach(chk=>{ chk.checked=ultraAll.checked; });
+		invalidateAllChunkRenderCaches();
+		if(!ultraAll.checked && POST_FX && POST_FX.releaseScratch) POST_FX.releaseScratch();
+	});
+	ultraAllRow.appendChild(ultraAll); pausePanel.appendChild(ultraAllRow);
+	for(const [gfxLabel,gfxName] of gfxComponentRows){
+		const row=buildPauseRow(gfxLabel);
+		const chk=document.createElement('input'); chk.type='checkbox'; chk.dataset.gfxToggle=gfxName;
+		chk.checked=!!(POST_FX && POST_FX.config && POST_FX.config[gfxName]);
+		chk.addEventListener('change',()=>{
+			if(POST_FX && POST_FX.set) POST_FX.set(gfxName,chk.checked);
+			if(gfxName==='ao' || gfxName==='specular') invalidateAllChunkRenderCaches();
+			if(!chk.checked && POST_FX && POST_FX.releaseScratch) POST_FX.releaseScratch();
+			syncGfxMaster();
+		});
+		row.appendChild(chk); pausePanel.appendChild(row);
+	}
 	const centerRow=buildPauseRow('🎯 Wyśrodkuj kamerę');
 	const center=document.createElement('button'); center.type='button'; center.textContent='Centruj';
 	center.addEventListener('click',()=>{ snapCameraToPlayer(); });
@@ -10180,6 +10327,8 @@ function setPaused(v){
 			else if(label.includes('Muzyka włączona')) chk.checked=!(MM.audio && MM.audio.isMusicOn && !MM.audio.isMusicOn());
 		});
 		panel.querySelectorAll('[data-frame-cap-toggle]').forEach(chk=>{ chk.checked=frameCapUnlocked; });
+		panel.querySelectorAll('[data-gfx-toggle]').forEach(chk=>{ chk.checked=!!(POST_FX && POST_FX.config && POST_FX.config[chk.dataset.gfxToggle]); });
+		panel.querySelectorAll('[data-gfx-toggle-all]').forEach(chk=>{ chk.checked=!!(POST_FX && POST_FX.config && POST_FX.COMPONENTS && POST_FX.COMPONENTS.every(name=>POST_FX.config[name])); });
 		panel.querySelectorAll('.pauseRow input[type=range][data-bus]').forEach(s=>{
 			if(MM.audio && MM.audio.getBusVolume) s.value=String(Math.round(MM.audio.getBusVolume(s.dataset.bus)*100));
 		});
@@ -14972,6 +15121,14 @@ function draw(){ // Background first
  if(SKY_MOODS && SKY_MOODS.drawAurora) SKY_MOODS.drawAurora(ctx,TILE,sx,sy,viewX,viewY,camRenderX,camRenderY);
  if(CLOUDS && CLOUDS.draw) CLOUDS.draw(ctx,TILE,getTile,sx,sy,viewX,viewY);
  drawFallingBlocks();
+ // Ultra dynamic shadows: sun-driven tree shadows, drawn under every entity
+ // (the hero's shadow lives inside drawPlayer; each MOB's shadow lives inside
+ // MOBS.draw with replace-semantics over its species contact blob, so every
+ // drawn creature gets exactly one shadow and fog gating stays authoritative).
+ if(gfxUltraOn('shadows') && POST_FX.drawTreeShadowsPass){
+	 const shadowTime=(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null;
+	 POST_FX.drawTreeShadowsPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,isTrunk:isWood,visibleAt:worldFxVisible,time:shadowTime,frameMs:lastFrameMs});
+ }
  // Standing in the same foreground cell as a wall mirror turns the hero into
  // the depth plane: the human player sees the back, while the late clipped
  // mirror pass below renders the live face. Outside that overlap rendering is
@@ -14995,11 +15152,27 @@ function draw(){ // Background first
  if(!deathTravelFx && heroCloakA>=0.98 && WEAPONS && WEAPONS.drawHeroReflection) WEAPONS.drawHeroReflection(ctx,TILE,player);
  // equipped weapon in hand (melee blades sweep during a swing)
  if(!deathTravelFx && heroCloakA>=0.98 && WEAPONS && WEAPONS.drawHeld) WEAPONS.drawHeld(ctx,TILE,player);
+ // Ultra hero coating: a faked environment reflection over the finished hero
+ // sprite (biome/daylight/depth matcap — no second world render). Skipped
+ // while cloaked (a shimmer-hidden hero must not gleam) and during death travel.
+ if(!deathTravelFx && heroCloakA>=0.98 && POST_FX && POST_FX.drawHeroSheenPass && POST_FX.on('heroSheen')){
+	 const sheenPx=Math.floor(player.x);
+	 POST_FX.drawHeroSheenPass(ctx,{
+		 bx:(player.x-player.w/2)*TILE, by:(player.y-player.h/2)*TILE, bw:player.w*TILE, bh:player.h*TILE,
+		 biome:(WORLDGEN && WORLDGEN.biomeType)?WORLDGEN.biomeType(sheenPx):1,
+		 daylight:currentDaylight(),
+		 depth:Math.max(0,Math.floor(player.y)-((WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight(sheenPx):0)),
+		 submerged:waterLevelUnitsAt(sheenPx,Math.floor(player.y))>0
+	 });
+ }
  if(NPCS && NPCS.draw) NPCS.draw(ctx,TILE,worldFxVisible);
  // soot graffiti marks on walls/faces (world truth, fog-gated)
  if(GRAFFITI && GRAFFITI.draw) GRAFFITI.draw(ctx,TILE,worldFxVisible);
  // soft drifts: sub-tile snow fluff / leaf litter / soot mounds on the surface
  if(SOFT_DRIFTS && SOFT_DRIFTS.draw) SOFT_DRIFTS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
+ // Ultra wet ground: rain soaks the surface into a fading sheen (frozen tiles
+ // skip — snow soaks invisibly and ice has its own reflection pass)
+ if(gfxUltraOn('wetGround') && POST_FX.drawWetGroundPass) POST_FX.drawWetGroundPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,visibleAt:worldFxVisible,rainingAt:(x)=>!!(CLOUDS && CLOUDS.isRainingAt && CLOUDS.isRainingAt(x)),skipWetTile:gfxWetSkipTile,daylight:currentDaylight(),frameMs:lastFrameMs});
  // icicles under cold overhangs (and their falling shards)
  if(ICICLES && ICICLES.draw) ICICLES.draw(ctx,TILE,worldFxVisible);
  // living plants (rooted vegetation over terrain, under fire/creatures)
@@ -15059,12 +15232,18 @@ function draw(){ // Background first
   // particles (screen-space in world coords)
   drawParticles();
   drawCombatImpactFx();
+ // Ultra dust motes: stateless daylight specks drifting just above the surface
+ if(gfxUltraOn('dustMotes') && POST_FX.drawDustMotesPass) POST_FX.drawDustMotesPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,visibleAt:worldFxVisible,daylight:currentDaylight(),frameMs:lastFrameMs});
   // front vegetation pass (blades/leaves that should appear in front)
  if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'front', sx,sy,viewX,viewY,TILE,worldMaxY(),getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible,worldMinY()); }
  // Water overlay shimmer (after vegetation front to avoid overdraw? place before falling solids for clarity)
  if(WATER){ WATER.drawOverlay(ctx,TILE,getTile,sx,sy,viewX,viewY,worldFxVisible); }
  // thin-ice crack webs + hot-spring steam wisps ride the finished water surface
  if(THIN_ICE_SIM && THIN_ICE_SIM.draw) THIN_ICE_SIM.draw(ctx,TILE,worldFxVisible);
+ // Ultra ice reflections: frozen sheets mirror a faint static strip of the
+ // scene (the water pass's frozen lakes stay dark by design — this is their
+ // subtle winter counterpart, clipped into the ice tile itself).
+ if(gfxUltraOn('iceReflections') && POST_FX.drawIceReflectionsPass) POST_FX.drawIceReflectionsPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,visibleAt:worldFxVisible,frameMs:lastFrameMs});
  if(GEOTHERMAL && GEOTHERMAL.draw) GEOTHERMAL.draw(ctx,TILE,worldFxVisible);
  // fishing line + bobber float on the finished water surface
  if(FISHING && FISHING.draw) FISHING.draw(ctx,TILE,player,worldFxVisible);
@@ -15084,12 +15263,19 @@ function draw(){ // Background first
  // Mirrors are deliberately late: their clipped second hero render captures the
  // finished live pose, then smoke, cave lighting and fog still affect the glass.
  if(FURNISHINGS && FURNISHINGS.drawMirrors) FURNISHINGS.drawMirrors(ctx,TILE,sx,sy,viewX,viewY,getTile,worldFxVisible,{player,maxDistance:HOME_MIRROR_RANGE,renderReflection:drawHomeMirrorReflection});
+ // Ultra god rays: additive shafts through canopy gaps, leaning with the same
+ // solar model as the dynamic shadows — drawn over the world content so the
+ // light reads volumetric, before smoke/darkness/fog still veil it.
+ if(gfxUltraOn('godRays') && POST_FX.drawGodRaysPass) POST_FX.drawGodRaysPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,isCanopy:(t)=>isLeaf(t)||isWood(t),visibleAt:worldFxVisible,time:(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null,daylight:currentDaylight(),frameMs:lastFrameMs});
  // Black smoke is a composited density layer: it can overlap ordinary gases and
  // obscures creatures/objects, while lighting still colours the finished scene.
  if(SMOKE && SMOKE.draw) SMOKE.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
  // Coloured weapon bounce is composited into the finished scene, then the
  // light-field overlay below applies cave occlusion and depth attenuation.
  if(!deathTravelFx && WEAPONS && WEAPONS.drawWorldLight) WEAPONS.drawWorldLight(ctx,TILE,player);
+ // Ultra heat shimmer: sine-offset self-blit slices above open-air lava and
+ // geothermal pools distort the already-drawn scene before darkness applies.
+ if(gfxUltraOn('heatShimmer') && POST_FX.drawHeatShimmerPass) POST_FX.drawHeatShimmerPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),pools:(GEOTHERMAL && GEOTHERMAL.poolsNear)?GEOTHERMAL.poolsNear(player.x,Math.ceil(viewX*0.6)+4):null,frameMs:lastFrameMs});
  // Cave darkness overlay: darkens unlit underground before UI-ish indicators,
  // so the ghost preview, mining progress and fog (final occlusion) stay on top.
  drawLightingOverlay(sx,sy,viewX,viewY,{camX:camRenderX,camY:camRenderY,shake:screenShake});
@@ -15097,6 +15283,15 @@ function draw(){ // Background first
  // fog pass stays later, while thermal silhouettes require current visibility.
  drawSpecialVisionOverlay(camRenderX,camRenderY,screenShake);
  drawAntennaEchoOverlay(camRenderX,camRenderY,screenShake);
+ // Ultra light temperature: broad soft ambience around the same emitters bloom
+ // uses, painted over the darkness overlay so torch rooms warm up and
+ // glowshroom chambers go teal — then bloom adds the tight bright cores.
+ if(gfxUltraOn('lightTint') && POST_FX.drawLightTintPass) POST_FX.drawLightTintPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs});
+ // Ultra bloom: additive halos over emissive tiles, drawn in world space above
+ // the darkness overlay (the glow is what lives in the dark) and before the
+ // fog pass below so undiscovered black still wins on top. The gate keeps
+ // standard mode from even building the opts object each frame.
+ if(gfxUltraOn('bloom') && POST_FX.drawBloomPass) POST_FX.drawBloomPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs});
  // Ghost block preview — recomputed each frame so camera motion can't leave it stale.
  // Green = placement allowed right now; red = blocked (reach/support/no blocks).
  if(isToolMode() && lastPointer.has && !pinch && !mining){

@@ -15,6 +15,7 @@ export const NEW_GAME_PREFERENCE_KEYS = Object.freeze([
   'mm_debug_menu_settings_v1',
   'mm_dynamo_orientation_v1',
   'mm_fps_unlocked',
+  'mm_gfx_ultra_v1',
   'mm_grass_density',
   'mm_grass_height',
   'mm_lighting_off_v1',
