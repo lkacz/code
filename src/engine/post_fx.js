@@ -421,9 +421,10 @@ function snapshotSceneCanvas(srcCanvas){
 // --- hero mirror backdrop -----------------------------------------------------
 // The coat's reflection is REAL: a rect of the finished scene around the hero,
 // grabbed BEFORE the sprite is drawn (so the hero can never reflect itself) and
-// blitted back over the body flipped and compressed. drawImage-only — the
-// getImageData taboo holds. The grab is downscaled on the way in, which both
-// caps the scratch and pre-blurs the image the way a curved surface would.
+// blitted back over the body, compressed but NOT flipped — the surroundings
+// shrunk in place. drawImage-only — the getImageData taboo holds. The grab is
+// downscaled on the way in, which both caps the scratch and pre-blurs the image
+// the way a curved surface would.
 // Field of view the coat mirrors, in body sizes. Kept deliberately tight: a
 // 14x19px sprite squeezing half a screen into itself is a smear, while ~4x3
 // tiles keeps whole features (a trunk, the ground line, a torch) recognisable.
@@ -471,8 +472,10 @@ function buildHeroCoat(ctx, mirror, bw, bh){
 	g.clearRect(0, 0, w, h);
 	g.globalCompositeOperation = 'source-over';
 	g.imageSmoothingEnabled = true;
-	// mirror image: flip horizontally by drawing under a negated x axis
-	g.setTransform(-1, 0, 0, 1, w, 0);
+	// The image is NOT flipped: the coat shows the surroundings shrunk in place,
+	// so what stands to the hero's left reads on the coat's left. A mirror flip
+	// is only correct for a plane facing the viewer; here it just moved familiar
+	// scenery to the wrong side and read as an artifact.
 	const bands = 7;
 	for(let i = 0; i < bands; i++){
 		const v0 = i / bands, v1 = (i + 1) / bands;
@@ -674,11 +677,13 @@ const api = {
 		const daylight = Math.max(0, Math.min(1, Number.isFinite(opts.daylight) ? opts.daylight : 1));
 		ctx.save();
 		// The outfit is a plain filled RECT with a 1px outline (inventory.js
-		// drawOutfit) — clip to that whole rect, inset by a pixel so the outline
-		// stays crisp. An inset rounded capsule used to leave the coat looking
-		// like a sticker floating inside the sprite.
+		// drawOutfit) — clip to that WHOLE rect. Any inset leaves a ring of bare
+		// outfit colour between the black outline and the coat, and since the
+		// inset is world-space it grows with zoom: the "extra border" the coat
+		// used to show. The stroke straddles the edge, so its outer half still
+		// separates the hero from the background.
 		ctx.beginPath();
-		ctx.rect(bx + 1, by + 1, bw - 2, bh - 2);
+		ctx.rect(bx, by, bw, bh);
 		ctx.clip();
 		// Base wash: the sampled environment carries hue the mirror can miss —
 		// the layers drawn after the hero (plants, mobs, the water overlay) are
@@ -693,7 +698,7 @@ const api = {
 		ctx.fillRect(bx, by, bw, bh);
 		const coat = mirror ? buildHeroCoat(ctx, mirror, bw, bh) : null;
 		if(coat){
-			// Fresnel-masked blit: a polished surface mirrors hardest where it
+			// Fresnel-masked blit: a polished surface reflects hardest where it
 			// turns away from the viewer, so the coat is near-opaque at the rim
 			// and thin over the middle — which is also what keeps the hero's face
 			// and outfit readable instead of replacing the sprite with a window.

@@ -99,8 +99,10 @@ assert.match(src, /function tryWeaponUltOrDefend\(player,aimX,aimY,item,pointerI
 assert.match(src, /tryWeaponUltOrDefend\(player, aim\.x, aim\.y, it, e\.pointerId, 'mouse'\)/, 'desktop right-click uses the ult-or-defend fallback');
 assert.match(src, /tryWeaponUltOrDefend\(player, aim\.x, aim\.y, it, e\.pointerId, 'touch'\)/, 'touch ult button uses the same defend fallback');
 assert.match(src, /endHeroDefense\(e\.pointerId,\{cancel:false\}\)/, 'pointer release clears held defense with a short grace window');
-assert.match(src, /const defendFaceT=\(\(\)=>\{[\s\S]*heroDefending\(now\)[\s\S]*heroDefendFlashUntil/, 'defense feedback is expressed through the hero face state');
-assert.match(src, /function drawDefendEyeTension\(eyeY,eyeOffsetX,eyeW\)\{[\s\S]*ctx\.moveTo\(left-eyeW\*0\.75[\s\S]*ctx\.lineTo\(right\+eyeW\*0\.75/, 'defense feedback draws native eye tension instead of a separate shield marker');
+// The face-defense helpers live at module scope so the ultra hero coat can
+// replay the eyes over its reflection through the same routine (post_fx.js).
+assert.match(src, /function heroDefendFaceT\(\)\{[\s\S]*heroDefending\(now\)[\s\S]*heroDefendFlashUntil/, 'defense feedback is expressed through the hero face state');
+assert.match(src, /function drawDefendEyeTension\(bodyX,bw,eyeY,eyeOffsetX,eyeW\)\{[\s\S]*ctx\.moveTo\(left-eyeW\*0\.75[\s\S]*ctx\.lineTo\(right\+eyeW\*0\.75/, 'defense feedback draws native eye tension instead of a separate shield marker');
 assert.ok(!src.includes('ctx.ellipse(cx,cy,TILE*(0.48+0.04*pulse),TILE*(0.72+0.04*pulse)'), 'defense no longer draws the blue ellipse shield around the hero');
 assert.match(src, /immunityBtn.*addEventListener\('click',toggleImmunity\)/, 'immunity button is wired to the toggle');
 assert.match(src, /k==='i'&&!keysOnce\.has\('i'\)/, 'I hotkey toggles immunity');

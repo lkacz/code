@@ -5985,7 +5985,79 @@ function drawDeathTravelFx(){
 	return true;
 }
 function drawCape(){ if(deathTravelFx) return; CAPE.draw(ctx,TILE); }
-function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opts&&opts.rearView); const remoteBody=!!(opts&&opts.remoteBody); const c=MM.customization||{}; let bodyX=(player.x-player.w/2)*TILE; let bodyY=(player.y-player.h/2)*TILE; let bw=player.w*TILE, bh=player.h*TILE;
+// Hero eyes, extracted so the ultra coat can paint them again over its own
+// reflection. Geometry of the last local-hero draw is kept in heroEyeReplay
+// (recoil squashes the body rect, so the replay must not recompute it).
+// The defend-face helpers moved out of drawPlayer with them: they are pure
+// reads of the block/flash clocks, so calling them from either site matches.
+let heroEyeReplay=null;
+function heroDefendFaceT(){
+	const now=performance.now();
+	if(heroDefending(now)) return 1;
+	const flash=Math.max(0,(heroDefendFlashUntil||0)-now);
+	return Math.max(0,Math.min(1,flash/240));
+}
+function defendSquintHeight(open,min){
+	return Math.max(min,Math.round(open*(1-0.58*heroDefendFaceT())));
+}
+function drawDefendEyeTension(bodyX,bw,eyeY,eyeOffsetX,eyeW){
+	const defendFaceT=heroDefendFaceT();
+	if(defendFaceT<=0.01) return;
+	const a=(0.24+0.38*defendFaceT).toFixed(3);
+	const left=bodyX+bw/2-eyeOffsetX;
+	const right=bodyX+bw/2+eyeOffsetX;
+	const y=eyeY-TILE*(0.13+0.02*defendFaceT);
+	ctx.save();
+	ctx.strokeStyle='rgba(48,31,18,'+a+')';
+	ctx.lineWidth=Math.max(1,TILE*0.035);
+	ctx.lineCap='round';
+	ctx.beginPath();
+	ctx.moveTo(left-eyeW*0.75,y-eyeW*0.18);
+	ctx.lineTo(left+eyeW*0.62,y+eyeW*0.12);
+	ctx.moveTo(right-eyeW*0.62,y+eyeW*0.12);
+	ctx.lineTo(right+eyeW*0.75,y-eyeW*0.18);
+	ctx.stroke();
+	ctx.restore();
+}
+function drawHeroEyes(bodyX,bodyY,bw,bh,style,c){
+	// Eyes (for all outfits except ninja/ironperson which draw their own below)
+	if(style!=='ninja' && style!=='ironperson') {
+		const eyeW=6, eyeHOpen=6; let eyeH = (EYES && EYES.getEyeHeight)? EYES.getEyeHeight(eyeHOpen, c.eyeStyle): eyeHOpen;
+		eyeH=defendSquintHeight(eyeH,2);
+		const eyeY=bodyY + bh*0.35; const eyeOffsetX=bw*0.18; const pupilW=2; const pupilShift=player.facing*1.5;
+		const eye=(cx)=>{ if(c.eyeStyle==='glow'){ ctx.fillStyle='rgba(255,255,255,0.08)'; ctx.fillRect(cx-eyeW/2-2, eyeY-eyeH/2-2, eyeW+4, eyeH+4); ctx.fillStyle='#8bf9ff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); }
+			else if(c.eyeStyle==='sleepy'){ const h=defendSquintHeight(eyeHOpen-3,1); ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-h/2, eyeW, h); if(h>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(h/2-1,2), pupilW, Math.min(h-2,4)); } }
+			else if(c.eyeStyle==='gold'){ ctx.fillStyle='#ffce3a'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#5a3b00'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } }
+			else { ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } } };
+		eye(bodyX+bw/2-eyeOffsetX); eye(bodyX+bw/2+eyeOffsetX);
+		drawDefendEyeTension(bodyX,bw,eyeY,eyeOffsetX,eyeW);
+	}
+	// Special eye overlays for ninja / ironperson
+	if(style==='ninja'){
+		const eyeW=6, eyeH=defendSquintHeight(3,1), eyeY=bodyY+bh*0.35, eyeOffsetX=bw*0.18;
+		const ey=eyeY-eyeH/2;
+		ctx.fillStyle='#fff';
+		ctx.fillRect(bodyX+bw/2-eyeOffsetX-eyeW/2, ey, eyeW, eyeH);
+		ctx.fillRect(bodyX+bw/2+eyeOffsetX-eyeW/2, ey, eyeW, eyeH);
+		if(eyeH>1){
+			ctx.fillStyle='#3cf';
+			ctx.fillRect(bodyX+bw/2-eyeOffsetX-eyeW/2+2, eyeY,2,1);
+			ctx.fillRect(bodyX+bw/2+eyeOffsetX-eyeW/2+2, eyeY,2,1);
+		}
+		drawDefendEyeTension(bodyX,bw,eyeY,eyeOffsetX,eyeW);
+	}
+	else if(style==='ironperson'){
+		const eyeW=6, eyeH=defendSquintHeight(6,2), eyeY=bodyY+bh*0.35, eyeOffsetX=bw*0.18;
+		ctx.fillStyle='#ffd700';
+		ctx.fillRect(bodyX+bw/2-eyeOffsetX-eyeW/2, eyeY-eyeH/2, eyeW, eyeH);
+		ctx.fillRect(bodyX+bw/2+eyeOffsetX-eyeW/2, eyeY-eyeH/2, eyeW, eyeH);
+		drawDefendEyeTension(bodyX,bw,eyeY,eyeOffsetX,eyeW);
+	}
+}
+function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opts&&opts.rearView); const remoteBody=!!(opts&&opts.remoteBody);
+	// Cleared every local draw: a rear-view pose (wall mirror) paints no eyes,
+	// and a stale geometry must never be replayed over the coat.
+	if(!remoteBody) heroEyeReplay=null; const c=MM.customization||{}; let bodyX=(player.x-player.w/2)*TILE; let bodyY=(player.y-player.h/2)*TILE; let bw=player.w*TILE, bh=player.h*TILE;
 	// Antenna cloak: the whole hero (body, face, jewellery, shadow) fades to a
 	// shimmer. Remote bodies carry their cloak state via opts (pb stream flag).
 	const heroA=(opts&&opts.cloaked)?0.32:((!remoteBody&&ANTENNAS&&ANTENNAS.heroAlpha)?ANTENNAS.heroAlpha():1);
@@ -6140,67 +6212,11 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 	if(!rearView){
 	if(!remoteBody && NECKLACE && NECKLACE.drawFront) NECKLACE.drawFront(ctx,TILE,player);
 	if(!remoteBody && ANTENNAS && ANTENNAS.draw) ANTENNAS.draw(ctx,TILE,player);
-	const defendFaceT=(()=>{
-		const now=performance.now();
-		if(heroDefending(now)) return 1;
-		const flash=Math.max(0,(heroDefendFlashUntil||0)-now);
-		return Math.max(0,Math.min(1,flash/240));
-	})();
-	function defendSquintHeight(open,min){
-		return Math.max(min,Math.round(open*(1-0.58*defendFaceT)));
-	}
-	function drawDefendEyeTension(eyeY,eyeOffsetX,eyeW){
-		if(defendFaceT<=0.01) return;
-		const a=(0.24+0.38*defendFaceT).toFixed(3);
-		const left=bodyX+bw/2-eyeOffsetX;
-		const right=bodyX+bw/2+eyeOffsetX;
-		const y=eyeY-TILE*(0.13+0.02*defendFaceT);
-		ctx.save();
-		ctx.strokeStyle='rgba(48,31,18,'+a+')';
-		ctx.lineWidth=Math.max(1,TILE*0.035);
-		ctx.lineCap='round';
-		ctx.beginPath();
-		ctx.moveTo(left-eyeW*0.75,y-eyeW*0.18);
-		ctx.lineTo(left+eyeW*0.62,y+eyeW*0.12);
-		ctx.moveTo(right-eyeW*0.62,y+eyeW*0.12);
-		ctx.lineTo(right+eyeW*0.75,y-eyeW*0.18);
-		ctx.stroke();
-		ctx.restore();
-	}
-	 // Eyes (for all outfits except ninja/ironperson which draw their own above)
-	 if(style!=='ninja' && style!=='ironperson') {
-		const eyeW=6, eyeHOpen=6; let eyeH = (EYES && EYES.getEyeHeight)? EYES.getEyeHeight(eyeHOpen, c.eyeStyle): eyeHOpen;
-		eyeH=defendSquintHeight(eyeH,2);
-		 const eyeY=bodyY + bh*0.35; const eyeOffsetX=bw*0.18; const pupilW=2; const pupilShift=player.facing*1.5;
-		 function eye(cx){ if(c.eyeStyle==='glow'){ ctx.fillStyle='rgba(255,255,255,0.08)'; ctx.fillRect(cx-eyeW/2-2, eyeY-eyeH/2-2, eyeW+4, eyeH+4); ctx.fillStyle='#8bf9ff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); }
-			 else if(c.eyeStyle==='sleepy'){ const h=defendSquintHeight(eyeHOpen-3,1); ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-h/2, eyeW, h); if(h>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(h/2-1,2), pupilW, Math.min(h-2,4)); } }
-			 else if(c.eyeStyle==='gold'){ ctx.fillStyle='#ffce3a'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#5a3b00'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } }
-			 else { ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); if(eyeH>2){ ctx.fillStyle='#111'; ctx.fillRect(cx - pupilW/2 + pupilShift, eyeY - Math.min(eyeH/2-1,2), pupilW, Math.min(eyeH-2,4)); } } }
-		 eye(bodyX+bw/2-eyeOffsetX); eye(bodyX+bw/2+eyeOffsetX);
-		 drawDefendEyeTension(eyeY,eyeOffsetX,eyeW);
-	 }
-
-	// Draw special eyes overlays for ninja / ironperson
-	if(style==='ninja'){
-		const eyeW=6, eyeH=defendSquintHeight(3,1), eyeY=bodyY+bh*0.35, eyeOffsetX=bw*0.18;
-		const ey=eyeY-eyeH/2;
-		ctx.fillStyle='#fff';
-		ctx.fillRect(bodyX+bw/2-eyeOffsetX-eyeW/2, ey, eyeW, eyeH);
-		ctx.fillRect(bodyX+bw/2+eyeOffsetX-eyeW/2, ey, eyeW, eyeH);
-		if(eyeH>1){
-			ctx.fillStyle='#3cf';
-			ctx.fillRect(bodyX+bw/2-eyeOffsetX-eyeW/2+2, eyeY,2,1);
-			ctx.fillRect(bodyX+bw/2+eyeOffsetX-eyeW/2+2, eyeY,2,1);
-		}
-		drawDefendEyeTension(eyeY,eyeOffsetX,eyeW);
-	}
-	else if(style==='ironperson'){
-		const eyeW=6, eyeH=defendSquintHeight(6,2), eyeY=bodyY+bh*0.35, eyeOffsetX=bw*0.18;
-		ctx.fillStyle='#ffd700';
-		ctx.fillRect(bodyX+bw/2-eyeOffsetX-eyeW/2, eyeY-eyeH/2, eyeW, eyeH);
-		ctx.fillRect(bodyX+bw/2+eyeOffsetX-eyeW/2, eyeY-eyeH/2, eyeW, eyeH);
-		drawDefendEyeTension(eyeY,eyeOffsetX,eyeW);
-	}
+	 // Eyes are their own layer: the ultra coat replays this exact routine on
+	 // top of the finished reflection (a mirror finish covers the suit, never
+	 // the pupils), so the local hero remembers the geometry it drew with.
+	 if(!remoteBody) heroEyeReplay={bodyX,bodyY,bw,bh,style,c};
+	 drawHeroEyes(bodyX,bodyY,bw,bh,style,c);
 	if(!remoteBody && HERO_LAMP && HERO_LAMP.isOn()){
 		const eyeY=bodyY+bh*0.35, eyeOffsetX=bw*0.18;
 		const centers=[bodyX+bw/2-eyeOffsetX,bodyX+bw/2+eyeOffsetX];
@@ -15176,6 +15192,9 @@ function draw(){ // Background first
 		 time:(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null,
 		 submerged:waterLevelUnitsAt(sheenPx,Math.floor(player.y))>0
 	 });
+	 // The coat mirrors the SUIT. Eyes are not reflective — they go back on top,
+	 // through the very routine that drew them, with the geometry it used.
+	 if(heroEyeReplay) drawHeroEyes(heroEyeReplay.bodyX,heroEyeReplay.bodyY,heroEyeReplay.bw,heroEyeReplay.bh,heroEyeReplay.style,heroEyeReplay.c);
  }
  if(NPCS && NPCS.draw) NPCS.draw(ctx,TILE,worldFxVisible);
  // soot graffiti marks on walls/faces (world truth, fog-gated)

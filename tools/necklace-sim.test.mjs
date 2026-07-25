@@ -143,7 +143,10 @@ assert.match(mainSrc, /function updateCape\(dt\)\{ CAPE\.update\(player,dt,getTi
 const backDrawIdx = mainSrc.indexOf('if(!remoteBody && NECKLACE && NECKLACE.drawBack)');
 const outfitIdx = mainSrc.indexOf('MM.drawOutfit(ctx, bodyX, bodyY, bw, bh, style, c, rearView?{back:true}:null)');
 const frontDrawIdx = mainSrc.indexOf('if(!remoteBody && NECKLACE && NECKLACE.drawFront)');
-const eyesIdx = mainSrc.indexOf('// Eyes (for all outfits except ninja/ironperson');
+// Anchor on the CALL, not the routine: eye rendering moved into drawHeroEyes()
+// (defined above drawPlayer) so the ultra hero coat can replay it on top of its
+// reflection. The order contract inside the sprite is what matters here.
+const eyesIdx = mainSrc.indexOf('drawHeroEyes(bodyX,bodyY,bw,bh,style,c);');
 assert.ok(backDrawIdx > 0 && backDrawIdx < outfitIdx, 'back chain draws behind the outfit body');
 assert.ok(frontDrawIdx > outfitIdx && frontDrawIdx < eyesIdx, 'front chain draws over the outfit but before the eyes');
 assert.ok(!mainSrc.includes('NECKLACE.draw(ctx,TILE,player);'), 'necklace is no longer drawn after eyes');

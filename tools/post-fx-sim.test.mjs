@@ -453,13 +453,25 @@ const iCape = mainSrc.indexOf('if(!mirrorFacing){ if(heroCloakA<1) ctx.globalAlp
 const iHero = mainSrc.indexOf('drawPlayer({rearView:mirrorFacing});');
 const iSheen = mainSrc.indexOf('POST_FX.drawHeroSheenPass(ctx,{');
 assert.ok(iGrab > 0 && iCape > iGrab && iHero > iGrab && iSheen > iHero, 'grab -> cape -> hero -> coat: the snapshot predates the sprite, the coat follows it');
+// Eyes are not reflective: ONE routine paints them, called from the sprite and
+// again over the finished coat, with the geometry the sprite actually used
+// (recoil squashes the body rect — a recomputed replay would drift).
+assert.match(mainSrc, /function drawHeroEyes\(bodyX,bodyY,bw,bh,style,c\)\{/, 'eye rendering is a single shared routine');
+assert.match(mainSrc, /if\(!remoteBody\) heroEyeReplay=\{bodyX,bodyY,bw,bh,style,c\};/, 'the local hero records the exact geometry it drew eyes with');
+assert.match(mainSrc, /if\(heroEyeReplay\) drawHeroEyes\(heroEyeReplay\.bodyX,heroEyeReplay\.bodyY,heroEyeReplay\.bw,heroEyeReplay\.bh,heroEyeReplay\.style,heroEyeReplay\.c\);/, 'the coat replays the eyes on top of its reflection');
+const iEyeReplay = mainSrc.indexOf('if(heroEyeReplay) drawHeroEyes(');
+assert.ok(iEyeReplay > iSheen, 'the eye replay lands AFTER the coat pass (eyes on top, never mirrored over)');
 // The coat covers the WHOLE outfit rect (inventory.js drawOutfit fills a plain
-// rect + 1px outline) — the old inset capsule looked like a floating sticker.
-assert.match(postFxSrc, /ctx\.rect\(bx \+ 1, by \+ 1, bw - 2, bh - 2\);/, 'the coat clips to the full body rect, inset only by the outline pixel');
+// rect + 1px outline). ANY inset is world-space, so it grows with zoom into a
+// visible ring of bare outfit colour between the outline and the coat.
+assert.match(postFxSrc, /ctx\.rect\(bx, by, bw, bh\);\n\t\tctx\.clip\(\);/, 'the coat clips to the full body rect — no inset ring');
 assert.ok(!postFxSrc.includes('roundRect(bx + bw * 0.06'), 'the inset capsule clip is gone');
+assert.ok(!postFxSrc.includes('ctx.rect(bx + 1, by + 1, bw - 2, bh - 2)'), 'the 1px inset clip is gone (it read as a second border)');
 // No self-animating sweep: a standing hero must show a still coat.
 assert.ok(!/hg\.addColorStop|bw \* 2\.2 \* phase/.test(postFxSrc), 'the travelling diagonal highlight is gone (it animated while standing still)');
-assert.match(postFxSrc, /g\.setTransform\(-1, 0, 0, 1, w, 0\);/, 'the coat is assembled mirror-flipped');
+// Not mirror-flipped: the surroundings are shrunk IN PLACE, so scenery keeps
+// the side it really stands on (a flip only suits a plane facing the viewer).
+assert.ok(!postFxSrc.includes('setTransform(-1, 0, 0, 1, w, 0)'), 'the coat is no longer flipped left-to-right');
 assert.match(postFxSrc, /g\.globalCompositeOperation = 'destination-in';/, 'a Fresnel alpha mask thins the coat over the middle (the face stays readable)');
 // The mask MUST be applied on the off-screen coat: a destination-in fill on the
 // live scene canvas would erase the world behind the hero.
