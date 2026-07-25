@@ -15141,6 +15141,12 @@ function draw(){ // Background first
  const heroCloakA=(ANTENNAS&&ANTENNAS.heroAlpha)?ANTENNAS.heroAlpha():1;
  // In the ordinary pose the cape is behind the body. From the rear it belongs
  // on top of the back and is therefore drawn immediately after the body.
+ // Ultra hero coating: grab the world BEHIND the hero before any part of the
+ // sprite lands on the canvas — that snapshot is what the coat mirrors, so the
+ // hero can never end up reflecting itself (or its own cape).
+ if(!deathTravelFx && heroCloakA>=0.98 && POST_FX && POST_FX.captureHeroBackdrop && POST_FX.on('heroSheen')){
+	 POST_FX.captureHeroBackdrop(ctx,{bx:(player.x-player.w/2)*TILE, by:(player.y-player.h/2)*TILE, bw:player.w*TILE, bh:player.h*TILE});
+ }
  if(!mirrorFacing){ if(heroCloakA<1) ctx.globalAlpha=heroCloakA; drawCape(); if(heroCloakA<1) ctx.globalAlpha=1; }
  if(GENERATED_NPCS && GENERATED_NPCS.draw) GENERATED_NPCS.draw(ctx,TILE,worldFxVisible,getTile,WORLDGEN,sx,sy,viewX,viewY);
  // spectator spirit BODIES glide behind the player (hovering above when parked on it) —
@@ -15167,6 +15173,7 @@ function draw(){ // Background first
 		 surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,
 		 px:sheenPx, py:Math.floor(player.y),
 		 daylight:currentDaylight(),
+		 time:(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null,
 		 submerged:waterLevelUnitsAt(sheenPx,Math.floor(player.y))>0
 	 });
  }

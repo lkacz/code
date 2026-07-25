@@ -418,6 +418,82 @@ function snapshotSceneCanvas(srcCanvas){
 	return selfBlitCanvas;
 }
 
+// --- hero mirror backdrop -----------------------------------------------------
+// The coat's reflection is REAL: a rect of the finished scene around the hero,
+// grabbed BEFORE the sprite is drawn (so the hero can never reflect itself) and
+// blitted back over the body flipped and compressed. drawImage-only — the
+// getImageData taboo holds. The grab is downscaled on the way in, which both
+// caps the scratch and pre-blurs the image the way a curved surface would.
+// Field of view the coat mirrors, in body sizes. Kept deliberately tight: a
+// 14x19px sprite squeezing half a screen into itself is a smear, while ~4x3
+// tiles keeps whole features (a trunk, the ground line, a torch) recognisable.
+const HERO_MIRROR_SPREAD_X = 5;
+const HERO_MIRROR_SPREAD_Y = 3;
+const HERO_MIRROR_MAX_PX = 256;
+let heroMirrorCanvas = null;
+let heroMirrorCtx = null;
+let heroMirrorFresh = false;
+let heroMirrorUsed = false;
+let heroCoatCanvas = null;
+let heroCoatCtx = null;
+// Barrel mapping from a destination band (0..1 down the body) to the source
+// band of the grab. Exponent > 1 keeps the middle of the field large and
+// squeezes the periphery — the signature look of a curved mirror. Exported for
+// the unit test: the shape of this curve IS the effect.
+export function heroMirrorCurve(v){
+	const u = 2 * Math.max(0, Math.min(1, v)) - 1;
+	return 0.5 + 0.5 * Math.sign(u) * Math.pow(Math.abs(u), 1.6);
+}
+
+// Assemble one frame of the coat off-screen: the grabbed field, flipped and
+// bent through the barrel curve, then masked by a Fresnel falloff (thin over
+// the middle, near-solid at the rim). Masking needs its own canvas — a
+// destination-in fill on the live scene would erase the world.
+function buildHeroCoat(ctx, mirror, bw, bh){
+	if(typeof document === 'undefined' || !(bw > 0) || !(bh > 0)) return null;
+	let m = null;
+	try{ m = (typeof ctx.getTransform === 'function') ? ctx.getTransform() : null; }catch(e){ m = null; }
+	const sxScale = (m && Number.isFinite(m.a) && m.a > 0) ? m.a : 1;
+	const syScale = (m && Number.isFinite(m.d) && m.d > 0) ? m.d : 1;
+	const w = Math.max(4, Math.min(512, Math.round(bw * sxScale)));
+	const h = Math.max(4, Math.min(512, Math.round(bh * syScale)));
+	if(!heroCoatCanvas){
+		heroCoatCanvas = document.createElement('canvas');
+		heroCoatCtx = heroCoatCanvas.getContext('2d');
+	}
+	if(!heroCoatCtx) return null;
+	if(heroCoatCanvas.width !== w || heroCoatCanvas.height !== h){
+		heroCoatCanvas.width = w;
+		heroCoatCanvas.height = h;
+	}
+	const g = heroCoatCtx;
+	g.setTransform(1, 0, 0, 1, 0, 0);
+	g.clearRect(0, 0, w, h);
+	g.globalCompositeOperation = 'source-over';
+	g.imageSmoothingEnabled = true;
+	// mirror image: flip horizontally by drawing under a negated x axis
+	g.setTransform(-1, 0, 0, 1, w, 0);
+	const bands = 7;
+	for(let i = 0; i < bands; i++){
+		const v0 = i / bands, v1 = (i + 1) / bands;
+		const s0 = heroMirrorCurve(v0), s1 = heroMirrorCurve(v1);
+		const sy0 = s0 * mirror.height;
+		const shh = Math.max(1, (s1 - s0) * mirror.height);
+		// +1px of overlap keeps the bands from seaming apart
+		g.drawImage(mirror, 0, sy0, mirror.width, shh, 0, v0 * h, w, h / bands + 1);
+	}
+	g.setTransform(1, 0, 0, 1, 0, 0);
+	g.globalCompositeOperation = 'destination-in';
+	const mask = g.createRadialGradient(w * 0.5, h * 0.42, 0, w * 0.5, h * 0.42, Math.max(w, h) * 0.62);
+	mask.addColorStop(0, 'rgba(0,0,0,0.30)');
+	mask.addColorStop(0.55, 'rgba(0,0,0,0.52)');
+	mask.addColorStop(1, 'rgba(0,0,0,1)');
+	g.fillStyle = mask;
+	g.fillRect(0, 0, w, h);
+	g.globalCompositeOperation = 'source-over';
+	return heroCoatCanvas;
+}
+
 // The emitter scan is SHARED by bloom, light-tint and heat-shimmer: one
 // cadence-cached viewport walk, three different draws over the same list.
 function ensureEmitterScan(opts){
@@ -474,18 +550,63 @@ const api = {
 	// needs it (settings handlers call this on toggle-off; the gated call
 	// sites cannot, because an off pass is never invoked).
 	releaseScratch(){
+		if(!config.heroSheen){ heroMirrorCanvas = null; heroMirrorCtx = null; heroCoatCanvas = null; heroCoatCtx = null; heroMirrorFresh = false; }
 		if(!config.heatShimmer && !config.iceReflections){ selfBlitCanvas = null; selfBlitCtx = null; return true; }
 		return false;
 	},
-	// QA seam: the current (chased) coat stops, rounded — lets a live driver
-	// assert "green over grass / warm near a torch" without pixel readbacks.
+	// QA seam: the current (chased) coat stops plus whether the last draw used a
+	// real mirrored backdrop — lets a live driver assert "green over grass, warm
+	// near a torch, mirror actually blitted" without pixel readbacks.
 	_sheenState(){
 		if(!sheenCur) return null;
 		return {
 			top: sheenCur.top.map(Math.round),
 			mid: sheenCur.mid.map(Math.round),
-			bot: sheenCur.bot.map(Math.round)
+			bot: sheenCur.bot.map(Math.round),
+			mirrored: heroMirrorUsed
 		};
+	},
+	// Grab the world behind the hero. MUST be called in world space BEFORE the
+	// hero sprite is drawn; the snapshot is consumed by the very next
+	// drawHeroSheenPass and then invalidated, so a pass without a fresh grab
+	// (mock contexts, screenshot tools) falls back to the sampled tint alone.
+	captureHeroBackdrop(ctx, opts){
+		heroMirrorFresh = false;
+		if(!api.on('heroSheen')) return 0;
+		if(typeof document === 'undefined') return 0;
+		if(!ctx || !ctx.canvas || !opts || !(opts.bw > 0) || !(opts.bh > 0)) return 0;
+		let m = null;
+		try{ m = (typeof ctx.getTransform === 'function') ? ctx.getTransform() : null; }catch(e){ m = null; }
+		if(!m || !Number.isFinite(m.a) || m.a <= 0 || !Number.isFinite(m.d) || m.d <= 0) return 0;
+		const src = ctx.canvas;
+		if(!(src.width > 0) || !(src.height > 0)) return 0;
+		const fw = opts.bw * HERO_MIRROR_SPREAD_X, fh = opts.bh * HERO_MIRROR_SPREAD_Y;
+		// the mirrored field sits a little high: more sky/ceiling than floor,
+		// which is what a standing figure actually catches
+		const cx = opts.bx + opts.bw * 0.5, cy = opts.by + opts.bh * 0.5 - opts.bh * 0.25;
+		const dx0 = m.a * (cx - fw * 0.5) + m.e, dy0 = m.d * (cy - fh * 0.5) + m.f;
+		const sx = Math.max(0, Math.floor(dx0)), sy = Math.max(0, Math.floor(dy0));
+		const ex = Math.min(src.width, Math.ceil(dx0 + m.a * fw));
+		const ey = Math.min(src.height, Math.ceil(dy0 + m.d * fh));
+		const sw = ex - sx, sh = ey - sy;
+		if(!(sw > 4) || !(sh > 4)) return 0; // hero at the very screen edge
+		if(!heroMirrorCanvas){
+			heroMirrorCanvas = document.createElement('canvas');
+			heroMirrorCtx = heroMirrorCanvas.getContext('2d');
+		}
+		if(!heroMirrorCtx) return 0;
+		const k = Math.min(1, HERO_MIRROR_MAX_PX / Math.max(sw, sh));
+		const cw = Math.max(4, Math.round(sw * k)), ch = Math.max(4, Math.round(sh * k));
+		if(heroMirrorCanvas.width !== cw || heroMirrorCanvas.height !== ch){
+			heroMirrorCanvas.width = cw;
+			heroMirrorCanvas.height = ch;
+		}
+		heroMirrorCtx.setTransform(1, 0, 0, 1, 0, 0);
+		heroMirrorCtx.clearRect(0, 0, cw, ch);
+		heroMirrorCtx.imageSmoothingEnabled = true;
+		heroMirrorCtx.drawImage(src, sx, sy, sw, sh, 0, 0, cw, ch);
+		heroMirrorFresh = true;
+		return 1;
 	},
 	// Bloom frame driver. Runs in WORLD space (main.js calls it under the world
 	// transform, after the darkness overlay and before fog): emitter list is
@@ -547,35 +668,61 @@ const api = {
 		sheenChaseAt = now;
 		const bx = opts.bx, by = opts.by, bw = opts.bw, bh = opts.bh;
 		const rgb = (z) => Math.round(sheenCur[z][0]) + ',' + Math.round(sheenCur[z][1]) + ',' + Math.round(sheenCur[z][2]);
+		const mirror = (heroMirrorFresh && heroMirrorCanvas && heroMirrorCanvas.width > 0) ? heroMirrorCanvas : null;
+		heroMirrorUsed = !!mirror;
+		heroMirrorFresh = false; // one grab feeds exactly one draw
+		const daylight = Math.max(0, Math.min(1, Number.isFinite(opts.daylight) ? opts.daylight : 1));
 		ctx.save();
-		// capsule clip approximating the hero silhouette (slightly inset)
+		// The outfit is a plain filled RECT with a 1px outline (inventory.js
+		// drawOutfit) — clip to that whole rect, inset by a pixel so the outline
+		// stays crisp. An inset rounded capsule used to leave the coat looking
+		// like a sticker floating inside the sprite.
 		ctx.beginPath();
-		if(typeof ctx.roundRect === 'function') ctx.roundRect(bx + bw * 0.06, by + bh * 0.03, bw * 0.88, bh * 0.94, Math.min(bw, bh) * 0.32);
-		else ctx.rect(bx + bw * 0.06, by + bh * 0.03, bw * 0.88, bh * 0.94);
+		ctx.rect(bx + 1, by + 1, bw - 2, bh - 2);
 		ctx.clip();
+		// Base wash: the sampled environment carries hue the mirror can miss —
+		// the layers drawn after the hero (plants, mobs, the water overlay) are
+		// not in the grab, and a torch just out of frame still belongs on the
+		// coat. Weak under a live mirror, the whole effect without one.
+		const baseA = mirror ? 0.14 : 0.42;
 		const grad = ctx.createLinearGradient(0, by, 0, by + bh);
-		grad.addColorStop(0, 'rgba(' + rgb('top') + ',0.42)');
-		grad.addColorStop(0.52, 'rgba(' + rgb('mid') + ',0.34)');
-		grad.addColorStop(1, 'rgba(' + rgb('bot') + ',0.40)');
+		grad.addColorStop(0, 'rgba(' + rgb('top') + ',' + baseA.toFixed(2) + ')');
+		grad.addColorStop(0.52, 'rgba(' + rgb('mid') + ',' + (baseA * 0.82).toFixed(2) + ')');
+		grad.addColorStop(1, 'rgba(' + rgb('bot') + ',' + (baseA * 0.95).toFixed(2) + ')');
 		ctx.fillStyle = grad;
 		ctx.fillRect(bx, by, bw, bh);
+		const coat = mirror ? buildHeroCoat(ctx, mirror, bw, bh) : null;
+		if(coat){
+			// Fresnel-masked blit: a polished surface mirrors hardest where it
+			// turns away from the viewer, so the coat is near-opaque at the rim
+			// and thin over the middle — which is also what keeps the hero's face
+			// and outfit readable instead of replacing the sprite with a window.
+			ctx.save();
+			ctx.imageSmoothingEnabled = true;
+			ctx.globalAlpha = 0.72;
+			ctx.drawImage(coat, bx, by, bw, bh);
+			ctx.restore();
+		}
 		ctx.globalCompositeOperation = 'lighter';
-		const daylight = Math.max(0, Math.min(1, Number.isFinite(opts.daylight) ? opts.daylight : 1));
-		const rim = ctx.createLinearGradient(0, by, 0, by + bh * 0.45);
-		rim.addColorStop(0, 'rgba(255,255,255,' + (0.10 + 0.14 * daylight).toFixed(3) + ')');
-		rim.addColorStop(1, 'rgba(255,255,255,0)');
-		ctx.fillStyle = rim;
-		ctx.fillRect(bx, by, bw, bh * 0.45);
-		// travelling diagonal highlight: the "coat catches the light" beat —
-		// slow enough to read as a gloss sweep, not a pattern change
-		const phase = (now * 0.00028) % 1;
-		const hx = bx - bw * 0.6 + bw * 2.2 * phase;
-		const hg = ctx.createLinearGradient(hx, by, hx + bw * 0.55, by + bh);
-		hg.addColorStop(0, 'rgba(255,255,255,0)');
-		hg.addColorStop(0.5, 'rgba(255,255,255,0.20)');
-		hg.addColorStop(1, 'rgba(255,255,255,0)');
-		ctx.fillStyle = hg;
-		ctx.fillRect(bx - bw, by, bw * 3, bh);
+		// Specular highlight on the side the light comes from (same solar model
+		// as the shadows: the sun rises on the SCREEN LEFT). It is anchored to
+		// the body, so a standing hero shows a still highlight.
+		const t = (opts.time && Number.isFinite(opts.time.tDay)) ? Math.max(0, Math.min(1, opts.time.tDay)) : 0.5;
+		const dir = (opts.time && opts.time.isDay === false) ? 0 : Math.cos(t * Math.PI);
+		const hx = bx + bw * (0.5 - dir * 0.26), hy = by + bh * 0.28;
+		const spec = ctx.createRadialGradient(hx, hy, 0, hx, hy, Math.max(bw, bh) * 0.55);
+		spec.addColorStop(0, 'rgba(255,255,255,' + (0.12 + 0.16 * daylight).toFixed(3) + ')');
+		spec.addColorStop(1, 'rgba(255,255,255,0)');
+		ctx.fillStyle = spec;
+		ctx.fillRect(bx, by, bw, bh);
+		// Fresnel-ish edges: a polished surface is brightest where it turns away
+		const edge = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+		edge.addColorStop(0, 'rgba(255,255,255,0.16)');
+		edge.addColorStop(0.22, 'rgba(255,255,255,0)');
+		edge.addColorStop(0.78, 'rgba(255,255,255,0)');
+		edge.addColorStop(1, 'rgba(255,255,255,0.16)');
+		ctx.fillStyle = edge;
+		ctx.fillRect(bx, by, bw, bh);
 		ctx.restore();
 		metrics.heroSheenDraws++;
 		return 1;

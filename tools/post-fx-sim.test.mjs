@@ -36,7 +36,7 @@ const {
 	postFx, GFX_ULTRA_KEY, GFX_COMPONENTS,
 	normalizeGfxConfig, parseGfxConfig, bloomScanIntervalMs,
 	bloomSourceFor, collectBloomEmitters, BLOOM_MIN_LEVEL, BLOOM_MAX_EMITTERS,
-	heroSheenEnvSample, shadowParams,
+	heroSheenEnvSample, heroMirrorCurve, shadowParams,
 	wetGroundStep, collectCanopyGaps, collectIceRuns
 } = await import('../src/engine/post_fx.js');
 const { T, INFO } = await import('../src/constants.js');
@@ -178,6 +178,31 @@ const shaftWorld = (x, y) => ((Math.abs(x) > 2 && y >= 195) || y > 232 ? T.STONE
 const shaft = heroSheenEnvSample({ getTile: shaftWorld, tileColor: sheenColor, surfaceHeight: () => 20, px: 0, py: 231, daylight: 1, submerged: false });
 assert.ok(shaft.top[2] < 60, 'an open shaft underground reflects darkness, not the sky');
 assert.equal(heroSheenEnvSample({ tileColor: sheenColor, px: 0, py: 0 }), null, 'no world access -> no probe (pass falls back to its neutral finish)');
+
+// --- hero mirror geometry ------------------------------------------------------
+// The coat blits a grabbed rect of the scene back over the body through a
+// barrel curve: the middle of the field stays large, the periphery squeezes.
+assert.equal(heroMirrorCurve(0), 0, 'the curve spans the whole grabbed field');
+assert.equal(heroMirrorCurve(1), 1, 'the curve spans the whole grabbed field');
+assert.ok(Math.abs(heroMirrorCurve(0.5) - 0.5) < 1e-9, 'the field centre lands at the body centre');
+const bandSrc = (v0, v1) => heroMirrorCurve(v1) - heroMirrorCurve(v0);
+assert.ok(bandSrc(0, 0.1) > bandSrc(0.45, 0.55) * 1.5, 'an edge band swallows far more of the field than a middle band (convex compression)');
+assert.ok(Math.abs(bandSrc(0, 0.1) - bandSrc(0.9, 1)) < 1e-9, 'top and bottom compress symmetrically');
+// live capture: gated on the component, needs a real transform and canvas
+function makeMirrorCtx(){
+	return {
+		canvas: { width: 1600, height: 900 },
+		getTransform(){ return { a: 2, b: 0, c: 0, d: 2, e: 300, f: 200 }; },
+		drawImage(){}
+	};
+}
+postFx.set('heroSheen', false);
+assert.equal(postFx.captureHeroBackdrop(makeMirrorCtx(), { bx: 100, by: 100, bw: 14, bh: 19 }), 0, 'no grab while the coat is off');
+postFx.set('heroSheen', true);
+assert.equal(postFx.captureHeroBackdrop(makeMirrorCtx(), { bx: 100, by: 100, bw: 14, bh: 19 }), 1, 'the coat grabs the scene behind the hero');
+const offscreen = makeMirrorCtx();
+assert.equal(postFx.captureHeroBackdrop(offscreen, { bx: -9000, by: -9000, bw: 14, bh: 19 }), 0, 'a hero past the screen edge grabs nothing (no bogus blit)');
+postFx.set('heroSheen', false);
 
 // --- dynamic shadows (solar model) ---------------------------------------------
 // The sun rises on the SCREEN LEFT (background.js celestialPosition), so
@@ -420,6 +445,27 @@ assert.ok(!mainSrc.includes('worldFxVisible(stx,sgy)'), 'the old main.js mob-sha
 assert.match(mainSrc, /if\(!deathTravelFx && heroCloakA>=0\.98 && POST_FX && POST_FX\.drawHeroSheenPass && POST_FX\.on\('heroSheen'\)\)/, 'hero coating skips death travel and cloak, and computes its inputs only when enabled');
 assert.match(mainSrc, /tileColor:minimapTileColor,/, 'hero coating samples through the minimap palette by REFERENCE (one shared table keeps the rgb cache warm)');
 assert.match(mainSrc, /px:sheenPx, py:Math\.floor\(player\.y\),/, 'hero coating probes the world at the hero tile');
+// The mirror grab must happen BEFORE any part of the hero lands on the canvas,
+// otherwise the coat reflects the hero (and its cape) back onto itself.
+assert.match(mainSrc, /POST_FX\.captureHeroBackdrop\(ctx,\{bx:\(player\.x-player\.w\/2\)\*TILE/, 'the coat grabs its backdrop through the pass API');
+const iGrab = mainSrc.indexOf('POST_FX.captureHeroBackdrop(ctx,{');
+const iCape = mainSrc.indexOf('if(!mirrorFacing){ if(heroCloakA<1) ctx.globalAlpha=heroCloakA; drawCape();');
+const iHero = mainSrc.indexOf('drawPlayer({rearView:mirrorFacing});');
+const iSheen = mainSrc.indexOf('POST_FX.drawHeroSheenPass(ctx,{');
+assert.ok(iGrab > 0 && iCape > iGrab && iHero > iGrab && iSheen > iHero, 'grab -> cape -> hero -> coat: the snapshot predates the sprite, the coat follows it');
+// The coat covers the WHOLE outfit rect (inventory.js drawOutfit fills a plain
+// rect + 1px outline) — the old inset capsule looked like a floating sticker.
+assert.match(postFxSrc, /ctx\.rect\(bx \+ 1, by \+ 1, bw - 2, bh - 2\);/, 'the coat clips to the full body rect, inset only by the outline pixel');
+assert.ok(!postFxSrc.includes('roundRect(bx + bw * 0.06'), 'the inset capsule clip is gone');
+// No self-animating sweep: a standing hero must show a still coat.
+assert.ok(!/hg\.addColorStop|bw \* 2\.2 \* phase/.test(postFxSrc), 'the travelling diagonal highlight is gone (it animated while standing still)');
+assert.match(postFxSrc, /g\.setTransform\(-1, 0, 0, 1, w, 0\);/, 'the coat is assembled mirror-flipped');
+assert.match(postFxSrc, /g\.globalCompositeOperation = 'destination-in';/, 'a Fresnel alpha mask thins the coat over the middle (the face stays readable)');
+// The mask MUST be applied on the off-screen coat: a destination-in fill on the
+// live scene canvas would erase the world behind the hero.
+const iCoatFn = postFxSrc.indexOf('function buildHeroCoat(');
+const iCoatEnd = postFxSrc.indexOf('\n}', iCoatFn);
+assert.ok(iCoatFn > 0 && postFxSrc.slice(iCoatFn, iCoatEnd).includes("destination-in"), 'the destination-in mask lives inside the off-screen coat builder');
 assert.match(mainSrc, /submerged:waterLevelUnitsAt\(sheenPx,Math\.floor\(player\.y\)\)>0/, 'hero coating reads submersion from the water ledger');
 assert.match(mainSrc, /if\(gfxName==='ao' \|\| gfxName==='specular'\) invalidateAllChunkRenderCaches\(\);/, 'baked components force a re-bake when toggled');
 assert.match(mainSrc, /panel\.querySelectorAll\('\[data-gfx-toggle\]'\)\.forEach\(chk=>\{ chk\.checked=!!\(POST_FX && POST_FX\.config && POST_FX\.config\[chk\.dataset\.gfxToggle\]\); \}\);/, 'panel reopen resyncs component checkboxes');

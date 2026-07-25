@@ -224,6 +224,12 @@ async function main(){
 			const cave = JSON.parse(rCave.slice(3));
 			const water = JSON.parse(rWater.slice(3));
 			const checks = [
+				// the real mirror blit must actually run in every scene — the tint
+				// alone is the fallback path, not the effect
+				['snow: the grabbed backdrop is mirrored onto the hero', snow.mirrored === true],
+				['grass: the grabbed backdrop is mirrored onto the hero', grass.st.mirrored === true],
+				['cave: the grabbed backdrop is mirrored onto the hero', cave.after.mirrored === true],
+				['underwater: the grabbed backdrop is mirrored onto the hero', water.st.mirrored === true],
 				['snow spawn: coat is bright (winter white reflects)', (snow.bot[0] + snow.bot[1] + snow.bot[2]) / 3 > 110],
 				['grass field: legs pick up GREEN from the ground', grass.st.bot[1] > grass.st.bot[0] && grass.st.bot[1] > grass.st.bot[2]],
 				['grass field: probe really stood on grass', grass.ground === 1],
