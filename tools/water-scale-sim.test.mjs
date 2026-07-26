@@ -40,18 +40,28 @@ function volume(){
     if(grid[idx(x,y)]===T.WATER) v+=water.levelAt(x,y,getTile);
   return v;
 }
-// Wall-clock instrumented stepper: returns worst tick / worst pressure pass in ms.
+// Wall-clock instrumented stepper. Reports a high PERCENTILE, not the maximum:
+// these are wall-clock samples, and on shared CI hardware ONE preempted tick is
+// enough to inflate a max tenfold. This budget failed in CI at 36.6ms against a
+// ~3ms typical pass while passing 3/3 on the dev machine, and bounced a deploy that
+// had nothing to do with water. The stated intent of the bounds below is to catch
+// order-of-magnitude regressions without being flaky on slower machines -- a real
+// regression slows EVERY tick, so p90 still catches it, while a single steal no
+// longer decides the gate. The true max rides along in the message for diagnosis.
+function pctl(arr,q){
+  const s=[...arr].sort((x,y)=>x-y);
+  return s[Math.min(s.length-1, Math.floor(q*s.length))];
+}
 function step(n){
-  let worstTick=0, worstPress=0;
+  const ticks=[], press=[];
   for(let i=0;i<n;i++){
     const a=performance.now();
     water.update(getTile,setTile,1/60);
-    const ms=performance.now()-a;
-    if(ms>worstTick) worstTick=ms;
-    const p=water.metrics().pressureMs;
-    if(p>worstPress) worstPress=p;
+    ticks.push(performance.now()-a);
+    press.push(water.metrics().pressureMs);
   }
-  return {worstTick, worstPress};
+  return {worstTick:pctl(ticks,0.9), worstPress:pctl(press,0.9),
+          maxTick:Math.max(...ticks), maxPress:Math.max(...press)};
 }
 // Artifact audit. floating: water directly over air (transient during flow, must be
 // zero at rest). stacked: a partial cell over water with headroom (a "wall of water"
@@ -173,8 +183,8 @@ audit(60,339,5);
 // regressions (e.g. reintroducing per-pass double flood fills) without being
 // flaky on slower machines.
 for(const [name,p] of [['lake',perf1],['ocean-level',perf2],['ocean-hole',perf3]]){
-  assert.ok(p.worstTick<50, `${name}: worst update() tick within budget (${p.worstTick.toFixed(1)}ms)`);
-  assert.ok(p.worstPress<30, `${name}: worst pressure pass within budget (${p.worstPress.toFixed(1)}ms)`);
+  assert.ok(p.worstTick<50, `${name}: p90 update() tick within budget (${p.worstTick.toFixed(1)}ms, max ${p.maxTick.toFixed(1)}ms)`);
+  assert.ok(p.worstPress<30, `${name}: p90 pressure pass within budget (${p.worstPress.toFixed(1)}ms, max ${p.maxPress.toFixed(1)}ms)`);
 }
 
 console.log('OK: all large-scale water tests passed');
