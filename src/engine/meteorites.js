@@ -2261,6 +2261,19 @@ const meteorites = (function(){
   }
   function draw(ctx,TILE,canDrawTile){
     const tileVisible=tileVisibleFn(canDrawTile);
+    // Viewport bounds read off the world transform (the pinned draw signature
+    // carries no camera): fog visibility is NOT a viewport test, so a DISCOVERED
+    // but off-screen meteor still registered its glow and burned one of the 128
+    // shared slots — the chest-cull bug class. Pad 8 tiles: the halo reaches
+    // ~5.8 tiles (rTiles 2.4 × 1.85 × bloom 1.3), so nothing visible is culled.
+    let vx0=-Infinity, vx1=Infinity, vy0=-Infinity, vy1=Infinity;
+    try{
+      const tr=(typeof ctx.getTransform==='function')?ctx.getTransform():null;
+      if(tr && tr.a>0 && tr.d>0 && ctx.canvas){
+        vx0=(-tr.e)/(tr.a*TILE)-8; vx1=(ctx.canvas.width-tr.e)/(tr.a*TILE)+8;
+        vy0=(-tr.f)/(tr.d*TILE)-8; vy1=(ctx.canvas.height-tr.f)/(tr.d*TILE)+8;
+      }
+    }catch(e){}
     const craterQuality=craterEcologyDrawQuality();
     const craterCap=craterEcologyDrawCap(craterQuality);
     let cratersDrawn=0;
@@ -2347,6 +2360,7 @@ const meteorites = (function(){
       ctx.restore();
     }
     for(const m of meteors){
+      if(m.x<vx0 || m.x>vx1 || m.y<vy0 || m.y>vy1) continue;
       if(!tileVisible(m.x,m.y) && !tileVisible(m.target.x,m.target.y)) continue;
       drawMeteor(ctx,TILE,m);
     }

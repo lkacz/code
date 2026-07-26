@@ -1607,7 +1607,10 @@ const api = {
 		// The washes are ~7x bloom's sprite area and overlapping ones saturate to
 		// a flat wall of color anyway: dedupe to one wash per 8x8-tile cell and
 		// budget the fill rate like the sibling passes.
-		const cap = (Number.isFinite(opts.frameMs) && opts.frameMs > 28) ? 24 : 64;
+		// FIXED cap (owner's rule: a weak machine sees the full picture; constant
+		// work bounds yes, frame-time-keyed quality never). 64 cannot bind anyway:
+		// a 40x28 viewport holds at most ~20 8x8 dedupe cells.
+		const cap = 64;
 		// The cell dedupe is a pure function of the cadence-cached emitter list —
 		// rebuild the winners when the scan refreshes, not every frame. Numeric cell
 		// key: x is viewport-bounded, y ∈ −140..280, so (cx·65536)+(cy+32768) cannot
@@ -1912,7 +1915,9 @@ const api = {
 		if(daylight <= 0.25) return 0;
 		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
 		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
-		const budget = (Number.isFinite(opts.frameMs) && opts.frameMs > 28) ? 20 : 48;
+		// FIXED budget — same rule as the tint cap above; 48 motes cost ~5 µs even
+		// on a software canvas, so the old stressed-frame halving bought nothing.
+		const budget = 48;
 		const visibleAt = typeof opts.visibleAt === 'function' ? opts.visibleAt : null;
 		const epoch = Math.floor(now / 9000);
 		// mote identity is WORLD-anchored (hash of the world column, not a

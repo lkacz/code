@@ -608,7 +608,19 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     ctx.save();
     ctx.globalCompositeOperation='lighter';
     const EMISSIVE=(typeof window!=='undefined' && window.MM && window.MM.postFx && window.MM.postFx.glow) ? window.MM.postFx : null;
+    // Viewport bounds off the world transform (same rationale as meteorites.js):
+    // fog visibility is not a viewport test, and a discovered off-screen sigil
+    // still burned a shared glow slot. Pad 6 tiles (halo reach ~1.7).
+    let vx0=-Infinity, vx1=Infinity, vy0=-Infinity, vy1=Infinity;
+    try{
+      const tr=(typeof ctx.getTransform==='function')?ctx.getTransform():null;
+      if(tr && tr.a>0 && tr.d>0 && ctx.canvas){
+        vx0=(-tr.e)/(tr.a*TILE)-6; vx1=(ctx.canvas.width-tr.e)/(tr.a*TILE)+6;
+        vy0=(-tr.f)/(tr.d*TILE)-6; vy1=(ctx.canvas.height-tr.f)/(tr.d*TILE)+6;
+      }
+    }catch(e){}
     for(const m of masterShots){
+      if(m.x<vx0 || m.x>vx1 || m.y<vy0 || m.y>vy1) continue;
       if(!tileVisible(m.x,m.y)) continue;
       const pulse=Math.sin(now*0.012 + m.x)*0.5+0.5;
       // a hurled sigil is a moving light: halo + streak through the glow attribute

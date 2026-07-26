@@ -856,8 +856,14 @@ const contactShadeStart = mainSrc.indexOf('function drawCaveContactShade(');
 const contactShadeEnd = mainSrc.indexOf('// ---- Tile art v2: neighbor-aware edge lighting', contactShadeStart);
 assert.ok(contactShadeStart > 0 && contactShadeEnd > contactShadeStart, 'cave contact shade pass is present');
 assert.match(mainSrc.slice(contactShadeStart, contactShadeEnd), /gfxUltraOn\('ao'\)/, 'ultra AO widens the cave contact shade behind the same gate');
-assert.match(mainSrc, /const specStressed=lastFrameMs>32;/, 'live specular glints degrade (not vanish) on stressed frames');
-assert.match(mainSrc, /let specBudget=specStressed\?48:120, specDrawn=0, specScan=specStressed\?600:1500;/, 'specular pass bounds the point WALK, with a reduced stressed-frame budget');
+// The owner's rule, as a pin: fixed constant work caps are fine, quality keyed
+// on measured frame time is not — a weak machine must see the full picture. The
+// three passes that carried such knobs (specular 120→48, tint 64→24, motes
+// 48→20) run on constants now.
+assert.match(mainSrc, /let specBudget=120, specDrawn=0, specScan=1500;/, 'specular pass bounds the point WALK with CONSTANT budgets');
+assert.ok(!mainSrc.includes('specStressed'), 'the stressed-frame specular degradation is gone');
+assert.match(postFxSrc, /\n\t\tconst cap = 64;/, 'the light-tint wash cap is a constant');
+assert.match(postFxSrc, /\n\t\tconst budget = 48;/, 'the dust-mote budget is a constant');
 assert.match(mainSrc, /if\(\(cx3\+1\)\*CHUNK_W<sx-1 \|\| cx3\*CHUNK_W>sx\+viewX\+2\) continue;/, 'off-screen chunk columns are culled from the glint walk');
 assert.match(mainSrc, /POST_FX\.metrics\.specGlints\+=specDrawn;/, 'specular pass reports its draw count');
 assert.match(mainSrc, /visibleAt:worldFxVisible,poweredAt:\(x,y\)=>furnishingPoweredAt\(x,y\),frameMs:lastFrameMs,now:performance\.now\(\)/, 'the glow pass receives the fog predicate, the furnishing power gate and the frame-health signal');
@@ -1065,6 +1071,13 @@ const iVolDraw = volcanoSeqSrc.indexOf('function draw(ctx,TILE,canDrawTile,getTi
 assert.ok(iVolDraw > 0, 'volcano draw was located');
 const iVolSeq = volcanoSeqSrc.indexOf('let shotSeq=0;');
 assert.ok(iVolSeq > 0 && iVolSeq < iVolDraw, 'the volcano trail-key counter lives at module scope, not reset per draw');
+// The chest-cull bug class, remaining instances: fog visibility is NOT a
+// viewport test, so a discovered but off-screen meteor/sigil still registered
+// its glow and burned one of the 128 shared slots. The pinned draw signatures
+// carry no camera, so the bounds come off the world transform.
+assert.match(volcanoSeqSrc, /if\(m\.x<vx0 \|\| m\.x>vx1 \|\| m\.y<vy0 \|\| m\.y>vy1\) continue;/, 'a discovered off-screen sigil cannot burn a shared glow slot');
+const meteorGlowSrc = readFileSync(new URL('../src/engine/meteorites.js', import.meta.url), 'utf8');
+assert.match(meteorGlowSrc, /if\(m\.x<vx0 \|\| m\.x>vx1 \|\| m\.y<vy0 \|\| m\.y>vy1\) continue;/, 'a discovered off-screen meteor cannot burn a shared glow slot');
 // ONE time snapshot per frame: BACKGROUND.timeInfo() walks the whole seasons
 // metrics chain (~11 allocations), and the gfx call sites used to call it — or
 // currentDaylight() around it — up to nine times per frame.

@@ -9757,8 +9757,10 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 			// specScan bounds the WALK, not just the draws: a frost/ore band can bake
 			// thousands of glint points into visible sections, and without a scan cap
 			// every fog-hidden point still costs a visibility lookup per frame
-			const specStressed=lastFrameMs>32;
-			let specBudget=specStressed?48:120, specDrawn=0, specScan=specStressed?600:1500;
+			// FIXED budgets (owner's rule: never degrade quality on measured frame
+			// time — a slow machine shows the same picture). The walk cap still
+			// bounds the worst case; it is a constant, not a reaction.
+			let specBudget=120, specDrawn=0, specScan=1500;
 			ctx.save();
 			ctx.globalCompositeOperation='lighter';
 			for(let cx3=minChunk; cx3<=maxChunk && specBudget>0 && specScan>0; cx3++){
