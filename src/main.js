@@ -9730,6 +9730,12 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 				for(const ch of chests){
 					const wx=ch.x, y=ch.y, t=ch.t;
 					if(y<y0 || y>=y1) continue;
+					// The chunk range this loop walks is padded by a whole CHUNK_W either
+					// side (the blit above needs that), so without an x cull chests up to
+					// ~64 tiles off-screen registered a glow. Their pixels were clipped
+					// away, but each one still burned one of the 128 emissive slots the
+					// whole frame shares — and in a vault those slots are the scarce thing.
+					if(wx<sx-3 || wx>sx+viewX+5) continue;
 					if(!chestDebug && !worldFxVisible(wx,y)) continue;
 					const cxp=(localLayer?(wx-camDrawX):wx)*TILE+TILE/2;
 					const cyp=(localLayer?(y-camDrawY):y)*TILE+TILE/2;

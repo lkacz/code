@@ -56,7 +56,24 @@ export function bloomScanIntervalMs(frameMs){
 export const BLOOM_MIN_LEVEL = 6;
 export const BLOOM_MAX_EMITTERS = 160;
 
+// Memoized per tile id, lazily. This function was ~88% of the emitter scan's cost
+// (measured 9.0ns/call over ~5800 solid tiles = 52us of a 59us scan) because INFO is
+// a 147-key dictionary-mode object and every miss ran three lookups plus two
+// Number(undefined) coercions. The inputs it reads -- glow, lightLevel, chestTier --
+// are written only at module init, so the answer per tile id is immutable.
+// LAZY is load-bearing: furnishings.js stamps INFO after constants.js, and an eager
+// table built at import time would miss every furnishing.
+const glowSourceMemo = [];   // tile id -> frozen source, or null for "not an emitter"
+
 export function bloomSourceFor(t){
+	const hit = glowSourceMemo[t];
+	if(hit !== undefined) return hit;
+	const out = computeBloomSource(t);
+	glowSourceMemo[t] = out;
+	return out;
+}
+
+function computeBloomSource(t){
 	const info = INFO[t];
 	if(info && info.chestTier) return null;
 	const attr = info && info.glow;
@@ -66,7 +83,11 @@ export function bloomSourceFor(t){
 		Number.isFinite(declared) ? declared : 0
 	);
 	if(level < BLOOM_MIN_LEVEL) return null;
-	return { level: Math.min(15, Math.round(level)), color: (attr && attr.color) || '255,236,190' };
+	// Normalised HERE, once per tile id. constants.js documents TILE_GLOW colours as
+	// '#rgb' | '#rrggbb' | 'r,g,b', but the tile draw path passed this string straight
+	// into 'rgba(' + color + ',0.55)' -- so a hex colour, exactly as documented, would
+	// have thrown SyntaxError from addColorStop inside the frame's draw loop.
+	return Object.freeze({ level: Math.min(15, Math.round(level)), color: emissiveRgb((attr && attr.color) || '255,236,190') });
 }
 
 // --- heat shimmer field -------------------------------------------------------
@@ -246,14 +267,17 @@ export function collectBloomEmitters(opts){
 			if(INFO[t] && INFO[t].requiresHomePower && !(poweredAt && poweredAt(x, y, t))) continue;
 			if(visibleAt && !visibleAt(x, y)) continue;
 			seen++;
-			const e = { x, y, t, level: src.level, color: src.color };
-			if(out.length < max) out.push(e);
+			// Built only once the reservoir has decided to keep it. A lava lake offers ~2000
+			// candidate emitters for 160 slots, so the old order allocated ~1800 objects per
+			// scan purely to drop them. The hash does not read the object, so the choice of
+			// which emitters survive is bit-identical.
+			if(out.length < max) out.push({ x, y, t, level: src.level, color: src.color });
 			else {
 				let h = (x * 374761393 + y * 668265263) | 0;
 				h = ((h ^ (h >>> 13)) * 1274126177) | 0;
 				h = (h ^ (h >>> 16)) >>> 0;
 				const idx = h % seen;
-				if(idx < max) out[idx] = e;
+				if(idx < max) out[idx] = { x, y, t, level: src.level, color: src.color };
 			}
 		}
 	}
@@ -558,6 +582,18 @@ let treeShadowScanAt = 0;
 
 // --- live pass state (browser only) -----------------------------------------
 const glowSprites = new Map(); // color string -> prerendered radial sprite
+const glowStrokes = new Map();  // color string -> 'rgb(r,g,b)', built once per colour
+// The streak stroke rebuilt this string per trailed source per frame -- up to 32
+// allocations plus 32 CSS colour parses -- two lines under a comment correctly
+// explaining why the per-SEGMENT alpha avoids exactly that.
+function glowStrokeFor(color){
+	let hit = glowStrokes.get(color);
+	if(hit === undefined){
+		hit = 'rgb(' + color + ')';
+		if(glowStrokes.size < 512) glowStrokes.set(color, hit);
+	}
+	return hit;
+}
 function glowSpriteFor(color){
 	if(typeof document === 'undefined') return null;
 	let spr = glowSprites.get(color);
@@ -671,32 +707,13 @@ let godRayBeams = [];
 let godRayKey = '';
 let godRayScanAt = 0;
 let iceRuns = [];
+const ICE_STRIDE = 7;
+const iceCols = [];   // flat geometry scratch, stride ICE_STRIDE: no per-frame alloc
 let iceRunKey = '';
 let iceRunScanAt = 0;
 let wetness = 0;
 let wetLastAt = 0;
-let selfBlitCanvas = null;
-let selfBlitCtx = null;
 
-// Self-blit staging: drawing a canvas onto itself once per SLICE is the
-// pattern water.js deliberately avoids — snapshot the scene ONCE per pass
-// into a reused scratch and blit slices from the copy instead.
-function snapshotSceneCanvas(srcCanvas){
-	if(typeof document === 'undefined' || !srcCanvas || !(srcCanvas.width > 0)) return null;
-	if(!selfBlitCanvas){
-		selfBlitCanvas = document.createElement('canvas');
-		selfBlitCtx = selfBlitCanvas.getContext('2d');
-	}
-	if(!selfBlitCtx) return null;
-	if(selfBlitCanvas.width !== srcCanvas.width || selfBlitCanvas.height !== srcCanvas.height){
-		selfBlitCanvas.width = srcCanvas.width;
-		selfBlitCanvas.height = srcCanvas.height;
-	}
-	selfBlitCtx.setTransform(1, 0, 0, 1, 0, 0);
-	selfBlitCtx.clearRect(0, 0, selfBlitCanvas.width, selfBlitCanvas.height);
-	selfBlitCtx.drawImage(srcCanvas, 0, 0);
-	return selfBlitCanvas;
-}
 
 // A REGION snapshot, not the whole frame. The heat shimmer only ever reads a few
 // hundred pixels around each plume, and copying the entire 1600x900 canvas to get
@@ -872,9 +889,10 @@ const api = {
 			heroCoatCanvas = null; heroCoatCtx = null;
 			heroGrabRect = null; heroMirrorAt = 0; heroSceneAt = 0;
 		}
-		if(!config.heatShimmer){ heatBlitCanvas = null; heatBlitCtx = null; }
-		if(!config.iceReflections){ selfBlitCanvas = null; selfBlitCtx = null; }
-		return !config.heatShimmer && !config.iceReflections;
+		// One region scratch now serves BOTH self-blit passes: each takes its snapshot
+		// at its own start and consumes it before returning, and they never interleave.
+		if(!config.heatShimmer && !config.iceReflections){ heatBlitCanvas = null; heatBlitCtx = null; return true; }
+		return false;
 	},
 	// QA seam: the current (chased) coat stops plus whether the last draw used a
 	// real mirrored backdrop — lets a live driver assert "green over grass, warm
@@ -1143,7 +1161,7 @@ const api = {
 				if(pts.length < 2) continue;
 				// One colour per source, alpha per segment: varying globalAlpha instead
 				// of rebuilding an rgba() string keeps the whole streak allocation-free.
-				ctx.strokeStyle = 'rgb(' + e.rgb + ')';
+				ctx.strokeStyle = glowStrokeFor(e.rgb);
 				for(let s = 1; s < pts.length; s++){
 					const w = trailTaper(s, pts.length);
 					ctx.globalAlpha = Math.min(0.55, e.a * 0.42 * ampA * w);
@@ -1171,7 +1189,7 @@ const api = {
 		for(let i = 0; i < n; i++){
 			const e = emissiveQueue[i];
 			const spr = glowSpriteFor(e.rgb);
-			if(!spr) break;
+			if(!spr) continue;   // one bad colour must not drop the rest
 			const beat = e.pulse > 0
 				? (1 - e.pulse) + e.pulse * (0.82 + 0.18 * Math.sin(tSec * 2.1 + e.x * 0.07 + e.y * 0.04))
 				: 1;
@@ -1185,7 +1203,7 @@ const api = {
 		}
 		for(const e of tiles){
 			const spr = glowSpriteFor(e.color);
-			if(!spr) break;
+			if(!spr) continue;   // one bad colour must not drop the rest
 			// Per-emitter phase from the tile position: deterministic, so a torch
 			// breathes without a stored animation state.
 			const pulse = 0.82 + 0.18 * Math.sin(tSec * 2.1 + e.x * 0.73 + e.y * 0.41);
@@ -1408,7 +1426,7 @@ const api = {
 			if(cells.has(cell)) continue;
 			cells.add(cell);
 			const spr = glowSpriteFor(e.color);
-			if(!spr) break;
+			if(!spr) continue;   // one bad colour must not drop the rest
 			const r = TILE * (2.6 + e.level * 0.4);
 			ctx.globalAlpha = Math.min(0.26, 0.08 + e.level * 0.010);
 			ctx.drawImage(spr, e.x * TILE + TILE * 0.5 - r, e.y * TILE + TILE * 0.5 - r, r * 2, r * 2);
@@ -1697,8 +1715,8 @@ const api = {
 	// lakes stay dark on purpose; this is their subtle winter counterpart.
 	drawIceReflectionsPass(ctx, opts){
 		if(!api.on('iceReflections')){
-			iceRunKey = ''; iceRuns.length = 0;
-			if(!api.on('heatShimmer') && selfBlitCanvas){ selfBlitCanvas = null; selfBlitCtx = null; }
+			iceRunKey = ''; iceRuns.length = 0; iceCols.length = 0;
+			if(!api.on('heatShimmer') && heatBlitCanvas){ heatBlitCanvas = null; heatBlitCtx = null; }
 			return 0;
 		}
 		if(!ctx || !opts || typeof opts.getTile !== 'function' || typeof opts.surfaceHeight !== 'function' || !ctx.canvas) return 0;
@@ -1706,6 +1724,8 @@ const api = {
 		try{ m = (typeof ctx.getTransform === 'function') ? ctx.getTransform() : null; }catch(e){ m = null; }
 		if(!m || !Number.isFinite(m.a) || m.a <= 0 || !Number.isFinite(m.d) || m.d <= 0) return 0;
 		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
+		const cw = ctx.canvas.width | 0, ch = ctx.canvas.height | 0;
+		if(cw < 2 || ch < 2) return 0;
 		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
 		const x0 = Math.floor(opts.sx) - 1, x1 = Math.ceil(opts.sx + opts.viewX) + 1;
 		const key = x0 + '|' + x1;
@@ -1715,12 +1735,12 @@ const api = {
 		}
 		if(!iceRuns.length) return 0;
 		const visibleAt = typeof opts.visibleAt === 'function' ? opts.visibleAt : null;
-		const srcCanvas = snapshotSceneCanvas(ctx.canvas);
-		if(!srcCanvas) return 0;
-		let cols = 0;
-		ctx.save();
-		ctx.imageSmoothingEnabled = true;
-		ctx.globalAlpha = 0.24;
+		// Resolve every column's geometry and apply EVERY cull FIRST, then copy pixels.
+		// The snapshot used to be taken before this, so a frame that draws nothing still
+		// paid for it -- and the run scan is x-only (this pass is given no sy/viewY), so
+		// "nothing" is the normal case: underground, fogged, or the surface off-screen.
+		iceCols.length = 0;
+		let rx0 = Infinity, ry0 = Infinity, rx1 = -Infinity, ry1 = -Infinity;
 		for(const run of iceRuns){
 			if(visibleAt && !visibleAt(run.x, run.surf)) continue;
 			const wxPx = run.x * TILE, topPx = run.surf * TILE;
@@ -1729,10 +1749,31 @@ const api = {
 			let syDev = m.d * (topPx - bandPx) + m.f;
 			let shDev = m.d * bandPx;
 			if(syDev < 0){ shDev += syDev; syDev = 0; }
-			if(!(shDev > 1) || syDev >= srcCanvas.height || sxDev < 0 || sxDev + swDev > srcCanvas.width) continue;
-			const visPx = shDev / m.d;
-			const destH = Math.min(TILE * 0.85, visPx * 0.45);
+			if(!(shDev > 1) || syDev >= ch || sxDev < 0 || sxDev + swDev > cw) continue;
+			const destH = Math.min(TILE * 0.85, (shDev / m.d) * 0.45);
 			if(!(destH > 1)) continue;
+			iceCols.push(wxPx, topPx, sxDev, syDev, swDev, shDev, destH);
+			if(sxDev < rx0) rx0 = sxDev;
+			if(syDev < ry0) ry0 = syDev;
+			if(sxDev + swDev > rx1) rx1 = sxDev + swDev;
+			if(syDev + shDev > ry1) ry1 = syDev + shDev;
+		}
+		if(!iceCols.length) return 0;
+		// Only the band the ice actually reads: three tiles above the ice line, across
+		// the surviving columns. A screen-wide lake reads ~1600x120 of a 1600x900 frame.
+		const regX0 = Math.max(0, Math.floor(rx0)), regY0 = Math.max(0, Math.floor(ry0));
+		const regW = Math.min(cw, Math.ceil(rx1)) - regX0, regH = Math.min(ch, Math.ceil(ry1)) - regY0;
+		if(regW < 2 || regH < 2) return 0;
+		const srcCanvas = snapshotSceneRegion(ctx.canvas, regX0, regY0, regW, regH);
+		if(!srcCanvas) return 0;
+		let cols = 0;
+		ctx.save();
+		ctx.imageSmoothingEnabled = true;
+		ctx.globalAlpha = 0.24;
+		for(let i = 0; i < iceCols.length; i += ICE_STRIDE){
+			const wxPx = iceCols[i], topPx = iceCols[i + 1];
+			const sxDev = iceCols[i + 2] - regX0, syDev = iceCols[i + 3] - regY0;
+			const swDev = iceCols[i + 4], shDev = iceCols[i + 5], destH = iceCols[i + 6];
 			ctx.save();
 			ctx.beginPath();
 			ctx.rect(wxPx, topPx, TILE, TILE * 0.9);

@@ -640,14 +640,47 @@ assert.match(postFxSrc, /__mmNoPostFX/, 'post_fx honors the QA kill switch');
 assert.match(postFxSrc, /__mmForceGfxUltra/, 'post_fx honors the QA force flag');
 assert.ok(!postFxSrc.includes('.getImageData('), 'bloom never reads pixels back (render-health taboo)');
 assert.ok(!waterSrc.includes('.getImageData('), 'water reflections never read pixels back');
-assert.equal((postFxSrc.match(/snapshotSceneCanvas\(ctx\.canvas\)/g) || []).length, 1, 'the ice pass stages through the full-frame snapshot');
-// The shimmer copies only the strip around each plume. Copying the whole canvas
-// to read a few hundred pixels WAS the cost of this pass (~330us/frame measured,
-// the row blits a small fraction of it), so the region snapshot is pinned.
-assert.match(postFxSrc, /function snapshotSceneRegion\(srcCanvas, rx, ry, rw, rh\)/, 'a region snapshot exists alongside the full-frame one');
-assert.match(postFxSrc, /const srcCanvas = snapshotSceneRegion\(ctx\.canvas, regX0, regY0, regW, regH\);/, 'the shimmer stages per band through the region snapshot');
-assert.ok(!/drawHeatShimmerPass[\s\S]{0,4000}snapshotSceneCanvas/.test(postFxSrc), 'the shimmer never copies the whole frame again');
+// NOTHING copies the whole frame any more. Both self-blit passes read only the
+// strip they sample, which was worth 332->120us for the shimmer and 225->~30us for
+// the ice, measured. The full-frame helper is gone so it cannot come back by habit.
+assert.equal((postFxSrc.match(/snapshotSceneCanvas/g) || []).length, 0, 'the full-frame snapshot helper is gone entirely');
+assert.match(postFxSrc, /function snapshotSceneRegion\(srcCanvas, rx, ry, rw, rh\)/, 'the region snapshot is the only staging path');
+assert.equal((postFxSrc.match(/snapshotSceneRegion\(ctx\.canvas, regX0, regY0, regW, regH\)/g) || []).length, 2, 'both self-blit passes stage through it: shimmer per band, ice per surviving band');
+// The ice pass must resolve and CULL every column before it copies a pixel: the
+// run scan is x-only (the pass is given no sy/viewY), so a frame that draws nothing
+// is the normal case underground, and it used to pay the full copy anyway.
+const iceBody = postFxSrc.slice(postFxSrc.indexOf('drawIceReflectionsPass(ctx, opts){'));
+const iCull = iceBody.indexOf('if(!iceCols.length) return 0;');
+const iSnap = iceBody.indexOf('snapshotSceneRegion(');
+assert.ok(iCull > 0 && iSnap > 0 && iCull < iSnap, 'the ice pass returns on an empty column set BEFORE it copies anything');
+assert.match(iceBody, /iceCols\.push\(wxPx, topPx, sxDev, syDev, swDev, shDev, destH\);/, 'column geometry goes into a reusable flat scratch, not a fresh object per column');
+assert.match(iceBody, /syDev >= ch \|\| sxDev < 0 \|\| sxDev \+ swDev > cw/, 'the bounds checks moved to the LIVE canvas dims — the snapshot is no longer full-frame, so its size stopped being a proxy');
 assert.ok(!/drawImage\(ctx\.canvas/.test(postFxSrc), 'no post_fx pass blits the live canvas onto itself directly');
+
+// --- hot-path invariants, each one a measured regression waiting to happen -----
+// The per-tile glow lookup is memoized: it was ~88% of the emitter scan (9.0ns per
+// call over thousands of solid tiles). LAZY is load-bearing — furnishings.js stamps
+// INFO after constants.js, so an eager table would miss every furnishing.
+assert.match(postFxSrc, /const glowSourceMemo = \[\];/, 'the per-tile glow source is memoized by tile id');
+assert.match(postFxSrc, /const hit = glowSourceMemo\[t\];\n\tif\(hit !== undefined\) return hit;/, 'the memo distinguishes "not computed" from "not an emitter"');
+assert.ok(!/glowSourceMemo\[[^\]]+\] =[^;]+;\n?\s*for\(/.test(postFxSrc), 'the memo is filled lazily, never as an eager table at import time');
+assert.equal(bloomSourceFor(T.TORCH), bloomSourceFor(T.TORCH), 'a repeat lookup returns the very same object');
+assert.ok(Object.isFrozen(bloomSourceFor(T.TORCH)), 'the shared descriptor is frozen, so no caller can poison the memo');
+// The tile path fed its raw colour into a string, so a hex colour — exactly what
+// constants.js documents as legal — would have thrown from addColorStop inside the
+// frame's draw loop. Normalised once per tile id now.
+assert.match(postFxSrc, /color: emissiveRgb\(\(attr && attr\.color\) \|\| '255,236,190'\)/, 'tile glow colours are normalised through emissiveRgb, so a documented hex value cannot throw mid-draw');
+assert.equal(bloomSourceFor(T.LAVA).color, '255,124,44', 'normalising leaves an existing triplet alone');
+assert.ok(!/if\(!spr\) break;/.test(postFxSrc), 'an unusable colour skips its own source instead of dropping every remaining one');
+// Reservoir: the entry object is built only once it is kept. A lava lake offers
+// ~2000 candidates for 160 slots, so the old order allocated ~1800 to throw away.
+assert.ok(!/const e = \{ x, y, t, level: src\.level, color: src\.color \};/.test(postFxSrc), 'no emitter object is built before the reservoir decides to keep it');
+assert.match(postFxSrc, /if\(out\.length < max\) out\.push\(\{ x, y, t, level: src\.level, color: src\.color \}\);/, 'the keep path allocates, the discard path does not');
+// The streak colour string was rebuilt per trailed source per frame.
+assert.match(postFxSrc, /ctx\.strokeStyle = glowStrokeFor\(e\.rgb\);/, 'the streak stroke colour comes from a cache, not a fresh string');
+// Chests: the chunk range this loop walks is padded by a whole CHUNK_W either side,
+// so without an x cull an off-screen chest burned one of the 128 shared glow slots.
+assert.match(mainSrc, /if\(wx<sx-3 \|\| wx>sx\+viewX\+5\) continue;/, 'the chest aura loop culls horizontally, not only vertically');
 
 // Heat shimmer, source side. The one line that decides whether this effect can
 // spill onto a neighbouring block: the destination rect (x0) is the SAME on both
@@ -884,7 +917,13 @@ assert.match(threatSrc, /fx\.addEmissive\(\{x:gx,y:gy,r:r\*3\.4,color:col,a:0\.4
 assert.match(threatSrc, /function staffGlowKey\(m\)\{/, 'the staff focus has its own per-instance trail identity');
 // Trails are world-space by construction. A screen-space accumulation buffer is
 // the other standard answer and it is WRONG here: it smears with the camera.
-assert.ok(!/canvas\.width = /.test(postFxSrc.slice(postFxSrc.indexOf('drawGlowPass('), postFxSrc.indexOf('drawHeroSheenPass'))), 'the glow pass allocates no full-screen accumulation buffer');
+// This guard used to be vacuous: indexOf('drawHeroSheenPass') matched a COMMENT
+// hundreds of lines before drawGlowPass, so slice(start > end) returned '' and the
+// assertion passed on an empty string. Anchored on the definitions now, and it
+// checks the thing that actually matters — no canvas is created in the pass at all.
+const glowBody = postFxSrc.slice(postFxSrc.indexOf('drawGlowPass(ctx, opts){'), postFxSrc.indexOf('drawHeroSheenPass(ctx, opts){'));
+assert.ok(glowBody.length > 1000, 'the glow pass body was actually located (the old slice was empty)');
+assert.ok(!/createElement\('canvas'\)|canvas\.width = /.test(glowBody), 'the glow pass allocates no canvas and no full-screen accumulation buffer');
 const iEmissive = mainSrc.indexOf('POST_FX.drawGlowPass(ctx');
 const iFogPass = mainSrc.indexOf('drawFogOverlay(sx,sy,viewX,viewY,{camX:camRenderX');
 assert.ok(iEmissive > iDark, 'creature light draws ABOVE the darkness overlay (that is the whole point)');

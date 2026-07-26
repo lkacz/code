@@ -337,8 +337,15 @@ async function main(){
 				['an open night field has no emissive tiles to halo', fly.on.b === 0],
 				['the kill switch removes the creature light entirely', fly.off.s === 0 && fly.off.h === 0 && fly.off.t === 0],
 				// the whole point: the light must be VISIBLE, not merely executed
-				['the firefly field measurably brightens the night', fly.lightOn.mean > fly.lightOff.mean],
-				['the glow raises lit-pixel count', fly.lightOn.lit > fly.lightOff.lit],
+				// Judged on LIT-PIXEL COUNT and PEAK, not on the box mean. The mean over a
+				// 380x260 probe is dominated by whatever else occupies it: two consecutive
+				// frames of a skittering swarm move enough sprite pixels in and out that the
+				// mean swung 11 units and inverted the result, in one run out of two, while
+				// lit and peak came out correct in every run. Added light raises how many
+				// pixels are lit and how bright the brightest is; it barely moves an average
+				// that terrain already dominates.
+				['the firefly field measurably brightens the night', fly.lightOn.lit > fly.lightOff.lit],
+				['the glow raises the brightest pixel too', fly.lightOn.peak > fly.lightOff.peak],
 				// the bloom toggle owns TILE emitters; creatures own their own light
 				['bloom AMPLIFIES the same sources instead of inventing any', flyB.tierWithBloom === 2 && flyB.tier === 1 && Math.abs(flyB.withBloom.ratio - flyB.withoutBloom.ratio) < 0.2],
 				['removing every creature stops the streaks (no light left hanging)', flyB.empty.t === 0 && flyB.empty.s === 0],
@@ -353,7 +360,7 @@ async function main(){
 				['cockroaches spawned', roach.n >= 4],
 				['cockroach isotope light is registered, not a flat ellipse', roach.d.s > 0 && roach.d.h >= roach.d.s * 1.8],
 				['skittering cockroaches leave a streak', roach.d.t > 0],
-				['cockroach light survives the darkness overlay', roach.light.mean > roach.lightOff.mean],
+				['cockroach light survives the darkness overlay', roach.light.lit > roach.lightOff.lit && roach.light.peak > roach.lightOff.peak],
 				// Cost: the numbers behind the "standard, no toggle" decision. These
 				// are software-canvas microseconds for a deliberately pessimistic 40
 				// sources (2.5x a real scene); the guards catch a regression, they are
