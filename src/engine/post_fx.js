@@ -38,15 +38,15 @@ export function parseGfxConfig(json){
 	catch(e){ return normalizeGfxConfig(null); }
 }
 
-// The emitter rescan is throttled by frame health; the halos themselves are
-// drawn every frame from the cached list so camera motion never leaves a
-// stale glow behind (positions are world-space, only the LIST is cached).
-export function bloomScanIntervalMs(frameMs){
-	const ms = Number.isFinite(frameMs) ? frameMs : 16;
-	if(ms > 40) return 400;
-	if(ms > 24) return 250;
-	return 120;
-}
+// The emitter rescan runs on ONE fixed cadence; the halos themselves are drawn
+// every frame from the cached list so camera motion never leaves a stale glow
+// behind (positions are world-space, only the LIST is cached).
+// This used to stretch to 250/400ms on slower frames, which made a newly lit
+// torch take three times longer to start glowing on a slower machine — the same
+// machine-dependent behaviour the quality rule forbids. Since bloomSourceFor was
+// memoized the whole scan costs ~10us, so there is nothing left to buy.
+export const BLOOM_SCAN_INTERVAL_MS = 120;
+export function bloomScanIntervalMs(){ return BLOOM_SCAN_INTERVAL_MS; }
 
 // Tile glow reads the TILE ATTRIBUTE (constants.js TILE_GLOW stamps INFO[t].glow)
 // or a furnishing's declared lightLevel — never a private table in here, so the

@@ -10576,8 +10576,9 @@ const mobs = (function(){
     if(mobLasers.length){
       const prevComp=ctx.globalCompositeOperation;
       ctx.globalCompositeOperation='lighter';
-      const frameMs=(typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
-      const cheapLasers=frameMs>24 || mobLasers.length>8;
+      // Count-based only: a fixed cap on how many beams get the rich treatment is
+      // allowed, reading the clock is not.
+      const cheapLasers=mobLasers.length>8;
       for(const l of mobLasers){
         if(visibleTile && !visibleTile(Math.floor(l.x1),Math.floor(l.y1)) && !visibleTile(Math.floor(l.x2),Math.floor(l.y2))) continue;
         const age=Math.max(0,Math.min(1,l.t/l.life));

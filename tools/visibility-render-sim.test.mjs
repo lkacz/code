@@ -116,18 +116,26 @@ const movedSilverCtx=makeCtx();
 grass.drawOverlays(movedSilverCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
 assert.notDeepEqual(movedSilverCtx.fillRects,silverCtx.fillRects,'moving the hero shifts view-dependent silver reflections');
 
+// How fast the machine happens to be running must not change the picture.
+// Identical world state, three very different "frame healths", byte-identical
+// gloss. This inverts the old contract on purpose: the budget used to fall to 32
+// tiles above 24ms and to ZERO above 40ms, so the effect vanished outright on a
+// slower machine — the one thing the quality rule forbids.
+globalThis.__mmFrameMs=16;
+grass.reset();
+const glossFastCtx=makeCtx();
+grass.drawOverlays(glossFastCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
+assert.ok(glossFastCtx.calls.filter(call=>call==='fillRect').length>0,'the animated gloss draws on a healthy frame');
 globalThis.__mmFrameMs=30;
 grass.reset();
-const stressedSilverCtx=makeCtx();
-grass.drawOverlays(stressedSilverCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
-const stressedSilverRects=stressedSilverCtx.calls.filter(call=>call==='fillRect').length;
-assert.ok(stressedSilverRects>0 && stressedSilverRects<=32*3,'slow frames cut silver gloss to the stressed 32-tile budget');
-
+const glossSlowCtx=makeCtx();
+grass.drawOverlays(glossSlowCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
+assert.deepEqual(glossSlowCtx.fillRects,glossFastCtx.fillRects,'a slow frame draws exactly the same silver gloss');
 globalThis.__mmFrameMs=48;
 grass.reset();
-const criticalSilverCtx=makeCtx();
-grass.drawOverlays(criticalSilverCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
-assert.equal(criticalSilverCtx.calls.length,0,'critical frames drop animated gloss and keep the cached static sheen only');
+const glossCriticalCtx=makeCtx();
+grass.drawOverlays(glossCriticalCtx,'back',10,10,20,20,20,WORLD_H,getTile,T,1,1,1,()=>true);
+assert.deepEqual(glossCriticalCtx.fillRects,glossFastCtx.fillRects,'and so does a critical one — the gloss used to disappear here');
 
 globalThis.__mmFrameMs=16;
 grass.reset();
@@ -443,7 +451,13 @@ assert.match(grassSource, /leafTile\(t\) \|\| t===T\.DIAMOND \|\| t===T\.GOLD_OR
 assert.match(grassSource, /pass==='back' && t===T\.GOLD_ORE[\s\S]*rgba\(255,202,58/, 'gold ore shimmer uses a warm metallic palette');
 assert.match(mainSource, /if\(t===T\.SILVER_INGOT\)\{[\s\S]*drawSilverIngotArt\(g,0,0,[\s\S]*terrainPatternCache\.set\(key,c\)/, 'silver ingot sheen is rendered into the small cached pattern atlas');
 assert.match(mainSource, /if\(t===T\.SILVER_INGOT\) return 3;/, 'polished silver keeps low base-shade variance instead of looking mottled');
-assert.match(grassSource, /const GLOSS_GLINT_BUDGET = 96;[\s\S]*const GLOSS_STRESSED_BUDGET = 32;/, 'animated metal gloss has explicit normal and stressed-frame budgets');
+assert.match(grassSource, /const GLOSS_GLINT_BUDGET = 96;/, 'animated metal gloss has an explicit budget');
+// The gloss used to be budgeted in THREE tiers off the measured frame time, with
+// the top tier being zero — the effect vanished outright above 40ms. One constant
+// now, so the same world looks the same on a fast and a slow machine.
+assert.ok(!/GLOSS_STRESSED_BUDGET|GRASS_CRITICAL_BUDGET/.test(grassSource), 'the stressed/critical grass tiers are gone');
+assert.match(grassSource, /const glossBudget = zoom<0\.65 \? 0 : GLOSS_GLINT_BUDGET;/, 'the gloss gate is geometry (zoom), never the clock');
+assert.match(grassSource, /const budget = GRASS_STROKE_BUDGET;/, 'the blade budget is one constant');
 assert.match(grassSource, /t===T\.SILVER_ORE \|\| t===T\.SILVER_INGOT[\s\S]*glossyDrawn<glossBudget/, 'only cached visible silver candidates enter the budgeted dynamic gloss pass');
 assert.match(grassSource, /phase:x\*0\.21\+y\*0\.08[\s\S]*glossPhaseAt\(x,y,h,glossView\.phase\)/, 'silver specular position follows the hero/view phase instead of wall-clock time');
 assert.match(mainSource, /if\(t===T\.SAND \|\| t===T\.UNSTABLE_SAND \|\| t===T\.QUICKSAND\) return 4;/, 'sand shade variance stays low enough to avoid block grid patches');

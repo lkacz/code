@@ -389,21 +389,24 @@ background.draw(makeBackgroundCtx(),900,500,0,20,pure(1));
 assert.equal(background._debugBackdropCacheState().refreshes, blurRefreshes, 'same-timestamp background draw reuses the full-quality blur cache');
 globalThis.performance.now = ()=>1234567+20;
 background.draw(makeBackgroundCtx(),900,500,0,20,pure(1));
-assert.ok(background._debugBackdropCacheState().refreshes>blurRefreshes, 'background blur cache refreshes at the capped 60 FPS cadence');
+assert.equal(background._debugBackdropCacheState().refreshes, blurRefreshes, 'a gap shorter than the interval reuses the cache instead of re-blurring');
+globalThis.performance.now = ()=>1234567+40;
+background.draw(makeBackgroundCtx(),900,500,0,20,pure(1));
+assert.ok(background._debugBackdropCacheState().refreshes>blurRefreshes, 'the parallax backdrop refreshes on its fixed cadence');
+// ONE cadence, on every machine. The old ladder asked for >113 fps before it
+// granted the top tier, so in practice every ordinary 60 fps display sat on the
+// slowest one (15/s) and the parallax stepped differently depending on the
+// hardware. Refreshing every frame is not the alternative either: a refresh
+// re-renders the whole scene and pushes it through a full-screen filter: blur().
+const fixedBackdropInterval = background._debugBackdropRefreshIntervalMs();
+assert.equal(fixedBackdropInterval, +(1000/30).toFixed(3), 'the backdrop cadence is a constant 30/s');
 globalThis.performance.now = ()=>1234567;
 const oldFrameMs = globalThis.__mmFrameMs;
 background._debugClearBackdropCache();
 globalThis.__mmFrameMs = 12;
-assert.ok(background._debugBackdropRefreshIntervalMs()>=66, 'slow frame pressure drops background blur cache to a 15 FPS cadence');
-globalThis.performance.now = ()=>2234567;
-background.draw(makeBackgroundCtx(),900,500,0,20,pure(1));
-const pressureRefreshes = background._debugBackdropCacheState().refreshes;
-globalThis.performance.now = ()=>2234567+40;
-background.draw(makeBackgroundCtx(),900,500,8,20,pure(1));
-assert.equal(background._debugBackdropCacheState().refreshes, pressureRefreshes, 'under frame pressure, movement does not force an early full-screen blur refresh');
-globalThis.performance.now = ()=>2234567+80;
-background.draw(makeBackgroundCtx(),900,500,8,20,pure(1));
-assert.ok(background._debugBackdropCacheState().refreshes>pressureRefreshes, 'under frame pressure, background blur cache still refreshes at the slower cadence');
+assert.equal(background._debugBackdropRefreshIntervalMs(), fixedBackdropInterval, 'frame pressure does not stretch the cadence');
+globalThis.__mmFrameMs = 60;
+assert.equal(background._debugBackdropRefreshIntervalMs(), fixedBackdropInterval, 'and neither does a badly stalling frame');
 if(oldFrameMs===undefined) delete globalThis.__mmFrameMs;
 else globalThis.__mmFrameMs = oldFrameMs;
 globalThis.performance.now = ()=>1234567;

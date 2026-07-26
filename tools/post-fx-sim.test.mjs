@@ -73,10 +73,11 @@ delete window.__mmForceGfxUltra;
 postFx.set('bloom', false);
 
 // --- bloom cadence + emitter model -------------------------------------------
-assert.equal(bloomScanIntervalMs(16), 120, 'healthy frames rescan at the fast cadence');
-assert.equal(bloomScanIntervalMs(30), 250, 'stressed frames rescan slower');
-assert.equal(bloomScanIntervalMs(50), 400, 'critical frames rescan slowest');
-assert.ok(bloomScanIntervalMs(undefined) === 120, 'missing frame time assumes healthy');
+// ONE cadence, whatever the machine is doing: the old 120/250/400 ladder made a
+// freshly lit torch take three times longer to start glowing on a slow machine.
+assert.equal(bloomScanIntervalMs(16), 120, 'the emitter rescan runs on one fixed cadence');
+assert.equal(bloomScanIntervalMs(50), 120, 'a slow frame does not stretch the cadence');
+assert.equal(bloomScanIntervalMs(undefined), 120, 'and a missing frame time changes nothing');
 
 const torchSrc = bloomSourceFor(T.TORCH);
 assert.ok(torchSrc && torchSrc.level >= BLOOM_MIN_LEVEL, 'torches bloom');
@@ -864,6 +865,25 @@ assert.match(mainSrc, /let specBudget=120, specDrawn=0, specScan=1500;/, 'specul
 assert.ok(!mainSrc.includes('specStressed'), 'the stressed-frame specular degradation is gone');
 assert.match(postFxSrc, /\n\t\tconst cap = 64;/, 'the light-tint wash cap is a constant');
 assert.match(postFxSrc, /\n\t\tconst budget = 48;/, 'the dust-mote budget is a constant');
+// The strongest form of the guard: this file may not consult the frame clock at
+// all any more. (`frameMs` still arrives in opts from main.js call sites, which
+// other passes' pins depend on — what must not come back is a COMPARISON.)
+assert.ok(!/frameMs\s*[<>]/.test(postFxSrc), 'post_fx never compares the measured frame time');
+// The same sweep outside post_fx. Fire was the worst offender: its first tier
+// began at 18ms, i.e. below 60fps, so an ordinary machine drew 115 of 260 lava
+// glows and a 30fps browser sat permanently at 54 — with half the flames gone too.
+assert.ok(!/frameMs\s*[<>]|stressed|critical/.test(fireGlowSrc), 'fire draws the same lava on every machine');
+assert.match(fireGlowSrc, /let glowBudget=260;\n    let flameBudget=112;\n    let wakeBudget=58;/, 'fire budgets are constants');
+assert.match(fireGlowSrc, /if\(\(frontier \|\| \(\(x\+y\)&3\)===0\) && glowBudget-->0\)\{/, 'which lava tiles glow no longer depends on the clock');
+const grassRuleSrc = readFileSync(new URL('../src/engine/grass.js', import.meta.url), 'utf8');
+assert.ok(!/frameMs/.test(grassRuleSrc), 'grass density and metal gloss no longer read the frame clock');
+const bgRuleSrc = readFileSync(new URL('../src/engine/background.js', import.meta.url), 'utf8');
+assert.match(bgRuleSrc, /const BACKDROP_CACHE_FPS=30;/, 'the parallax backdrop refreshes on one rate everywhere');
+assert.ok(!/measuredFrameMs/.test(bgRuleSrc), 'the backdrop cache no longer measures the frame clock');
+const mobsRuleSrc = readFileSync(new URL('../src/engine/mobs.js', import.meta.url), 'utf8');
+assert.match(mobsRuleSrc, /const cheapLasers=mobLasers\.length>8;/, 'laser richness is capped by COUNT, not by frame time');
+assert.match(mainSrc, /\tturboSparkT=0\.065;/, 'sprint sparks keep one cadence');
+assert.match(mainSrc, /\t\tfx\.emitT=0\.038;/, 'the death-travel trail keeps one cadence');
 assert.match(mainSrc, /if\(\(cx3\+1\)\*CHUNK_W<sx-1 \|\| cx3\*CHUNK_W>sx\+viewX\+2\) continue;/, 'off-screen chunk columns are culled from the glint walk');
 assert.match(mainSrc, /POST_FX\.metrics\.specGlints\+=specDrawn;/, 'specular pass reports its draw count');
 assert.match(mainSrc, /visibleAt:worldFxVisible,poweredAt:\(x,y\)=>furnishingPoweredAt\(x,y\),frameMs:lastFrameMs,now:performance\.now\(\)/, 'the glow pass receives the fog predicate, the furnishing power gate and the frame-health signal');

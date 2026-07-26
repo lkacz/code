@@ -8,11 +8,13 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
   const grass = {};
 
   // Internal perf controls
+  // Fixed caps, one tier. The stressed/critical tiers these replace were keyed on
+  // the measured frame time, so grass thinned out and the metal gloss vanished
+  // ENTIRELY (budget 0 above 40ms) on exactly the machines whose owners could not
+  // tell why the world looked barer than in a screenshot.
   const GRASS_STROKE_BUDGET = 6500; // soft cap total blade strokes per frame (both passes)
-  const GRASS_CRITICAL_BUDGET = 1800;
   const GRASS_MAX_BLADES_PER_TILE = 56;
   const GLOSS_GLINT_BUDGET = 96; // rare metals only; dense steel stays baked/static
-  const GLOSS_STRESSED_BUDGET = 32;
   let grassThinningFactor = 1; // dynamic 0..1
   let grassBladeTarget = 3;
   let grassBudgetInfo = '';
@@ -138,9 +140,10 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
       overlayCache={key, ver, at:now, tiles:next.tiles, grassTiles:next.grassTiles, glossyTiles:next.glossyTiles};
     }
     const candidates=overlayCache.tiles;
-    const frameMs = (typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
     const glossView = pass==='back' ? readGlossView() : {phase:0,motion:0};
-    const glossBudget = zoom<0.65 || frameMs>40 ? 0 : (frameMs>24 ? GLOSS_STRESSED_BUDGET : GLOSS_GLINT_BUDGET);
+    // The zoom gate stays: that is geometry (glints are invisible zoomed out), not
+    // a reaction to how fast the machine happens to be running.
+    const glossBudget = zoom<0.65 ? 0 : GLOSS_GLINT_BUDGET;
     const glossStride = glossBudget>0 ? Math.max(1,Math.ceil(overlayCache.glossyTiles/glossBudget)) : Infinity;
     let glossySeen=0;
     let glossyDrawn=0;
@@ -150,7 +153,7 @@ import { isAirOrGasTile, isFoliageTile } from './material_physics.js';
       const basePerTile = Math.min(GRASS_MAX_BLADES_PER_TILE, Math.max(1, Math.round(3 * densityScalar)));
       const zoomLod = zoom < 1 ? (0.35 + 0.65*zoom) : 1;
       const desiredBlades = Math.max(1, Math.round(basePerTile * zoomLod));
-      const budget = frameMs>40 ? GRASS_CRITICAL_BUDGET : (frameMs>24 ? 3400 : GRASS_STROKE_BUDGET);
+      const budget = GRASS_STROKE_BUDGET;
       const estimatedStrokes = overlayCache.grassTiles * desiredBlades;
       if(estimatedStrokes > budget){
         grassThinningFactor = budget / estimatedStrokes;

@@ -1804,8 +1804,7 @@ function updateTurboFx(dt,active){
 	if(turboSparkT>0) return;
 	const speedK=Math.max(0.35, Math.min(1.25, Math.abs(player.vx||0)/Math.max(1,MOVE.MAX)));
 	PARTICLES.spawnTurboSparks(player.x*TILE,(player.y-0.02)*TILE,player.facing,0.65+speedK*0.35);
-	const frameMs=(typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
-	turboSparkT=frameMs>34 ? 0.13 : 0.065;
+	turboSparkT=0.065;   // constant cadence — a sprint must not shed half its sparks on a slower machine
 }
 function heroEnergyInfo(){
 	applyHeroEnergyCapacity();
@@ -2891,7 +2890,7 @@ function updateDeathTravelFx(dt){
 	const p=deathTravelProgressAt(raw);
 	const pos=deathTravelPointAt(fx,p);
 	if(fx.emitT<=0){
-		fx.emitT=(lastFrameMs>34)?0.095:0.038;
+		fx.emitT=0.038;   // constant cadence, same rule as the turbo sparks
 		const tail=deathTravelPointAt(fx,deathTravelProgressAt(deathTravelParticleTailRaw(fx,raw)));
 		try{ if(PARTICLES && PARTICLES.spawnEnergyAbsorb) PARTICLES.spawnEnergyAbsorb(tail.x*TILE,tail.y*TILE,pos.x*TILE,pos.y*TILE,0.62+0.36*(1-p),{quick:true,hue:'gold'}); }catch(e){}
 	}

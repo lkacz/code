@@ -111,9 +111,15 @@
   const biomeBlendCache=new Map();
   const scratchCanvases=new Map();
   const BIOME_BLEND_CACHE_CAP=2048;
-  const BACKDROP_CACHE_FAST_FPS=60;
-  const BACKDROP_CACHE_BALANCED_FPS=30;
-  const BACKDROP_CACHE_SLOW_FPS=15;
+  // ONE refresh rate for the cached parallax backdrop, on every machine. The old
+  // three tiers were keyed on the measured frame time with thresholds of 10.5 and
+  // 8.8 ms — i.e. the top tier needed >113 fps, so in practice NOBODY got it and
+  // every ordinary 60 fps display sat on the slowest one (15/s). Going the other
+  // way and refreshing every frame is not the answer either: a refresh re-renders
+  // the whole scene and pushes it through a full-screen `filter: blur()`, the one
+  // Canvas2D operation this codebase removes on sight. 30/s is twice what nearly
+  // every real display was getting, and it is the same everywhere.
+  const BACKDROP_CACHE_FPS=30;
   const backdropCache={w:0,h:0,playerX:0,tile:0,blur:0,lastMs:-1e9,refreshes:0};
   const MOUNTAIN_W=2200, MOUNTAIN_H=380;
   const MOUNTAIN_LAYER=[
@@ -389,16 +395,8 @@
   function effectiveBackdropBlurPx(W,H,cameraZoom){
     return backdropBlurPx(W,H)*backdropBlurScale()*cameraZoomBlurScale(cameraZoom);
   }
-  function measuredFrameMs(){
-    const root = (typeof window!=='undefined') ? window : (typeof globalThis!=='undefined' ? globalThis : null);
-    const raw = root ? Number(root.__mmFrameMs) : 0;
-    return Number.isFinite(raw) && raw>0 ? raw : 0;
-  }
   function backdropRefreshIntervalMs(){
-    const frameMs=measuredFrameMs();
-    if(frameMs>10.5) return 1000/BACKDROP_CACHE_SLOW_FPS;
-    if(frameMs>8.8) return 1000/BACKDROP_CACHE_BALANCED_FPS;
-    return 1000/BACKDROP_CACHE_FAST_FPS;
+    return 1000/BACKDROP_CACHE_FPS;
   }
   function shouldRefreshBackdropCache(W,H,playerX,TILE,blur,now){
     if(backdropCache.w!==Math.ceil(W) || backdropCache.h!==Math.ceil(H)) return true;

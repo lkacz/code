@@ -504,13 +504,18 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const GS=glowSprite.width;
     const igniteTick = now-lastLavaTick>500;
     if(igniteTick) lastLavaTick=now;
-    const frameMs=(typeof window!=='undefined' && Number.isFinite(window.__mmFrameMs)) ? window.__mmFrameMs : 16;
-    const stressed=frameMs>18, critical=frameMs>32;
-    let glowBudget=critical?54:(stressed?115:260);
-    let flameBudget=critical?24:(stressed?52:112);
-    let wakeBudget=critical?10:(stressed?26:58);
-    let frontierProbeBudget=critical?90:(stressed?190:420);
-    let flameProbeBudget=critical?90:(stressed?190:420);
+    // CONSTANT budgets. Fixed work caps are fine; quality keyed on the measured
+    // frame time is not — the picture must not depend on the machine. The tiers
+    // these replace began at 18 ms per frame, i.e. BELOW 60fps, so an ordinary
+    // display was already drawing 115 of 260 lava glows and 52 of 112 flames,
+    // and a browser running at 30fps sat permanently at 54/24 — half a volcano
+    // missing without anyone being told. The caps still bound the worst case;
+    // they just no longer read the clock.
+    let glowBudget=260;
+    let flameBudget=112;
+    let wakeBudget=58;
+    let frontierProbeBudget=420;
+    let flameProbeBudget=420;
     const wakeTick = now-lastLavaWakeTick>460;
     if(wakeTick) lastLavaWakeTick=now;
     const openForLava=t=>lavaOpenTile(t);
@@ -583,13 +588,13 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         // molten body + crust speckles over the baked tile color
         ctx.fillStyle='rgba(255,140,30,'+(0.25+0.2*flick).toFixed(2)+')';
         ctx.fillRect(px,py,TILE,TILE);
-        if((frontier || (!stressed && ((x+y)&3)===0)) && glowBudget-->0){
+        if((frontier || ((x+y)&3)===0) && glowBudget-->0){
           ctx.globalAlpha=0.5+0.4*flick;
           ctx.drawImage(glowSprite, px+TILE/2-GS/2, py+TILE/2-GS/2);
         }
         // small surface flames where lava meets open air
         const chimneySmokeOutlet=aboveT===T.CHIMNEY && smokeChimneyOutlet(x,y,getTile);
-        if((aboveT===T.AIR || chimneySmokeOutlet) && flameBudget-->0 && (!critical || ((x+y)&1)===0)){
+        if((aboveT===T.AIR || chimneySmokeOutlet) && flameBudget-->0){
           if(aboveT===T.AIR){
             drawFlameSprite(ctx,TILE,x,y,py+TILE*0.13,now,0.68,0.45+0.25*flick);
           }

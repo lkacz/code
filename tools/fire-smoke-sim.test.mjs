@@ -250,7 +250,12 @@ try{
   };
   fire.draw(makeCtx(),20,0,0,42,42,getDenseLava,{visible:()=>true, seen:()=>true});
   globalThis.__mmFrameMs=oldFrameMs;
-  assert.ok(tileReads<3000, 'low-FPS lava overlay limits neighbour probes on dense lava faces ('+tileReads+' tile reads)');
+  // The probe budget is a CONSTANT now (post-fx-sim pins the absence of any
+  // frame-time branch in fire.js), so this bound is what a dense lava face costs
+  // on EVERY machine. It used to collapse to 90 probes above 32ms — together
+  // with the glow and flame budgets that meant a 30fps browser silently drew 54
+  // of 260 lava glows and 24 of 112 flames, and nobody was told.
+  assert.ok(tileReads<5200, 'the constant probe budget bounds a dense lava face ('+tileReads+' tile reads)');
   // --- fire weather: wind-driven spread, moisture, embers, rain ---------------
   // The coupling contract. Every input is optional at runtime, so the NEUTRAL
   // case (no weather modules) must leave the bare spread thresholds untouched —
