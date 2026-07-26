@@ -355,6 +355,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   // field has always used for fire (lighting.js FIRE_LEVEL), so the halo and the
   // lit area agree instead of being tuned twice.
   const BURN_GLOW=Object.freeze({level:12, color:'#ff8c32', pulse:0.30});
+  // Fire's fixed share of the frame's 128 shared glow slots. A constant, never a
+  // reaction to frame time: a weak machine sees the same fire as a fast one.
+  const BURN_GLOW_CAP=40;
   const FLAME_SUPERSAMPLE=2;
   const BLOCK_FLAME_PUFFS=6;
   function flameRand(variant,index){
@@ -614,6 +617,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(typeof getTile==='function') drawLava(ctx,TILE,sx,sy,viewX,viewY,getTile,now,visibility);
     if(!burning.size){ ctx.restore(); return; }
     const GS=glowSprite.width;
+    // A fire must not monopolise the SHARED glow queue. That queue holds 128 sources
+    // for the whole frame, MAX_BURNING is 240, registration order IS draw order, and
+    // fire draws early — so a big enough forest fire used to fill the queue and leave
+    // every mob, projectile, drop, meteor, turret and spring pad after it with no
+    // light at all. Stride-sampled rather than first-N: the halos of a fire overlap
+    // several tiles deep and saturate, so an evenly spread subset is indistinguishable,
+    // whereas taking the first N would clump them at one end of the blaze.
+    const glowStride=Math.max(1, Math.ceil(burning.size/BURN_GLOW_CAP));
+    let burnSeen=0;
     for(const b of burning.values()){
       if(b.x<sx-1||b.x>sx+viewX+2||b.y<sy-1||b.y>sy+viewY+2) continue;
       if(!visibleTile(b.x,b.y)) continue;
@@ -627,7 +639,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       // as level 12 — so it declares the same glow attribute every other light in
       // the game uses and blooms above the darkness overlay. The baked sprite
       // below stays as the tile's own art: the warm pool ON the block.
-      if(EMISSIVE) EMISSIVE.glow(px+TILE/2, py+TILE*0.45, BURN_GLOW, null, TILE);
+      if(EMISSIVE && (burnSeen++ % glowStride)===0) EMISSIVE.glow(px+TILE/2, py+TILE*0.45, BURN_GLOW, null, TILE);
       // glow (baked radial sprite, alpha-flickered)
       ctx.globalAlpha=0.6+0.4*flick;
       ctx.drawImage(glowSprite, px+TILE/2-GS/2, py+TILE/2-GS/2);

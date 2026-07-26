@@ -712,6 +712,19 @@ assert.ok(!/halos \+= 2;/.test(postFxSrc), 'the second per-source blit is gone')
 assert.match(postFxSrc, /e\.a = Math\.max\(0, Math\.min\(GLOW_A_MAX, Number\.isFinite\(src\.a\) \? src\.a : 0\.55\)\);/, 'the inlet caps alpha at the ceiling the bake depends on');
 assert.ok(GLOW_A_MAX > 0.68, 'the ceiling sits above every alpha the game actually declares, so it never fires today');
 
+// One system must not be able to empty the SHARED glow queue. Registration order is
+// draw order and fire draws early, so a forest fire (MAX_BURNING 240, queue 128, no
+// cap) used to starve every mob, projectile, drop, meteor, turret and spring pad
+// after it of light entirely. Stride-sampled, not first-N: fire halos overlap several
+// tiles deep and saturate, so an even subset reads the same, while the first N would
+// clump at one end of the blaze.
+const fireGlowSrc = readFileSync(new URL('../src/engine/fire.js', import.meta.url), 'utf8');
+assert.match(fireGlowSrc, /const BURN_GLOW_CAP=40;/, 'fire takes a fixed share of the shared glow queue');
+assert.match(fireGlowSrc, /const glowStride=Math\.max\(1, Math\.ceil\(burning\.size\/BURN_GLOW_CAP\)\);/, 'the share is spread across the blaze by stride, not taken off the front');
+assert.match(fireGlowSrc, /if\(EMISSIVE && \(burnSeen\+\+ % glowStride\)===0\) EMISSIVE\.glow\(/, 'and the stride actually gates the registration');
+assert.ok(40 < EMISSIVE_MAX, 'fire cannot fill the queue on its own');
+assert.ok(!/BURN_GLOW_CAP[^\n]*frameMs|frameMs[^\n]*BURN_GLOW_CAP/.test(fireGlowSrc), 'the cap is a constant, never a reaction to frame time');
+
 // --- hot-path invariants, each one a measured regression waiting to happen -----
 // The per-tile glow lookup is memoized: it was ~88% of the emitter scan (9.0ns per
 // call over thousands of solid tiles). LAZY is load-bearing — furnishings.js stamps
