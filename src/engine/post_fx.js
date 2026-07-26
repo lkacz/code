@@ -931,6 +931,7 @@ export const SLIT_ALIGN_MIN = 0.6;     // light must actually flow ALONG the ope
 export const SLIT_FALLOFF_TILES = 5;   // inverse-square scale for source distance
 export const SLIT_PROBE_OUT = 3;       // how far out the background is sampled
 export const SLIT_PROBE_SIDE = 4;      // and how far to EACH SIDE of the beam
+export const SLIT_MOUTH_WALK = 4;      // deepest bore the mouth walk resolves
 export const LAMP_SPREADS = Object.freeze([1.6, 2.1, 2.8, 3.6, 4.6]);
 export const LAMP_SCAN_MS = 400;       // openings move only when the world does
 // Peak, before darkness and distance take their cut — and they take most of it:
@@ -954,6 +955,22 @@ export function slitFalloff(distTiles){
 // light sideways — a window; horizontal runs throw it up or down — a hole in a
 // roof or a cave floor. Pure and injected with predicates so the suite can
 // drive it with a fake building.
+//
+// The audit rebuilt four parts of this scan, each against a defect verified by
+// executing the module (2026-07-26):
+//  * the pierce test runs PER CELL and the aperture is the contiguous piercing
+//    sub-run — one mid-cell test let a blind niche above a window delete the
+//    window, and the ordinary cross-section of a 1-3 tall CORRIDOR pass as an
+//    aperture, throwing wedges from mid-air in every player-dug tunnel;
+//  * a cap must open toward the light's EXIT (a roof has sky above its rim) —
+//    a corridor's ceiling continues, so it is no rim at all;
+//  * the identity of an opening is its MOUTH CELL, found by walking along the
+//    light while the bore stays wall-flanked — the old key held only the
+//    coordinate ACROSS the light, so two huts at the same height fed ONE
+//    shaft between them while a jogged bore drew twice;
+//  * ownership of a mouth goes to the highest WEIGHT — the old farther-face
+//    rule, applied across emitters, let a dim far lamp steal a window from
+//    the bright near one and repaint its shaft the wrong colour.
 export function collectLightSlits(opts){
 	const out = [];
 	if(!opts || typeof opts.getTile !== 'function' || typeof opts.blocks !== 'function' || !Array.isArray(opts.emitters)) return out;
@@ -969,71 +986,112 @@ export function collectLightSlits(opts){
 	for(const e of opts.emitters){ if(e && e.level >= minLevel) srcs.push(e); }
 	srcs.sort((a, b) => (b.level - a.level) || (a.x - b.x) || (a.y - b.y));
 	if(srcs.length > SLIT_SOURCES) srcs.length = SLIT_SOURCES;
-	// One hole, one shaft. A wall two tiles thick presents the SAME opening twice
-	// — once at its inner face, once at its outer — and drawing both stacks two
-	// beams on the same air and doubles its brightness. Keyed on the opening's
-	// position ACROSS the light instead of on the cell, so the two faces collide
-	// and the outer one (the mouth the light actually leaves by) wins.
 	const best = new Map();
 	for(const e of srcs){
 		const ex = e.x + 0.5, ey = e.y + 0.5;
-		for(let dy = -R; dy <= R && out.length < max; dy++){
-			for(let dx = -R; dx <= R && out.length < max; dx++){
+		for(let dy = -R; dy <= R; dy++){
+			for(let dx = -R; dx <= R; dx++){
 				const x = e.x + dx, y = e.y + dy;
 				const d2 = dx * dx + dy * dy;
-				if(d2 < 4 || d2 > R * R) continue;          // touching the lamp, or out of reach
+				// Only the lamp's own cell is out: a torch mounted flush against
+				// its window is the strongest shaft the system can make, and the
+				// old d2<4 gate deleted exactly that placement while keeping the
+				// weaker ones (the shaft brightened as you dragged the lamp AWAY).
+				if(d2 < 1 || d2 > R * R) continue;
 				if(solid(x, y)) continue;
-				// Two orientations, tested in the order that makes a window win over
-				// a coincidental floor gap: a run CLOSED above and below is a hole in
-				// a vertical wall and throws light sideways.
+				// Two orientations: a run CLOSED above and below is a hole in a
+				// vertical wall and throws light sideways; a horizontal run is a
+				// hole in a roof or floor.
 				for(let axis = 0; axis < 2; axis++){
 					const ux = axis === 0 ? 0 : 1, uy = axis === 0 ? 1 : 0;   // run direction
 					const nx = axis === 0 ? 1 : 0, ny = axis === 0 ? 0 : 1;   // light direction
 					if(!solid(x - ux, y - uy)) continue;    // not the start of a run
-					let span = 0;
-					while(span <= SLIT_MAX_SPAN && !solid(x + ux * span, y + uy * span)) span++;
-					if(span === 0 || span > SLIT_MAX_SPAN) continue;   // open-ended: a doorway, not a slit
-					const mx = x + ux * ((span - 1) >> 1), my = y + uy * ((span - 1) >> 1);
-					if(solid(mx - nx, my - ny) || solid(mx + nx, my + ny)) continue;  // must pierce the wall
-					const cx = x + ux * span * 0.5 + nx * 0.5, cy = y + uy * span * 0.5 + ny * 0.5;
-					let vx = cx - ex, vy = cy - ey;
-					const dist = Math.sqrt(vx * vx + vy * vy);
-					if(!(dist > 0.5)) continue;
-					vx /= dist; vy /= dist;
-					// The light has to flow ALONG the opening, not graze it: a lamp
-					// directly above a window sees its slit but shines past it.
-					if(Math.abs(vx * nx + vy * ny) < SLIT_ALIGN_MIN) continue;
-					if(!slitClearPath(getTile, blocks, ex, ey, cx, cy)) continue;
-					// Contrast is the whole effect: lit air is invisible against lit
-					// air. But the probe has to sample the BACKGROUND, and the
-					// background is not what lies straight out of the hole — the
-					// light field already carries this lamp's own leak out through
-					// this same opening, so an on-axis probe reads the shaft itself
-					// and talks the effect out of existing. Measured: it dimmed a
-					// night shaft to a sixth of its strength. Sample to the SIDES of
-					// the beam instead, which is the comparison an eye actually makes.
-					const ox = cx + vx * SLIT_PROBE_OUT, oy = cy + vy * SLIT_PROBE_OUT;
-					const sideA = lightAt ? lightAt(Math.floor(ox - vy * SLIT_PROBE_SIDE), Math.floor(oy + vx * SLIT_PROBE_SIDE)) : 0;
-					const sideB = lightAt ? lightAt(Math.floor(ox + vy * SLIT_PROBE_SIDE), Math.floor(oy - vx * SLIT_PROBE_SIDE)) : 0;
-					const ambient = Math.max(0, Math.min(1, ((sideA || 0) + (sideB || 0)) * 0.5));
-					const dark = 1 - ambient;
-					if(dark < SLIT_MIN_DARK) continue;
-					let len = 0;
-					while(len < SLIT_MAX_LEN && !solid(Math.floor(cx + vx * (len + 1)), Math.floor(cy + vy * (len + 1)))) len++;
-					if(len < 2) continue;
-					// Across the light, not along it: the two faces of one hole share
-					// this coordinate and collide here, and the OUTER face — the one
-					// farther from the lamp — is the mouth the beam leaves by.
-					const key = axis + ':' + (axis === 0 ? Math.round(cy * 2) : Math.round(cx * 2));
-					const prev = best.get(key);
-					if(prev && prev.dist >= dist) break;
-					best.set(key, {
-						cx, cy, span, axis, dist, len,
-						dirX: vx, dirY: vy,
-						level: e.level, color: e.color,
-						weight: dark * Math.min(1, e.level / 12) * slitFalloff(dist)
-					});
-					break;   // one shaft per cell; the winning orientation is enough
+					let raw = 0;
+					while(raw <= SLIT_MAX_SPAN && !solid(x + ux * raw, y + uy * raw)) raw++;
+					if(raw === 0 || raw > SLIT_MAX_SPAN) continue;   // open-ended: a doorway, not a slit
+					// Pierce PER CELL: the raw run may drag in a blind niche (a
+					// shelf over the window); the aperture is the contiguous
+					// sub-run of cells open on BOTH sides across the wall.
+					let s0 = -1;
+					for(let k = 0; k <= raw; k++){
+						const pier = k < raw && !solid(x + ux * k - nx, y + uy * k - ny) && !solid(x + ux * k + nx, y + uy * k + ny);
+						if(pier && s0 < 0) s0 = k;
+						if(pier && k < raw) continue;
+						if(s0 < 0) continue;
+						const span = k - s0;
+						const ax = x + ux * s0, ay = y + uy * s0;     // sub-run start cell
+						s0 = -1;
+						// preliminary direction from the aperture's own centre —
+						// the mouth walk needs the sign of the flow first
+						const pcx = ax + ux * (span - 1) * 0.5 + 0.5, pcy = ay + uy * (span - 1) * 0.5 + 0.5;
+						let vx = pcx - ex, vy = pcy - ey;
+						const pd = Math.sqrt(vx * vx + vy * vy);
+						if(!(pd > 0.5)) continue;
+						vx /= pd; vy /= pd;
+						// The light has to flow ALONG the opening, not graze it: a
+						// lamp directly above a window sees its slit but shines
+						// past it.
+						const flow = vx * nx + vy * ny;
+						if(Math.abs(flow) < SLIT_ALIGN_MIN) continue;
+						const sgn = flow >= 0 ? 1 : -1;
+						// The caps must open toward the EXIT: a roof has sky above
+						// its rim, a wall has outdoors beside its jamb — a
+						// corridor's ceiling continues, and so does the wall beside
+						// a window one row up, which is how a first cut ("a thin
+						// cap anywhere") let interior cross-sections NEXT TO a
+						// window pass as apertures and hang phantom beams in the
+						// middle of the room. At least one rim open on the exit
+						// side keeps the window under a deep roof overhang.
+						if(solid(x - ux + nx * sgn, y - uy + ny * sgn) && solid(x + ux * raw + nx * sgn, y + uy * raw + ny * sgn)) continue;
+						// THE MOUTH WALK — the identity of the opening. March along
+						// the light while the next cell is open and still touches
+						// the wall on a flank: the two faces of one bore (straight
+						// or jogged) land on the same terminal cell, two different
+						// windows never do.
+						let mxc = ax + ux * ((span - 1) >> 1), myc = ay + uy * ((span - 1) >> 1);
+						for(let w = 0; w < SLIT_MOUTH_WALK; w++){
+							const nxt = mxc + nx * sgn, nyt = myc + ny * sgn;
+							if(solid(nxt, nyt)) break;
+							if(!solid(nxt - ux, nyt - uy) && !solid(nxt + ux, nyt + uy)) break;   // left the wall
+							mxc = nxt; myc = nyt;
+						}
+						// beam origin: the centre of the mouth's exit face
+						const cx = mxc + 0.5 + nx * sgn * 0.5, cy = myc + 0.5 + ny * sgn * 0.5;
+						vx = cx - ex; vy = cy - ey;
+						const dist = Math.sqrt(vx * vx + vy * vy);
+						if(!(dist > 0.5)) continue;
+						vx /= dist; vy /= dist;
+						if(!slitClearPath(getTile, blocks, ex, ey, mxc + 0.5, myc + 0.5)) continue;
+						// Contrast is the whole effect: lit air is invisible against
+						// lit air. The probes sample the BACKGROUND — to the SIDES
+						// of the beam, never along it (the field carries this
+						// lamp's own leak out of this same opening, so an on-axis
+						// probe reads the shaft itself), and only where the probe
+						// cell is OPEN: rock is not darkness, it is rock, and
+						// averaging it in drew faint wedges out of surface huts at
+						// noon. The brighter open side is the true background.
+						const ox = cx + vx * SLIT_PROBE_OUT, oy = cy + vy * SLIT_PROBE_OUT;
+						const pax = Math.floor(ox - vy * SLIT_PROBE_SIDE), pay = Math.floor(oy + vx * SLIT_PROBE_SIDE);
+						const pbx = Math.floor(ox + vy * SLIT_PROBE_SIDE), pby = Math.floor(oy - vx * SLIT_PROBE_SIDE);
+						let ambient = -1;
+						if(!solid(pax, pay)) ambient = Math.max(ambient, (lightAt ? lightAt(pax, pay) : 0) || 0);
+						if(!solid(pbx, pby)) ambient = Math.max(ambient, (lightAt ? lightAt(pbx, pby) : 0) || 0);
+						if(ambient < 0) continue;               // no open background to judge against
+						const dark = 1 - Math.max(0, Math.min(1, ambient));
+						if(dark < SLIT_MIN_DARK) continue;
+						const len = slitRayReach(getTile, blocks, cx, cy, vx, vy, SLIT_MAX_LEN);
+						if(len < 2) continue;
+						const weight = dark * Math.min(1, e.level / 12) * slitFalloff(dist);
+						const key = axis + ':' + mxc + ':' + myc;
+						const prev = best.get(key);
+						if(prev && prev.weight >= weight) continue;
+						best.set(key, {
+							cx, cy, span, axis, dist, len,
+							dirX: vx, dirY: vy,
+							level: e.level, color: e.color,
+							weight
+						});
+					}
 				}
 			}
 		}
@@ -1046,18 +1104,55 @@ export function collectLightSlits(opts){
 	return out;
 }
 
-// Straight line from the lamp to the opening, in the world's own terms: a lamp
-// on the far side of a wall must not light a window it cannot see. Stepped at
-// half a tile, which cannot skip a one-tile wall.
-export function slitClearPath(getTile, blocks, x0, y0, x1, y1){
+// Both rays walk the GRID (Amanatides & Woo), visiting every cell the segment
+// actually crosses. The old point-sampling — half-tile steps for the clear
+// path, whole-tile steps for the length — could step OVER a one-tile wall on a
+// diagonal: a shaft through solid rock, and a lamp lighting a window through a
+// 45-degree one-block wall it cannot see past. Both reproduced by execution.
+export function slitRayBlocked(getTile, blocks, x0, y0, x1, y1){
+	let cx = Math.floor(x0), cy = Math.floor(y0);
+	const tx = Math.floor(x1), ty = Math.floor(y1);
 	const dx = x1 - x0, dy = y1 - y0;
-	const steps = Math.ceil(Math.sqrt(dx * dx + dy * dy) * 2);
-	if(steps <= 1) return true;
-	for(let i = 1; i < steps; i++){
-		const t = i / steps;
-		if(blocks(getTile(Math.floor(x0 + dx * t), Math.floor(y0 + dy * t)))) return false;
+	const sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1;
+	const adx = Math.abs(dx), ady = Math.abs(dy);
+	let tMaxX = adx > 1e-9 ? (sx > 0 ? cx + 1 - x0 : x0 - cx) / adx : Infinity;
+	let tMaxY = ady > 1e-9 ? (sy > 0 ? cy + 1 - y0 : y0 - cy) / ady : Infinity;
+	const tDx = adx > 1e-9 ? 1 / adx : Infinity;
+	const tDy = ady > 1e-9 ? 1 / ady : Infinity;
+	for(let guard = 0; guard < 64; guard++){
+		if(cx === tx && cy === ty) return false;    // arrived — end cell is not tested
+		if(tMaxX < tMaxY){ tMaxX += tDx; cx += sx; }
+		else { tMaxY += tDy; cy += sy; }
+		if(cx === tx && cy === ty) return false;
+		if(blocks(getTile(cx, cy))) return true;
 	}
 	return true;
+}
+// How far (in tiles) a unit-direction ray reaches before the first blocking
+// cell, capped. Same traversal as slitRayBlocked so the beam can never be
+// longer than the air it actually crosses.
+export function slitRayReach(getTile, blocks, x0, y0, ux, uy, maxLen){
+	let cx = Math.floor(x0), cy = Math.floor(y0);
+	const sx = ux > 0 ? 1 : -1, sy = uy > 0 ? 1 : -1;
+	const adx = Math.abs(ux), ady = Math.abs(uy);
+	let tMaxX = adx > 1e-9 ? (sx > 0 ? cx + 1 - x0 : x0 - cx) / adx : Infinity;
+	let tMaxY = ady > 1e-9 ? (sy > 0 ? cy + 1 - y0 : y0 - cy) / ady : Infinity;
+	const tDx = adx > 1e-9 ? 1 / adx : Infinity;
+	const tDy = ady > 1e-9 ? 1 / ady : Infinity;
+	for(let guard = 0; guard < 96; guard++){
+		const t = Math.min(tMaxX, tMaxY);
+		if(t >= maxLen) return maxLen;
+		if(tMaxX < tMaxY){ tMaxX += tDx; cx += sx; }
+		else { tMaxY += tDy; cy += sy; }
+		if(blocks(getTile(cx, cy))) return t;
+	}
+	return maxLen;
+}
+
+// Straight line from the lamp to the opening, in the world's own terms: a lamp
+// on the far side of a wall must not light a window it cannot see.
+export function slitClearPath(getTile, blocks, x0, y0, x1, y1){
+	return !slitRayBlocked(getTile, blocks, x0, y0, x1, y1);
 }
 
 // Ice-run finder: frozen water lives at the WATER LINE, which sits ABOVE the
@@ -1113,7 +1208,7 @@ let godRayBeams = [];
 let godRayKey = '';
 let godRayScanAt = 0;
 let lampSlits = [];
-let lampSlitGen = -1;
+let lampSlitKey = '';
 let lampSlitAt = 0;
 let iceRuns = [];
 const ICE_STRIDE = 7;
@@ -2050,21 +2145,31 @@ const api = {
 	// is light being added to a dark scene; underneath it the overlay would dim
 	// the one thing the effect exists to show.
 	drawLampShaftsPass(ctx, opts){
-		if(!api.on('lampShafts')){ lampSlits.length = 0; lampSlitGen = -1; return 0; }
+		if(!api.on('lampShafts')){ lampSlits.length = 0; lampSlitKey = ''; return 0; }
 		if(!ctx || !opts || typeof opts.getTile !== 'function' || typeof opts.blocks !== 'function') return 0;
+		// No light model, no contrast judgment, no shafts: with the cave-lighting
+		// toggle off, lightAt reports 0 for EVERY cell, which the darkness gate
+		// would read as a world of perfect blackness — the strongest possible
+		// shafts over a scene whose darkness overlay draws nothing at all.
+		if(typeof opts.lightAt !== 'function') return 0;
 		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
 		const emitters = ensureEmitterScan(opts);
 		if(!emitters.length){ lampSlits.length = 0; return 0; }
 		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
-		// Re-scan when the emitter scan itself rolled over, or on its own floor.
-		// Riding that generation is the point: the openings can only have moved
-		// if the world did, and the emitter walk already pays for noticing.
-		if(lampSlitGen !== bloomScanGen || now - lampSlitAt > LAMP_SCAN_MS){
+		// Its own viewport key and its own clock — like the god ray scan. The
+		// first version rode the shared emitter-scan generation, believing it a
+		// world-change signal; it is a 120 ms clock that also bumps on every
+		// camera tile-crossing, so the slit scan ran 8-14x/s instead of the
+		// documented 2.5x/s (audit, verified by execution). A key change still
+		// rescans immediately, so lamps scrolling into view light up without
+		// waiting out the cadence.
+		const key = Math.floor(opts.sx) + '|' + Math.floor(opts.sy);
+		if(key !== lampSlitKey || now - lampSlitAt > LAMP_SCAN_MS){
 			lampSlits = collectLightSlits({
 				emitters, getTile: opts.getTile, blocks: opts.blocks,
 				lightAt: opts.lightAt, radius: SLIT_RADIUS, max: SLIT_MAX, minLevel: SLIT_MIN_LEVEL
 			});
-			lampSlitGen = bloomScanGen; lampSlitAt = now;
+			lampSlitKey = key; lampSlitAt = now;
 		}
 		if(!lampSlits.length) return 0;
 		const visibleAt = typeof opts.visibleAt === 'function' ? opts.visibleAt : null;

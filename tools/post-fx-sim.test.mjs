@@ -39,8 +39,8 @@ const {
 	bloomSourceFor, collectBloomEmitters, BLOOM_MIN_LEVEL, BLOOM_MAX_EMITTERS,
 	heroSheenEnvSample, heroMirrorCurve, shadowParams,
 	wetGroundStep, collectCanopyGaps, collectIceRuns,
-	collectLightSlits, slitClearPath, slitFalloff,
-	SLIT_MAX_SPAN, SLIT_RADIUS, SLIT_MAX, SLIT_MIN_LEVEL, SLIT_MIN_DARK, SLIT_ALIGN_MIN, LAMP_SPREADS,
+	collectLightSlits, slitClearPath, slitFalloff, slitRayBlocked, slitRayReach,
+	SLIT_MAX_SPAN, SLIT_RADIUS, SLIT_MAX, SLIT_MIN_LEVEL, SLIT_MIN_DARK, SLIT_ALIGN_MIN, SLIT_MOUTH_WALK, LAMP_SPREADS,
 	godRayWeight, godRayJitter, godRayProfile, godRayCross,
 	GAP_COVER_MIN, GAP_COVER_SPAN, GAP_MAX_WIDTH, GAP_CANOPY_PROBE, GAP_ROOF_MIN,
 	GODRAY_SPREADS, GODRAY_TINTS, GODRAY_MAX_BEAMS, GODRAY_SUN_TILES, GODRAY_LEAN,
@@ -422,10 +422,10 @@ const slitsOf = (o) => collectLightSlits({ emitters: [slitLamp], getTile: cabinT
 const slits = slitsOf({});
 assert.equal(slits.length, 1, 'a lit room with one window throws one shaft');
 assert.equal(slits[0].span, 1, 'the opening is one tile tall');
-assert.ok(Math.abs(slits[0].cx - 10.5) < 1e-9, 'the shaft leaves from the middle of the opening');
+assert.ok(Math.abs(slits[0].cx - 11) < 1e-9, 'the shaft leaves from the EXIT face of the wall (the mouth walk resolved it)');
 assert.ok(Math.abs(slits[0].cy - 5.5) < 1e-9, 'and from the middle of its run');
 assert.ok(slits[0].dirX > 0.999 && Math.abs(slits[0].dirY) < 1e-9, 'it travels away from the lamp, straight out through the slitWall');
-assert.ok(Math.abs(slits[0].dist - 2) < 1e-9, 'the apex is the LAMP, two tiles back — that is what makes the wedge open hard');
+assert.ok(Math.abs(slits[0].dist - 2.5) < 1e-9, 'the apex is the LAMP, two and a half tiles behind the mouth — that is what makes the wedge open hard');
 assert.equal(slits[0].color, '255,176,84', 'a shaft is the colour of the light that threw it');
 assert.ok(slits[0].len >= 2, 'the beam reaches into the open air outside');
 assert.ok(slits[0].weight > 0.5, 'a bright lamp close behind a window, opening onto full pitchDark, is a strong shaft');
@@ -475,6 +475,88 @@ assert.equal(thickSlits.length, 1, 'a two-tile-thick wall still throws ONE shaft
 assert.ok(thickSlits[0].cx > 11, 'and it leaves by the OUTER face — the mouth the light actually exits');
 assert.ok(slitClearPath((x, y) => cabinTile(x, y), slitWall, 8.5, 5.5, 10.5, 5.5), 'the path from lamp to window is clear');
 assert.ok(!slitClearPath((x, y) => cabinTile(x, y), slitWall, 8.5, 2.5, 12.5, 2.5), 'a path through the slitWall is not');
+
+// --- the audit's eight (2026-07-26): every defect pinned by the world that showed it
+// AUDIT F1a — the old dedupe key held only the coordinate ACROSS the light, so
+// every distinct opening sharing a row fed ONE shaft between them.
+const twoHuts = new Map();
+for(let y = 1; y <= 9; y++) if(y !== 5){ twoHuts.set('10,' + y, T.STONE); twoHuts.set('40,' + y, T.STONE); }
+const hutSlits = collectLightSlits({ emitters: [slitLamp, { ...slitLamp, x: 38 }], getTile: (x, y) => twoHuts.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark });
+assert.equal(hutSlits.length, 2, 'two huts at the same height throw TWO shafts — one each, not one between them');
+// A SEALED room (ceiling and floor, not floating wall posts): the first version
+// of this fixture had neither, and the scan rightly reported the two slots
+// between the wall TOPS as apertures too — a roofless room does spill light up.
+const roomBoth = new Map();
+for(let y = 1; y <= 9; y++) if(y !== 5){ roomBoth.set('6,' + y, T.STONE); roomBoth.set('10,' + y, T.STONE); }
+for(let x = 5; x <= 11; x++){ roomBoth.set(x + ',0', T.STONE); roomBoth.set(x + ',10', T.STONE); }
+const roomSlits = collectLightSlits({ emitters: [slitLamp], getTile: (x, y) => roomBoth.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark });
+assert.equal(roomSlits.length, 2, 'one sealed room with windows in both walls: light leaves BOTH ways and NOWHERE else');
+// The audit-adjacent phantom this fixture also guards: the room's own interior
+// cross-section one row above the window row must never read as an aperture.
+assert.ok(roomSlits.every(s => Math.abs(s.cy - 5.5) < 1e-9 && s.axis === 0), 'both shafts leave through the windows — no phantom beams inside the room');
+// AUDIT F1b — a jogged bore (a one-tile jog inside a thick wall, the shape a
+// miner produces constantly) produced two keys and drew two stacked beams.
+const jog = new Map();
+for(let y = 1; y <= 9; y++) for(const wx of [10, 11]) jog.set(wx + ',' + y, T.STONE);
+jog.delete('10,5'); jog.delete('11,5'); jog.delete('11,6');
+const jogSlits = collectLightSlits({ emitters: [slitLamp], getTile: (x, y) => jog.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark });
+assert.equal(jogSlits.length, 1, 'a jogged bore through a thick wall is ONE opening — both faces resolve to one mouth');
+// AUDIT F2 — a corridor cross-section satisfied the old aperture test at every
+// column (caps solid, mid cell open along the tunnel): wedges from mid-air in
+// every player-dug tunnel. The cap-thinness test rejects it — a corridor is
+// capped by its ceiling and floor, metres of rock, not by a wall.
+const tunnelTile = (x, y) => (y >= 17 && y <= 19 && x >= 4 && x <= 20) ? T.AIR : T.STONE;
+const tunnelSlits = collectLightSlits({ emitters: [{ x: 8, y: 18, t: T.TORCH, level: 13, color: '255,176,84' }], getTile: tunnelTile, blocks: slitWall, lightAt: pitchDark });
+assert.equal(tunnelSlits.length, 0, 'a corridor cross-section is not an aperture — no wedge from mid-air in a mined tunnel');
+// AUDIT F7 — the old one-mid-cell pierce test let a blind niche above or below
+// the window swallow it whole: the run merged, the mid cell missed, 0 shafts.
+const nicheUp = new Map(cabin); nicheUp.delete('10,4'); nicheUp.set('11,4', T.STONE);
+const nicheUpSlits = collectLightSlits({ emitters: [slitLamp], getTile: (x, y) => nicheUp.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark });
+assert.equal(nicheUpSlits.length, 1, 'a blind niche above the window no longer deletes it');
+assert.ok(Math.abs(nicheUpSlits[0].cy - 5.5) < 1e-9, 'and the shaft leaves through the WINDOW, not the niche');
+const nicheDn = new Map(cabin); nicheDn.delete('10,6'); nicheDn.set('11,6', T.STONE);
+const nicheDnSlits = collectLightSlits({ emitters: [slitLamp], getTile: (x, y) => nicheDn.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark });
+assert.equal(nicheDnSlits.length, 1, 'a niche below survives too');
+assert.ok(Math.abs(nicheDnSlits[0].cy - 5.5) < 1e-9, 'same window, same shaft');
+// AUDIT F4 — ownership: the old farther-face rule, applied across emitters, let
+// a dim far lamp steal the window from the bright near one (adding a light to a
+// room DIMMED its window and re-coloured the shaft).
+const twoLampSlits = collectLightSlits({ emitters: [slitLamp, { x: 3, y: 5, t: T.GLOWSHROOM, level: 13, color: '96,240,192' }], getTile: cabinTile, blocks: slitWall, lightAt: pitchDark });
+assert.equal(twoLampSlits.length, 1, 'one window, two lamps: one shaft');
+assert.equal(twoLampSlits[0].color, '255,176,84', 'and it belongs to the NEAR lamp — the strongest claim to the mouth wins');
+assert.ok(Math.abs(twoLampSlits[0].dist - 2.5) < 1e-9, 'with the near geometry, so the wedge opens the way that lamp would open it');
+// AUDIT F6 — the old d2<4 gate deleted the lamp's whole 8-neighbourhood, so a
+// torch mounted flush against its window (the strongest case slitFalloff can
+// produce) threw nothing, and the shaft BRIGHTENED as you dragged the lamp away.
+const flushSlits = collectLightSlits({ emitters: [{ ...slitLamp, x: 9 }], getTile: cabinTile, blocks: slitWall, lightAt: pitchDark });
+assert.equal(flushSlits.length, 1, 'a torch mounted flush against its window still throws');
+assert.ok(flushSlits[0].weight > slits[0].weight, 'and it is STRONGER than the same lamp two tiles back');
+// AUDIT F3 — rock is not darkness. The probes averaged whatever lightAt said,
+// and inside terrain it says 0 — a noon hut whose lower probe landed in the
+// ground read dark=0.5 and sprayed a wedge across sunlit grass at midday.
+const noonTile = (x, y) => (y >= 8 ? T.STONE : (cabin.get(x + ',' + y) ?? T.AIR));
+const noonSlits = collectLightSlits({ emitters: [slitLamp], getTile: noonTile, blocks: slitWall, lightAt: (x, y) => (y >= 8 ? 0 : 1) });
+assert.equal(noonSlits.length, 0, 'one probe in rock, one in daylight: the open probe is the background and there is no noon shaft');
+// AUDIT F5 — both rays walk the GRID now. The old point-sampling stepped OVER a
+// one-tile wall on diagonals: a shaft through solid rock, and a lamp lighting a
+// window through a 45-degree one-block wall it cannot see past.
+const diagWall = new Map();
+for(const [wx, wy] of [[3, 8], [4, 7], [5, 6], [6, 5], [7, 4], [8, 3]]) diagWall.set(wx + ',' + wy, T.STONE);
+assert.ok(!slitClearPath((x, y) => diagWall.get(x + ',' + y) ?? T.AIR, slitWall, 5.5, 5.5, 9.5, 9.5), 'the grid walk cannot tunnel through a one-block diagonal wall');
+assert.equal(slitRayReach((x, y) => (x === 5 ? T.STONE : T.AIR), slitWall, 2.5, 2.5, 1, 0, 14), 2.5, 'the reach walk stops exactly where the ray enters the first blocking cell');
+const oneStone = (x, y) => (x === 14 && y === 3 ? T.STONE : T.AIR);
+const diagReach = slitRayReach(oneStone, slitWall, 10.5, 5.5, 0.832, -0.555, 14);
+assert.ok(diagReach > 4 && diagReach < 4.6, 'a single diagonally-crossed stone clips the beam — point-sampling stepped over it');
+assert.equal(slitRayReach(() => T.AIR, slitWall, 0.5, 0.5, 0.7071, 0.7071, 14), 14, 'free air reaches the cap');
+// AUDIT F8 — the caps that actually bound the scan, pinned by BEHAVIOR: a hall
+// of twelve windows keeps the strongest SLIT_MAX, not the first in scan order.
+const hall = new Map();
+for(let y = 0; y <= 26; y++) if(!(y >= 2 && y <= 24 && y % 2 === 0)) hall.set('10,' + y, T.STONE);
+const hallLamps = [];
+for(let y = 2; y <= 22; y += 4) hallLamps.push({ x: 8, y, t: T.TORCH, level: 13, color: '255,176,84' });
+const hallSlits = collectLightSlits({ emitters: hallLamps, getTile: (x, y) => hall.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark });
+assert.equal(hallSlits.length, SLIT_MAX, 'a hall of windows is capped at SLIT_MAX shafts');
+for(let i = 1; i < hallSlits.length; i++) assert.ok(hallSlits[i].weight <= hallSlits[i - 1].weight + 1e-12, 'and the cap keeps the STRONGEST, not scan order');
 
 // --- ice-run finder ---------------------------------------------------------------
 // Natural frozen lake: the ICE crust sits at the WATER LINE, rows ABOVE the
@@ -1036,6 +1118,13 @@ assert.match(lampBody, /const spread = \(s\.dist \+ s\.len\) \/ s\.dist;/, 'the 
 assert.match(lampBody, /const ang = Math\.atan2\(s\.dirY, s\.dirX\) - Math\.PI \/ 2;/, 'a lamp shaft points any way at all, unlike a sunbeam');
 assert.ok(!/frameMs|stressed|critical/.test(lampBody), 'lamp shafts never degrade themselves on a frame-time threshold');
 assert.match(lampBody, /max: SLIT_MAX, minLevel: SLIT_MIN_LEVEL/, 'the shaft count is a fixed cap');
+// Cadence: its OWN key and clock, like the god ray scan. The first version rode
+// bloomScanGen believing it a world-change signal; it is a 120 ms clock that
+// also bumps on camera tile-crossings, so the scan ran 8-14x/s instead of the
+// documented 2.5x/s (audit F8, verified by execution).
+assert.match(lampBody, /if\(key !== lampSlitKey \|\| now - lampSlitAt > LAMP_SCAN_MS\)\{/, 'the slit scan runs on its own viewport key and its own cadence');
+assert.ok(!/bloomScanGen|lampSlitGen/.test(lampBody), 'and no longer rides the shared emitter generation');
+assert.match(lampBody, /if\(typeof opts\.lightAt !== 'function'\) return 0;/, 'no light model means no contrast judgment and no shafts (audit F3b)');
 // Both effects bake through ONE function. That is the reuse the feature is built
 // on, and a second bake would quietly double the sprite memory.
 assert.equal((postFxSrc.match(/function beamSpriteFor\(/g) || []).length, 1, 'one bake serves both the sun and the lamps');
@@ -1044,10 +1133,27 @@ assert.match(postFxSrc, /const spr = beamSpriteFor\(LAMP_SPREADS\[si\], s\.color
 const iSlitFn = postFxSrc.indexOf('export function collectLightSlits(');
 const slitBody = postFxSrc.slice(iSlitFn, postFxSrc.indexOf('\n}', iSlitFn));
 assert.ok(iSlitFn > 0 && slitBody.length > 400, 'the slit scan body was located');
-assert.match(slitBody, /const key = axis \+ ':' \+ \(axis === 0 \? Math\.round\(cy \* 2\) : Math\.round\(cx \* 2\)\);/, 'openings are deduped ACROSS the light, so a thick wall throws one shaft, not one per face');
-assert.match(slitBody, /if\(prev && prev\.dist >= dist\) break;/, 'and the OUTER face wins — that is the mouth the light leaves by');
-assert.match(slitBody, /const sideA = lightAt \? lightAt\(Math\.floor\(ox - vy \* SLIT_PROBE_SIDE\)/, 'the background is sampled to the SIDE of the beam, never along it');
+// The audit's structural pins: the identity of an opening is its MOUTH CELL
+// (both faces of a bore — straight or jogged — resolve to it; two windows on
+// one row never collide), and ownership of a mouth goes to the strongest claim.
+assert.match(slitBody, /const key = axis \+ ':' \+ mxc \+ ':' \+ myc;/, 'openings are identified by their mouth cell, not by a bare cross coordinate');
+assert.match(slitBody, /if\(prev && prev\.weight >= weight\) continue;/, 'the strongest claim to a mouth wins — a dim far lamp can no longer steal a window');
+assert.ok(!/prev\.dist >= dist/.test(slitBody), 'the farther-face rule is gone (it compared across emitters and picked the wrong lamp)');
+// Contrast probes: to the SIDES, never along the beam (the field carries the
+// lamp's own leak out of the opening), and only where the probe cell is OPEN —
+// rock is not darkness, it is rock.
+assert.match(slitBody, /if\(!solid\(pax, pay\)\) ambient = Math\.max\(ambient, \(lightAt \? lightAt\(pax, pay\) : 0\) \|\| 0\);/, 'a probe buried in terrain is invalid, and the brighter open side is the background');
+assert.match(slitBody, /if\(ambient < 0\) continue;/, 'no open background at all means no judgment and no shaft');
 assert.ok(!/lightAt\(Math\.floor\(cx \+ vx \* 2\.5\)/.test(slitBody), 'the on-axis probe is gone — it read the shaft itself and talked the effect out of existing');
+// The rays walk the grid; point-sampling stepped over one-tile diagonal walls.
+assert.match(slitBody, /const len = slitRayReach\(getTile, blocks, cx, cy, vx, vy, SLIT_MAX_LEN\);/, 'the beam length walks the cells the ray actually crosses');
+assert.ok(!/Math\.floor\(cx \+ vx \* \(len \+ 1\)\)/.test(slitBody), 'the whole-tile point-sample walk is gone');
+assert.match(postFxSrc, /export function slitClearPath\(getTile, blocks, x0, y0, x1, y1\)\{\n\treturn !slitRayBlocked\(getTile, blocks, x0, y0, x1, y1\);\n\}/, 'line of sight rides the same traversal');
+// The caps and budgets that bound the scan are fixed constants, and REAL.
+assert.match(slitBody, /if\(srcs\.length > SLIT_SOURCES\) srcs\.length = SLIT_SOURCES;/, 'the emitter budget is a fixed cap');
+assert.match(slitBody, /if\(out\.length > max\) out\.length = max;/, 'and so is the shaft count');
+assert.ok(!/dy <= R && out\.length|dx <= R && out\.length/.test(slitBody), 'the scan loops carry no vacuously-true guards (out is only filled after the walk — the audit found them dead)');
+assert.match(slitBody, /if\(d2 < 1 \|\| d2 > R \* R\) continue;/, 'only the lamp\'s own cell is excluded — a flush-mounted torch throws the strongest shaft');
 
 const iGapFn = postFxSrc.indexOf('export function collectCanopyGaps(');
 const gapBody = postFxSrc.slice(iGapFn, postFxSrc.indexOf('\n}', iGapFn));
@@ -1152,7 +1258,11 @@ assert.match(mainSrc, /\['🪟 Snopy światła z okien','lampShafts'\]/, 'lamp s
 // collision test — that is the difference between a pane of glass being a window
 // and being a brick.
 assert.match(mainSrc, /function gfxLightBlocks\(t\)\{ return !isSunTransparentTile\(t\); \}/, 'openings are decided by sun transparency');
-assert.match(mainSrc, /blocks:gfxLightBlocks,lightAt:\(LIGHTING && LIGHTING\.lightAt\)\?LIGHTING\.lightAt:null/, 'the pass gets the wall test and the light field that supplies its contrast');
+// lightAt is handed over ONLY while the lighting model is enabled: with the
+// cave-lighting toggle off, lightAt reports 0 for every cell — the darkness
+// gate would read a world of perfect blackness and draw the strongest possible
+// shafts over a scene whose darkness overlay draws nothing (audit F3b).
+assert.match(mainSrc, /blocks:gfxLightBlocks,lightAt:\(LIGHTING && LIGHTING\.lightAt && LIGHTING\.config && LIGHTING\.config\.enabled\)\?LIGHTING\.lightAt:null/, 'the pass gets the wall test, and the light field only while that field is real');
 // Lamp shafts are light ADDED to a dark scene, so they belong ABOVE the darkness
 // overlay with the light tint — underneath it the overlay would dim away the one
 // thing the effect exists to show. God rays are the opposite: daylight, below it.

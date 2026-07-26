@@ -420,11 +420,12 @@ async function main(){
 		const lamp = stage.startsWith('OK ')
 			? await run('lamp', LAMP.replace('${SITE}', String(JSON.parse(stage.slice(3)).site)))
 			: 'SKIPPED';
+		let lampShot = 'SKIPPED';
 		if (lamp.startsWith('OK ')){
 			// The chamber is carved, not built, so it is still there — stand next to
 			// it with every component live and look at the thing.
 			const site = JSON.parse(stage.slice(3)).site;
-			await run('lampShot', `(async()=>{
+			lampShot = await run('lampShot', `(async()=>{
 				window.__mmForceGfxUltra=true;
 				const ui=document.getElementById('ui'); if(ui) ui.style.display='none';
 				window.__mmDebugHero(${site}+6, MM.worldGen.surfaceHeight(${site}+6)-2);
@@ -486,6 +487,10 @@ async function main(){
 				// The rig proves the geometry; this proves the geometry survives
 				// contact with terrain nobody staged.
 				['a natural forest stand casts shafts too', shotStatus.startsWith('OK ') && JSON.parse(shotStatus.slice(3)).beamDraws > 0],
+				// The one end-to-end proof that the real main.js call site draws a
+				// lamp shaft in a live frame. The audit found it computed, printed
+				// and never read — a tautology dressed as coverage.
+				['the LIVE frame draws the lamp shaft through main.js', lampShot.startsWith('OK ') && JSON.parse(lampShot.slice(3)).liveDraws > 0],
 				// --- lamp shafts: the same effect, apex indoors ---
 				['a lit chamber throws a shaft out of its hole at night', L.shafts > 0],
 				['and NOTHING in daylight — contrast is the effect, both ways round', L.byDay === 0],

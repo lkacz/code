@@ -50,7 +50,7 @@ const STAGE_A = `(async()=>{
 	const ui=document.getElementById('ui'); if(ui) ui.style.display='none';
 	MM.background.importState({cycleT:0.25});
 	const M=MM.postFx.metrics;
-	const snap=()=>({scans:M.bloomScans|0,bloom:M.bloomDraws|0,refl:M.reflectionColumns|0,spec:M.specGlints|0,sheen:M.heroSheenDraws|0,shadow:M.shadowDraws|0,rays:M.godRayBeams|0,tint:M.tintDraws|0,shim:M.shimmerSlices|0,wet:M.wetSheenColumns|0,motes:M.dustMotes|0,ice:M.iceColumns|0});
+	const snap=()=>({scans:M.bloomScans|0,bloom:M.bloomDraws|0,refl:M.reflectionColumns|0,spec:M.specGlints|0,sheen:M.heroSheenDraws|0,shadow:M.shadowDraws|0,rays:M.godRayBeams|0,tint:M.tintDraws|0,shim:M.shimmerSlices|0,wet:M.wetSheenColumns|0,motes:M.dustMotes|0,ice:M.iceColumns|0,lamp:M.lampShafts|0});
 	// 1) standard mode: every ULTRA metric must stay frozen. bloomScans/bloomDraws
 	//    are deliberately excluded — since glow became an attribute they belong to
 	//    the glow pass, which is standard and ungated by design, so the shared
@@ -92,7 +92,7 @@ const STAGE_A = `(async()=>{
 const STAGE_B = `(async()=>{
 	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 	const M=MM.postFx.metrics;
-	const snap=()=>({scans:M.bloomScans|0,bloom:M.bloomDraws|0,refl:M.reflectionColumns|0,spec:M.specGlints|0,sheen:M.heroSheenDraws|0,shadow:M.shadowDraws|0,rays:M.godRayBeams|0,tint:M.tintDraws|0,shim:M.shimmerSlices|0,wet:M.wetSheenColumns|0,motes:M.dustMotes|0,ice:M.iceColumns|0});
+	const snap=()=>({scans:M.bloomScans|0,bloom:M.bloomDraws|0,refl:M.reflectionColumns|0,spec:M.specGlints|0,sheen:M.heroSheenDraws|0,shadow:M.shadowDraws|0,rays:M.godRayBeams|0,tint:M.tintDraws|0,shim:M.shimmerSlices|0,wet:M.wetSheenColumns|0,motes:M.dustMotes|0,ice:M.iceColumns|0,lamp:M.lampShafts|0});
 	const peek=(x,y)=>{ try{ return MM.world.peekTile(x,y,0); }catch(e){ return 0; } };
 	// deep cave pockets: bloom emitters (lava/glowshrooms/altars) + specular
 	// ores. Teleport to each band FIRST so chunks generate, then hop into a
@@ -153,7 +153,7 @@ const STAGE_D = `(async()=>{
 const STAGE_C = `(async()=>{
 	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 	const M=MM.postFx.metrics;
-	const snap=()=>({scans:M.bloomScans|0,bloom:M.bloomDraws|0,refl:M.reflectionColumns|0,spec:M.specGlints|0,sheen:M.heroSheenDraws|0,shadow:M.shadowDraws|0,rays:M.godRayBeams|0,tint:M.tintDraws|0,shim:M.shimmerSlices|0,wet:M.wetSheenColumns|0,motes:M.dustMotes|0,ice:M.iceColumns|0});
+	const snap=()=>({scans:M.bloomScans|0,bloom:M.bloomDraws|0,refl:M.reflectionColumns|0,spec:M.specGlints|0,sheen:M.heroSheenDraws|0,shadow:M.shadowDraws|0,rays:M.godRayBeams|0,tint:M.tintDraws|0,shim:M.shimmerSlices|0,wet:M.wetSheenColumns|0,motes:M.dustMotes|0,ice:M.iceColumns|0,lamp:M.lampShafts|0});
 	const pond=window.__gfxQaPond;
 	if(!pond) return 'FAIL no-pond-handoff';
 	// back to the surface stage set: ice-cap part of the pond, a surface lava

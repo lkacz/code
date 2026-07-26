@@ -15383,7 +15383,7 @@ function draw(){ // Background first
  // and under the darkness overlay it would be dimmed away. isSolid is the wall
  // test the light field itself uses; lightAt supplies the contrast that decides
  // whether there is any dark out there for a shaft to show against.
- if(gfxUltraOn('lampShafts') && POST_FX.drawLampShaftsPass) POST_FX.drawLampShaftsPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,blocks:gfxLightBlocks,lightAt:(LIGHTING && LIGHTING.lightAt)?LIGHTING.lightAt:null,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs});
+ if(gfxUltraOn('lampShafts') && POST_FX.drawLampShaftsPass) POST_FX.drawLampShaftsPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,blocks:gfxLightBlocks,lightAt:(LIGHTING && LIGHTING.lightAt && LIGHTING.config && LIGHTING.config.enabled)?LIGHTING.lightAt:null,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs});
  // THE glow pass: every light in the game in one draw — emissive TILES found by
  // the cadence-cached attribute scan, plus every entity part that registered its
  // own `glow` during the passes above (creatures, held weapons, projectiles,
