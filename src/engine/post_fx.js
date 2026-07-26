@@ -69,6 +69,141 @@ export function bloomSourceFor(t){
 	return { level: Math.min(15, Math.round(level)), color: (attr && attr.color) || '255,236,190' };
 }
 
+// --- heat shimmer field -------------------------------------------------------
+// How a real heat haze is rendered (SFML/Unity/Godot all land on the same
+// recipe): you do NOT move the hot air's pixels around the screen. You keep the
+// destination fixed and sample the scene from a DISPLACED source coordinate --
+// refraction is a lookup offset, not a translation. Two consequences fall out
+// for free, and both were the bugs in the old three-slice version:
+//   * nothing can ever spill onto a neighbouring block, because the region that
+//     gets painted never moves;
+//   * no strip of un-displaced original is left behind at the vacated edge.
+// The offset itself comes from a coherent-noise map scrolled UPWARD over time
+// (hot air rises), damped with height (rising air cools and mixes). We have no
+// shader, so a sum of two incommensurate sines stands in for the noise: it never
+// visibly repeats, where one sine reads as a rhythmic left-right pump.
+// Both the wavelength and the amplitude are WORLD px, so the shear the eye
+// actually judges -- offset change per pixel of height -- comes out the same at
+// every zoom, and only the row height below is a device measure.
+// These two numbers are not free: peak displacement over wavelength IS the
+// gradient, and the gradient times the row height is the jump between adjacent
+// sampled rows. At 1.8/52 the jump is ~0.57 device px, comfortably sub-pixel, so
+// the rows melt into a continuous field. The old version ran a ~1.9 px jump,
+// which is precisely why it read as three blocks sliding over each other.
+export const HEAT_WAVE_PX = 52;        // wavelength of the field, WORLD px
+export const HEAT_AMP_PX = [0.6, 1.8]; // peak displacement by strength, WORLD px
+export const HEAT_RISE = 0.0045;       // how fast the pattern climbs (rad/ms)
+export const HEAT_RISE_2 = 0.0026;     // the second component drifts at its own
+                                       // rate, so the shape morphs as it rises
+// Row height in DEVICE px, growing with height: the sampling only has to be fine
+// where the field is steep, and the envelope has already flattened it near the
+// top. Free rows back with nothing visible given up.
+export const HEAT_ROW_PX = [2, 6];
+// Two hard work caps, both frame-rate INDEPENDENT (a weak machine is shown the
+// same effect, it is never quietly degraded). The band cap is the one that bites:
+// each band pays for its own strip copy, so twenty small plumes cost far more than
+// one lava lake of the same total width — measured ~22us per band against ~135us
+// for a whole 40-tile lake.
+export const HEAT_ROW_BUDGET = 260;
+export const HEAT_BAND_CAP = 10;
+export const HEAT_PLUME_TILES = [1.15, 2.5];  // plume height by strength
+
+// Strength of a tile's plume, straight off the tile attribute (constants.js
+// TILE_HEAT stamps INFO[t].heat). Live sources (fire, geothermal) pass their own.
+export function heatSourceFor(t){
+	const h = Number(INFO[t] && INFO[t].heat);
+	return (Number.isFinite(h) && h > 0) ? Math.min(1, h) : 0;
+}
+function heatLerp(a, b, k){ return a + (b - a) * Math.max(0, Math.min(1, k)); }
+export function heatPlumeTiles(strength){ return heatLerp(HEAT_PLUME_TILES[0], HEAT_PLUME_TILES[1], strength); }
+export function heatAmpPx(strength){ return heatLerp(HEAT_AMP_PX[0], HEAT_AMP_PX[1], strength); }
+export function heatRowHeight(h){ return heatLerp(HEAT_ROW_PX[0], HEAT_ROW_PX[1], h); }
+
+// Rows a plume of this device height will cost. Shares the stepping rule with the
+// draw loop, so the work the budget reserves is the work that actually happens.
+export function heatRowCount(plumeH){
+	if(!(plumeH > 0)) return 0;
+	let n = 0, d = 0;
+	while(d < plumeH && n < 512){ d += heatRowHeight(d / plumeH); n++; }
+	return n;
+}
+
+// Height envelope: full at the source, zero at the plume top. Superlinear, so the
+// haze dies out well before the band's top edge and no horizontal seam can show
+// where the effect stops.
+export function heatEnvelope(h){
+	if(!(h > 0)) return h === 0 ? 1 : 0;
+	if(h >= 1) return 0;
+	const e = 1 - h;
+	return e * Math.sqrt(e);
+}
+
+// THE displacement, in device px, for one sampled row. rowY/baseY/plumeH/amp/wave
+// are all device px; baseY is the top of the hot tile and rowY climbs toward
+// baseY - plumeH. Continuous in rowY by construction (one smooth field, sampled)
+// and travelling upward in `now` -- the two properties the old version lacked.
+export function heatOffsetPx(rowY, baseY, plumeH, amp, wave, seed, now){
+	if(!(plumeH > 0) || !(amp > 0) || !(wave > 0)) return 0;
+	const h = (baseY - rowY) / plumeH;
+	if(!(h >= 0) || h >= 1) return 0;
+	// +now on the phase, with canvas y growing DOWNWARD, is what sends the pattern
+	// up the screen: a fixed phase sits at a row that decreases as time advances.
+	const p = (rowY / wave) * Math.PI * 2 + now * HEAT_RISE + seed;
+	const w = Math.sin(p) * 0.64 + Math.sin(p * 1.87 - now * HEAT_RISE_2 + seed * 2.3) * 0.36;
+	return w * amp * heatEnvelope(h);
+}
+
+// Contiguous hot tiles on one row become ONE band. This is what keeps the pass
+// affordable: a forty-tile lava lake costs the rows of a single band instead of
+// forty stacked plumes, and it is also the truthful shape -- a lake boils as one
+// sheet of air, not as forty separate columns.
+// Ordered hottest first, then nearest the view centre, and cut off by a fixed
+// row budget: a torch-lit base never crowds out the lava lake next to the hero.
+export function buildHeatBands(sources, opts){
+	const bands = [];
+	if(!Array.isArray(sources) || !sources.length) return bands;
+	const rows = new Map();
+	for(const s of sources){
+		if(!s || !Number.isFinite(s.x) || !Number.isFinite(s.y) || !(s.strength > 0)) continue;
+		const y = Math.round(s.y);
+		let list = rows.get(y);
+		if(!list){ list = []; rows.set(y, list); }
+		list.push({ x: Math.round(s.x), strength: Math.min(1, s.strength) });
+	}
+	for(const [y, list] of rows){
+		list.sort((a, b) => a.x - b.x);
+		let run = null;
+		for(const cell of list){
+			if(run && cell.x === run.x1 + 1){
+				run.x1 = cell.x;
+				run.strength = Math.max(run.strength, cell.strength);
+			} else if(run && cell.x === run.x1){
+				run.strength = Math.max(run.strength, cell.strength);
+			} else {
+				run = { x0: cell.x, x1: cell.x, y, strength: cell.strength };
+				bands.push(run);
+			}
+		}
+	}
+	const focus = (opts && Number.isFinite(opts.focusX)) ? opts.focusX : 0;
+	bands.sort((a, b) => (b.strength - a.strength) || (Math.abs((a.x0 + a.x1) * 0.5 - focus) - Math.abs((b.x0 + b.x1) * 0.5 - focus)));
+	const budget = (opts && Number.isFinite(opts.rowBudget)) ? opts.rowBudget : HEAT_ROW_BUDGET;
+	const bandCap = (opts && Number.isFinite(opts.bandCap)) ? opts.bandCap : HEAT_BAND_CAP;
+	const scale = (opts && opts.scale > 0) ? opts.scale : 1;
+	const tile = (opts && opts.TILE > 0) ? opts.TILE : 20;
+	const out = [];
+	let spent = 0;
+	for(const b of bands){
+		if(out.length >= bandCap) break;
+		const need = Math.max(1, heatRowCount(heatPlumeTiles(b.strength) * tile * scale));
+		if(spent + need > budget) continue;
+		spent += need;
+		b.rows = need;
+		out.push(b);
+	}
+	return out;
+}
+
 // Viewport scan for glow-worthy tiles. visibleAt is the caller's fog/vision
 // predicate (worldFxVisible in the live game): an emitter the player has not
 // discovered must never bloom through the fog pass that draws after us.
@@ -499,7 +634,7 @@ export function collectIceRuns(opts){
 }
 
 const config = normalizeGfxConfig(null);
-const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, emissiveSources: 0, emissiveHalos: 0, emissiveStreaks: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, bladeSheens: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0 };
+const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, shimmerBands: 0, emissiveSources: 0, emissiveHalos: 0, emissiveStreaks: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, bladeSheens: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0 };
 let bloomEmitters = [];
 let bloomScanAt = 0;
 let bloomScanKey = '';
@@ -545,6 +680,31 @@ function snapshotSceneCanvas(srcCanvas){
 	selfBlitCtx.clearRect(0, 0, selfBlitCanvas.width, selfBlitCanvas.height);
 	selfBlitCtx.drawImage(srcCanvas, 0, 0);
 	return selfBlitCanvas;
+}
+
+// A REGION snapshot, not the whole frame. The heat shimmer only ever reads a few
+// hundred pixels around each plume, and copying the entire 1600x900 canvas to get
+// them was almost the whole cost of the pass (measured: ~330us a frame, of which
+// the row blits were a small fraction). Taken per BAND rather than once over a
+// union box, because two plumes at opposite screen edges would union back into
+// the whole frame. Two plumes that do overlap compound their displacement, which
+// is fine -- both of them are hot air.
+let heatBlitCanvas = null, heatBlitCtx = null;
+function snapshotSceneRegion(srcCanvas, rx, ry, rw, rh){
+	if(typeof document === 'undefined' || !srcCanvas || !(rw > 0) || !(rh > 0)) return null;
+	if(!heatBlitCanvas){
+		heatBlitCanvas = document.createElement('canvas');
+		heatBlitCtx = heatBlitCanvas.getContext('2d');
+	}
+	if(!heatBlitCtx) return null;
+	if(heatBlitCanvas.width < rw || heatBlitCanvas.height < rh){
+		heatBlitCanvas.width = Math.max(heatBlitCanvas.width | 0, rw);
+		heatBlitCanvas.height = Math.max(heatBlitCanvas.height | 0, rh);
+	}
+	heatBlitCtx.setTransform(1, 0, 0, 1, 0, 0);
+	heatBlitCtx.clearRect(0, 0, rw, rh);
+	heatBlitCtx.drawImage(srcCanvas, rx, ry, rw, rh, 0, 0, rw, rh);
+	return heatBlitCanvas;
 }
 
 // --- hero mirror backdrop -----------------------------------------------------
@@ -696,8 +856,9 @@ const api = {
 			heroCoatCanvas = null; heroCoatCtx = null;
 			heroGrabRect = null; heroMirrorAt = 0; heroSceneAt = 0;
 		}
-		if(!config.heatShimmer && !config.iceReflections){ selfBlitCanvas = null; selfBlitCtx = null; return true; }
-		return false;
+		if(!config.heatShimmer){ heatBlitCanvas = null; heatBlitCtx = null; }
+		if(!config.iceReflections){ selfBlitCanvas = null; selfBlitCtx = null; }
+		return !config.heatShimmer && !config.iceReflections;
 	},
 	// QA seam: the current (chased) coat stops plus whether the last draw used a
 	// real mirrored backdrop — lets a live driver assert "green over grass, warm
@@ -1298,55 +1459,122 @@ const api = {
 		metrics.godRayBeams += drawn;
 		return drawn;
 	},
-	// Heat shimmer: thin self-blit slices above open-air lava (from the shared
-	// emitter cache) and geothermal pools, each shifted by a phase-offset sine.
-	// drawImage-only, like the water reflections — the readback taboo holds.
+	// Heat shimmer: the air over hot things refracts what is behind it. Built the
+	// way a shader does it (see heatOffsetPx above) -- the painted rect never
+	// moves, only the coordinate it samples FROM, so the distortion can never climb
+	// onto a neighbouring block. Sampled in thin rows off one smooth field that
+	// travels upward and fades with height, which is what makes it read as rising
+	// air instead of a rhythmic slosh.
+	// Runs in DEVICE space (transform reset): rows land on whole pixels, the blits
+	// are 1:1, and only the source x carries a fraction -- that fraction is the
+	// whole point, it is what keeps the wave from quantising into visible steps.
+	// drawImage-only, like the water reflections -- the readback taboo holds.
 	drawHeatShimmerPass(ctx, opts){
 		if(!api.on('heatShimmer')){
-			if(!api.on('iceReflections') && selfBlitCanvas){ selfBlitCanvas = null; selfBlitCtx = null; }
+			if(heatBlitCanvas){ heatBlitCanvas = null; heatBlitCtx = null; }
 			return 0;
 		}
 		if(!ctx || !opts || typeof opts.getTile !== 'function' || !ctx.canvas) return 0;
 		let m = null;
 		try{ m = (typeof ctx.getTransform === 'function') ? ctx.getTransform() : null; }catch(e){ m = null; }
 		if(!m || !Number.isFinite(m.a) || m.a <= 0 || !Number.isFinite(m.d) || m.d <= 0) return 0;
+		if(typeof ctx.setTransform !== 'function') return 0;
 		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
-		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
-		const stressed = Number.isFinite(opts.frameMs) && opts.frameMs > 28;
-		const cap = stressed ? 12 : 30;
-		const emitters = ensureEmitterScan(opts);
+		const now = Number.isFinite(opts.now) ? opts.now : ((typeof performance !== 'undefined' && performance.now) ? performance.now() : 0);
+		const getTile = opts.getTile;
+		// Sources: hot TILES off the shared emitter scan (the attribute decides, see
+		// heatSourceFor) plus the live registries that are not tiles at all. Every one
+		// of them needs open air overhead -- a capped lava vein bends nothing.
 		const sources = [];
-		for(const e of emitters){
-			if(sources.length >= cap) break;
-			if((e.t === T.LAVA || e.t === T.MOTHER_LAVA) && opts.getTile(e.x, e.y - 1) === T.AIR) sources.push({ x: e.x, y: e.y });
+		for(const e of ensureEmitterScan(opts)){
+			const strength = heatSourceFor(e.t);
+			if(strength > 0 && getTile(e.x, e.y - 1) === T.AIR) sources.push({ x: e.x, y: e.y, strength });
 		}
-		if(Array.isArray(opts.pools)){
-			for(const p of opts.pools){
-				if(sources.length >= cap) break;
-				if(p && Number.isFinite(p.x) && Number.isFinite(p.y)) sources.push({ x: p.x, y: p.y });
+		for(const [list, strength] of [[opts.pools, 0.5], [opts.burning, 0.8]]){
+			if(!Array.isArray(list)) continue;
+			for(const s of list){
+				if(!s || !Number.isFinite(s.x) || !Number.isFinite(s.y)) continue;
+				if(getTile(Math.round(s.x), Math.round(s.y) - 1) !== T.AIR) continue;
+				if(typeof opts.visibleAt === 'function' && !opts.visibleAt(Math.round(s.x), Math.round(s.y))) continue;
+				sources.push({ x: s.x, y: s.y, strength });
 			}
 		}
 		if(!sources.length) return 0;
-		const srcCanvas = snapshotSceneCanvas(ctx.canvas);
-		if(!srcCanvas) return 0;
-		let slices = 0;
+		const bands = buildHeatBands(sources, { focusX: opts.sx + (Number(opts.viewX) || 0) * 0.5, TILE, scale: m.d, rowBudget: HEAT_ROW_BUDGET, bandCap: HEAT_BAND_CAP });
+		if(!bands.length) return 0;
+		const cw = ctx.canvas.width | 0, ch = ctx.canvas.height | 0;
+		if(cw < 2 || ch < 2) return 0;
+		let rowsDrawn = 0, bandsDrawn = 0;
 		ctx.save();
+		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.imageSmoothingEnabled = true;
-		for(const s of sources){
-			for(let i = 0; i < 3; i++){
-				const wyPx = s.y * TILE - 4 - i * 4;
-				const wxPx = s.x * TILE;
-				const sxDev = m.a * wxPx + m.e, swDev = m.a * TILE;
-				const syDev = m.d * wyPx + m.f, shDev = m.d * 4;
-				if(sxDev < 0 || sxDev + swDev > srcCanvas.width || syDev < 0 || syDev + shDev > srcCanvas.height) continue;
-				const wob = Math.sin(now * 0.006 + i * 1.7 + s.x * 0.9) * (2.6 - i * 0.6);
-				ctx.drawImage(srcCanvas, sxDev, syDev, swDev, shDev, wxPx + wob, wyPx, TILE, 4);
-				slices++;
+		ctx.globalCompositeOperation = 'source-over';
+		ctx.globalAlpha = 1;
+		for(const band of bands){
+			// Clip the plume to the open air actually above the run: it must never
+			// distort through the ceiling of a lava cavern.
+			const wantTiles = heatPlumeTiles(band.strength);
+			let openTiles = Math.ceil(wantTiles);
+			for(let x = band.x0; x <= band.x1 && openTiles > 0; x++){
+				let k = 0;
+				while(k < openTiles && getTile(x, band.y - 1 - k) === T.AIR) k++;
+				if(k < openTiles) openTiles = k;
+			}
+			if(openTiles <= 0) continue;
+			const plumeTiles = Math.min(wantTiles, openTiles);
+			const baseY = Math.round(m.d * (band.y * TILE) + m.f);
+			const plumeH = plumeTiles * TILE * m.d;
+			const topY = Math.max(0, Math.round(baseY - plumeH));
+			if(baseY <= 0 || topY >= ch || baseY - topY < HEAT_ROW_PX[0]) continue;
+			const amp = heatAmpPx(band.strength) * m.d;
+			const wave = HEAT_WAVE_PX * m.d;
+			// A plume SPREADS as it rises. Widening the band with height also drags its
+			// left/right edge off the vertical, so the seam where the effect stops is a
+			// moving diagonal instead of a straight line begging to be noticed -- and by
+			// then the envelope has faded the displacement to nearly nothing anyway.
+			const spread = TILE * m.d * 0.5;
+			const coreX0 = m.a * (band.x0 * TILE) + m.e;
+			const coreX1 = m.a * ((band.x1 + 1) * TILE) + m.e;
+			const seed = (band.x0 * 0.7 + band.y * 1.3) % 6.283;
+			// Only the strip this plume can actually read is copied: its own columns,
+			// plus the spread, plus the peak displacement it may sample across.
+			const margin = Math.ceil(amp) + 1;
+			const regX0 = Math.max(0, Math.round(coreX0 - spread) - margin);
+			const regX1 = Math.min(cw, Math.round(coreX1 + spread) + margin);
+			const regY0 = Math.max(0, topY), regY1 = Math.min(ch, baseY);
+			const regW = regX1 - regX0, regH = regY1 - regY0;
+			if(regW < 2 || regH < 2) continue;
+			const srcCanvas = snapshotSceneRegion(ctx.canvas, regX0, regY0, regW, regH);
+			if(!srcCanvas) continue;
+			bandsDrawn++;
+			// Row boundaries are derived from ROUNDED distances up the plume, so
+			// consecutive rows share an edge exactly -- a rounded height per row would
+			// drift and leave hairline strips of undistorted world between them.
+			let d = 0, edge = baseY;
+			while(d < plumeH){
+				const h = d / plumeH;
+				d += heatRowHeight(h);
+				const ry = Math.round(baseY - Math.min(d, plumeH));
+				const rh = Math.min(edge, ch) - ry;
+				edge = ry;
+				if(ry < 0) break;
+				if(rh < 1 || ry >= ch) continue;
+				const grow = spread * h;
+				const x0 = Math.round(Math.max(regX0, coreX0 - grow));
+				const x1 = Math.round(Math.min(regX1, coreX1 + grow));
+				const w = x1 - x0;
+				if(w < 1) continue;
+				const off = heatOffsetPx(ry, baseY, plumeH, amp, wave, seed, now);
+				if(off > -0.05 && off < 0.05) continue;   // this row sits on a node of the field
+				const sx = Math.max(regX0, Math.min(regX1 - w, x0 + off));
+				ctx.drawImage(srcCanvas, sx - regX0, ry - regY0, w, rh, x0, ry, w, rh);
+				rowsDrawn++;
 			}
 		}
 		ctx.restore();
-		metrics.shimmerSlices += slices;
-		return slices;
+		metrics.shimmerBands += bandsDrawn;
+		metrics.shimmerSlices += rowsDrawn;
+		return rowsDrawn;
 	},
 	// Wet ground: rain soaks the surface (wetGroundStep model), leaving a
 	// fading sheen line on non-frozen ground and splash ticks while it pours.

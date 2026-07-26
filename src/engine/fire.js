@@ -992,7 +992,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   function isBurning(x,y){ return burning.has(key(x|0,y|0)); }
   // Put out a single tile (water hose, rain, …) — the tile keeps whatever charring it had
   function extinguish(x,y){ return burning.delete(key(x|0,y|0)); }
-  MM.fire={ignite,extinguish,update,draw,reset,snapshot,restore,isBurning,thawAt,cookAt,heatAround,noteTorch,noteLava,wakeLavaAround,wakeVolcanoLeaksNear,count:()=>burning.size,lavaCount:()=>lavaSet.size,dangerIndex,_debug:{coalHasAirAccess,moistureAt,windSpreadMult,trySpotFire,isSheltered}};
+  // A burning block is a live HEAT source, the same way it is a live light source
+  // (BURN_GLOW above). Read-only positions for the heat-shimmer pass, shaped like
+  // geothermal.poolsNear so post_fx treats both registries identically.
+  function burningNear(x,r){
+    const out=[]; const cx=Number(x)||0; const rad=Number(r)||0;
+    for(const b of burning.values()) if(Math.abs(b.x-cx)<=rad) out.push({x:b.x,y:b.y});
+    return out;
+  }
+  MM.fire={ignite,extinguish,update,draw,reset,snapshot,restore,isBurning,burningNear,thawAt,cookAt,heatAround,noteTorch,noteLava,wakeLavaAround,wakeVolcanoLeaksNear,count:()=>burning.size,lavaCount:()=>lavaSet.size,dangerIndex,_debug:{coalHasAirAccess,moistureAt,windSpreadMult,trySpotFire,isSheltered}};
 })();
 // ESM export (progressive migration)
 export const fire = (typeof window!=='undefined' && window.MM) ? window.MM.fire : undefined;

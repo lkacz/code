@@ -51,9 +51,13 @@ const STAGE_A = `(async()=>{
 	MM.background.importState({cycleT:0.25});
 	const M=MM.postFx.metrics;
 	const snap=()=>({scans:M.bloomScans|0,bloom:M.bloomDraws|0,refl:M.reflectionColumns|0,spec:M.specGlints|0,sheen:M.heroSheenDraws|0,shadow:M.shadowDraws|0,rays:M.godRayBeams|0,tint:M.tintDraws|0,shim:M.shimmerSlices|0,wet:M.wetSheenColumns|0,motes:M.dustMotes|0,ice:M.iceColumns|0});
-	// 1) standard mode: every ultra metric must stay frozen
+	// 1) standard mode: every ULTRA metric must stay frozen. bloomScans/bloomDraws
+	//    are deliberately excluded — since glow became an attribute they belong to
+	//    the glow pass, which is standard and ungated by design, so the shared
+	//    emitter scan legitimately keeps running with every ultra toggle off.
+	const ultraOnly=(s)=>{ const o={...s}; delete o.scans; delete o.bloom; return o; };
 	const s0=snap(); await sleep(1500); const s1=snap();
-	if(JSON.stringify(s1)!==JSON.stringify(s0)) return 'FAIL standard-mode-drew '+JSON.stringify([s0,s1]);
+	if(JSON.stringify(ultraOnly(s1))!==JSON.stringify(ultraOnly(s0))) return 'FAIL standard-mode-drew '+JSON.stringify([s0,s1]);
 	// 2) force ultra; sealed open-air pond beside the hero (boats-qa pattern) so
 	// reflections get guaranteed OPEN water regardless of biome (frozen lakes
 	// have open:false by design and correctly skip the mirror)

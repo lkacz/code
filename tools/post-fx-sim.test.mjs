@@ -39,9 +39,12 @@ const {
 	heroSheenEnvSample, heroMirrorCurve, shadowParams,
 	wetGroundStep, collectCanopyGaps, collectIceRuns,
 	emissiveRgb, normalizeGlow, trailSampleDue, trailBroken, trailTaper,
-	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX
+	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX,
+	heatSourceFor, heatPlumeTiles, heatAmpPx, heatEnvelope, heatOffsetPx, buildHeatBands,
+	heatRowHeight, heatRowCount,
+	HEAT_WAVE_PX, HEAT_RISE, HEAT_RISE_2, HEAT_ROW_PX, HEAT_ROW_BUDGET, HEAT_BAND_CAP, HEAT_PLUME_TILES, HEAT_AMP_PX
 } = await import('../src/engine/post_fx.js');
-const { T, INFO, TILE_GLOW } = await import('../src/constants.js');
+const { T, INFO, TILE_GLOW, TILE_HEAT } = await import('../src/constants.js');
 await import('../src/engine/furnishings.js'); // stamps INFO[t].requiresHomePower like the live game
 const { NEW_GAME_PREFERENCE_KEYS } = await import('../src/engine/new_game.js');
 
@@ -340,7 +343,7 @@ function makeRichCtx(){
 		globalAlpha: 1, globalCompositeOperation: 'source-over', imageSmoothingEnabled: false,
 		canvas: { width: 1600, height: 900 },
 		getTransform(){ return { a: 1, b: 0, c: 0, d: 1, e: 700, f: 400 }; },
-		save(){}, restore(){}, beginPath(){}, closePath(){}, rect(){}, clip(){},
+		save(){}, restore(){}, beginPath(){}, closePath(){}, rect(){}, clip(){}, setTransform(){},
 		translate(){}, scale(){}, moveTo(){}, lineTo(){}, fill(){ ctx.fills++; }, ellipse(){ ctx.fills++; },
 		stroke(){ ctx.strokes++; },
 		fillRect(){ ctx.fills++; },
@@ -397,6 +400,124 @@ assert.ok(stagedCtx.drawSources.length > 0 && stagedCtx.drawSources.every(s => s
 postFx.set('heatShimmer', false);
 postFx.set('iceReflections', false);
 assert.equal(postFx.releaseScratch(), true, 'toggling both consumers off releases the snapshot scratch');
+
+// --- heat shimmer: the FIELD ---------------------------------------------------
+// What this effect looks like is decided by the displacement field, not by the
+// draw loop that consumes it, so the field's properties are the contract. Each
+// assertion below is a defect the previous three-slice version actually shipped.
+
+// Heat is an attribute of the tile, read the same way glow is.
+assert.equal(heatSourceFor(T.LAVA), 1, 'open lava is the reference heat source');
+assert.equal(heatSourceFor(T.MOTHER_LAVA), 1, 'the mother lava boils air like ordinary lava');
+// A measured exclusion, not an oversight: cost scales with plume AREA, so a dozen
+// small plumes cost multiples of one lava pool, and a torch's ~2px waver sits in
+// the darkness the torch itself creates — where there is nothing to bend.
+assert.equal(heatSourceFor(T.TORCH), 0, 'torches are deliberately NOT heat sources (too many, too little to see)');
+assert.equal(heatSourceFor(T.STONE), 0, 'cold tiles throw no plume');
+assert.equal(heatSourceFor(T.GLOWSHROOM), 0, 'a COLD light bends no air — heat and glow are independent attributes');
+assert.equal(INFO[T.LAVA].heat, TILE_HEAT[T.LAVA], 'the attribute is stamped onto INFO from the constants table');
+assert.ok(Object.isFrozen(TILE_HEAT), 'the heat table is frozen like the glow table');
+
+// Plume geometry. The effect has to reach visibly ABOVE the hot block — a haze
+// hugging the tile edge was the other half of why the old one read as an artefact.
+assert.ok(heatPlumeTiles(1) >= 2, 'a full-strength plume stands at least two blocks tall');
+assert.ok(heatPlumeTiles(0) > 1, 'even the coolest source on the ramp (a hot spring) clears a whole block');
+assert.ok(heatPlumeTiles(1) > heatPlumeTiles(0.3) && heatAmpPx(1) > heatAmpPx(0.3), 'hotter means taller and stronger');
+
+// Envelope: full at the source, gone before the top edge.
+assert.equal(heatEnvelope(0), 1, 'the air is most disturbed right at the source');
+assert.equal(heatEnvelope(1), 0, 'and undisturbed at the plume top');
+assert.equal(heatEnvelope(2), 0, 'past the top it stays zero rather than wrapping');
+assert.ok(heatEnvelope(0.85) < 0.07, 'the haze has faded out BEFORE the band ends, so its top edge cannot show as a seam');
+let envPrev = Infinity;
+for(let h = 0; h <= 1.0001; h += 0.05){
+	const e = heatEnvelope(h);
+	assert.ok(e <= envPrev + 1e-12, 'the envelope never rises again on the way up (h=' + h.toFixed(2) + ')');
+	envPrev = e;
+}
+
+// CONTINUITY IN HEIGHT — the headline fix. Neighbouring sampled rows must differ
+// by a sub-pixel amount; the old version jumped ~1.9px between 4px slices, which
+// is what made one block visibly slide against the next.
+const fBase = 800, fPlume = 100, fAmp = heatAmpPx(1) * 2, fWave = HEAT_WAVE_PX * 2, fSeed = 1.1;
+let worstStep = 0, worstAt = 0;
+for(const t of [0, 400, 1234, 5000]){
+	let d = 0;
+	while(d < fPlume){
+		const h = d / fPlume;
+		const rh = heatRowHeight(h);
+		const a = heatOffsetPx(fBase - d, fBase, fPlume, fAmp, fWave, fSeed, t);
+		const b = heatOffsetPx(fBase - d - rh, fBase, fPlume, fAmp, fWave, fSeed, t);
+		if(Math.abs(a - b) > worstStep){ worstStep = Math.abs(a - b); worstAt = h; }
+		d += rh;
+	}
+}
+assert.ok(worstStep < 0.75, 'adjacent rows stay sub-pixel apart (worst ' + worstStep.toFixed(2) + 'px at h=' + worstAt.toFixed(2) + ') — the rows read as one continuous field');
+assert.ok(heatRowHeight(1) > heatRowHeight(0), 'rows grow taller where the field has flattened, buying back draw calls for free');
+assert.equal(heatRowCount(0), 0, 'no plume, no rows');
+assert.ok(heatRowCount(100) < 100 / HEAT_ROW_PX[0], 'the adaptive step costs fewer rows than uniform fine sampling');
+
+// TRAVELLING UPWARD, not oscillating in place. A feature at a fixed phase must sit
+// at a SMALLER canvas y as time advances (canvas y grows downward).
+const traceRow = (t) => {
+	let bestY = null, bestV = -Infinity;
+	for(let y = fBase - fPlume + 4; y <= fBase - 4; y += 0.25){
+		const v = heatOffsetPx(y, fBase, fPlume, fAmp, fWave, 0, t);
+		if(v > bestV){ bestV = v; bestY = y; }
+	}
+	return bestY;
+};
+const peak0 = traceRow(0), peak1 = traceRow(90), peak2 = traceRow(180);
+assert.ok(peak1 < peak0 && peak2 < peak1, 'the crest climbs the plume over time (' + peak0 + ' -> ' + peak1 + ' -> ' + peak2 + ') — rising air, not a left-right pump');
+
+// NOT A SINGLE SINE. One sine repeats on its own period and the eye locks onto the
+// rhythm; the second, differently-paced component is what keeps it from doing so.
+const periodMs = 2 * Math.PI / HEAT_RISE;
+const sampleAt = (t) => heatOffsetPx(fBase - 25, fBase, fPlume, fAmp, fWave, 0.4, t);
+assert.ok(Math.abs(sampleAt(0) - sampleAt(periodMs)) > 0.05, 'the field does NOT repeat after one base period — no perceptible rhythm');
+assert.ok(HEAT_RISE_2 > 0 && Math.abs(HEAT_RISE_2 - HEAT_RISE) > 1e-6, 'the two components drift at genuinely different rates');
+assert.ok(Math.abs(heatOffsetPx(fBase - 25, fBase, fPlume, fAmp, fWave, 0.4, 1000) - heatOffsetPx(fBase - 25, fBase, fPlume, fAmp, fWave, 2.9, 1000)) > 1e-6, 'the seed decorrelates neighbouring plumes so they never wave in unison');
+
+// Domain guards: outside the plume there is no displacement at all.
+assert.equal(heatOffsetPx(fBase + 5, fBase, fPlume, fAmp, fWave, 0, 0), 0, 'below the source, nothing');
+assert.equal(heatOffsetPx(fBase - fPlume, fBase, fPlume, fAmp, fWave, 0, 0), 0, 'at the very top, nothing');
+assert.equal(heatOffsetPx(fBase - 10, fBase, 0, fAmp, fWave, 0, 0), 0, 'a zero-height plume displaces nothing');
+
+// Bands: contiguous hot tiles merge into ONE plume. This is both the truthful
+// shape (a heatLake boils as one sheet) and what keeps the pass affordable.
+const heatLakeRow = [];
+for(let x = 0; x < 40; x++) heatLakeRow.push({ x, y: 30, strength: 1 });
+const heatLake = buildHeatBands(heatLakeRow, { TILE: 20, scale: 1, focusX: 20 });
+assert.equal(heatLake.length, 1, 'a forty-tile lava heatLake is ONE band, not forty stacked plumes');
+assert.equal(heatLake[0].x0, 0, 'the merged band starts at the run start');
+assert.equal(heatLake[0].x1, 39, 'and ends at the run end');
+const heatSplit = buildHeatBands([{ x: 0, y: 30, strength: 1 }, { x: 1, y: 30, strength: 1 }, { x: 5, y: 30, strength: 1 }, { x: 0, y: 12, strength: 1 }], { TILE: 20, scale: 1, focusX: 0 });
+assert.equal(heatSplit.length, 3, 'a gap in the run and a different row both break the band');
+const heatMixed = buildHeatBands([{ x: 3, y: 30, strength: 0.3 }, { x: 4, y: 30, strength: 1 }], { TILE: 20, scale: 1, focusX: 0 });
+assert.equal(heatMixed.length, 1, 'touching sources of different heat still merge');
+assert.equal(heatMixed[0].strength, 1, 'and the merged band takes the hottest strength in the run');
+assert.deepEqual(buildHeatBands(null, {}), [], 'no sources, no bands');
+assert.deepEqual(buildHeatBands([{ x: 1, y: 1, strength: 0 }], {}), [], 'a zero-strength source is not a heat source');
+
+// Ordering and the work cap: hottest first, then nearest the view centre, and a
+// FIXED row budget — never a frame-time threshold, because a weak machine must
+// still be shown the effect at full quality.
+const heatCrowd = [];
+for(let x = 0; x < 60; x += 2) heatCrowd.push({ x, y: 30, strength: 0.3 });   // a torch-lit base
+heatCrowd.push({ x: 100, y: 30, strength: 1 });                              // one lava tile far off
+const heatCapped = buildHeatBands(heatCrowd, { TILE: 20, scale: 2, focusX: 0, rowBudget: 40 });
+assert.ok(heatCapped.length > 0 && heatCapped.length < 31, 'the row budget cuts the band list off');
+assert.equal(heatCapped[0].strength, 1, 'the hottest source is served first, however far away');
+assert.ok(heatCapped.reduce((n, b) => n + b.rows, 0) <= 40, 'the reserved rows respect the budget');
+const heatNear = buildHeatBands([{ x: 0, y: 30, strength: 0.3 }, { x: 50, y: 30, strength: 0.3 }], { TILE: 20, scale: 1, focusX: 48, rowBudget: 12 });
+assert.equal(heatNear.length, 1, 'with room for one, the tie is broken by distance');
+assert.equal(heatNear[0].x0, 50, 'and it is the one next to the player');
+// The band cap is the cap that matters: every band pays for its own strip copy,
+// so twenty scattered torches cost far more than one lava lake of the same width.
+const heatMany = [];
+for(let x = 0; x < 80; x += 4) heatMany.push({ x, y: 30, strength: 0.3 });
+assert.equal(buildHeatBands(heatMany, { TILE: 20, scale: 2, focusX: 40 }).length, HEAT_BAND_CAP, 'a field of small plumes is cut off at the band cap');
+assert.ok(HEAT_BAND_CAP > 0 && HEAT_BAND_CAP <= 16, 'the band cap is a small fixed number, not a frame-time reaction');
 
 // --- entity emissive registry --------------------------------------------------
 // Colour normaliser: the art writes hex, the bloom table writes triplets, and the
@@ -498,8 +619,29 @@ assert.match(postFxSrc, /__mmNoPostFX/, 'post_fx honors the QA kill switch');
 assert.match(postFxSrc, /__mmForceGfxUltra/, 'post_fx honors the QA force flag');
 assert.ok(!postFxSrc.includes('.getImageData('), 'bloom never reads pixels back (render-health taboo)');
 assert.ok(!waterSrc.includes('.getImageData('), 'water reflections never read pixels back');
-assert.equal((postFxSrc.match(/snapshotSceneCanvas\(ctx\.canvas\)/g) || []).length, 2, 'both self-blit passes stage through the scene snapshot');
+assert.equal((postFxSrc.match(/snapshotSceneCanvas\(ctx\.canvas\)/g) || []).length, 1, 'the ice pass stages through the full-frame snapshot');
+// The shimmer copies only the strip around each plume. Copying the whole canvas
+// to read a few hundred pixels WAS the cost of this pass (~330us/frame measured,
+// the row blits a small fraction of it), so the region snapshot is pinned.
+assert.match(postFxSrc, /function snapshotSceneRegion\(srcCanvas, rx, ry, rw, rh\)/, 'a region snapshot exists alongside the full-frame one');
+assert.match(postFxSrc, /const srcCanvas = snapshotSceneRegion\(ctx\.canvas, regX0, regY0, regW, regH\);/, 'the shimmer stages per band through the region snapshot');
+assert.ok(!/drawHeatShimmerPass[\s\S]{0,4000}snapshotSceneCanvas/.test(postFxSrc), 'the shimmer never copies the whole frame again');
 assert.ok(!/drawImage\(ctx\.canvas/.test(postFxSrc), 'no post_fx pass blits the live canvas onto itself directly');
+
+// Heat shimmer, source side. The one line that decides whether this effect can
+// spill onto a neighbouring block: the destination rect (x0) is the SAME on both
+// sides of the call, and only the source x carries the displacement.
+const iShimFn = postFxSrc.indexOf('drawHeatShimmerPass(ctx, opts){');
+const shimBody = postFxSrc.slice(iShimFn, postFxSrc.indexOf('\n\t},', iShimFn));
+assert.ok(iShimFn > 0 && shimBody.length > 400, 'the shimmer pass body was located');
+assert.match(shimBody, /const sx = Math\.max\(regX0, Math\.min\(regX1 - w, x0 \+ off\)\);/, 'the displacement is applied to the SOURCE coordinate, clamped inside the copied strip');
+assert.match(shimBody, /ctx\.drawImage\(srcCanvas, sx - regX0, ry - regY0, w, rh, x0, ry, w, rh\);/, 'the painted rect never moves — refraction is a lookup offset, not a translation');
+assert.ok(!/wxPx \+ wob|drawImage\([^)]*, wxPx/.test(postFxSrc), 'the old destination-offset slice blit is gone (it climbed onto the next block)');
+assert.ok(!/i \* 1\.7|2\.6 - i \* 0\.6/.test(postFxSrc), 'the old three-slice phase/amplitude ladder is gone');
+assert.match(shimBody, /ctx\.setTransform\(1, 0, 0, 1, 0, 0\);/, 'the pass works in device space, so rows land on whole pixels');
+assert.ok(!/frameMs\s*>|stressed/.test(shimBody), 'the shimmer never degrades itself on a frame-time threshold — a weak machine sees the full effect');
+assert.match(shimBody, /rowBudget: HEAT_ROW_BUDGET, bandCap: HEAT_BAND_CAP/, 'work is capped by fixed row and band budgets instead');
+assert.match(shimBody, /while\(k < openTiles && getTile\(x, band\.y - 1 - k\) === T\.AIR\) k\+\+;/, 'the plume is clipped to the open air above the run — never through a cavern ceiling');
 
 // Standard-mode zero cost: EVERY pass invocation in main.js sits behind a
 // component gate (gfxUltraOn / POST_FX.on within the guarding block), so a
@@ -564,20 +706,33 @@ assert.match(mainSrc, /isCanopy:\(t\)=>isLeaf\(t\)\|\|isWood\(t\)/, 'god rays us
 assert.match(mainSrc, /if\(gfxUltraOn\('lightTint'\) && POST_FX\.drawLightTintPass\)/, 'light tint pass is gated');
 assert.match(mainSrc, /if\(gfxUltraOn\('heatShimmer'\) && POST_FX\.drawHeatShimmerPass\)/, 'heat shimmer pass is gated');
 assert.match(mainSrc, /pools:\(GEOTHERMAL && GEOTHERMAL\.poolsNear\)/, 'heat shimmer covers geothermal pools via the existing registry');
+assert.match(mainSrc, /burning:\(FIRE && FIRE\.burningNear\)/, 'burning blocks feed the shimmer as live heat sources, off the fire registry');
+assert.match(readFileSync(new URL('../src/engine/fire.js', import.meta.url), 'utf8'), /function burningNear\(x,r\)/, 'the fire module owns the read-only heat-source feed');
 assert.match(mainSrc, /if\(gfxUltraOn\('wetGround'\) && POST_FX\.drawWetGroundPass\)/, 'wet ground pass is gated');
 assert.match(mainSrc, /rainingAt:\(x\)=>!!\(CLOUDS && CLOUDS\.isRainingAt && CLOUDS\.isRainingAt\(x\)\)/, 'wet ground reads real per-column rain from the cloud sim');
 assert.match(mainSrc, /function gfxWetSkipTile\(t\)/, 'frozen surfaces are excluded from the wet sheen');
 assert.match(mainSrc, /if\(gfxUltraOn\('dustMotes'\) && POST_FX\.drawDustMotesPass\)/, 'dust motes pass is gated');
 assert.match(mainSrc, /if\(gfxUltraOn\('iceReflections'\) && POST_FX\.drawIceReflectionsPass\)/, 'ice reflections pass is gated');
 // Frame ordering: light tint before bloom (ambience under the cores); god rays
-// over world content but before smoke; shimmer before the darkness overlay.
+// over world content but before smoke.
 const iTint = mainSrc.indexOf("gfxUltraOn('lightTint')");
 const iRays = mainSrc.indexOf("gfxUltraOn('godRays')");
 const iSmoke = mainSrc.indexOf('SMOKE.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible)');
 const iShimmer = mainSrc.indexOf("gfxUltraOn('heatShimmer')");
 assert.ok(iTint > 0 && iTint < iBloom, 'light tint paints under the bloom cores');
 assert.ok(iRays > 0 && iSmoke > iRays, 'god rays draw before smoke veils them');
-assert.ok(iShimmer > iSmoke && iShimmer < iLight, 'heat shimmer distorts the scene before the darkness overlay');
+// Heat shimmer refracts what is BEHIND the hot air, so it must land on the
+// finished world but UNDER everything the heat itself throws off. A flame sprite
+// animates its own bend; distorting it as well doubled the motion into an
+// artefact, which is exactly why this ordering is pinned and not incidental.
+const iFire = mainSrc.indexOf('FIRE.draw(ctx,TILE,sx,sy,viewX,viewY,getTile,worldFxVisibility())');
+const iGases = mainSrc.indexOf('GASES.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible)');
+const iHeroSprite = mainSrc.indexOf('drawPlayer({rearView:mirrorFacing})');
+assert.ok(iShimmer > 0 && iFire > 0 && iGases > 0 && iHeroSprite > 0, 'the shimmer ordering anchors all exist');
+assert.ok(iShimmer < iFire, 'flames are composited OVER the shimmer, never through it');
+assert.ok(iShimmer < iGases && iShimmer < iSmoke, 'hot air, steam and smoke ride over the plume that produced them');
+assert.ok(iShimmer > iHeroSprite, 'the finished world (hero included) is what the plume refracts');
+assert.ok(iShimmer < iLight, 'heat shimmer distorts the scene before the darkness overlay');
 assert.match(mainSrc, /if\(gfxUltraOn\('shadows'\) && POST_FX\.drawCasterShadow\)/, 'hero drop shadow upgrades to the solar model only behind the toggle');
 assert.match(mainSrc, /sunlit:gy<=shSurf/, 'hero shadow goes directional only on sunlit ground');
 assert.match(mainSrc, /if\(gfxUltraOn\('shadows'\) && POST_FX\.drawTreeShadowsPass\)/, 'tree shadow pass is gated');

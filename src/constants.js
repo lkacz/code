@@ -335,6 +335,28 @@ for(const tileId of Object.keys(TILE_GLOW)){
   if(INFO[tileId]) INFO[tileId].glow = TILE_GLOW[tileId];
 }
 
+// HEAT is an attribute too, exactly like glow above: a tile that declares it
+// boils the air over itself, and post_fx.heatSourceFor turns the number into a
+// plume height and a distortion strength (1 = open lava, a torch barely nudges
+// the air). Burning blocks and geothermal pools are LIVE sources and register
+// themselves instead — they are not tiles.
+// Only tiles the shared emitter scan already walks can carry this: everything
+// hot enough to bend air in this world also gives light, so heat rides the glow
+// scan for free instead of paying for a second viewport walk.
+// Torches are deliberately NOT here, and the reason is measured: the pass costs
+// pixel AREA, so many small plumes cost far more than one big one (~40us per torch
+// band against ~120us for a whole lava pool), and a torch-lit base would field a
+// dozen of them. What it buys is a ~2px waver in the darkness a torch itself
+// creates — the one place there is no contrast to bend. Bad trade, cut.
+export const TILE_HEAT = Object.freeze({
+  [T.LAVA]:          1,
+  [T.MOTHER_LAVA]:   1,
+  [T.MINIATURE_SUN]: 0.55
+});
+for(const tileId of Object.keys(TILE_HEAT)){
+  if(INFO[tileId]) INFO[tileId].heat = TILE_HEAT[tileId];
+}
+
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;
@@ -379,6 +401,7 @@ if (typeof window !== 'undefined') {
     T,
     INFO,
     TILE_GLOW,
+    TILE_HEAT,
     SNOW_LINE,
     MOVE,
     CAPE,
