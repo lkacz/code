@@ -75,10 +75,15 @@ const HELPERS = `
 			const x0=Math.max(0,(cv.width>>1)-190), y0=Math.max(0,(cv.height>>1)-130);
 			const w=Math.min(380,cv.width-x0), h=Math.min(260,cv.height-y0);
 			const d=g.getImageData(x0,y0,w,h).data;
+			// mean/lit stay on the 1-in-4 lattice (cost), but peak reads EVERY pixel:
+			// a wandering firefly's bright core is a few pixels, and two consecutive
+			// frames of a moving swarm land on/off the sampling lattice at random —
+			// the strided peak inverted the A/B in one run out of two.
 			let sum=0, lit=0, peak=0;
-			for(let i=0;i<d.length;i+=16){
+			for(let i=0;i<d.length;i+=4){
 				const v=(d[i]+d[i+1]+d[i+2])/3;
-				sum+=v; if(v>70) lit++; if(v>peak) peak=v;
+				if(v>peak) peak=v;
+				if((i%16)===0){ sum+=v; if(v>70) lit++; }
 			}
 			const n=d.length/16;
 			return {mean:+(sum/n).toFixed(2), lit, peak:peak|0};
@@ -349,7 +354,10 @@ async function main(){
 				// pixels are lit and how bright the brightest is; it barely moves an average
 				// that terrain already dominates.
 				['the firefly field measurably brightens the night', fly.lightOn.lit > fly.lightOff.lit],
-				['the glow raises the brightest pixel too', fly.lightOn.peak > fly.lightOff.peak],
+				// saturation escape: if the box already holds a 255 pixel without the
+				// glow, added light cannot raise the maximum any further — the lit-count
+				// check above still proves the glow is visible.
+				['the glow raises the brightest pixel too', fly.lightOn.peak > fly.lightOff.peak || (fly.lightOn.peak === 255 && fly.lightOff.peak === 255)],
 				// the bloom toggle owns TILE emitters; creatures own their own light
 				['bloom AMPLIFIES the same sources instead of inventing any', flyB.tierWithBloom === 2 && flyB.tier === 1 && Math.abs(flyB.withBloom.ratio - flyB.withoutBloom.ratio) < 0.2],
 				['removing every creature stops the streaks (no light left hanging)', flyB.empty.t === 0 && flyB.empty.s === 0],

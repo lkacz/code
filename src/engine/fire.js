@@ -1007,9 +1007,19 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   // A burning block is a live HEAT source, the same way it is a live light source
   // (BURN_GLOW above). Read-only positions for the heat-shimmer pass, shaped like
   // geothermal.poolsNear so post_fx treats both registries identically.
+  // Pooled: called every frame while the shimmer is on, and a big fire built up
+  // to ~240 throwaway {x,y} a call. Entries are recycled and valid until the
+  // next call — the consumer reads .x/.y synchronously.
+  const burningNearList=[]; const burningNearPool=[];
   function burningNear(x,r){
-    const out=[]; const cx=Number(x)||0; const rad=Number(r)||0;
-    for(const b of burning.values()) if(Math.abs(b.x-cx)<=rad) out.push({x:b.x,y:b.y});
+    const out=burningNearList; out.length=0;
+    const cx=Number(x)||0; const rad=Number(r)||0;
+    for(const b of burning.values()){
+      if(Math.abs(b.x-cx)>rad) continue;
+      const p=burningNearPool[out.length]||(burningNearPool[out.length]={x:0,y:0});
+      p.x=b.x; p.y=b.y;
+      out.push(p);
+    }
     return out;
   }
   MM.fire={ignite,extinguish,update,draw,reset,snapshot,restore,isBurning,burningNear,thawAt,cookAt,heatAround,noteTorch,noteLava,wakeLavaAround,wakeVolcanoLeaksNear,count:()=>burning.size,lavaCount:()=>lavaSet.size,dangerIndex,_debug:{coalHasAirAccess,moistureAt,windSpreadMult,trySpotFire,isSheltered}};

@@ -129,12 +129,20 @@ export const HEAT_ROW_BUDGET = 260;
 export const HEAT_BAND_CAP = 10;
 export const HEAT_MERGE_GAP = 2;       // tiles of open air a single plume bridges
 export const HEAT_PLUME_TILES = [1.15, 2.5];  // plume height by strength
+// Recycled source-collection scratch for the shimmer pass (list + object pool).
+const heatSrcList = [];
+const heatSrcPool = [];
 
 // Strength of a tile's plume, straight off the tile attribute (constants.js
 // TILE_HEAT stamps INFO[t].heat). Live sources (fire, geothermal) pass their own.
+// Memoized per tile id like bloomSourceFor above (the INFO dictionary lookup was
+// 88% of that scan's cost); lazy is load-bearing — furnishings stamp INFO late.
+const heatSourceMemo = [];
 export function heatSourceFor(t){
+	const hit = heatSourceMemo[t];
+	if(hit !== undefined) return hit;
 	const h = Number(INFO[t] && INFO[t].heat);
-	return (Number.isFinite(h) && h > 0) ? Math.min(1, h) : 0;
+	return heatSourceMemo[t] = (Number.isFinite(h) && h > 0) ? Math.min(1, h) : 0;
 }
 function heatLerp(a, b, k){ return a + (b - a) * Math.max(0, Math.min(1, k)); }
 export function heatPlumeTiles(strength){ return heatLerp(HEAT_PLUME_TILES[0], HEAT_PLUME_TILES[1], strength); }
@@ -314,12 +322,19 @@ export function collectBloomEmitters(opts){
 // every source uniformly instead of owning tiles alone), and 0 under the QA kill
 // switch (__mmNoPostFX), which keeps screenshot goldens comparable.
 export const EMISSIVE_MAX = 128;       // per-frame entity queue cap
+// Shared hand-off descriptor for api.glow(): addEmissive copies it into the
+// pooled queue synchronously, so one reused object replaces a per-call literal.
+const glowHandoff = { x: 0, y: 0, r: 0, color: '', a: 0, pulse: 0, key: '', trail: false };
 export const EMISSIVE_TRAIL_MAX = 32;  // trailed sources per frame
 export const TRAIL_PTS = 7;            // history depth
 export const TRAIL_SAMPLE_MS = 26;     // ~6 samples over ~170 ms of movement
 export const TRAIL_MIN_PX = 1.1;       // below this the source counts as still
 export const TRAIL_BREAK_PX = 140;     // respawn/teleport guard (world px)
 export const TRAIL_TTL_MS = 900;       // histories of gone entities expire
+// A source that stops sampling (still, or crawling below TRAIL_MIN_PX) retracts
+// one tail point per period instead of pinning its full frozen streak to the old
+// world positions forever — which is also what a light streak physically does.
+export const TRAIL_RETRACT_MS = TRAIL_SAMPLE_MS * 2;
 
 // Colour normaliser: the art writes '#rgb'/'#rrggbb', the bloom table writes
 // 'r,g,b', and glowSpriteFor keys its cache on the triplet. Unparseable input
@@ -521,12 +536,18 @@ export function heroSheenEnvSample(opts){
 	let warm = null, warmW = 0;
 	for(let dy = -4; dy <= 4; dy++){
 		for(let dx = -5; dx <= 5; dx++){
+			// Weight is (level/15)·(1−ring/7) with level ≤ 15 and a STRICT > below, so a
+			// cell whose upper bound (1−ring/7) cannot beat the current winner is dead —
+			// skip it before the tile read. Bit-exact: an adjacent torch collapses the
+			// 99-cell walk to 25 reads without changing which emitter wins.
+			const ring = Math.max(Math.abs(dx), Math.abs(dy));
+			if(1 - ring / 7 <= warmW) continue;
 			const t = o.getTile(px + dx, py + dy);
 			if(t === T.AIR || t === T.WATER) continue;
 			const src = bloomSourceFor(t);
 			if(!src) continue;
 			if(INFO[t] && INFO[t].requiresHomePower && !(typeof o.poweredAt === 'function' && o.poweredAt(px + dx, py + dy, t))) continue;
-			const w = (src.level / 15) * (1 - Math.max(Math.abs(dx), Math.abs(dy)) / 7);
+			const w = (src.level / 15) * (1 - ring / 7);
 			if(w > warmW){
 				warmW = w;
 				const p = src.color.split(',');
@@ -633,11 +654,14 @@ export function glowBakeStops(g){
 }
 
 const glowSprites = new Map(); // color string -> prerendered radial sprite
-const glowBakedSprites = new Map(); // color|tier -> the one-blit two-layer sprite
+// One Map per tier, keyed on the colour string directly: the pass looks a sprite
+// up per source per frame, and the old `color + '|' + tier` key built ~300
+// throwaway strings a frame in the one pass that is deliberately never gated.
+const glowBakedSprites = [null, new Map(), new Map()]; // [tier] -> color -> sprite
 function glowBakedSpriteFor(color, tier){
 	if(typeof document === 'undefined') return null;
-	const key = color + '|' + tier;
-	let spr = glowBakedSprites.get(key);
+	const byColor = glowBakedSprites[tier] || (glowBakedSprites[tier] = new Map());
+	let spr = byColor.get(color);
 	if(spr) return spr;
 	const c = document.createElement('canvas');
 	c.width = GLOW_BAKED_PX; c.height = GLOW_BAKED_PX;
@@ -649,7 +673,7 @@ function glowBakedSpriteFor(color, tier){
 	for(const u of glowBakeStops(g)) grad.addColorStop(u, 'rgba(' + color + ',' + glowBakedProfile(u, g).toFixed(5) + ')');
 	g2.fillStyle = grad;
 	g2.fillRect(0, 0, GLOW_BAKED_PX, GLOW_BAKED_PX);
-	glowBakedSprites.set(key, spr = c);
+	byColor.set(color, spr = c);
 	return spr;
 }
 const glowStrokes = new Map();  // color string -> 'rgb(r,g,b)', built once per colour
@@ -760,6 +784,12 @@ const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, shimmerBands: 
 let bloomEmitters = [];
 let bloomScanAt = 0;
 let bloomScanKey = '';
+let bloomScanGen = 0;          // bumped on every rescan; memoized consumers key on it
+// Light-tint winners: the 8×8-cell dedupe is a pure function of the cadence-cached
+// emitter list, so it is rebuilt per SCAN, not per frame.
+const tintWinners = [];
+let tintWinnersGen = -1;
+const tintCells = new Set();
 // Entity emissive queue: filled during the entity passes (mobs, threat look),
 // drained once per frame by drawEmissivePass. Entries are recycled objects — the
 // queue is a ring, not a fresh array per frame, so a hundred glowing creatures
@@ -834,6 +864,21 @@ let heroMirrorUsed = false;
 let heroSceneUsed = false;
 let heroCoatCanvas = null;
 let heroCoatCtx = null;
+// Steady-state scratch: the coat mirrors heroSceneCanvas, so the pre-sprite grab
+// only needs the hero-footprint PATCH pasted over the sprite (~5% of the field's
+// pixels); the full field lands in heroMirrorCanvas only when the scene grab went
+// stale. heroMirrorFull records which of the two the mirror canvas holds — the
+// fallback paths must never blit a stale full field grabbed frames ago.
+let heroPatchCanvas = null;
+let heroPatchCtx = null;
+let heroMirrorFull = false;
+// Cached gradients: both are pure functions of geometry that only changes on a
+// zoom step or a weapon swap, not per frame.
+let coatMaskGrad = null;
+let coatMaskKey = -1;
+let bladeSpineGrad = null;
+let bladeSpineKey = -1;
+const SHEEN_ZONES = ['top', 'mid', 'bot'];
 // A grab older than this is stale (pause, teleport, a frame that drew no hero)
 // and the coat falls back to the sampled tint rather than showing a ghost.
 const HERO_GRAB_TTL_MS = 250;
@@ -852,10 +897,17 @@ export function heroMirrorCurve(v){
 // destination-in fill on the live scene would erase the world.
 function buildHeroCoat(ctx, mirror, bw, bh){
 	if(typeof document === 'undefined' || !(bw > 0) || !(bh > 0)) return null;
-	let m = null;
-	try{ m = (typeof ctx.getTransform === 'function') ? ctx.getTransform() : null; }catch(e){ m = null; }
-	const sxScale = (m && Number.isFinite(m.a) && m.a > 0) ? m.a : 1;
-	const syScale = (m && Number.isFinite(m.d) && m.d > 0) ? m.d : 1;
+	// The grab that produced `mirror` already read the world transform this frame;
+	// reuse its scale instead of allocating a second DOMMatrix.
+	let sxScale = 1, syScale = 1;
+	if(heroGrabRect && heroGrabRect.ka > 0 && heroGrabRect.kd > 0){
+		sxScale = heroGrabRect.ka; syScale = heroGrabRect.kd;
+	} else {
+		let m = null;
+		try{ m = (typeof ctx.getTransform === 'function') ? ctx.getTransform() : null; }catch(e){ m = null; }
+		if(m && Number.isFinite(m.a) && m.a > 0) sxScale = m.a;
+		if(m && Number.isFinite(m.d) && m.d > 0) syScale = m.d;
+	}
 	const w = Math.max(4, Math.min(512, Math.round(bw * sxScale)));
 	const h = Math.max(4, Math.min(512, Math.round(bh * syScale)));
 	if(!heroCoatCanvas){
@@ -887,11 +939,16 @@ function buildHeroCoat(ctx, mirror, bw, bh){
 	}
 	g.setTransform(1, 0, 0, 1, 0, 0);
 	g.globalCompositeOperation = 'destination-in';
-	const mask = g.createRadialGradient(w * 0.5, h * 0.42, 0, w * 0.5, h * 0.42, Math.max(w, h) * 0.62);
-	mask.addColorStop(0, 'rgba(0,0,0,0.30)');
-	mask.addColorStop(0.55, 'rgba(0,0,0,0.52)');
-	mask.addColorStop(1, 'rgba(0,0,0,1)');
-	g.fillStyle = mask;
+	// The Fresnel mask depends only on (w,h) — rebuild it on a zoom step, not per frame.
+	const mk = w * 4096 + h;
+	if(!coatMaskGrad || coatMaskKey !== mk){
+		coatMaskKey = mk;
+		coatMaskGrad = g.createRadialGradient(w * 0.5, h * 0.42, 0, w * 0.5, h * 0.42, Math.max(w, h) * 0.62);
+		coatMaskGrad.addColorStop(0, 'rgba(0,0,0,0.30)');
+		coatMaskGrad.addColorStop(0.55, 'rgba(0,0,0,0.52)');
+		coatMaskGrad.addColorStop(1, 'rgba(0,0,0,1)');
+	}
+	g.fillStyle = coatMaskGrad;
 	g.fillRect(0, 0, w, h);
 	g.globalCompositeOperation = 'source-over';
 	return heroCoatCanvas;
@@ -908,6 +965,7 @@ function ensureEmitterScan(opts){
 	if(key !== bloomScanKey || now - bloomScanAt > bloomScanIntervalMs(opts.frameMs)){
 		bloomEmitters = collectBloomEmitters({ x0, x1, y0, y1, getTile: opts.getTile, visibleAt: opts.visibleAt, poweredAt: opts.poweredAt, max: BLOOM_MAX_EMITTERS });
 		bloomScanAt = now; bloomScanKey = key;
+		bloomScanGen++;
 		metrics.bloomScans++;
 	}
 	metrics.bloomEmitters = bloomEmitters.length;
@@ -957,6 +1015,9 @@ const api = {
 			heroMirrorCanvas = null; heroMirrorCtx = null;
 			heroSceneCanvas = null; heroSceneCtx = null;
 			heroCoatCanvas = null; heroCoatCtx = null;
+			heroPatchCanvas = null; heroPatchCtx = null; heroMirrorFull = false;
+			coatMaskGrad = null; coatMaskKey = -1;
+			bladeSpineGrad = null; bladeSpineKey = -1;
 			heroGrabRect = null; heroMirrorAt = 0; heroSceneAt = 0;
 		}
 		// One region scratch now serves BOTH self-blit passes: each takes its snapshot
@@ -1000,21 +1061,8 @@ const api = {
 		const ey = Math.min(src.height, Math.ceil(dy0 + m.d * fh));
 		const sw = ex - sx, sh = ey - sy;
 		if(!(sw > 4) || !(sh > 4)) return 0; // hero at the very screen edge
-		if(!heroMirrorCanvas){
-			heroMirrorCanvas = document.createElement('canvas');
-			heroMirrorCtx = heroMirrorCanvas.getContext('2d');
-		}
-		if(!heroMirrorCtx) return 0;
 		const k = Math.min(1, HERO_MIRROR_MAX_PX / Math.max(sw, sh));
 		const cw = Math.max(4, Math.round(sw * k)), ch = Math.max(4, Math.round(sh * k));
-		if(heroMirrorCanvas.width !== cw || heroMirrorCanvas.height !== ch){
-			heroMirrorCanvas.width = cw;
-			heroMirrorCanvas.height = ch;
-		}
-		heroMirrorCtx.setTransform(1, 0, 0, 1, 0, 0);
-		heroMirrorCtx.clearRect(0, 0, cw, ch);
-		heroMirrorCtx.imageSmoothingEnabled = true;
-		heroMirrorCtx.drawImage(src, sx, sy, sw, sh, 0, 0, cw, ch);
 		// Remember the exact rect so the full-scene grab later in the frame can
 		// sample the SAME field, plus where the hero sits inside it (with a
 		// margin for the cape and the held weapon) — that is the patch the
@@ -1033,14 +1081,54 @@ const api = {
 			ex1 = Math.max(ex1, rx0 + m.a * opts.erase.w * gk);
 			ey1 = Math.max(ey1, ry0 + m.d * opts.erase.h * gk);
 		}
-		const px = Math.max(0, Math.min(cw, ex0)), py = Math.max(0, Math.min(ch, ey0));
-		heroGrabRect = {
-			sx, sy, sw, sh, cw, ch,
-			px, py,
-			pw: Math.max(0, Math.min(cw - px, ex1 - ex0)),
-			ph: Math.max(0, Math.min(ch - py, ey1 - ey0))
-		};
-		heroMirrorAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+		// Whole-pixel patch rect: an integer rect makes the paste a pure copy and the
+		// patch-only grab sample the exact grid the full-field downscale would.
+		const px = Math.max(0, Math.min(cw, Math.floor(ex0))), py = Math.max(0, Math.min(ch, Math.floor(ey0)));
+		const pw = Math.max(0, Math.min(cw - px, Math.ceil(ex1) - px));
+		const ph = Math.max(0, Math.min(ch - py, Math.ceil(ey1) - py));
+		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+		// Steady state: last frame's full-scene grab is fresh, so this frame's coat
+		// mirrors heroSceneCanvas and the only pixels ever read from THIS grab are
+		// the hero-footprint patch. Copy just the patch (~5% of the field); the full
+		// field is grabbed only when the scene grab went stale (first frame, resize,
+		// pause) and the coat needs the backdrop itself.
+		const sceneFresh = heroSceneAt > 0 && (now - heroSceneAt) < HERO_GRAB_TTL_MS
+			&& heroSceneCanvas && heroSceneCanvas.width > 0;
+		// No clearRect on either path: the game canvas is opaque ({alpha:false}), the
+		// source rect is clamped inside it, and each draw covers its whole target —
+		// source-over with an opaque source replaces every pixel, so a clear is memset
+		// for nothing (it was ~45% of this helper's touched area).
+		if(sceneFresh){
+			if(!heroPatchCanvas){
+				heroPatchCanvas = document.createElement('canvas');
+				heroPatchCtx = heroPatchCanvas.getContext('2d');
+			}
+			if(!heroPatchCtx) return 0;
+			if(pw > 0 && ph > 0){
+				if(heroPatchCanvas.width < pw) heroPatchCanvas.width = pw;   // grow-only scratch
+				if(heroPatchCanvas.height < ph) heroPatchCanvas.height = ph;
+				heroPatchCtx.setTransform(1, 0, 0, 1, 0, 0);
+				heroPatchCtx.imageSmoothingEnabled = true;
+				heroPatchCtx.drawImage(src, sx + px / gk, sy + py / gk, pw / gk, ph / gk, 0, 0, pw, ph);
+			}
+			heroMirrorFull = false;
+		} else {
+			if(!heroMirrorCanvas){
+				heroMirrorCanvas = document.createElement('canvas');
+				heroMirrorCtx = heroMirrorCanvas.getContext('2d');
+			}
+			if(!heroMirrorCtx) return 0;
+			if(heroMirrorCanvas.width !== cw || heroMirrorCanvas.height !== ch){
+				heroMirrorCanvas.width = cw;
+				heroMirrorCanvas.height = ch;
+			}
+			heroMirrorCtx.setTransform(1, 0, 0, 1, 0, 0);
+			heroMirrorCtx.imageSmoothingEnabled = true;
+			heroMirrorCtx.drawImage(src, sx, sy, sw, sh, 0, 0, cw, ch);
+			heroMirrorFull = true;
+		}
+		heroGrabRect = { sx, sy, sw, sh, cw, ch, px, py, pw, ph, ka: m.a, kd: m.d };
+		heroMirrorAt = now;
 		return 1;
 	},
 	// Grab the FINISHED world (mobs, creatures, projectiles, fire, gases,
@@ -1072,10 +1160,18 @@ const api = {
 		}
 		const g = heroSceneCtx;
 		g.setTransform(1, 0, 0, 1, 0, 0);
-		g.clearRect(0, 0, r.cw, r.ch);
+		// No clearRect: the draw below covers the whole scratch from an opaque,
+		// clamped source rect — see captureHeroBackdrop for the argument.
 		g.imageSmoothingEnabled = true;
 		g.drawImage(src, r.sx, r.sy, r.sw, r.sh, 0, 0, r.cw, r.ch);
-		if(r.pw > 0 && r.ph > 0) g.drawImage(heroMirrorCanvas, r.px, r.py, r.pw, r.ph, r.px, r.py, r.pw, r.ph);
+		if(r.pw > 0 && r.ph > 0){
+			// The hero-free patch: cut from the full-field grab when one was taken,
+			// otherwise it IS the whole patch canvas (steady state).
+			const patch = heroMirrorFull ? heroMirrorCanvas : heroPatchCanvas;
+			if(patch) g.drawImage(patch,
+				heroMirrorFull ? r.px : 0, heroMirrorFull ? r.py : 0, r.pw, r.ph,
+				r.px, r.py, r.pw, r.ph);
+		}
 		heroSceneAt = now;
 		return 1;
 	},
@@ -1096,7 +1192,7 @@ const api = {
 		const fresh = (t) => t > 0 && (now - t) < HERO_GRAB_TTL_MS;
 		const src = (fresh(heroSceneAt) && heroSceneCanvas && heroSceneCanvas.width > 0)
 			? heroSceneCanvas
-			: ((fresh(heroMirrorAt) && heroMirrorCanvas && heroMirrorCanvas.width > 0) ? heroMirrorCanvas : null);
+			: ((heroMirrorFull && fresh(heroMirrorAt) && heroMirrorCanvas && heroMirrorCanvas.width > 0) ? heroMirrorCanvas : null);
 		if(!src) return 0;
 		const x = opts.x, y = opts.y, w = opts.w, h = opts.h;
 		ctx.save();
@@ -1108,12 +1204,18 @@ const api = {
 		ctx.drawImage(src, 0, 0, src.width, src.height, x, y, w, h);
 		ctx.globalAlpha = 1;
 		ctx.globalCompositeOperation = 'lighter';
-		const spine = ctx.createLinearGradient(x, 0, x + w, 0);
-		spine.addColorStop(0, 'rgba(255,255,255,0)');
-		spine.addColorStop(0.42, 'rgba(255,255,255,0.34)');
-		spine.addColorStop(0.62, 'rgba(255,255,255,0.10)');
-		spine.addColorStop(1, 'rgba(255,255,255,0)');
-		ctx.fillStyle = spine;
+		// The spine gradient is a pure function of (x,w), and weapons.js passes
+		// literal constant rects — cache it across frames, rebuild on weapon swap.
+		const sk = x * 4096 + w;
+		if(!bladeSpineGrad || bladeSpineKey !== sk){
+			bladeSpineKey = sk;
+			bladeSpineGrad = ctx.createLinearGradient(x, 0, x + w, 0);
+			bladeSpineGrad.addColorStop(0, 'rgba(255,255,255,0)');
+			bladeSpineGrad.addColorStop(0.42, 'rgba(255,255,255,0.34)');
+			bladeSpineGrad.addColorStop(0.62, 'rgba(255,255,255,0.10)');
+			bladeSpineGrad.addColorStop(1, 'rgba(255,255,255,0)');
+		}
+		ctx.fillStyle = bladeSpineGrad;
 		ctx.fillRect(x, y, w, h);
 		ctx.restore();
 		metrics.bladeSheens++;
@@ -1136,8 +1238,13 @@ const api = {
 	glow(x, y, spec, key, TILE){
 		const g = normalizeGlow(spec, Number.isFinite(TILE) ? TILE : lastGlowTilePx);
 		if(!g) return false;
-		return api.addEmissive({ x, y, r: g.r, color: g.rgb, a: g.a, pulse: g.pulse,
-			key, trail: g.trail && typeof key === 'string' && !!key });
+		// addEmissive copies every field into its pooled ring entry synchronously,
+		// so a shared scratch descriptor is safe and saves one literal per source
+		// per frame (normalizeGlow stays pure — the suite pins its ramps).
+		const s = glowHandoff;
+		s.x = x; s.y = y; s.r = g.r; s.color = g.rgb; s.a = g.a; s.pulse = g.pulse;
+		s.key = key; s.trail = g.trail && typeof key === 'string' && !!key;
+		return api.addEmissive(s);
 	},
 	// Low-level inlet: radius already in world pixels. Nothing is painted here, so
 	// a caller cannot accidentally land its glow under the darkness overlay. `key`
@@ -1213,7 +1320,8 @@ const api = {
 			let trailed = 0;
 			for(let i = 0; i < n; i++){
 				const e = emissiveQueue[i];
-				if(!e.trail || trailed >= EMISSIVE_TRAIL_MAX) continue;
+				if(!e.trail) continue;
+				if(trailed >= EMISSIVE_TRAIL_MAX) break; // only trailed sources use this loop
 				trailed++;
 				let hist = emissiveTrails.get(e.key);
 				if(!hist){
@@ -1228,6 +1336,12 @@ const api = {
 					if(trailSampleDue(hist, e.x, e.y, now)){
 						hist.pts.push({ x: e.x, y: e.y });
 						if(hist.pts.length > TRAIL_PTS) hist.pts.shift();
+						hist.at = now;
+					} else if(hist.pts.length && now - hist.at > TRAIL_RETRACT_MS){
+						// No new sample due: the source stands still. Retract the tail
+						// into the body one point per period — a stopped mob used to keep
+						// drawing its full frozen streak at the old positions forever.
+						hist.pts.shift();
 						hist.at = now;
 					}
 				}
@@ -1260,6 +1374,10 @@ const api = {
 		// A wide dim bleed UNDER a tight bright core: the two-layer shape of a real
 		// bloom, and the thing that makes a glow read as light instead of as a
 		// coloured disc stuck on the sprite. Both source kinds get it.
+		// `lighter` is commutative under clamping, so skipping a globalAlpha set when
+		// the value repeats is bit-exact (no reordering happens — same draw order).
+		const gain = 0.34 * ampA * GLOW_BAKE_GAIN;
+		let lastGA = -1;
 		for(let i = 0; i < n; i++){
 			const e = emissiveQueue[i];
 			const spr = glowBakedSpriteFor(e.rgb, tier);
@@ -1268,11 +1386,13 @@ const api = {
 				? (1 - e.pulse) + e.pulse * (0.82 + 0.18 * Math.sin(tSec * 2.1 + e.x * 0.07 + e.y * 0.04))
 				: 1;
 			const wr = e.r * beat * 1.85 * ampR;
-			ctx.globalAlpha = Math.min(1, e.a * 0.34 * ampA * GLOW_BAKE_GAIN);
+			const ga = Math.min(1, e.a * gain);
+			if(ga !== lastGA){ ctx.globalAlpha = ga; lastGA = ga; }
 			ctx.drawImage(spr, e.x - wr, e.y - wr, wr * 2, wr * 2);
 			halos += 1;
 		}
-		for(const e of tiles){
+		for(let i = 0; i < tiles.length; i++){
+			const e = tiles[i];
 			const spr = glowBakedSpriteFor(e.color, tier);
 			if(!spr) continue;   // one bad colour must not drop the rest
 			// Per-emitter phase from the tile position: deterministic, so a torch
@@ -1281,7 +1401,8 @@ const api = {
 			const wr = TILE * (0.7 + e.level * 0.2) * pulse * 1.85 * ampR;   // normalizeGlow's ramp
 			const a = Math.min(0.68, 0.3 + e.level * 0.018);
 			const cx = e.x * TILE + TILE * 0.5, cy = e.y * TILE + TILE * 0.5;
-			ctx.globalAlpha = Math.min(1, a * 0.34 * ampA * GLOW_BAKE_GAIN);
+			const ga = Math.min(1, a * gain);
+			if(ga !== lastGA){ ctx.globalAlpha = ga; lastGA = ga; }
 			ctx.drawImage(spr, cx - wr, cy - wr, wr * 2, wr * 2);
 			drawn++;
 		}
@@ -1326,7 +1447,7 @@ const api = {
 		} else {
 			const dt = Math.min(0.25, Math.max(0, (now - sheenChaseAt) / 1000));
 			const k = 1 - Math.exp(-dt / 0.4);
-			for(const zone of ['top', 'mid', 'bot']){
+			for(const zone of SHEEN_ZONES){
 				const cur = sheenCur[zone], tgt = target[zone];
 				for(let i = 0; i < 3; i++) cur[i] += (tgt[i] - cur[i]) * k;
 			}
@@ -1338,9 +1459,11 @@ const api = {
 		// fall back to this frame's pre-sprite grab on the very first frame or
 		// right after a resize, and to the sampled tint when both went stale.
 		const fresh = (t) => t > 0 && (now - t) < HERO_GRAB_TTL_MS;
+		// The full-field fallback is only valid when the mirror canvas actually HOLDS
+		// a full field (heroMirrorFull) — on patch-only frames it is frames old.
 		const mirror = (fresh(heroSceneAt) && heroSceneCanvas && heroSceneCanvas.width > 0)
 			? heroSceneCanvas
-			: ((fresh(heroMirrorAt) && heroMirrorCanvas && heroMirrorCanvas.width > 0) ? heroMirrorCanvas : null);
+			: ((heroMirrorFull && fresh(heroMirrorAt) && heroMirrorCanvas && heroMirrorCanvas.width > 0) ? heroMirrorCanvas : null);
 		heroSceneUsed = mirror === heroSceneCanvas;
 		heroMirrorUsed = !!mirror;
 		const daylight = Math.max(0, Math.min(1, Number.isFinite(opts.daylight) ? opts.daylight : 1));
@@ -1371,11 +1494,12 @@ const api = {
 			// turns away from the viewer, so the coat is near-opaque at the rim
 			// and thin over the middle — which is also what keeps the hero's face
 			// and outfit readable instead of replacing the sprite with a window.
-			ctx.save();
+			// No inner save/restore: the outer restore below resets both fields,
+			// and nothing between here and it reads imageSmoothingEnabled.
 			ctx.imageSmoothingEnabled = true;
 			ctx.globalAlpha = 0.72;
 			ctx.drawImage(coat, bx, by, bw, bh);
-			ctx.restore();
+			ctx.globalAlpha = 1;
 		}
 		ctx.globalCompositeOperation = 'lighter';
 		// Specular highlight on the side the light comes from (same solar model
@@ -1484,19 +1608,34 @@ const api = {
 		// a flat wall of color anyway: dedupe to one wash per 8x8-tile cell and
 		// budget the fill rate like the sibling passes.
 		const cap = (Number.isFinite(opts.frameMs) && opts.frameMs > 28) ? 24 : 64;
-		const cells = new Set();
+		// The cell dedupe is a pure function of the cadence-cached emitter list —
+		// rebuild the winners when the scan refreshes, not every frame. Numeric cell
+		// key: x is viewport-bounded, y ∈ −140..280, so (cx·65536)+(cy+32768) cannot
+		// collide. The cap stays a draw-time cut (it varies, the winners do not).
+		if(tintWinnersGen !== bloomScanGen){
+			tintWinnersGen = bloomScanGen;
+			tintWinners.length = 0;
+			tintCells.clear();
+			for(const e of emitters){
+				const cell = ((e.x >> 3) * 65536) + ((e.y >> 3) + 32768);
+				if(tintCells.has(cell)) continue;
+				tintCells.add(cell);
+				tintWinners.push(e);
+			}
+		}
 		let drawn = 0;
 		ctx.save();
+		// The doc above PROMISES source-over; enforce it instead of inheriting
+		// whatever the previous overlay left behind.
+		ctx.globalCompositeOperation = 'source-over';
 		ctx.imageSmoothingEnabled = true;
-		for(const e of emitters){
+		for(let i = 0; i < tintWinners.length; i++){
 			if(drawn >= cap) break;
-			const cell = (e.x >> 3) + ',' + (e.y >> 3);
-			if(cells.has(cell)) continue;
-			cells.add(cell);
+			const e = tintWinners[i];
 			const spr = glowSpriteFor(e.color);
 			if(!spr) continue;   // one bad colour must not drop the rest
 			const r = TILE * (2.6 + e.level * 0.4);
-			ctx.globalAlpha = Math.min(0.26, 0.08 + e.level * 0.010);
+			ctx.globalAlpha = 0.08 + e.level * 0.010;   // level ≤ 15 ⇒ max 0.23; the old 0.26 clamp was dead code
 			ctx.drawImage(spr, e.x * TILE + TILE * 0.5 - r, e.y * TILE + TILE * 0.5 - r, r * 2, r * 2);
 			drawn++;
 		}
@@ -1529,6 +1668,10 @@ const api = {
 		const p = shadowParams(time);
 		const visibleAt = typeof opts.visibleAt === 'function' ? opts.visibleAt : null;
 		let drawn = 0;
+		// alpha is fixed for the whole frame — build the two stop strings once,
+		// not per beam (they were 48 string builds a frame at the 24-beam cap).
+		const rayTop = 'rgba(255,244,200,' + alpha.toFixed(3) + ')';
+		const rayBot = 'rgba(255,244,200,' + (alpha * 0.45).toFixed(3) + ')';
 		ctx.save();
 		ctx.globalCompositeOperation = 'lighter';
 		for(const b of godRayBeams){
@@ -1545,8 +1688,8 @@ const api = {
 			const drop = Math.max(-4 * TILE, Math.min(4 * TILE, p.skew * h * 0.5));
 			const gx0 = b.x0 * TILE, gx1 = (b.x1 + 1) * TILE;
 			const grad = ctx.createLinearGradient(0, topPx, 0, groundPx);
-			grad.addColorStop(0, 'rgba(255,244,200,' + alpha.toFixed(3) + ')');
-			grad.addColorStop(1, 'rgba(255,244,200,' + (alpha * 0.45).toFixed(3) + ')');
+			grad.addColorStop(0, rayTop);
+			grad.addColorStop(1, rayBot);
 			ctx.fillStyle = grad;
 			ctx.beginPath();
 			ctx.moveTo(gx0, topPx);
@@ -1587,18 +1730,40 @@ const api = {
 		// Sources: hot TILES off the shared emitter scan (the attribute decides, see
 		// heatSourceFor) plus the live registries that are not tiles at all. Every one
 		// of them needs open air overhead -- a capped lava vein bends nothing.
-		const sources = [];
-		for(const e of ensureEmitterScan(opts)){
+		// Pooled source list: entries are recycled objects valid until the next call
+		// (~170 throwaway objects per frame during a large fire otherwise).
+		const sources = heatSrcList;
+		sources.length = 0;
+		const emitters = ensureEmitterScan(opts);
+		for(let i = 0; i < emitters.length; i++){
+			const e = emitters[i];
 			const strength = heatSourceFor(e.t);
-			if(strength > 0 && getTile(e.x, e.y - 1) === T.AIR) sources.push({ x: e.x, y: e.y, strength });
+			if(!(strength > 0) || getTile(e.x, e.y - 1) !== T.AIR) continue;
+			const p = heatSrcPool[sources.length] || (heatSrcPool[sources.length] = { x: 0, y: 0, strength: 0 });
+			p.x = e.x; p.y = e.y; p.strength = strength;
+			sources.push(p);
 		}
-		for(const [list, strength] of [[opts.pools, 0.5], [opts.burning, 0.8]]){
+		// The live feeds (geothermal pools, burning tiles) are culled on x only by
+		// their callers, while the band sort (hottest first) and the band/row caps
+		// run BEFORE off-canvas bands are discarded — so a fire in a mine below the
+		// screen could outrank and silently suppress the plumes actually in view.
+		// Cut to the visible rows (+3: the tallest plume is 2.5 tiles).
+		const yMin = Number.isFinite(opts.sy) ? Math.floor(opts.sy) - 1 : -Infinity;
+		const yMax = (Number.isFinite(opts.sy) && Number.isFinite(opts.viewY)) ? Math.ceil(opts.sy + opts.viewY) + 3 : Infinity;
+		for(let li = 0; li < 2; li++){
+			const list = li === 0 ? opts.pools : opts.burning;
+			const strength = li === 0 ? 0.5 : 0.8;
 			if(!Array.isArray(list)) continue;
-			for(const s of list){
+			for(let i = 0; i < list.length; i++){
+				const s = list[i];
 				if(!s || !Number.isFinite(s.x) || !Number.isFinite(s.y)) continue;
-				if(getTile(Math.round(s.x), Math.round(s.y) - 1) !== T.AIR) continue;
-				if(typeof opts.visibleAt === 'function' && !opts.visibleAt(Math.round(s.x), Math.round(s.y))) continue;
-				sources.push({ x: s.x, y: s.y, strength });
+				const ry = Math.round(s.y);
+				if(ry < yMin || ry > yMax) continue;
+				if(getTile(Math.round(s.x), ry - 1) !== T.AIR) continue;
+				if(typeof opts.visibleAt === 'function' && !opts.visibleAt(Math.round(s.x), ry)) continue;
+				const p = heatSrcPool[sources.length] || (heatSrcPool[sources.length] = { x: 0, y: 0, strength: 0 });
+				p.x = s.x; p.y = s.y; p.strength = strength;
+				sources.push(p);
 			}
 		}
 		if(!sources.length) return 0;

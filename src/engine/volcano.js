@@ -22,6 +22,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   const ROCK_DYNAMO_DESTROY_CHANCE = 0.20;
   const rocks = [];
   const masterShots = [];
+  // Module-level, like drops/mobs/weapons: a counter reset every draw() handed two
+  // shots born on different frames the same trail key, so their streaks swapped.
+  let shotSeq=0;
   const lavaHands = [];
   const masterTiles = new Map(); // "x,y" -> {x,y,t,stage}
   const volcanoState = new Map();
@@ -605,7 +608,6 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     ctx.save();
     ctx.globalCompositeOperation='lighter';
     const EMISSIVE=(typeof window!=='undefined' && window.MM && window.MM.postFx && window.MM.postFx.glow) ? window.MM.postFx : null;
-    let shotSeq=0;
     for(const m of masterShots){
       if(!tileVisible(m.x,m.y)) continue;
       const pulse=Math.sin(now*0.012 + m.x)*0.5+0.5;

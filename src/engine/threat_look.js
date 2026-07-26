@@ -112,6 +112,9 @@ export const GRADE_PALETTE=[
 // over the art.
 const EYE_COLORS=[null,null,'#e9922e','#f4571c','#fa1f0c','#ff0400'];
 const EYE_MENACE_MIX=[0,0,0.45,0.65,0.82,0.96];
+// mixHex is a pure function of (base, grade) and runs per EYE per mob per frame;
+// the per-grade memo turns the regex + parse + string build into a Map hit.
+const eyeColorMemo=[];
 export function menaceEyeColor(look,baseHex){
   let base=typeof baseHex==='string' ? baseHex : '#000000';
   // the art writes short hex ('#fff') which the mixer would misread
@@ -119,7 +122,10 @@ export function menaceEyeColor(look,baseHex){
   if(!look) return base;
   const g=Math.max(0,Math.min(5,Number(look.grade)||0));
   if(!EYE_COLORS[g]) return base;
-  return mixHex(base,EYE_COLORS[g],EYE_MENACE_MIX[g]);
+  const memo=eyeColorMemo[g]||(eyeColorMemo[g]=new Map());
+  let out=memo.get(base);
+  if(out===undefined){ out=mixHex(base,EYE_COLORS[g],EYE_MENACE_MIX[g]); memo.set(base,out); }
+  return out;
 }
 // keratin ages the way real horn does: pale and thin when young, dark, dense
 // and yellowed at the base when old

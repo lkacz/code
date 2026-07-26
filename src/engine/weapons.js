@@ -238,14 +238,29 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const base=it && WEAPON_TIER_RANK[it.tier] || 0;
     return it && it.unique ? Math.max(3,base) : base;
   }
-  function weaponVisualSeed(it){
+  // Both helpers below are pure functions of item fields and run several times per
+  // FRAME (world light, hero reflection, held art, blade sheen), so they memoize
+  // per item object. The guard fields re-derive if anything they read mutates in
+  // place (fusion/upgrades), which a bare WeakMap hit would miss.
+  const weaponSeedMemo=new WeakMap();
+  function computeWeaponVisualSeed(it){
     const text=String((it&&(it.id||it.name))||'weapon');
     let h=2166136261;
     for(let i=0;i<text.length;i++){ h^=text.charCodeAt(i); h=Math.imul(h,16777619); }
     return (h>>>0)/4294967296;
   }
+  const WEAPON_SEED_DEFAULT=computeWeaponVisualSeed(null);
+  function weaponVisualSeed(it){
+    if(!it || typeof it!=='object') return WEAPON_SEED_DEFAULT;
+    const hit=weaponSeedMemo.get(it);
+    if(hit && hit.id===it.id && hit.name===it.name) return hit.seed;
+    const seed=computeWeaponVisualSeed(it);
+    weaponSeedMemo.set(it,{id:it.id,name:it.name,seed});
+    return seed;
+  }
   function weaponPrestigeColor(it){ return tierColor(it)||WEAPON_TIER_GLOW[it&&it.tier]||'#d7f5ff'; }
-  function weaponMaterialProfile(it){
+  const weaponMaterialMemo=new WeakMap();
+  function computeWeaponMaterialProfile(it){
     const name=String((it&&(it.id||it.name))||'').toLowerCase();
     const aquatic=aquaticStyle(it);
     if(aquatic) return WEAPON_MATERIALS.aquatic;
@@ -257,6 +272,14 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(weaponType(it)==='electric' || /elektr|electric|tesla|laser|plasm/.test(name)) return WEAPON_MATERIALS.arc;
     if(it && (it.unique || weaponPrestigeRank(it)>=3)) return WEAPON_MATERIALS.exotic;
     return WEAPON_MATERIALS.steel;
+  }
+  function weaponMaterialProfile(it){
+    if(!it || typeof it!=='object') return computeWeaponMaterialProfile(it);
+    const hit=weaponMaterialMemo.get(it);
+    if(hit && hit.id===it.id && hit.name===it.name && hit.tier===it.tier && hit.unique===it.unique && hit.wt===it.weaponType) return hit.profile;
+    const profile=computeWeaponMaterialProfile(it);
+    weaponMaterialMemo.set(it,{id:it.id,name:it.name,tier:it.tier,unique:it.unique,wt:it.weaponType,profile});
+    return profile;
   }
   function triggerHeldActionFx(kind,power,duration,continuous){
     const now=nowMs(), dur=Math.max(45,Number(duration)||150);
@@ -341,12 +364,20 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       action:action.active?action.kind:''
     };
   }
+  // The hex→"rgba(r,g,b," prefix is memoized (emissiveRgb's pattern in post_fx):
+  // the regex + parseInt ran per gradient stop, several stops per frame, over a
+  // handful of material colours that never change.
+  const weaponRgbaPrefix=new Map();
   function weaponLightRgba(hex,alpha){
     const raw=String(hex||'').trim();
-    const m=/^#([0-9a-f]{6})$/i.exec(raw);
-    if(!m) return 'rgba(170,235,255,'+clamp01(alpha).toFixed(3)+')';
-    const n=parseInt(m[1],16);
-    return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+clamp01(alpha).toFixed(3)+')';
+    let pre=weaponRgbaPrefix.get(raw);
+    if(pre===undefined){
+      const m=/^#([0-9a-f]{6})$/i.exec(raw);
+      if(m){ const n=parseInt(m[1],16); pre='rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','; }
+      else pre='rgba(170,235,255,';
+      weaponRgbaPrefix.set(raw,pre);
+    }
+    return pre+clamp01(alpha).toFixed(3)+')';
   }
   function drawWorldLight(ctx,TILE,player){
     const light=weaponLightSource(player);

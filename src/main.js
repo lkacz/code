@@ -6327,7 +6327,7 @@ function drawPlayer(opts){ if(drawDeathTravelFx()) return; const rearView=!!(opt
 				// underground the same call keeps the classic ambient blob.
 				if(gfxUltraOn('shadows') && POST_FX.drawCasterShadow){
 					const shSurf=(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight(tx):gy;
-					POST_FX.drawCasterShadow(ctx,{TILE,x:player.x,w:player.w,h:player.h,groundY:gy,k,sunlit:gy<=shSurf,time:(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null});
+					POST_FX.drawCasterShadow(ctx,{TILE,x:player.x,w:player.w,h:player.h,groundY:gy,k,sunlit:gy<=shSurf,time:frameTimeInfo});
 				}else{
 					ctx.fillStyle='rgba(0,0,0,'+(0.25*k).toFixed(3)+')';
 					const shw=bw*0.6*(0.55+0.45*k);
@@ -9795,12 +9795,19 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 	if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'back', sx,sy,viewX,viewY,TILE,worldMaxY(),getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible,worldMinY()); }
 }
 
+// ONE time snapshot per frame: BACKGROUND.timeInfo() walks the whole seasons
+// metrics chain (~11 object allocations), and the gfx call sites used to call it
+// — directly or through currentDaylight() — up to nine times per frame. draw()
+// refreshes it at frame start; between frames it is at most one frame stale,
+// which the sun's arc cannot resolve.
+let frameTimeInfo=null;
+let frameDaylight=1;
 // Cave darkness: BFS light field from sky/torches/lava/fire, blitted as one
 // smoothed overlay. Drawn before the ghost preview + fog so mining/placement
 // indicators stay readable and undiscovered black still wins on top.
 function currentDaylight(){
 	try{
-		const ti=(BACKGROUND && BACKGROUND.timeInfo) ? BACKGROUND.timeInfo() : null;
+		const ti=frameTimeInfo || ((BACKGROUND && BACKGROUND.timeInfo) ? BACKGROUND.timeInfo() : null);
 		if(ti){
 			const tDay=Math.max(0,Math.min(1,ti.tDay));
 			// Night light follows the Moon's continuously changing altitude/phase.
@@ -9829,7 +9836,7 @@ function drawLightingOverlay(sx,sy,viewX,viewY,opts){
 		originY: localLayer ? opts.camY : 0,
 		getTile,
 		surfaceHeight: (WORLDGEN && WORLDGEN.surfaceHeight) ? WORLDGEN.surfaceHeight : null,
-		daylight: currentDaylight(),
+		daylight: frameDaylight,
 		hero: player,
 		heroLamp: (HERO_LAMP && HERO_LAMP.lightSource) ? HERO_LAMP.lightSource(player) : null,
 		weaponLight: (WEAPONS && WEAPONS.lightSource) ? WEAPONS.lightSource(player) : null,
@@ -15142,6 +15149,8 @@ canvas.addEventListener('pointerleave',()=>{ lastPointer.has=false; });
 
 // Render
 function draw(){ // Background first
+ frameTimeInfo=(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null;
+ frameDaylight=currentDaylight();
  resetFrameCanvasState();
  const renderCam=currentRenderCamera();
  drawBackground();
@@ -15173,8 +15182,7 @@ function draw(){ // Background first
  // MOBS.draw with replace-semantics over its species contact blob, so every
  // drawn creature gets exactly one shadow and fog gating stays authoritative).
  if(gfxUltraOn('shadows') && POST_FX.drawTreeShadowsPass){
-	 const shadowTime=(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null;
-	 POST_FX.drawTreeShadowsPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,isTrunk:isWood,visibleAt:worldFxVisible,time:shadowTime,frameMs:lastFrameMs});
+	 POST_FX.drawTreeShadowsPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,isTrunk:isWood,visibleAt:worldFxVisible,time:frameTimeInfo,frameMs:lastFrameMs});
  }
  // Standing in the same foreground cell as a wall mirror turns the hero into
  // the depth plane: the human player sees the back, while the late clipped
@@ -15215,8 +15223,8 @@ function draw(){ // Background first
 		 poweredAt:(x,y)=>furnishingPoweredAt(x,y),
 		 surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,
 		 px:sheenPx, py:Math.floor(player.y),
-		 daylight:currentDaylight(),
-		 time:(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null,
+		 daylight:frameDaylight,
+		 time:frameTimeInfo,
 		 submerged:waterLevelUnitsAt(sheenPx,Math.floor(player.y))>0
 	 });
 	 // The coat mirrors the SUIT. Eyes are not reflective — they go back on top,
@@ -15234,7 +15242,7 @@ function draw(){ // Background first
  if(SOFT_DRIFTS && SOFT_DRIFTS.draw) SOFT_DRIFTS.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);
  // Ultra wet ground: rain soaks the surface into a fading sheen (frozen tiles
  // skip — snow soaks invisibly and ice has its own reflection pass)
- if(gfxUltraOn('wetGround') && POST_FX.drawWetGroundPass) POST_FX.drawWetGroundPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,visibleAt:worldFxVisible,rainingAt:(x)=>!!(CLOUDS && CLOUDS.isRainingAt && CLOUDS.isRainingAt(x)),skipWetTile:gfxWetSkipTile,daylight:currentDaylight(),frameMs:lastFrameMs});
+ if(gfxUltraOn('wetGround') && POST_FX.drawWetGroundPass) POST_FX.drawWetGroundPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,visibleAt:worldFxVisible,rainingAt:(x)=>!!(CLOUDS && CLOUDS.isRainingAt && CLOUDS.isRainingAt(x)),skipWetTile:gfxWetSkipTile,daylight:frameDaylight,frameMs:lastFrameMs});
  // icicles under cold overhangs (and their falling shards)
  if(ICICLES && ICICLES.draw) ICICLES.draw(ctx,TILE,worldFxVisible);
  // living plants (rooted vegetation over terrain, under fire/creatures)
@@ -15245,7 +15253,7 @@ function draw(){ // Background first
  // sparks) is drawn on top of it, undistorted. A flame sprite already bends and
  // flickers on its own; running it through the plume too doubled the motion and
  // read as an artefact rather than as heat.
- if(gfxUltraOn('heatShimmer') && POST_FX.drawHeatShimmerPass) POST_FX.drawHeatShimmerPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),pools:(GEOTHERMAL && GEOTHERMAL.poolsNear)?GEOTHERMAL.poolsNear(player.x,Math.ceil(viewX*0.6)+4):null,burning:(FIRE && FIRE.burningNear)?FIRE.burningNear(player.x,Math.ceil(viewX*0.6)+4):null,frameMs:lastFrameMs});
+ if(gfxUltraOn('heatShimmer') && POST_FX.drawHeatShimmerPass){ const heatR=Math.ceil(viewX*0.6)+4; POST_FX.drawHeatShimmerPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),pools:(GEOTHERMAL && GEOTHERMAL.poolsNear)?GEOTHERMAL.poolsNear(player.x,heatR):null,burning:(FIRE && FIRE.burningNear)?FIRE.burningNear(player.x,heatR):null,frameMs:lastFrameMs}); }
  // burning tiles + lava glow (flames over terrain, under mobs so creatures stay readable)
  if(FIRE && FIRE.draw) FIRE.draw(ctx,TILE,sx,sy,viewX,viewY,getTile,worldFxVisibility());
  // volcano hazards and story-item effects (over terrain, under creatures)
@@ -15302,7 +15310,7 @@ function draw(){ // Background first
   drawParticles();
   drawCombatImpactFx();
  // Ultra dust motes: stateless daylight specks drifting just above the surface
- if(gfxUltraOn('dustMotes') && POST_FX.drawDustMotesPass) POST_FX.drawDustMotesPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,visibleAt:worldFxVisible,daylight:currentDaylight(),frameMs:lastFrameMs});
+ if(gfxUltraOn('dustMotes') && POST_FX.drawDustMotesPass) POST_FX.drawDustMotesPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,visibleAt:worldFxVisible,daylight:frameDaylight,frameMs:lastFrameMs});
   // front vegetation pass (blades/leaves that should appear in front)
  if(VISUAL.animations && GRASS && GRASS.drawOverlays){ GRASS.drawOverlays(ctx,'front', sx,sy,viewX,viewY,TILE,worldMaxY(),getTile,T,zoom,grassDensityScalar,grassHeightScalar,worldFxVisible,worldMinY()); }
  // Water overlay shimmer (after vegetation front to avoid overdraw? place before falling solids for clarity)
@@ -15335,7 +15343,7 @@ function draw(){ // Background first
  // Ultra god rays: additive shafts through canopy gaps, leaning with the same
  // solar model as the dynamic shadows — drawn over the world content so the
  // light reads volumetric, before smoke/darkness/fog still veil it.
- if(gfxUltraOn('godRays') && POST_FX.drawGodRaysPass) POST_FX.drawGodRaysPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,isCanopy:(t)=>isLeaf(t)||isWood(t),visibleAt:worldFxVisible,time:(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null,daylight:currentDaylight(),frameMs:lastFrameMs});
+ if(gfxUltraOn('godRays') && POST_FX.drawGodRaysPass) POST_FX.drawGodRaysPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,isCanopy:(t)=>isLeaf(t)||isWood(t),visibleAt:worldFxVisible,time:frameTimeInfo,daylight:frameDaylight,frameMs:lastFrameMs});
  // Black smoke is a composited density layer: it can overlap ordinary gases and
  // obscures creatures/objects, while lighting still colours the finished scene.
  if(SMOKE && SMOKE.draw) SMOKE.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);

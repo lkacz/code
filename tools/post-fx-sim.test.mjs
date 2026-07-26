@@ -39,7 +39,7 @@ const {
 	heroSheenEnvSample, heroMirrorCurve, shadowParams,
 	wetGroundStep, collectCanopyGaps, collectIceRuns,
 	emissiveRgb, normalizeGlow, trailSampleDue, trailBroken, trailTaper,
-	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX,
+	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX, TRAIL_RETRACT_MS,
 	heatSourceFor, heatPlumeTiles, heatAmpPx, heatEnvelope, heatOffsetPx, buildHeatBands,
 	heatRowHeight, heatRowCount,
 	glowProfile, glowBakedProfile, glowBakeStops, glowCoreRatio, GLOW_BAKE_GAIN, GLOW_AMP_A, GLOW_A_MAX,
@@ -613,6 +613,21 @@ postFx.addEmissive({ x: 280, y: 200, r: 7, color: '#ff5a5a', a: 0.5, key: 'bat1:
 const afterStill = makeRichCtx();
 postFx.drawEmissivePass(afterStill, { now: t2 + 40 });
 assert.ok(afterStill.strokes <= Math.ceil(stillStrokes / 3), 'a stationary source stops extending its history');
+// …and RETRACTS it: a stopped mob used to keep drawing its full frozen streak at
+// the old world positions forever (history only ever lost points on movement),
+// paying ~8 strokes a frame for an artefact. One point per TRAIL_RETRACT_MS
+// drains the tail into the body — which is also what a light streak physically does.
+assert.ok(TRAIL_RETRACT_MS > TRAIL_SAMPLE_MS, 'retraction is slower than sampling, so a moving source never retracts');
+let drainT = t2 + 40;
+let drainedCtx = null;
+for(let step = 0; step < TRAIL_PTS + 4; step++){
+	postFx.addEmissive({ x: 280, y: 200, r: 7, color: '#ff5a5a', a: 0.5, key: 'bat1:eye0', trail: true });
+	drainedCtx = makeRichCtx();
+	drainT += TRAIL_RETRACT_MS + 4;
+	postFx.drawEmissivePass(drainedCtx, { now: drainT });
+}
+assert.equal(drainedCtx.strokes, 0, 'a source that stays still drains its whole streak — no frozen tail');
+t2 = drainT;
 // Queue cap: a swarm cannot make the pass unbounded.
 for(let i = 0; i < EMISSIVE_MAX + 40; i++) postFx.addEmissive({ x: i, y: 5, r: 4, color: '#ffe068' });
 assert.equal(postFx.emissiveQueued(), EMISSIVE_MAX, 'the queue is capped like the bloom emitter list');
@@ -707,7 +722,11 @@ for(const tier of [1, 2]){
 	for(let i = 1; i < stops.length; i++) assert.ok(stops[i] > stops[i - 1], 'stops are strictly increasing, as addColorStop requires');
 	assert.ok(stops.some(u => Math.abs(u - 1 / g) < 1e-9), 'including the kink where the core term ends — sampling past it costs ~2.6/255 (tier ' + tier + ')');
 }
-assert.match(postFxSrc, /const wr = e\.r \* beat \* 1\.85 \* ampR;\n\t\t\tctx\.globalAlpha = Math\.min\(1, e\.a \* 0\.34 \* ampA \* GLOW_BAKE_GAIN\);\n\t\t\tctx\.drawImage\(spr, e\.x - wr, e\.y - wr, wr \* 2, wr \* 2\);\n\t\t\thalos \+= 1;/, 'an entity glow is ONE blit now');
+assert.match(postFxSrc, /const gain = 0\.34 \* ampA \* GLOW_BAKE_GAIN;/, 'the bake gain is hoisted out of the per-source loops');
+assert.match(postFxSrc, /const wr = e\.r \* beat \* 1\.85 \* ampR;\n\t\t\tconst ga = Math\.min\(1, e\.a \* gain\);\n\t\t\tif\(ga !== lastGA\)\{ ctx\.globalAlpha = ga; lastGA = ga; \}\n\t\t\tctx\.drawImage\(spr, e\.x - wr, e\.y - wr, wr \* 2, wr \* 2\);\n\t\t\thalos \+= 1;/, 'an entity glow is ONE blit now');
+// `lighter` is additive and additive-with-clamp is commutative, so skipping a
+// redundant globalAlpha set is bit-exact AS LONG AS nothing reorders the draws.
+assert.ok(!/\.sort\(/.test(postFxSrc.slice(postFxSrc.indexOf('drawGlowPass(ctx, opts){'), postFxSrc.indexOf('\n\t},', postFxSrc.indexOf('drawGlowPass(ctx, opts){')))), 'the alpha-skip never licenses reordering the halo draws');
 assert.ok(!/halos \+= 2;/.test(postFxSrc), 'the second per-source blit is gone');
 assert.match(postFxSrc, /e\.a = Math\.max\(0, Math\.min\(GLOW_A_MAX, Number\.isFinite\(src\.a\) \? src\.a : 0\.55\)\);/, 'the inlet caps alpha at the ceiling the bake depends on');
 assert.ok(GLOW_A_MAX > 0.68, 'the ceiling sits above every alpha the game actually declares, so it never fires today');
@@ -724,6 +743,10 @@ assert.match(fireGlowSrc, /const glowStride=Math\.max\(1, Math\.ceil\(burning\.s
 assert.match(fireGlowSrc, /if\(EMISSIVE && \(burnSeen\+\+ % glowStride\)===0\) EMISSIVE\.glow\(/, 'and the stride actually gates the registration');
 assert.ok(40 < EMISSIVE_MAX, 'fire cannot fill the queue on its own');
 assert.ok(!/BURN_GLOW_CAP[^\n]*frameMs|frameMs[^\n]*BURN_GLOW_CAP/.test(fireGlowSrc), 'the cap is a constant, never a reaction to frame time');
+// burningNear feeds the shimmer every frame; a big fire built ~240 throwaway
+// {x,y} per call before the pool. Entries are valid until the next call only.
+assert.match(fireGlowSrc, /const burningNearList=\[\]; const burningNearPool=\[\];/, 'burningNear recycles its list and entries');
+assert.match(fireGlowSrc, /function burningNear\(x,r\)\{\n    const out=burningNearList; out\.length=0;/, 'the pooled feed keeps the pinned (x,r) signature');
 
 // --- hot-path invariants, each one a measured regression waiting to happen -----
 // The per-tile glow lookup is memoized: it was ~88% of the emitter scan (9.0ns per
@@ -749,6 +772,33 @@ assert.match(postFxSrc, /ctx\.strokeStyle = glowStrokeFor\(e\.rgb\);/, 'the stre
 // Chests: the chunk range this loop walks is padded by a whole CHUNK_W either side,
 // so without an x cull an off-screen chest burned one of the 128 shared glow slots.
 assert.match(mainSrc, /if\(wx<sx-3 \|\| wx>sx\+viewX\+5\) continue;/, 'the chest aura loop culls horizontally, not only vertically');
+// Hero sheen scratch discipline (audit: the four scratch copies/clears were ~93%
+// of the pass's touched pixel area). Steady state grabs only the hero-footprint
+// patch — the full field is read by nobody once the scene grab is fresh — and
+// neither capture clears first: the game canvas is opaque ({alpha:false}), the
+// source rect is clamped inside it, and each draw covers its whole target.
+assert.match(postFxSrc, /const sceneFresh = heroSceneAt > 0 && \(now - heroSceneAt\) < HERO_GRAB_TTL_MS/, 'the backdrop grab branches on scene freshness');
+const iBackFn = postFxSrc.indexOf('captureHeroBackdrop(ctx, opts){');
+const backBody = postFxSrc.slice(iBackFn, postFxSrc.indexOf('\n\t},', iBackFn));
+assert.ok(iBackFn > 0 && backBody.length > 800, 'captureHeroBackdrop body was located');
+assert.ok(!backBody.includes('.clearRect('), 'no clearRect before an opaque full-cover draw (backdrop)');
+assert.match(backBody, /heroPatchCtx\.drawImage\(src, sx \+ px \/ gk, sy \+ py \/ gk, pw \/ gk, ph \/ gk, 0, 0, pw, ph\);/, 'the patch-only grab samples the exact grid the full-field downscale would');
+const iSceneFn = postFxSrc.indexOf('captureHeroScene(ctx){');
+const sceneBody = postFxSrc.slice(iSceneFn, postFxSrc.indexOf('\n\t},', iSceneFn));
+assert.ok(iSceneFn > 0 && sceneBody.length > 400, 'captureHeroScene body was located');
+assert.ok(!sceneBody.includes('.clearRect('), 'no clearRect before an opaque full-cover draw (scene)');
+assert.match(sceneBody, /const patch = heroMirrorFull \? heroMirrorCanvas : heroPatchCanvas;/, 'the hero-free patch comes from whichever grab this frame actually took');
+// A patch-only frame leaves the mirror canvas holding a STALE full field — the
+// fallback consumers must never blit it (a hitch frame would show a ghost scene).
+assert.equal((postFxSrc.match(/heroMirrorFull && fresh\(heroMirrorAt\)/g) || []).length, 2, 'both fallback consumers (coat and blade) gate on the mirror holding a real full field');
+// Light tint: the 8×8 dedupe is a pure function of the cadence-cached emitter
+// list — rebuilt per SCAN, with numeric keys, under the source-over it documents.
+assert.match(postFxSrc, /if\(tintWinnersGen !== bloomScanGen\)\{/, 'the wash winners rebuild only when the emitter scan does');
+assert.match(postFxSrc, /const cell = \(\(e\.x >> 3\) \* 65536\) \+ \(\(e\.y >> 3\) \+ 32768\);/, 'numeric dedupe cells — no key string per emitter');
+// The per-tile heat lookup is memoized exactly like bloomSourceFor above (the
+// INFO dictionary walk was 88% of that scan) — and lazily, INFO is stamped late.
+assert.match(postFxSrc, /const heatSourceMemo = \[\];/, 'the per-tile heat strength is memoized by tile id');
+assert.match(postFxSrc, /const hit = heatSourceMemo\[t\];\n\tif\(hit !== undefined\) return hit;/, 'the heat memo distinguishes "not computed" from "cold"');
 
 // Heat shimmer, source side. The one line that decides whether this effect can
 // spill onto a neighbouring block: the destination rect (x0) is the SAME on both
@@ -762,6 +812,12 @@ assert.ok(!/wxPx \+ wob|drawImage\([^)]*, wxPx/.test(postFxSrc), 'the old destin
 assert.ok(!/i \* 1\.7|2\.6 - i \* 0\.6/.test(postFxSrc), 'the old three-slice phase/amplitude ladder is gone');
 assert.match(shimBody, /ctx\.setTransform\(1, 0, 0, 1, 0, 0\);/, 'the pass works in device space, so rows land on whole pixels');
 assert.ok(!/frameMs\s*>|stressed/.test(shimBody), 'the shimmer never degrades itself on a frame-time threshold — a weak machine sees the full effect');
+// The live feeds (pools, burning) are x-culled by their callers, while the band
+// sort (hottest first) and the caps run BEFORE off-canvas bands are discarded —
+// without a y-cut a fire in a mine below the screen could outrank and silently
+// suppress the plumes actually in view.
+assert.match(shimBody, /if\(ry < yMin \|\| ry > yMax\) continue;/, 'pool/burning sources are cut to the visible rows before the band budget');
+assert.match(shimBody, /const sources = heatSrcList;\n\t\tsources\.length = 0;/, 'the shimmer source list is pooled scratch, not a fresh array per frame');
 assert.match(shimBody, /rowBudget: HEAT_ROW_BUDGET, bandCap: HEAT_BAND_CAP/, 'work is capped by fixed row and band budgets instead');
 assert.match(shimBody, /while\(k < openTiles && getTile\(x, band\.y - 1 - k\) === T\.AIR\) k\+\+;/, 'the plume is clipped to the open air above the run — never through a cavern ceiling');
 // The merger gets the SAME probe the clip uses. Anything looser and it could bridge
@@ -992,6 +1048,30 @@ assert.match(threatSrc, /function staffGlowKey\(m\)\{/, 'the staff focus has its
 const glowBody = postFxSrc.slice(postFxSrc.indexOf('drawGlowPass(ctx, opts){'), postFxSrc.indexOf('drawHeroSheenPass(ctx, opts){'));
 assert.ok(glowBody.length > 1000, 'the glow pass body was actually located (the old slice was empty)');
 assert.ok(!/createElement\('canvas'\)|canvas\.width = /.test(glowBody), 'the glow pass allocates no canvas and no full-screen accumulation buffer');
+
+// --- frame-seam allocation contracts (audit 2026-07-26) ------------------------
+// Pure helpers that run several times per frame memoize per item/colour/grade,
+// with guard fields so an in-place mutation (fusion, upgrades) re-derives.
+assert.match(weaponsSrc, /const weaponSeedMemo=new WeakMap\(\);/, 'weapon visual seed memoized per item');
+assert.match(weaponsSrc, /const weaponMaterialMemo=new WeakMap\(\);/, 'weapon material profile memoized per item');
+assert.match(weaponsSrc, /hit\.tier===it\.tier && hit\.unique===it\.unique && hit\.wt===it\.weaponType/, 'the material memo re-derives when the item mutates in place');
+assert.match(weaponsSrc, /const weaponRgbaPrefix=new Map\(\);/, 'the hex→rgba prefix is memoized per colour (emissiveRgb pattern)');
+assert.match(threatSrc, /const eyeColorMemo=\[\];/, 'menace eye colours memoized per (grade, base hex)');
+assert.match(mobsSrc, /const kc=m\._gkc\|\|\(m\._gkc=\{\}\);/, 'mob trail keys cached on the instance — no string concat per part per frame');
+// The volcano's trail-key counter is MODULE state: a per-draw reset handed two
+// shots born on different frames the same key, swapping their streaks.
+const volcanoSeqSrc = readFileSync(new URL('../src/engine/volcano.js', import.meta.url), 'utf8');
+const iVolDraw = volcanoSeqSrc.indexOf('function draw(ctx,TILE,canDrawTile,getTile){');
+assert.ok(iVolDraw > 0, 'volcano draw was located');
+const iVolSeq = volcanoSeqSrc.indexOf('let shotSeq=0;');
+assert.ok(iVolSeq > 0 && iVolSeq < iVolDraw, 'the volcano trail-key counter lives at module scope, not reset per draw');
+// ONE time snapshot per frame: BACKGROUND.timeInfo() walks the whole seasons
+// metrics chain (~11 allocations), and the gfx call sites used to call it — or
+// currentDaylight() around it — up to nine times per frame.
+assert.match(mainSrc, /frameTimeInfo=\(BACKGROUND && BACKGROUND\.timeInfo\)\?BACKGROUND\.timeInfo\(\):null;\n frameDaylight=currentDaylight\(\);/, 'draw() refreshes the frame time snapshot first');
+assert.match(mainSrc, /time:frameTimeInfo,daylight:frameDaylight,frameMs:lastFrameMs\}\);/, 'god rays ride the frame snapshot');
+assert.match(mainSrc, /sunlit:gy<=shSurf,time:frameTimeInfo\}/, 'the caster shadow rides the frame snapshot');
+assert.match(mainSrc, /visibleAt:worldFxVisible,time:frameTimeInfo,frameMs:lastFrameMs\}/, 'tree shadows ride the frame snapshot');
 const iEmissive = mainSrc.indexOf('POST_FX.drawGlowPass(ctx');
 const iFogPass = mainSrc.indexOf('drawFogOverlay(sx,sy,viewX,viewY,{camX:camRenderX');
 assert.ok(iEmissive > iDark, 'creature light draws ABOVE the darkness overlay (that is the whole point)');

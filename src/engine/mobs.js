@@ -8646,7 +8646,14 @@ const mobs = (function(){
       // part name opts the source into a motion streak.
       const glowAt=(x,y,r,color,a,part)=>{
         if(!EMISSIVE) return false;
-        if(part) return EMISSIVE.addEmissive({x,y,r,color,a,key:mobGlowKey(m)+part,trail:true});
+        if(part){
+          // Composed trail keys cached on the mob: a property hit instead of a
+          // string concat per glowing part per frame. _gkc follows _gk's rule —
+          // the serializer's explicit field list keeps it out of saves.
+          const kc=m._gkc||(m._gkc={});
+          const key=kc[part]||(kc[part]=mobGlowKey(m)+part);
+          return EMISSIVE.addEmissive({x,y,r,color,a,key,trail:true});
+        }
         return EMISSIVE.addEmissive({x,y,r,color,a});
       };
       // Glowing eyes. The art's own eye pixels stay exactly where the species put
