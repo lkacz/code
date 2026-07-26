@@ -347,6 +347,15 @@ function dorsalFin(ctx,x,y,dir,w,h,col,edge){
   ctx.quadraticCurveTo(x-dir*w*0.10, y-h*1.05, x+dir*w*0.20, y-h);
   ctx.strokeStyle=edge; ctx.lineWidth=1; ctx.stroke();
 }
+// Trail identity for the staff focus. Same rule mobs.js uses: a lazily assigned
+// in-memory counter, because spawn timestamps collide and a shared trail key
+// would swap streaks between two shamans.
+let staffKeySeq=0;
+function staffGlowKey(m){
+  if(!m) return 'staff:0';
+  if(!m._sgk) m._sgk='staff'+(++staffKeySeq)+':';
+  return m._sgk;
+}
 // lazily pre-baked additive glow sprite for the eye-shine (one per colour)
 const glowSprites=new Map();
 function glowSprite(col){
@@ -634,16 +643,25 @@ function drawGear(ctx,look,meta,m,sx,sy,faceDir,phase,hpTop,dark){
     ctx.beginPath(); ctx.moveTo(gx,gy+4); ctx.lineTo(gx,gy+30); ctx.stroke();
     const r=2+tier*1.1;
     const col=look.breath;
+    // The focus is a lamp on a swinging staff: registered with post_fx so it
+    // burns THROUGH the darkness overlay (drawn here it was dimmed by the night
+    // it lights) and paints a streak as the shaman channels. Falls back to the
+    // local sprite when the registry is absent.
     if(tier>=2){
-      const s=glowSprite(col);
-      if(s){
-        const gr=r*3.2;
-        const prev=ctx.globalCompositeOperation;
-        ctx.globalCompositeOperation='lighter';
-        ctx.globalAlpha=0.40+0.14*Math.sin(phase*2.1);
-        ctx.drawImage(s,gx-gr,gy-gr,gr*2,gr*2);
-        ctx.globalAlpha=1;
-        ctx.globalCompositeOperation=prev;
+      const fx=(typeof window!=='undefined' && window.MM && window.MM.postFx) || null;
+      if(fx && fx.addEmissive){
+        fx.addEmissive({x:gx,y:gy,r:r*3.4,color:col,a:0.46+0.16*Math.sin(phase*2.1),key:staffGlowKey(m),trail:true});
+      } else {
+        const s=glowSprite(col);
+        if(s){
+          const gr=r*3.2;
+          const prev=ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation='lighter';
+          ctx.globalAlpha=0.40+0.14*Math.sin(phase*2.1);
+          ctx.drawImage(s,gx-gr,gy-gr,gr*2,gr*2);
+          ctx.globalAlpha=1;
+          ctx.globalCompositeOperation=prev;
+        }
       }
     }
     ctx.fillStyle=col;

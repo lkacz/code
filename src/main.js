@@ -15349,6 +15349,12 @@ function draw(){ // Background first
  // fog pass below so undiscovered black still wins on top. The gate keeps
  // standard mode from even building the opts object each frame.
  if(gfxUltraOn('bloom') && POST_FX.drawBloomPass) POST_FX.drawBloomPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs});
+ // Entity glow: the halos creatures registered during their own pass above, now
+ // painted in the same place tile bloom lands — over the darkness, under the fog.
+ // NOT gated on a toggle: at standard tier this IS the creature's light (it
+ // replaced the flat ellipses the species used to draw), and the call also
+ // DRAINS the queue, so skipping it would show stale positions next frame.
+ if(POST_FX.drawEmissivePass) POST_FX.drawEmissivePass(ctx,{now:performance.now()});
  // Ghost block preview — recomputed each frame so camera motion can't leave it stale.
  // Green = placement allowed right now; red = blocked (reach/support/no blocks).
  if(isToolMode() && lastPointer.has && !pinch && !mining){

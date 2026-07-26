@@ -122,6 +122,94 @@ export function collectBloomEmitters(opts){
 	return out;
 }
 
+// --- entity emissive glow (poświata istot) -----------------------------------
+// Every glowing creature part in the game used to hand-roll its own halo: a
+// flat additive ellipse or a filled arc at one constant alpha. Two things are
+// wrong with that. A constant-alpha disc has a HARD rim, so it reads as a
+// coloured blob glued onto the sprite instead of light leaving a body; and it is
+// drawn INSIDE the entity pass, i.e. underneath the darkness overlay that
+// follows, so the night dims the one thing that exists to survive the night.
+//
+// Entities now REGISTER their emissive parts in world pixels and one batched
+// pass draws the lot where tile bloom draws — above darkness, below fog —
+// through the same pre-baked radial falloff sprite.
+//
+// It carries NO toggle, at full quality (wide bleed + core + motion streak),
+// because it was measured rather than assumed: 3.4 us per still source and
+// 9.8 us per streaking source (tools/mob-glow-qa.mjs, 400 cycles, software
+// canvas). A firefly field puts ~9 sources on screen, a bat cave 16, so the pass
+// costs ~0.2-1% of a 60 fps frame — cheaper than hiding it behind an option.
+// emissiveTier() is therefore 1 normally and 0 only under the QA kill switch
+// (__mmNoPostFX), which keeps screenshot goldens comparable.
+export const EMISSIVE_MAX = 96;        // per-frame queue cap (bloom's is 160)
+export const EMISSIVE_TRAIL_MAX = 32;  // trailed sources per frame
+export const TRAIL_PTS = 7;            // history depth
+export const TRAIL_SAMPLE_MS = 26;     // ~6 samples over ~170 ms of movement
+export const TRAIL_MIN_PX = 1.1;       // below this the source counts as still
+export const TRAIL_BREAK_PX = 140;     // respawn/teleport guard (world px)
+export const TRAIL_TTL_MS = 900;       // histories of gone entities expire
+
+// Colour normaliser: the art writes '#rgb'/'#rrggbb', the bloom table writes
+// 'r,g,b', and glowSpriteFor keys its cache on the triplet. Unparseable input
+// falls back to the same warm white bloom uses rather than throwing inside a
+// draw loop.
+const emissiveRgbCache = new Map();
+export function emissiveRgb(color){
+	if(typeof color !== 'string' || !color) return '255,236,190';
+	const hit = emissiveRgbCache.get(color);
+	if(hit) return hit;
+	let out = null;
+	if(color.charCodeAt(0) === 35){
+		let h = color.slice(1);
+		if(h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+		if(h.length === 6 && /^[0-9a-fA-F]{6}$/.test(h)){
+			const n = parseInt(h, 16);
+			out = ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255);
+		}
+	} else if(/^\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*$/.test(color)){
+		out = color.replace(/\s+/g, '');
+	}
+	if(!out) out = '255,236,190';
+	if(emissiveRgbCache.size < 512) emissiveRgbCache.set(color, out);
+	return out;
+}
+
+// Trails are WORLD-space position history — the model every trail renderer uses
+// (Unity's TrailRenderer, "ribbon trails"): sample the position at intervals,
+// then draw a tapering stroke through the samples. The other standard answer, a
+// full-screen accumulation buffer faded a few percent per frame (what every
+// "canvas motion trail" tutorial reaches for, and what a long exposure
+// physically does), is WRONG for a scrolling world: that buffer lives in SCREEN
+// space, so it smears with the CAMERA and a standing torch grows a tail
+// whenever the player walks. History in world coordinates is camera-independent
+// by construction and its cost scales with the handful of glowing entities
+// instead of with the framebuffer.
+// One stamp per sample was rejected as well: a fast mover needs so many stamps
+// to keep the streak unbroken that either the beads show or the count explodes.
+// A round-capped stroke per segment interpolates the gap for free.
+export function trailSampleDue(hist, x, y, now){
+	if(!hist || !hist.pts || !hist.pts.length) return true;
+	if(!((now - hist.at) >= TRAIL_SAMPLE_MS)) return false;
+	const last = hist.pts[hist.pts.length - 1];
+	return (Math.abs(x - last.x) + Math.abs(y - last.y)) > TRAIL_MIN_PX;
+}
+// A jump this large is not motion, it is a teleport, a respawn or a key reused
+// by a different entity: keeping the history would draw a light beam across the
+// world. The trail restarts instead.
+export function trailBroken(hist, x, y){
+	if(!hist || !hist.pts || !hist.pts.length) return false;
+	const last = hist.pts[hist.pts.length - 1];
+	return (Math.abs(x - last.x) + Math.abs(y - last.y)) > TRAIL_BREAK_PX;
+}
+// Segment weight along the streak: 0 at the oldest sample, 1 at the head. The
+// square keeps the tail thin and dim (a light streak fades fast) while the last
+// third stays bright enough to connect to the body.
+export function trailTaper(i, n){
+	if(!(n > 1)) return 1;
+	const t = Math.max(0, Math.min(1, i / (n - 1)));
+	return t * t;
+}
+
 // --- hero sheen (środowiskowa powłoka bohatera) ------------------------------
 // A faked environment reflection built like a 2D matcap: each body zone gets
 // the color it WOULD mirror — the crown reflects the sky or the cave ceiling,
@@ -383,10 +471,19 @@ export function collectIceRuns(opts){
 }
 
 const config = normalizeGfxConfig(null);
-const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, bladeSheens: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0 };
+const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, emissiveSources: 0, emissiveHalos: 0, emissiveStreaks: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, bladeSheens: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0 };
 let bloomEmitters = [];
 let bloomScanAt = 0;
 let bloomScanKey = '';
+// Entity emissive queue: filled during the entity passes (mobs, threat look),
+// drained once per frame by drawEmissivePass. Entries are recycled objects — the
+// queue is a ring, not a fresh array per frame, so a hundred glowing creatures
+// allocate nothing.
+const emissiveQueue = [];
+let emissiveCount = 0;
+let emissiveFrame = 0;
+const emissiveTrails = new Map(); // key -> {pts:[{x,y}], at, seen, frame}
+let emissiveTrailSweepAt = 0;
 let godRayBeams = [];
 let godRayKey = '';
 let godRayScanAt = 0;
@@ -724,6 +821,138 @@ const api = {
 		ctx.restore();
 		metrics.bladeSheens++;
 		return 1;
+	},
+	// Effective emissive tier: 1 normally, 0 under the QA kill switch. Not a
+	// component flag — the glow REPLACES art the entities used to draw for
+	// themselves, so switching it off would delete a firefly's light rather than
+	// remove an optional extra.
+	emissiveTier(){
+		return (HAS_WINDOW && window.__mmNoPostFX) ? 0 : 1;
+	},
+	// Registry inlet. Called from entity draw code in WORLD pixels; nothing is
+	// painted here, so the caller cannot accidentally land its glow under the
+	// darkness overlay. `key` is required for a trail (a stable per-entity-part
+	// identity); without one the source is a still light.
+	addEmissive(src){
+		if(!src || !Number.isFinite(src.x) || !Number.isFinite(src.y)) return false;
+		const r = Number(src.r);
+		if(!(r > 0)) return false;
+		if(api.emissiveTier() < 1) return false;
+		if(emissiveCount >= EMISSIVE_MAX) return false;
+		let e = emissiveQueue[emissiveCount];
+		if(!e) e = emissiveQueue[emissiveCount] = { x: 0, y: 0, r: 0, rgb: '', a: 1, key: '', trail: false };
+		e.x = src.x; e.y = src.y;
+		e.r = Math.min(320, r);
+		e.rgb = emissiveRgb(src.color);
+		e.a = Math.max(0, Math.min(1, Number.isFinite(src.a) ? src.a : 0.55));
+		e.key = (src.trail && typeof src.key === 'string') ? src.key : '';
+		e.trail = !!e.key;
+		emissiveCount++;
+		return true;
+	},
+	emissiveQueued(){ return emissiveCount; },
+	// Entity glow frame driver. Runs in WORLD space next to bloom: above the
+	// darkness overlay (glow is what lives in the dark), below the fog pass
+	// (undiscovered black still wins). Drains the queue unconditionally — an
+	// early return that left entries behind would draw last frame's glow at
+	// stale positions.
+	drawEmissivePass(ctx, opts){
+		const n = emissiveCount;
+		emissiveCount = 0;
+		// Killed: drop the histories too, so coming back cannot resume a streak
+		// from wherever an entity used to be. A merely EMPTY frame keeps them —
+		// expiry is the TTL sweep's job, not a one-frame cull's.
+		if(api.emissiveTier() < 1){
+			if(emissiveTrails.size) emissiveTrails.clear();
+			return 0;
+		}
+		if(!ctx || !n) return 0;
+		metrics.emissiveSources += n;
+		const now = (opts && Number.isFinite(opts.now)) ? opts.now
+			: ((typeof performance !== 'undefined' && performance.now) ? performance.now() : 0);
+		emissiveFrame++;
+		let halos = 0, streaks = 0;
+		ctx.save();
+		ctx.globalCompositeOperation = 'lighter';
+		ctx.imageSmoothingEnabled = true;
+		// Streaks first so the head halo always caps the tail it belongs to.
+		{
+			ctx.lineCap = 'round';
+			ctx.lineJoin = 'round';
+			let trailed = 0;
+			for(let i = 0; i < n; i++){
+				const e = emissiveQueue[i];
+				if(!e.trail || trailed >= EMISSIVE_TRAIL_MAX) continue;
+				trailed++;
+				let hist = emissiveTrails.get(e.key);
+				if(!hist){
+					if(emissiveTrails.size >= EMISSIVE_MAX * 2) continue;
+					hist = { pts: [], at: 0, seen: now, frame: 0 };
+					emissiveTrails.set(e.key, hist);
+				}
+				hist.seen = now;
+				if(hist.frame !== emissiveFrame){
+					hist.frame = emissiveFrame;
+					if(trailBroken(hist, e.x, e.y)) hist.pts.length = 0;
+					if(trailSampleDue(hist, e.x, e.y, now)){
+						hist.pts.push({ x: e.x, y: e.y });
+						if(hist.pts.length > TRAIL_PTS) hist.pts.shift();
+						hist.at = now;
+					}
+				}
+				const pts = hist.pts;
+				if(pts.length < 2) continue;
+				// One colour per source, alpha per segment: varying globalAlpha
+				// instead of rebuilding an rgba() string keeps the whole streak
+				// allocation-free.
+				ctx.strokeStyle = 'rgb(' + e.rgb + ')';
+				for(let s = 1; s < pts.length; s++){
+					const w = trailTaper(s, pts.length);
+					ctx.globalAlpha = Math.min(0.5, e.a * 0.42 * w);
+					ctx.lineWidth = Math.max(0.7, e.r * 0.42 * w);
+					ctx.beginPath();
+					ctx.moveTo(pts[s - 1].x, pts[s - 1].y);
+					ctx.lineTo(pts[s].x, pts[s].y);
+					ctx.stroke();
+					streaks++;
+				}
+				// close the gap between the newest sample and where the body is NOW
+				ctx.globalAlpha = Math.min(0.5, e.a * 0.42);
+				ctx.lineWidth = Math.max(0.7, e.r * 0.42);
+				ctx.beginPath();
+				ctx.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+				ctx.lineTo(e.x, e.y);
+				ctx.stroke();
+				streaks++;
+			}
+		}
+		for(let i = 0; i < n; i++){
+			const e = emissiveQueue[i];
+			const spr = glowSpriteFor(e.rgb);
+			if(!spr) break;
+			// A wide dim bleed UNDER a tight bright core: the two-layer shape of a
+			// real bloom, and the thing that makes a glow read as light instead of
+			// as a coloured disc stuck on the sprite.
+			const wr = e.r * 1.85;
+			ctx.globalAlpha = e.a * 0.34;
+			ctx.drawImage(spr, e.x - wr, e.y - wr, wr * 2, wr * 2);
+			halos++;
+			ctx.globalAlpha = e.a;
+			ctx.drawImage(spr, e.x - e.r, e.y - e.r, e.r * 2, e.r * 2);
+			halos++;
+		}
+		ctx.restore();
+		metrics.emissiveHalos += halos;
+		metrics.emissiveStreaks += streaks;
+		// Histories of entities that stopped being drawn (dead, culled, fogged)
+		// expire on a slow sweep rather than per frame.
+		if(emissiveTrails.size && now - emissiveTrailSweepAt > 500){
+			emissiveTrailSweepAt = now;
+			for(const [key, hist] of emissiveTrails){
+				if(now - hist.seen > TRAIL_TTL_MS) emissiveTrails.delete(key);
+			}
+		}
+		return halos;
 	},
 	// Bloom frame driver. Runs in WORLD space (main.js calls it under the world
 	// transform, after the darkness overlay and before fog): emitter list is

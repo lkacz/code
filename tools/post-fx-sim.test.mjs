@@ -37,7 +37,9 @@ const {
 	normalizeGfxConfig, parseGfxConfig, bloomScanIntervalMs,
 	bloomSourceFor, collectBloomEmitters, BLOOM_MIN_LEVEL, BLOOM_MAX_EMITTERS,
 	heroSheenEnvSample, heroMirrorCurve, shadowParams,
-	wetGroundStep, collectCanopyGaps, collectIceRuns
+	wetGroundStep, collectCanopyGaps, collectIceRuns,
+	emissiveRgb, trailSampleDue, trailBroken, trailTaper,
+	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX
 } = await import('../src/engine/post_fx.js');
 const { T, INFO } = await import('../src/constants.js');
 await import('../src/engine/furnishings.js'); // stamps INFO[t].requiresHomePower like the live game
@@ -287,11 +289,14 @@ function makeRichCtx(){
 	const ctx = {
 		drawSources,
 		fills: 0,
-		fillStyle: '', globalAlpha: 1, globalCompositeOperation: 'source-over', imageSmoothingEnabled: false,
+		strokes: 0,
+		fillStyle: '', strokeStyle: '', lineWidth: 1, lineCap: 'butt', lineJoin: 'miter',
+		globalAlpha: 1, globalCompositeOperation: 'source-over', imageSmoothingEnabled: false,
 		canvas: { width: 1600, height: 900 },
 		getTransform(){ return { a: 1, b: 0, c: 0, d: 1, e: 700, f: 400 }; },
 		save(){}, restore(){}, beginPath(){}, closePath(){}, rect(){}, clip(){},
 		translate(){}, scale(){}, moveTo(){}, lineTo(){}, fill(){ ctx.fills++; }, ellipse(){ ctx.fills++; },
+		stroke(){ ctx.strokes++; },
 		fillRect(){ ctx.fills++; },
 		drawImage(src){ drawSources.push(src); },
 		createLinearGradient(){ return { addColorStop(){} }; },
@@ -347,6 +352,92 @@ postFx.set('heatShimmer', false);
 postFx.set('iceReflections', false);
 assert.equal(postFx.releaseScratch(), true, 'toggling both consumers off releases the snapshot scratch');
 
+// --- entity emissive registry --------------------------------------------------
+// Colour normaliser: the art writes hex, the bloom table writes triplets, and the
+// sprite cache is keyed on the triplet.
+assert.equal(emissiveRgb('#ff5a5a'), '255,90,90', 'six-digit hex becomes a triplet');
+assert.equal(emissiveRgb('#fff'), '255,255,255', 'short hex expands');
+assert.equal(emissiveRgb('164,255,84'), '164,255,84', 'an existing triplet passes through');
+assert.equal(emissiveRgb('120, 200, 255'), '120,200,255', 'whitespace in a triplet is normalised');
+assert.equal(emissiveRgb('rebeccapurple'), '255,236,190', 'unparseable colour falls back instead of throwing in a draw loop');
+assert.equal(emissiveRgb(null), '255,236,190', 'a missing colour falls back');
+
+// Trail sampling model (world-space position history).
+assert.equal(trailSampleDue(null, 0, 0, 1000), true, 'an empty history always takes its first sample');
+const histA = { pts: [{ x: 100, y: 100 }], at: 1000 };
+assert.equal(trailSampleDue(histA, 140, 100, 1000 + TRAIL_SAMPLE_MS - 5), false, 'samples are rate-limited by time, not by frames');
+assert.equal(trailSampleDue(histA, 100.2, 100, 1000 + TRAIL_SAMPLE_MS + 5), false, 'a source that barely moved adds no sample (a still light must not pile up dots)');
+assert.equal(trailSampleDue(histA, 140, 100, 1000 + TRAIL_SAMPLE_MS + 5), true, 'real movement past the cadence samples');
+assert.equal(trailBroken(histA, 140, 100), false, 'ordinary movement keeps the history');
+assert.equal(trailBroken(histA, 100 + TRAIL_BREAK_PX + 10, 100), true, 'a teleport-sized jump breaks the trail (no light beam across the world)');
+assert.equal(trailTaper(0, 7), 0, 'the oldest sample carries no weight');
+assert.equal(trailTaper(6, 7), 1, 'the head carries full weight');
+assert.ok(trailTaper(3, 7) < 0.5, 'the taper is convex — the tail thins fast, like a real light streak');
+
+// Live registry: queue -> one batched pass. The glow carries NO component flag —
+// it is standard at full quality because it was measured (3.4 us per still
+// source, 9.8 us per streaking one; tools/mob-glow-qa.mjs) — so the only thing
+// that can silence it is the QA kill switch.
+assert.equal(postFx.emissiveTier(), 1, 'creature light is standard, not an ultra option');
+postFx.set('bloom', true);
+assert.equal(postFx.emissiveTier(), 1, 'the bloom toggle does not change creature light (tile emitters are its business)');
+postFx.set('bloom', false);
+window.__mmNoPostFX = true;
+assert.equal(postFx.emissiveTier(), 0, 'the QA kill switch silences the glow for goldens');
+assert.equal(postFx.addEmissive({ x: 10, y: 10, r: 6, color: '#fff' }), false, 'a killed registry accepts nothing');
+delete window.__mmNoPostFX;
+
+assert.equal(postFx.addEmissive({ x: 10, y: 10, r: 6, color: '#ffe068' }), true, 'a valid source is accepted');
+assert.equal(postFx.addEmissive({ x: NaN, y: 10, r: 6, color: '#fff' }), false, 'a non-finite position is rejected');
+assert.equal(postFx.addEmissive({ x: 10, y: 10, r: 0, color: '#fff' }), false, 'a zero radius is rejected');
+assert.equal(postFx.emissiveQueued(), 1, 'only the valid source queued');
+const emCtx = makeRichCtx();
+assert.equal(postFx.drawEmissivePass(emCtx, { now: 5000 }), 2, 'a still source draws the wide bleed plus the tight core');
+assert.equal(postFx.emissiveQueued(), 0, 'the pass DRAINS the queue (a stranded source would redraw at a stale position)');
+assert.equal(emCtx.strokes, 0, 'a source with no trail key paints no streak');
+assert.equal(emCtx.drawSources.length, 2, 'two sprite blits per source — the two-layer shape of a real bloom');
+assert.equal(postFx.drawEmissivePass(makeRichCtx(), { now: 5016 }), 0, 'an empty queue costs nothing');
+
+// A streak that grows as the source moves.
+let t2 = 6000;
+let lastTrailCtx = null;
+for(let step = 0; step < 6; step++){
+	postFx.addEmissive({ x: 100 + step * 30, y: 200, r: 7, color: '#ff5a5a', a: 0.5, key: 'bat1:eye0', trail: true });
+	lastTrailCtx = makeRichCtx();
+	postFx.drawEmissivePass(lastTrailCtx, { now: t2 });
+	t2 += 40;
+}
+assert.equal(lastTrailCtx.drawSources.length, 2, 'the moving source still gets bleed + core');
+assert.ok(lastTrailCtx.strokes >= 5, 'the streak strokes one segment per history step plus the head, so it reaches the body: ' + lastTrailCtx.strokes);
+assert.equal(lastTrailCtx.lineCap, 'round', 'round caps keep a segmented streak from reading as beads');
+// A source that stops moving must not keep a growing tail, and dropping the
+// source (dead, culled, fogged) must not leave its streak behind.
+const stillCtx = makeRichCtx();
+for(let step = 0; step < 4; step++){
+	postFx.addEmissive({ x: 280, y: 200, r: 7, color: '#ff5a5a', a: 0.5, key: 'bat1:eye0', trail: true });
+	postFx.drawEmissivePass(stillCtx, { now: t2 });
+	t2 += 40;
+}
+const stillStrokes = stillCtx.strokes;
+postFx.addEmissive({ x: 280, y: 200, r: 7, color: '#ff5a5a', a: 0.5, key: 'bat1:eye0', trail: true });
+const afterStill = makeRichCtx();
+postFx.drawEmissivePass(afterStill, { now: t2 + 40 });
+assert.ok(afterStill.strokes <= Math.ceil(stillStrokes / 3), 'a stationary source stops extending its history');
+// Queue cap: a swarm cannot make the pass unbounded.
+for(let i = 0; i < EMISSIVE_MAX + 40; i++) postFx.addEmissive({ x: i, y: 5, r: 4, color: '#ffe068' });
+assert.equal(postFx.emissiveQueued(), EMISSIVE_MAX, 'the queue is capped like the bloom emitter list');
+postFx.drawEmissivePass(makeRichCtx(), { now: t2 + 100 });
+assert.ok(TRAIL_PTS >= 5 && TRAIL_PTS <= 12, 'history depth stays in the range a streak needs');
+// The kill switch must also DROP the histories: coming back must not resume a
+// streak from wherever the entity used to be.
+window.__mmNoPostFX = true;
+postFx.drawEmissivePass(makeRichCtx(), { now: t2 + 200 });
+delete window.__mmNoPostFX;
+const resumeCtx = makeRichCtx();
+postFx.addEmissive({ x: 100, y: 200, r: 7, color: '#ff5a5a', key: 'bat1:eye0', trail: true });
+postFx.drawEmissivePass(resumeCtx, { now: t2 + 240 });
+assert.equal(resumeCtx.strokes, 0, 'a revived pass starts from a clean history, never from a stale position');
+
 // --- new-game boundary --------------------------------------------------------
 assert.ok(NEW_GAME_PREFERENCE_KEYS.includes('mm_gfx_ultra_v1'), 'graphics choice survives a new game');
 
@@ -368,11 +459,17 @@ assert.ok(!/drawImage\(ctx\.canvas/.test(postFxSrc), 'no post_fx pass blits the 
 // disabled component costs neither the call nor its opts object. A new pass
 // added without the gate fails here, not in a profiler.
 const passCalls = [...mainSrc.matchAll(/POST_FX\.draw\w+\(ctx/g)];
-assert.ok(passCalls.length >= 9, 'all pass invocations are present in main.js');
+assert.ok(passCalls.length >= 10, 'all pass invocations are present in main.js');
 for(const m of passCalls){
+	// The entity glow is the ONE deliberate exception. It is not an optional
+	// extra: at standard tier it IS the light creatures used to draw for
+	// themselves, and the call also DRAINS the registry queue, so gating it would
+	// strand queued sources and redraw them at stale positions next frame.
+	if(mainSrc.startsWith('POST_FX.drawEmissivePass(ctx', m.index)) continue;
 	const back = mainSrc.slice(Math.max(0, m.index - 420), m.index);
 	assert.ok(back.includes("gfxUltraOn('") || back.includes("POST_FX.on('"), 'pass invocation missing a component gate near: ' + mainSrc.slice(m.index, m.index + 60));
 }
+assert.match(mainSrc, /if\(POST_FX\.drawEmissivePass\) POST_FX\.drawEmissivePass\(ctx,\{now:performance\.now\(\)\}\);/, 'the entity glow pass runs every frame, ungated, and drains the queue');
 
 assert.match(mainSrc, /import \{ postFx as POST_FX \} from '\.\/engine\/post_fx\.js';/, 'main.js wires the post_fx module');
 assert.match(mainSrc, /function gfxUltraOn\(name\)\{ return !!\(POST_FX && POST_FX\.on && POST_FX\.on\(name\)\); \}/, 'every ultra hook gates through one helper');
@@ -524,6 +621,42 @@ assert.match(mainSrc, /submerged:waterLevelUnitsAt\(sheenPx,Math\.floor\(player\
 assert.match(mainSrc, /if\(gfxName==='ao' \|\| gfxName==='specular'\) invalidateAllChunkRenderCaches\(\);/, 'baked components force a re-bake when toggled');
 assert.match(mainSrc, /panel\.querySelectorAll\('\[data-gfx-toggle\]'\)\.forEach\(chk=>\{ chk\.checked=!!\(POST_FX && POST_FX\.config && POST_FX\.config\[chk\.dataset\.gfxToggle\]\); \}\);/, 'panel reopen resyncs component checkboxes');
 for(const name of GFX_COMPONENTS) assert.ok(mainSrc.includes("'" + name + "'"), 'component ' + name + ' has a UI mapping in main.js');
+
+// --- entity glow: source contracts ---------------------------------------------
+// Creature light must be REGISTERED, not painted where the creature is drawn: the
+// darkness overlay lands between the two, so a hand-rolled halo gets dimmed by
+// the night it exists to cut through.
+const threatSrc = readFileSync(new URL('../src/engine/threat_look.js', import.meta.url), 'utf8');
+assert.match(postFxSrc, /addEmissive\(src\)\{/, 'post_fx owns the registry inlet');
+assert.match(mobsSrc, /const glowAt=\(x,y,r,color,a,part\)=>\{/, 'mobs register glow through one helper');
+assert.match(mobsSrc, /const EMISSIVE=\(typeof window!=='undefined' && window\.MM && MM\.postFx && MM\.postFx\.addEmissive\) \? MM\.postFx : null;/, 'the registry lookup is hoisted once per frame and fails soft');
+assert.match(mobsSrc, /function mobGlowKey\(m\)\{/, 'trail identity is per instance, not per species');
+assert.ok(!mobsSrc.includes("m.spawnT+':'+m.id") && /if\(!m\._gk\) m\._gk='m'\+\(\+\+glowKeySeq\)\+':';/.test(mobsSrc), 'the trail key is a counter — spawn timestamps collide inside a spawn batch');
+// Every converted species must be gone from the flat-disc pattern. These are the
+// exact shapes the user could see: a constant-alpha ellipse or arc with a hard rim.
+assert.ok(!mobsSrc.includes("ctx.ellipse(screenX,screenY-3,12,6,0,0,Math.PI*2)"), 'the radiation cockroach green blob is gone');
+assert.ok(!mobsSrc.includes("ctx.arc(screenX, screenY, 6,0,Math.PI*2)"), 'the firefly flat halo disc is gone');
+assert.ok(!mobsSrc.includes("ctx.ellipse(screenX-2,screenY-12,36,22,0,0,Math.PI*2)"), 'the atomic bomb aura ellipse is gone');
+assert.ok(!mobsSrc.includes('function goldGlowSprite()'), 'the golden sprinter no longer bakes its own private halo sprite');
+assert.ok(!mobsSrc.includes("ctx.arc(screenX,screenY-4,22,0,Math.PI*2)"), 'the seraph halo disc is gone');
+const glowCalls = (mobsSrc.match(/glowAt\(/g) || []).length;
+assert.ok(glowCalls >= 15, 'the converted species all register their light: ' + glowCalls);
+// Eyes: the art keeps its own pixels; the registry only adds the light they emit.
+assert.match(mobsSrc, /const eyeGlow=\(x,y,w,h,base,lit\)=>\{/, 'eyeGlow draws the art eye AND registers its light');
+assert.match(mobsSrc, /if\(!lit && grade<3\) return col;/, 'only a natively lit eye or a grade-3+ menace stare glows');
+assert.match(mobsSrc, /glowAt\(screenX\+faceDir\*ea\[0\], screenY\+ea\[1\], 4\.4\+g\*0\.6, eyeTint\('#ff3018'\), 0\.18\+0\.09\*\(g-2\), 'stare'\);/, 'the generic menace stare hangs off threat_look\'s measured head anchor');
+assert.ok(!/eyeGlow\([^)]*\)\s*;\s*\n\s*ctx\.fillStyle=eyeTint/.test(mobsSrc), 'a converted face does not also paint its eyes the old way');
+// The shaman's staff focus is a lamp on a swinging stick: registered, with the
+// local sprite kept only as the no-registry fallback.
+assert.match(threatSrc, /fx\.addEmissive\(\{x:gx,y:gy,r:r\*3\.4,color:col,a:0\.46\+0\.16\*Math\.sin\(phase\*2\.1\),key:staffGlowKey\(m\),trail:true\}\);/, 'the staff focus registers its glow with a trail');
+assert.match(threatSrc, /function staffGlowKey\(m\)\{/, 'the staff focus has its own per-instance trail identity');
+// Trails are world-space by construction. A screen-space accumulation buffer is
+// the other standard answer and it is WRONG here: it smears with the camera.
+assert.ok(!/emissive[\s\S]{0,400}canvas\.width = /i.test(postFxSrc.slice(postFxSrc.indexOf('drawEmissivePass'))), 'the glow pass allocates no full-screen accumulation buffer');
+const iEmissive = mainSrc.indexOf('POST_FX.drawEmissivePass(ctx');
+const iFogPass = mainSrc.indexOf('drawFogOverlay(sx,sy,viewX,viewY,{camX:camRenderX');
+assert.ok(iEmissive > iDark, 'creature light draws ABOVE the darkness overlay (that is the whole point)');
+assert.ok(iFogPass > iEmissive, 'creature light stays BELOW the fog pass (undiscovered black still wins)');
 
 // Celestial bloom: the sun/moon are screen-space (no tile the emitter scan can
 // find), so background.js carries its own gated halo — one per body.

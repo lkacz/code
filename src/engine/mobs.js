@@ -8503,22 +8503,9 @@ const mobs = (function(){
     ctx.restore();
   }
 
-  // Pre-baked radial glow for the golden sprinter (per-frame gradients are costly)
-  let _goldGlow=null;
-  function goldGlowSprite(){
-    if(_goldGlow!==null) return _goldGlow;
-    try{
-      const c=document.createElement('canvas'); c.width=c.height=96;
-      const g=c.getContext('2d');
-      const grad=g.createRadialGradient(48,48,2,48,48,46);
-      grad.addColorStop(0,'rgba(255,242,180,0.9)');
-      grad.addColorStop(0.35,'rgba(255,206,84,0.40)');
-      grad.addColorStop(1,'rgba(255,180,40,0)');
-      g.fillStyle=grad; g.beginPath(); g.arc(48,48,46,0,Math.PI*2); g.fill();
-      _goldGlow=c;
-    }catch(e){ _goldGlow=false; }
-    return _goldGlow;
-  }
+  // (The golden sprinter's own pre-baked halo sprite lived here. Its halo now
+  // goes through the shared emissive registry, which bakes one sprite per colour
+  // for every glowing creature and draws them all above the darkness overlay.)
 
   function drawAtomicTrefoil(ctx,cx,cy,r){
     const radius=Math.max(3,Number(r)||7);
@@ -8543,6 +8530,17 @@ const mobs = (function(){
     ctx.restore();
   }
 
+  // Per-instance identity for glow trails. spawnT alone collides — a spawnBatch
+  // lands six piranhas in the same millisecond — and two entities sharing a
+  // trail key would swap streaks between them, so this is a lazily assigned
+  // counter that exists only in memory. It can never reach a save: the
+  // serializer writes an explicit field list, not the whole mob.
+  let glowKeySeq=0;
+  function mobGlowKey(m){
+    if(!m._gk) m._gk='m'+(++glowKeySeq)+':';
+    return m._gk;
+  }
+
   function draw(ctx, TILE, camX,camY, zoom, canDrawTile, viewX,viewY){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const mobVisible = (m)=> !visibleTile || visibleTile(Math.floor(m.x), Math.floor(m.y));
@@ -8550,6 +8548,9 @@ const mobs = (function(){
     // directional sun shadow REPLACES the contact blob below (the hero's
     // replace-semantics); caves and standard mode keep the classic ellipse.
     const ultraShadows=(typeof window!=='undefined' && window.MM && MM.postFx && MM.postFx.on && MM.postFx.on('shadows') && MM.postFx.drawCasterShadow) ? MM.postFx : null;
+    // Shared emissive registry (see glowAt below). Hoisted once per frame; a
+    // missing registry costs a species its halo, never a broken sprite.
+    const EMISSIVE=(typeof window!=='undefined' && window.MM && MM.postFx && MM.postFx.addEmissive) ? MM.postFx : null;
     const ultraShadowTime=(ultraShadows && MM.background && MM.background.timeInfo) ? MM.background.timeInfo() : null;
     ctx.save(); ctx.imageSmoothingEnabled=false; const now=performance.now();
   // View bounds expressed in tile coordinates (camX/camY already in tiles)
@@ -8619,6 +8620,34 @@ const mobs = (function(){
       // sand worm) simply never call it. No engine eyeball is layered on top.
       const mobLook=THREAT_LOOK.lookFor(m,spec);
       const eyeTint=(base)=>THREAT_LOOK.menaceEyeColor(mobLook,base);
+      // Emissive parts register with post_fx instead of painting a local additive
+      // ellipse. Two reasons the shared pass wins: it draws ABOVE the darkness
+      // overlay (a hand-rolled halo inside this pass gets dimmed by the very
+      // night it exists to cut through), and it owns the falloff, so a glow is
+      // light with a soft edge rather than a flat disc with a hard rim. Passing a
+      // part name opts the source into a motion streak.
+      const glowAt=(x,y,r,color,a,part)=>{
+        if(!EMISSIVE) return false;
+        if(part) return EMISSIVE.addEmissive({x,y,r,color,a,key:mobGlowKey(m)+part,trail:true});
+        return EMISSIVE.addEmissive({x,y,r,color,a});
+      };
+      // Glowing eyes. The art's own eye pixels stay exactly where the species put
+      // them — threat_look's standing rule is that no overlay eyeball is ever
+      // stamped over the art — and what this adds is the LIGHT those pixels give
+      // off. A menacing stare earns it from grade 3 up, which is where
+      // menaceEyeColor has pulled the colour to unmistakable hot red; species
+      // whose eyes are lamps by nature pass lit:true and glow at any grade.
+      let eyeSeq=0;
+      const eyeGlow=(x,y,w,h,base,lit)=>{
+        const col=eyeTint(base);
+        ctx.fillStyle=col;
+        ctx.fillRect(x,y,w,h);
+        const grade=mobLook?(Number(mobLook.grade)||0):0;
+        if(!lit && grade<3) return col;
+        const k=lit?1:Math.min(1,(grade-2)/3);
+        glowAt(x+w*0.5,y+h*0.5,Math.max(2.8,Math.max(w,h)*2.1),col,0.26+0.30*k,'eye'+(eyeSeq++));
+        return col;
+      };
       // Helper to draw outline rectangle
       function box(x,y,w,h,fill,stroke){ ctx.fillStyle=fill; ctx.fillRect(x,y,w,h); if(stroke){ ctx.strokeStyle=stroke; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);} hpTop(y); }
       function shade(x,y,w,h,col,alpha){ ctx.fillStyle=col; ctx.globalAlpha=alpha; ctx.fillRect(x,y,w,h); ctx.globalAlpha=1; }
@@ -8847,12 +8876,7 @@ const mobs = (function(){
           const pulse=Math.sin(phase*1.45)*0.5+0.5;
           ctx.save();
           ctx.globalAlpha=veiled ? 0.34+0.18*pulse : 0.70+0.20*pulse;
-          ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(180,236,255,0.34)';
-          ctx.beginPath();
-          ctx.ellipse(screenX,screenY-10,15+pulse*4,18+pulse*3,0,0,Math.PI*2);
-          ctx.fill();
-          ctx.globalCompositeOperation='source-over';
+          glowAt(screenX,screenY-10,17+pulse*4,'#b4ecff',(veiled?0.14:0.30)+0.10*pulse,'chill');
           ctx.fillStyle=body;
           ctx.beginPath();
           ctx.moveTo(screenX,screenY-24);
@@ -9147,14 +9171,7 @@ const mobs = (function(){
           const pulse = Math.sin(phase*1.6)*0.5+0.5;
           const bob = Math.sin(phase2)*2;
           ctx.save();
-          ctx.globalCompositeOperation='lighter';
-          ctx.globalAlpha=0.22+0.16*pulse;
-          ctx.fillStyle='#7be8ff';
-          ctx.beginPath();
-          ctx.ellipse(screenX,screenY-7+bob,18+pulse*4,15+pulse*3,0,0,Math.PI*2);
-          ctx.fill();
-          ctx.globalCompositeOperation='source-over';
-          ctx.globalAlpha=1;
+          glowAt(screenX,screenY-7+bob,18+pulse*4,'#7be8ff',0.24+0.16*pulse,'bell');
           const grad=ctx.createLinearGradient(screenX,screenY-20+bob,screenX,screenY+8+bob);
           grad.addColorStop(0,body);
           grad.addColorStop(1,'#7f5bd6');
@@ -9534,8 +9551,9 @@ const mobs = (function(){
           const glowA = 0.55+0.45*pulse;
           ctx.fillStyle=`rgba(255,224,102,${glowA})`; ctx.fillRect(screenX-2, screenY-2,4,4); hpTop(screenY-2);
           ctx.fillStyle=`rgba(255,213,0,${0.4+0.4*pulse})`; ctx.fillRect(screenX-1, screenY-1,2,2);
-          // outer halo
-          ctx.globalAlpha=0.25*glowA; ctx.fillStyle='#ffe068'; ctx.beginPath(); ctx.arc(screenX, screenY, 6,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+          // The lamp itself: a real falloff over the darkness, and the wander
+          // path draws itself the way a firefly reads on a long exposure.
+          glowAt(screenX,screenY,7.5+pulse*2.5,'#ffe068',0.34*glowA+0.20,'lamp');
           break; }
         case 'GHOUL': { // gaunt hunched night stalker with glowing eyes
           const body = flashing? '#e8ffe8' : (m.baseColor||'#4a5d49');
@@ -9560,12 +9578,10 @@ const mobs = (function(){
           // legs
           ctx.fillStyle=body;
           ctx.fillRect(screenX-4, screenY-4, 3, 5); ctx.fillRect(screenX+1, screenY-4, 3, 5);
-          // glowing eyes with a faint halo so the stare reads at night
-          ctx.fillStyle=rgbaHex(eyeTint('#d8ff9a'),0.25);
-          ctx.fillRect(screenX+(faceDir>0?3:-7), screenY-26+lurch*0.6, 6, 4);
-          ctx.fillStyle=eyeTint('#d8ff9a');
-          ctx.fillRect(screenX+(faceDir>0?4:-6), screenY-25+lurch*0.6, 2, 2);
-          ctx.fillRect(screenX+(faceDir>0?7:-3), screenY-25+lurch*0.6, 2, 2);
+          // glowing eyes; the hand-rolled 0.25-alpha rect behind them was the
+          // "faint halo" — real light with a falloff replaces it
+          eyeGlow(screenX+(faceDir>0?4:-6), screenY-25+lurch*0.6, 2, 2, '#d8ff9a', true);
+          eyeGlow(screenX+(faceDir>0?7:-3), screenY-25+lurch*0.6, 2, 2, '#d8ff9a', true);
           break; }
         case 'BAT': { // small flapping silhouette with red eyes
           const body = flashing? '#fff' : (m.baseColor||'#2b2533');
@@ -9575,9 +9591,10 @@ const mobs = (function(){
           ctx.beginPath(); ctx.moveTo(screenX-3,screenY); ctx.lineTo(screenX-11,screenY-2+flap); ctx.lineTo(screenX-4,screenY+3); ctx.closePath(); ctx.fill();
           ctx.beginPath(); ctx.moveTo(screenX+3,screenY); ctx.lineTo(screenX+11,screenY-2-flap); ctx.lineTo(screenX+4,screenY+3); ctx.closePath(); ctx.fill();
           hpTop(screenY-6);
-          ctx.fillStyle=eyeTint('#ff5a5a');
-          ctx.fillRect(screenX+(faceDir>0?0:-2), screenY-2, 1.6, 1.6);
-          ctx.fillRect(screenX+(faceDir>0?2:-4), screenY-2, 1.6, 1.6);
+          // red eyes in a black cave: two points of light on an erratic flight
+          // path, which is exactly what a streak is for
+          eyeGlow(screenX+(faceDir>0?0:-2), screenY-2, 1.6, 1.6, '#ff5a5a', true);
+          eyeGlow(screenX+(faceDir>0?2:-4), screenY-2, 1.6, 1.6, '#ff5a5a', true);
           break; }
         case 'SZKIELET': { // bony archer: ribcage, skull, a short bow held forward
           const bone = flashing? '#ffffff' : (m.baseColor||'#dcd6c4');
@@ -9619,9 +9636,10 @@ const mobs = (function(){
             ctx.globalAlpha=1;
           }
           if(inRock){ ctx.globalCompositeOperation=prevComp; break; }
-          // pulsing halo
-          const glowS=goldGlowSprite();
-          if(glowS){ const pul=1+Math.sin(now*0.006+m.spawnT)*0.12; const gs=TILE*2.6*pul; ctx.globalAlpha=0.9; ctx.drawImage(glowS, screenX-gs/2, screenY-gs/2, gs, gs); ctx.globalAlpha=1; }
+          // Pulsing halo. No streak here: the rock-aware path streak drawn above
+          // is this species' own trail and knows what the generic one cannot —
+          // that a tunnelling mole is invisible inside stone.
+          glowAt(screenX,screenY,TILE*1.3*(1+Math.sin(now*0.006+m.spawnT)*0.12),'#ffce54',0.62);
           ctx.globalCompositeOperation=prevComp;
           // twinkling 4-point stars orbiting the body
           for(let i=0;i<5;i++){
@@ -9715,13 +9733,9 @@ const mobs = (function(){
           const gas=m.state==='gas';
           const claw=m.state==='claw';
           const wingLift=Math.sin(phase*1.3)*2;
-          const prevComp=ctx.globalCompositeOperation;
-          ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(255,196,64,'+(breath?0.28:0.13)+')';
-          ctx.beginPath();
-          ctx.ellipse(screenX,screenY-18,38,22,0,0,Math.PI*2);
-          ctx.fill();
-          ctx.globalCompositeOperation=prevComp;
+          // body heat: a still aura, so no streak — a 38px halo dragged behind a
+          // flying dragon reads as a smear, not as light
+          glowAt(screenX,screenY-18,34,'#ffc440',breath?0.30:0.15);
           ctx.fillStyle=mixHexColor(body,'#5b2e16',0.28);
           ctx.beginPath();
           ctx.moveTo(screenX-faceDir*8,screenY-27+wingLift);
@@ -9757,7 +9771,10 @@ const mobs = (function(){
           if(breath){
             const flameX=headX+faceDir*15;
             const flameY=screenY-38;
+            const prevComp=ctx.globalCompositeOperation;
             ctx.globalCompositeOperation='lighter';
+            // the jet's own light: hottest at the muzzle, and it sweeps with the head
+            glowAt(flameX+faceDir*16,flameY,20,'#ffb03c',0.44,'jet');
             for(let i=0;i<4;i++){
               const len=18+i*8;
               ctx.fillStyle=i%2?'rgba(255,98,35,0.42)':'rgba(255,224,82,0.55)';
@@ -9917,13 +9934,9 @@ const mobs = (function(){
           const body = flashing? '#f4ffd6' : (m.baseColor||'#79cf42');
           const glow=0.35+0.30*Math.sin(phase*2.2);
           const skit=Math.sin(phase*4.2);
-          ctx.save();
-          ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(164,255,84,'+Math.max(0.16,glow).toFixed(3)+')';
-          ctx.beginPath();
-          ctx.ellipse(screenX,screenY-3,12,6,0,0,Math.PI*2);
-          ctx.fill();
-          ctx.restore();
+          // was a flat additive ellipse — a green blob with a hard rim; the
+          // registry gives the isotope glow a falloff and a skitter streak
+          glowAt(screenX,screenY-3,13,'#a4ff54',0.20+0.22*Math.max(0,glow),'iso');
           box(screenX-8,screenY-6,16,7,body,'#263914');
           ctx.fillStyle=mixHexColor(body,'#17300f',0.42);
           ctx.fillRect(screenX-7,screenY-4,14,2);
@@ -9935,8 +9948,7 @@ const mobs = (function(){
             ctx.beginPath(); ctx.moveTo(screenX+ox,screenY-1); ctx.lineTo(screenX+ox-4,screenY+3+lift); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(screenX+ox,screenY-1); ctx.lineTo(screenX+ox+4,screenY+3-lift); ctx.stroke();
           }
-          ctx.fillStyle=eyeTint('#eaff8e');
-          ctx.fillRect(screenX+faceDir*6-(faceDir>0?0:2),screenY-5,2,2);
+          eyeGlow(screenX+faceDir*6-(faceDir>0?0:2),screenY-5,2,2,'#eaff8e',true);
           ctx.fillStyle='rgba(220,255,124,0.75)';
           ctx.fillRect(screenX-faceDir*10,screenY-2,4,1);
           hpTop(screenY-8);
@@ -9951,14 +9963,9 @@ const mobs = (function(){
           const mid=mixHexColor(body,'#9fa78b',0.24);
           const pulse=Math.sin(now*(0.006+damage*0.012)+m.spawnT*0.004)*0.5+0.5;
           const alarm=0.42+0.58*pulse;
-          // Restrained radioactive aura: the silhouette, not a green blob, owns the read.
-          ctx.save();
-          ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(163,255,84,'+(0.07+0.08*pulse+damage*0.08).toFixed(3)+')';
-          ctx.beginPath();
-          ctx.ellipse(screenX-2,screenY-12,36,22,0,0,Math.PI*2);
-          ctx.fill();
-          ctx.restore();
+          // Restrained radioactive aura: the silhouette, not a green blob, owns the
+          // read — and a bomb on its cradle stands still, so no streak.
+          glowAt(screenX-2,screenY-12,32,'#a3ff54',0.10+0.10*pulse+damage*0.10);
           // Heavy transport cradle and skids keep the warhead grounded.
           ctx.strokeStyle='#242a27';
           ctx.lineWidth=3;
@@ -10000,11 +10007,7 @@ const mobs = (function(){
           for(const bx of [-17,13]){ ctx.fillRect(screenX+bx,screenY-16,1.5,1.5); ctx.fillRect(screenX+bx,screenY-8,1.5,1.5); }
           ctx.fillStyle='#242a25'; ctx.fillRect(screenX+8,screenY-27,12,6);
           ctx.strokeStyle='#111612'; ctx.lineWidth=1; ctx.strokeRect(screenX+8.5,screenY-26.5,11,5);
-          ctx.save();
-          ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(255,55,35,'+(0.12+alarm*0.35).toFixed(3)+')';
-          ctx.beginPath(); ctx.arc(screenX+16,screenY-27,4+damage*2,0,Math.PI*2); ctx.fill();
-          ctx.restore();
+          glowAt(screenX+16,screenY-27,5+damage*2.5,'#ff3723',0.16+alarm*0.38);
           ctx.fillStyle=alarm>0.7?'#fff0c2':'#f0442f';
           ctx.fillRect(screenX+14,screenY-29,4,3);
           // Progressive cracks, scorched plating and smoke communicate the long siege.
@@ -10058,14 +10061,9 @@ const mobs = (function(){
           const pulse=Math.sin(phase*1.8)*0.5+0.5;
           ctx.save();
           if(praying){
-            ctx.globalCompositeOperation='lighter';
-            ctx.fillStyle=fire ? 'rgba(255,104,28,'+(0.12+0.16*pulse).toFixed(3)+')'
-              : sootId ? 'rgba(255,116,38,'+(0.07+0.10*pulse).toFixed(3)+')'
-              : 'rgba(130,230,255,'+(0.12+0.16*pulse).toFixed(3)+')';
-            ctx.beginPath();
-            ctx.ellipse(screenX,screenY-18,active?24:18,active?30:22,0,0,Math.PI*2);
-            ctx.fill();
-            ctx.globalCompositeOperation='source-over';
+            glowAt(screenX,screenY-18,active?26:20,
+              fire ? '#ff681c' : sootId ? '#ff7426' : '#82e6ff',
+              (sootId?0.10:0.16)+0.18*pulse);
           }
           box(screenX-8,screenY-22,16,23,body,dark);
           shade(screenX-8,screenY-5,16,6,'#000',0.15);
@@ -10180,8 +10178,7 @@ const mobs = (function(){
           const prevComp=ctx.globalCompositeOperation;
           ctx.globalCompositeOperation='lighter';
           const pulse=2.4+Math.sin(phase*3)*1.2;
-          ctx.fillStyle='rgba(120,200,255,0.35)';
-          ctx.beginPath(); ctx.arc(screenX,screenY,9+pulse,0,Math.PI*2); ctx.fill();
+          glowAt(screenX,screenY,11+pulse,'#78c8ff',0.40,'orb');
           ctx.fillStyle=flashing?'#ffffff':'rgba(200,240,255,0.95)';
           ctx.beginPath(); ctx.arc(screenX,screenY,4.5,0,Math.PI*2); ctx.fill(); hpTop(screenY-10);
           ctx.strokeStyle='rgba(170,225,255,0.9)'; ctx.lineWidth=1.4;
@@ -10206,15 +10203,13 @@ const mobs = (function(){
           }
           ctx.fillStyle='rgba(210,255,190,0.8)';
           ctx.fillRect(screenX-3,screenY-7,2,2); ctx.fillRect(screenX+2,screenY-5,2,2); // glow pores
+          glowAt(screenX-2,screenY-6,6,'#d2ffbe',0.30,'pores');
           break; }
         case 'CINDER_HAWK': { // dark hawk trailing embers
           const body=flashing?'#ffd9b8':(m.baseColor||'#cf6a34');
           const flap=Math.sin(phase*2.4)*4;
-          const prevComp=ctx.globalCompositeOperation;
-          ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(255,120,40,0.30)';
-          ctx.beginPath(); ctx.arc(screenX-faceDir*8,screenY+1,5,0,Math.PI*2); ctx.fill(); // ember wake
-          ctx.globalCompositeOperation=prevComp;
+          // ember wake: the one species whose whole read IS the trail
+          glowAt(screenX-faceDir*8,screenY+1,6.5,'#ff7828',0.36,'wake');
           ctx.fillStyle='#5a2c16';
           ctx.fillRect(screenX-9,screenY-4-flap,7,5); ctx.fillRect(screenX+2,screenY-4+flap,7,5); // wings
           box(screenX-5,screenY-4,10,7,body,'#61301a');
@@ -10224,11 +10219,7 @@ const mobs = (function(){
           break; }
         case 'SKY_SERAPH': { // radiant winged figure with a halo
           const body=flashing?'#ffffff':(m.baseColor||'#f4e6b8');
-          const prevComp=ctx.globalCompositeOperation;
-          ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(255,235,160,0.22)';
-          ctx.beginPath(); ctx.arc(screenX,screenY-4,22,0,Math.PI*2); ctx.fill();
-          ctx.globalCompositeOperation=prevComp;
+          glowAt(screenX,screenY-4,22,'#ffeba0',0.26,'halo');
           const spread=Math.sin(phase*1.4)*3;
           ctx.fillStyle='rgba(255,246,210,0.9)';
           for(const side of [-1,1]){ // twin blade-wings
@@ -10256,8 +10247,8 @@ const mobs = (function(){
           ctx.fillStyle='#3f7d2e'; // leaf crown
           ctx.beginPath(); ctx.arc(screenX-8,screenY-18,7,0,Math.PI*2); ctx.arc(screenX+2,screenY-23,9,0,Math.PI*2); ctx.arc(screenX+11,screenY-17,6,0,Math.PI*2); ctx.fill();
           hpTop(screenY-32);
-          ctx.fillStyle=eyeTint('#ffe27a');
-          ctx.fillRect(screenX+(faceDir>0?-4:0),screenY-8,3,3); ctx.fillRect(screenX+(faceDir>0?4:-8),screenY-8,3,3); // glowing eyes
+          eyeGlow(screenX+(faceDir>0?-4:0),screenY-8,3,3,'#ffe27a',true); // glowing eyes
+          eyeGlow(screenX+(faceDir>0?4:-8),screenY-8,3,3,'#ffe27a',true);
           break; }
         case 'BALLOON_TYRANT': { // striped gasbag with a fanged gondola
           const skin=flashing?'#ffe6c8':(m.baseColor||'#e08a4e');
@@ -10378,11 +10369,7 @@ const mobs = (function(){
         case 'GRAVITY_COLOSSUS': { // obsidian monolith with orbiting debris
           const rock=flashing?'#c8bce0':(m.baseColor||'#4a3f5e');
           box(screenX-13,screenY-18,26,36,rock,'#241d33'); hpTop(screenY-18);
-          const prevComp=ctx.globalCompositeOperation;
-          ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle='rgba(190,120,255,0.75)';
-          ctx.beginPath(); ctx.arc(screenX,screenY-2,5+Math.sin(phase*2)*1.4,0,Math.PI*2); ctx.fill(); // core
-          ctx.globalCompositeOperation=prevComp;
+          glowAt(screenX,screenY-2,6.5+Math.sin(phase*2)*1.6,'#be78ff',0.68,'core'); // singularity core
           ctx.fillStyle='#241d33';
           ctx.fillRect(screenX-9,screenY-14,5,4); ctx.fillRect(screenX+5,screenY-12,4,3); // cracks
           for(let i=0;i<3;i++){ // orbiting shards
@@ -10396,8 +10383,7 @@ const mobs = (function(){
           const reborn=!!m._reborn;
           const prevComp=ctx.globalCompositeOperation;
           ctx.globalCompositeOperation='lighter';
-          ctx.fillStyle=reborn?'rgba(255,150,40,0.4)':'rgba(255,120,40,0.28)';
-          ctx.beginPath(); ctx.arc(screenX,screenY,16,0,Math.PI*2); ctx.fill();
+          glowAt(screenX,screenY,17,reborn?'#ff9628':'#ff7828',reborn?0.46:0.34,'burn');
           const flap=Math.sin(phase*2.6)*5;
           ctx.fillStyle='rgba(255,170,60,0.85)';
           for(const side of [-1,1]){ // flame wings
@@ -10422,6 +10408,23 @@ const mobs = (function(){
         default: {
           // fallback: small box
           box(screenX-4, screenY-4,8,8, flashing? '#ffffff':'#888', '#444');
+        }
+      }
+      // The menace stare. From grade 3 up menaceEyeColor has already pulled the
+      // art's own eye pixels to unmistakable hot red, and red eyes are the one
+      // thing that should read in a dark cave BEFORE the silhouette does. This
+      // covers every species at once instead of touching 45 hand-drawn faces: the
+      // light is pinned to threat_look's head anchor — the same measured anatomy
+      // point its fangs and breath hang off, never a guessed bounding box — and
+      // species that registered their own eye light above are skipped.
+      // The anchor is a world position, so per-entity pose, bulk and hit-shake
+      // jitter do not move the light. That is right for a light source and it
+      // keeps the registry free of matrix math.
+      if(!eyeSeq && mobLook && (Number(mobLook.grade)||0)>=3){
+        const ea=mobLook.meta && mobLook.meta.eye;
+        if(ea){
+          const g=Math.min(5,Number(mobLook.grade)||0);
+          glowAt(screenX+faceDir*ea[0], screenY+ea[1], 4.4+g*0.6, eyeTint('#ff3018'), 0.18+0.09*(g-2), 'stare');
         }
       }
       {

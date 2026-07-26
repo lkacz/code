@@ -392,9 +392,13 @@ function stubCtx(){
     'JESIENNY_LOS','ZIMOWY_NIEDZWIEDZ','GHOUL','BAT','SZKIELET','PELZACZ','GOLD_DRAGON','GOLD_DWARF_GUARD',
     'RADIATION_COCKROACH','ICE_SHAMAN','FIRE_SHAMAN','CLOUD_RAY','HARPY','HARPY_QUEEN','CINDER_HAWK',
     'SKY_SERAPH','SKYGROVE_WARDEN','BALLOON_TYRANT','AURORA_WYRM','MIRAGE_DJINN','SPORE_MOTHER','EMBER_PHOENIX'];
+  // Two spellings satisfy the rule. eyeTint() is the bare colour bridge; eyeGlow()
+  // is the same bridge plus a registration of the LIGHT those pixels emit (the
+  // emissive registry, drawn above the darkness overlay). Both tint the art's own
+  // eye pixels in place — what is still forbidden is a stamped overlay eyeball.
   for(const id of SIGHTED){
     assert.ok(bodies[id], id+': draw case parsed');
-    assert.ok(bodies[id].includes('eyeTint('), id+': tints its OWN art eyes natively');
+    assert.ok(bodies[id].includes('eyeTint(') || bodies[id].includes('eyeGlow('), id+': tints its OWN art eyes natively');
   }
   const SENSOR=['STRAZNIK','STONE_GOLEM','CORSAIR_AUTOMATON','GRAVITY_COLOSSUS','ATOMIC_BOMB',
     'VOLT_WISP','STORM_HERALD','ICE_WRAITH','SAND_WORM','ATLANTIS_MEDUZA','SPORE_DRIFTER','FIREFLY','ZLOTY'];
@@ -405,6 +409,15 @@ function stubCtx(){
   // the helper is the single bridge between the art and the menace ramp
   assert.ok(/const eyeTint=\(base\)=>THREAT_LOOK\.menaceEyeColor\(mobLook,base\);/.test(mobsSrc),
     'the draw loop derives eyeTint from menaceEyeColor');
+  // eyeGlow must stay a WRAPPER over that bridge: it fills the art's own rect with
+  // the tinted colour and only then registers the light. If it ever grew its own
+  // eyeball shape we would be back to the rejected shared-eye overlay.
+  const iEyeGlow=mobsSrc.indexOf('const eyeGlow=(x,y,w,h,base,lit)=>{');
+  assert.ok(iEyeGlow>0, 'eyeGlow exists as the tint+register wrapper');
+  const eyeGlowBody=mobsSrc.slice(iEyeGlow, mobsSrc.indexOf('\n      };', iEyeGlow));
+  assert.ok(/const col=eyeTint\(base\);/.test(eyeGlowBody), 'eyeGlow colours through eyeTint, never with a colour of its own');
+  assert.ok(/ctx\.fillRect\(x,y,w,h\);/.test(eyeGlowBody), 'eyeGlow paints the art\'s own eye rect (no arc, no template eyeball)');
+  assert.ok(!/ctx\.arc\(|ctx\.ellipse\(/.test(eyeGlowBody), 'eyeGlow draws no eyeball shape of its own');
 }
 {
   const FAMS=[
