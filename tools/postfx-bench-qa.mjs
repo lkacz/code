@@ -191,6 +191,17 @@ async function main(){
 		}
 		console.log('   -------');
 		console.log('   ' + String(total.toFixed(1)).padStart(7) + '                           SUM (all passes on; no profile runs them all)');
+		// A pass that drew NOTHING still yields a small, plausible number, and the
+		// draws column has to be READ for that to register — the ice case sat at
+		// zero for a whole audit round with its time quoted as a measurement. Say
+		// it out loud instead, and fail: a scene this fragile (one natural tree
+		// over the ice sheet is enough) will break again.
+		const silent = rows.filter(([label]) => !(out.shape[label] > 0)).map(([label]) => label);
+		if (silent.length){
+			process.exitCode = 1;
+			console.error(NL + '  NOTHING DREW: ' + silent.join(', ') + NL
+				+ '  Their microseconds are noise — the staged scene no longer feeds these passes.');
+		}
 		console.log(NL + '  "naive" = the tight loop with no flush: command recording only.');
 		console.log('  Kept in the report so the gap stays visible - it is NOT a cost.');
 		if (pageErrors.length) console.log('\npageErrors:\n' + pageErrors.slice(0, 2).join('\n---\n'));

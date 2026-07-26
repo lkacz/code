@@ -21,6 +21,7 @@ globalThis.document = {
 			getContext(){
 				return {
 					fillStyle: null,
+					createLinearGradient(){ return { addColorStop(){} }; },
 					createRadialGradient(){ return { addColorStop(){} }; },
 					fillRect(){},
 					setTransform(){},
@@ -38,6 +39,9 @@ const {
 	bloomSourceFor, collectBloomEmitters, BLOOM_MIN_LEVEL, BLOOM_MAX_EMITTERS,
 	heroSheenEnvSample, heroMirrorCurve, shadowParams,
 	wetGroundStep, collectCanopyGaps, collectIceRuns,
+	godRayWeight, godRayJitter, godRayProfile, godRayCross,
+	GAP_COVER_MIN, GAP_COVER_SPAN, GAP_MAX_WIDTH, GAP_CANOPY_PROBE, GAP_ROOF_MIN,
+	GODRAY_SPREADS, GODRAY_TINTS, GODRAY_MAX_BEAMS, GODRAY_SUN_TILES, GODRAY_LEAN,
 	emissiveRgb, normalizeGlow, trailSampleDue, trailBroken, trailTaper,
 	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX, TRAIL_RETRACT_MS,
 	heatSourceFor, heatPlumeTiles, heatAmpPx, heatEnvelope, heatOffsetPx, buildHeatBands,
@@ -307,6 +311,99 @@ assert.equal(gaps[0].groundY, 20, 'beam lands on the surface');
 const treeless = collectCanopyGaps({ x0: 20, x1: 40, getTile: () => T.AIR, surfaceHeight: flatSurf, isCanopy: t => t === T.LEAF });
 assert.equal(treeless.length, 0, 'open plains cast no beams (a gap needs canopy on both sides)');
 assert.ok(Number.isFinite(gaps[0].groundX), 'beam remembers which column produced its landing row (fog probe target)');
+// The MOUTH is the roof's underside, not the crown: a shaft becomes visible
+// where it enters shaded air, and starting it at the treetops is what left the
+// old beams hanging in open sky with a bright horizontal cut across the top.
+assert.equal(gaps[0].mouthY, 15, 'a one-row canopy puts crown and underside on the same row');
+const thick = new Map();
+for(const cx of [0, 1, 2, 6, 7, 8]) for(const cy of [13, 14, 15]) thick.set(cx + ',' + cy, T.LEAF);
+const thickGaps = collectCanopyGaps({ x0: 0, x1: 8, getTile: (x, y) => thick.get(x + ',' + y) ?? T.AIR, surfaceHeight: flatSurf, isCanopy: t => t === T.LEAF });
+assert.equal(thickGaps.length, 1, 'a thick roof still yields its one gap');
+assert.equal(thickGaps[0].topY, 13, 'topY is the CROWN (highest leaf)');
+assert.equal(thickGaps[0].mouthY, 15, 'mouthY is the UNDERSIDE (lowest leaf) — where the shaft enters shaded air');
+// Cover: how enclosed the site is. A sunbeam is lit air, invisible against a
+// bright sky, so enclosure IS the beam's strength — this is the gate that stops
+// shafts appearing over open ground.
+assert.ok(Math.abs(gaps[0].cover - 6 / 9) < 1e-12, 'cover counts canopy columns in the window around the gap');
+assert.ok(Math.abs(gaps[0].weight - 7 / 27) < 1e-12, 'weight is the smoothstep of cover above the threshold');
+assert.equal(godRayWeight(GAP_COVER_MIN), 0, 'at the threshold a site is worth nothing — it fades in, never pops');
+assert.equal(godRayWeight(0.4), 0, 'below the threshold there is no beam at all');
+assert.equal(godRayWeight(1), 1, 'a fully closed roof gives full strength');
+assert.equal(godRayWeight(0.75), 0.5, 'halfway up the range is the smoothstep midpoint');
+// Two lone trees in a field: a narrow gap, flanked on both sides, and still no
+// beam — because there is no dark air under it for a shaft to show against.
+const sparse = new Map();
+for(const cx of [3, 7]) sparse.set(cx + ',15', T.LEAF);
+const sparseGaps = collectCanopyGaps({ x0: 0, x1: 8, getTile: (x, y) => sparse.get(x + ',' + y) ?? T.AIR, surfaceHeight: flatSurf, isCanopy: t => t === T.LEAF });
+assert.equal(sparseGaps.length, 0, 'two lone trees in a field cast no beam (cover too low)');
+// A break wider than the cap is a clearing, not a hole in a roof.
+const wide = new Map();
+for(const cx of [0, 1, 2, 8]) wide.set(cx + ',15', T.LEAF);
+const wideGaps = collectCanopyGaps({ x0: 0, x1: 8, getTile: (x, y) => wide.get(x + ',' + y) ?? T.AIR, surfaceHeight: flatSurf, isCanopy: t => t === T.LEAF });
+assert.equal(wideGaps.length, 0, 'a break wider than GAP_MAX_WIDTH is a clearing, not a beam site');
+assert.equal(GAP_MAX_WIDTH, 3, 'a beam site is at most three columns wide');
+assert.equal(gaps[0].x1 - gaps[0].x0 + 1, GAP_MAX_WIDTH, 'the pinned forest gap sits exactly at the width cap');
+// Wide on purpose. At four columns a single pair of trees scored 0.89 cover and
+// cast a bright shaft against open blue sky — one crown spans many columns, so
+// the narrow window was answering "is there a leaf above me" when the question
+// is "am I inside a forest". Caught by the live QA's screenshot, not by a pin.
+assert.equal(GAP_COVER_SPAN, 9, 'the cover window reaches nine columns each side');
+assert.equal(GAP_CANOPY_PROBE, 16, 'a roof may sit up to sixteen rows above the surface');
+// A roof is something you can stand under. Undergrowth shades nothing, and
+// counting it would anchor a shaft's mouth at ankle height — the same guard
+// stops a tree TRUNK being mistaken for the underside of a canopy.
+assert.equal(GAP_ROOF_MIN, 3, 'foliage closer than three rows to the ground is undergrowth, not a roof');
+const bushes = new Map();
+for(const cx of [0, 1, 2, 6, 7, 8]) for(const cy of [18, 19]) bushes.set(cx + ',' + cy, T.LEAF);
+const bushGaps = collectCanopyGaps({ x0: 0, x1: 8, getTile: (x, y) => bushes.get(x + ',' + y) ?? T.AIR, surfaceHeight: flatSurf, isCanopy: t => t === T.LEAF });
+assert.equal(bushGaps.length, 0, 'undergrowth at head height casts no beam — there is no shaded air under it');
+assert.equal(collectCanopyGaps({ x0: 0, x1: 8, getTile: forestTile, surfaceHeight: flatSurf, isCanopy: t => t === T.LEAF, maxBeams: 0 }).length, 0, 'a zero cap collects nothing');
+// Per-site jitter must be stable across scans (a beam that re-rolls its width
+// every 400 ms flickers) and must differ between the two salts.
+assert.equal(godRayJitter(37, 1), godRayJitter(37, 1), 'jitter is deterministic for a column');
+assert.notEqual(godRayJitter(37, 1), godRayJitter(37, 2), 'width and alpha draw from different salts');
+assert.notEqual(godRayJitter(37, 1), godRayJitter(38, 1), 'neighbouring sites do not share a character');
+for(const x of [-9, 0, 5, 41, 1200]){ const j = godRayJitter(x, 1); assert.ok(j >= 0 && j < 1, 'jitter stays in [0,1) at x=' + x); }
+
+// --- god ray beam profile ---------------------------------------------------------
+// Along the shaft: both ends eased to zero. The old pass started at FULL alpha
+// on its top edge, which is what drew a bright horizontal line across the sky.
+assert.equal(godRayProfile(0), 0, 'the mouth starts at nothing — no cut line where the shaft leaves the leaves');
+assert.equal(godRayProfile(1), 0, 'the foot dissolves — no cut line where it lands');
+assert.equal(godRayProfile(-0.1), 0, 'outside the shaft there is no shaft');
+assert.equal(godRayProfile(1.4), 0, 'past the foot there is no shaft');
+assert.ok(godRayProfile(0.2) > godRayProfile(0.5), 'a shaft is brightest near its source');
+assert.ok(godRayProfile(0.5) > godRayProfile(0.8), 'and fades progressively along its length');
+// Across the shaft: a soft bell, symmetric, zero at both edges — no rim.
+assert.equal(godRayCross(0), 1, 'the core is full strength');
+assert.equal(godRayCross(1), 0, 'the edge is nothing');
+assert.equal(godRayCross(-1), 0, 'the other edge too');
+assert.equal(godRayCross(1.6), 0, 'beyond the edge stays nothing');
+assert.equal(godRayCross(-0.42), godRayCross(0.42), 'the cross-section is symmetric');
+assert.ok(godRayCross(0.5) < 0.5, 'the falloff is faster than linear — a beam has no flat plateau');
+for(let u = 0; u < 1; u += 0.05) assert.ok(godRayCross(u) > godRayCross(u + 0.05) - 1e-12, 'cross-section never brightens outward at u=' + u.toFixed(2));
+assert.deepEqual([...GODRAY_SPREADS], [1.25, 1.5, 1.8, 2.2, 2.7], 'five spread buckets bake the wedge');
+assert.equal(GODRAY_TINTS.length, 3, 'three sun tints: high sun, golden hour, horizon');
+assert.equal(GODRAY_MAX_BEAMS, 24, 'the beam cap is a fixed constant');
+assert.ok(GODRAY_SUN_TILES > 0, 'the apparent sun distance sets how fast a shaft widens');
+assert.ok(GODRAY_LEAN > 0 && GODRAY_LEAN < 1, 'a shaft leans with the sun, less steeply than the shadow it belongs to');
+// The whole point of the apex model: the foot is wider than the mouth, and by a
+// bounded amount. Crepuscular rays are very nearly parallel — they only LOOK
+// like they fan out — so the spread must stay a shaft, never a cone.
+const spreadFor = (lenTiles) => (GODRAY_SUN_TILES + lenTiles) / GODRAY_SUN_TILES;
+assert.equal(spreadFor(0), 1, 'a zero-length shaft has not spread yet');
+assert.ok(spreadFor(12) > 1.7 && spreadFor(12) < 2.0, 'a twelve-tile shaft lands about 1.85x its mouth width');
+// The bucket table is what BOUNDS it. The raw ratio grows without limit, but
+// the pass bakes the wedge, so the widest bucket is the widest a shaft can ever
+// open — a beam can never turn into a floodlight cone.
+const bucketFor = (s) => { let si = 0; for(let k = 1; k < GODRAY_SPREADS.length; k++) if(Math.abs(GODRAY_SPREADS[k] - s) < Math.abs(GODRAY_SPREADS[si] - s)) si = k; return GODRAY_SPREADS[si]; };
+assert.equal(bucketFor(spreadFor(0)), 1.25, 'a short shaft takes the narrowest bake');
+assert.equal(bucketFor(spreadFor(12)), 1.8, 'a twelve-tile shaft takes the middle bake');
+assert.equal(bucketFor(spreadFor(400)), 2.7, 'an absurdly long shaft still bakes at the widest bucket, never wider');
+// The decay must not outrun the spread. A shaft that dims faster than it widens
+// still LOOKS like it tapers to a point, whatever its geometry says — this is
+// the arithmetic the live QA measured off the framebuffer and rejected once.
+assert.ok(godRayProfile(0.8) > godRayProfile(0.2) * 0.45, 'the tail stays bright enough for the widening to read');
 
 // --- ice-run finder ---------------------------------------------------------------
 // Natural frozen lake: the ICE crust sits at the WATER LINE, rows ABOVE the
@@ -346,7 +443,7 @@ function makeRichCtx(){
 		canvas: { width: 1600, height: 900 },
 		getTransform(){ return { a: 1, b: 0, c: 0, d: 1, e: 700, f: 400 }; },
 		save(){}, restore(){}, beginPath(){}, closePath(){}, rect(){}, clip(){}, setTransform(){},
-		translate(){}, scale(){}, moveTo(){}, lineTo(){}, fill(){ ctx.fills++; }, ellipse(){ ctx.fills++; },
+		translate(){}, scale(){}, rotate(){}, moveTo(){}, lineTo(){}, fill(){ ctx.fills++; }, ellipse(){ ctx.fills++; },
 		stroke(){ ctx.strokes++; },
 		fillRect(){ ctx.fills++; },
 		drawImage(src){ drawSources.push(src); },
@@ -361,7 +458,13 @@ matrixWorld.set(gk(4, 21), T.LAVA);            // shimmer source (air above)
 matrixWorld.set(gk(6, 17), T.ICE);             // frozen crust above the bed row
 matrixWorld.set(gk(6, 18), T.WATER);
 for(let wx = -20; wx <= 40; wx++) if(!matrixWorld.has(gk(wx, 21))) matrixWorld.set(gk(wx, 21), T.STONE);
-for(const cx of [10, 11, 12, 16, 17, 18]) matrixWorld.set(gk(cx, 16), T.LEAF); // canopy with a gap at 13-15
+// A closed roof with a three-column hole at 13-15. It has to be a ROOF, not two
+// trees: god rays are gated on how enclosed the site is, so a token canopy would
+// drive the pass with a beam too faint to mean anything.
+// Columns 4 (lava) and 6 (the frozen crust) stay open on purpose — a leaf over
+// either would cap the shimmer plume and hide the ice from its scan, and this
+// world drives every pass at once.
+for(const cx of [5, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20, 21, 22, 23, 24]) matrixWorld.set(gk(cx, 16), T.LEAF);
 for(let ty = 17; ty <= 20; ty++) matrixWorld.set(gk(20, ty), T.WOOD);          // a trunk for tree shadows
 const mTile = (x, y) => matrixWorld.get(gk(x, y)) ?? T.AIR;
 const mSurf = () => 21;
@@ -827,6 +930,31 @@ assert.match(shimBody, /while\(k < openTiles && getTile\(x, band\.y - 1 - k\) ==
 assert.match(shimBody, /const airAbove = \(x, y, need\) => \{/, 'the pass lends the merger an air probe');
 assert.match(shimBody, /mergeGap: Number\.isFinite\(opts\.mergeGap\) \? opts\.mergeGap : HEAT_MERGE_GAP, airAbove/, 'gap merging is wired, with a QA seam to A/B it');
 
+// --- god rays: the shaft is a baked quad, not a polygon ---------------------------
+const iRayFn = postFxSrc.indexOf('drawGodRaysPass(ctx, opts){');
+const rayBody = postFxSrc.slice(iRayFn, postFxSrc.indexOf('\n\t},', iRayFn));
+assert.ok(iRayFn > 0 && rayBody.length > 400, 'the god ray pass body was located');
+// The old pass built a linear gradient and two rgba() strings PER BEAM PER FRAME
+// and filled a hard-edged parallelogram. The profile is baked once now, so the
+// pass allocates nothing and the beam has soft edges on every side.
+assert.ok(!/createLinearGradient|addColorStop|rgba\(/.test(rayBody), 'the shaft profile is baked into a sprite — the pass builds no gradient and no colour string per frame');
+assert.ok(!/moveTo|lineTo|closePath|\bfill\(\)/.test(rayBody), 'no polygon: a hard-edged quad is what gave the old beams their rim');
+assert.match(rayBody, /ctx\.drawImage\(spr, -footW \* 0\.5, 0, footW, len\);/, 'one blit per beam, sized by its FOOT (the sprite bakes the mouth narrower)');
+assert.match(rayBody, /const len = h \/ cos;/, 'a leaning shaft is longer than the vertical drop it covers');
+assert.match(rayBody, /const spread = \(GODRAY_SUN_TILES \+ len \/ TILE\) \/ GODRAY_SUN_TILES;/, 'the wedge diverges from an apex placed up-sun — that is what makes it narrow at the roof and wide where it lands');
+assert.match(rayBody, /const mouthPx = b\.mouthY \* TILE/, 'the shaft starts at the canopy UNDERSIDE, not at the crown hanging in the sky');
+assert.ok(!/b\.topY/.test(rayBody), 'the crown row no longer anchors anything the player can see');
+assert.match(rayBody, /ctx\.globalAlpha = alpha \* b\.weight \* \(0\.80 \+ 0\.40 \* b\.jitterA\);/, 'each beam carries its own enclosure weight and its own character');
+assert.match(rayBody, /const pad = GAP_COVER_SPAN \+ 2;/, 'the scan is padded past the view so a beam does not brighten as it scrolls in');
+assert.match(rayBody, /maxBeams: GODRAY_MAX_BEAMS/, 'the beam count is a fixed cap');
+assert.ok(!/frameMs|stressed|critical/.test(rayBody), 'god rays never degrade themselves on a frame-time threshold');
+const iGapFn = postFxSrc.indexOf('export function collectCanopyGaps(');
+const gapBody = postFxSrc.slice(iGapFn, postFxSrc.indexOf('\n}', iGapFn));
+assert.ok(iGapFn > 0 && gapBody.length > 400, 'the canopy scan body was located');
+assert.match(gapBody, /if\(bots\[i\] === null\) bots\[i\] = y;\n\t\t\ttops\[i\] = y;/, 'one probe per column yields both the underside and the crown');
+assert.ok(!/surfaceHeight\(end \+ 1\)|surfaceHeight\(x - 1\)/.test(gapBody), 're-probing the flanks is gone — the spans are computed once and reused');
+assert.match(gapBody, /const weight = godRayWeight\(cover\);/, 'enclosure decides the beam, in the scan, not at draw time');
+
 // Standard-mode zero cost: EVERY pass invocation in main.js sits behind a
 // component gate (gfxUltraOn / POST_FX.on within the guarding block), so a
 // disabled component costs neither the call nor its opts object. A new pass
@@ -911,7 +1039,11 @@ assert.match(mainSrc, /\['🌧️ Mokra nawierzchnia','wetGround'\]/, 'wet groun
 assert.match(mainSrc, /\['✨ Pyłki w świetle','dustMotes'\]/, 'dust motes row maps to its component');
 assert.match(mainSrc, /\['🧊 Odbicia na lodzie','iceReflections'\]/, 'ice reflections row maps to its component');
 assert.match(mainSrc, /if\(gfxUltraOn\('godRays'\) && POST_FX\.drawGodRaysPass\)/, 'god rays pass is gated');
-assert.match(mainSrc, /isCanopy:\(t\)=>isLeaf\(t\)\|\|isWood\(t\)/, 'god rays use the shared leaf/wood predicates');
+// FOLIAGE only. A roof is made of leaves; wood is the post holding it up, and
+// feeding trunks to the scan put the underside of the "canopy" at the base of
+// the nearest tree — which is to say, on the ground.
+assert.match(mainSrc, /isCanopy:isLeaf,/, 'god rays read the shared foliage predicate, and only that');
+assert.ok(!/isCanopy:\(t\)=>isLeaf\(t\)\|\|isWood\(t\)/.test(mainSrc), 'trunks are no longer mistaken for roof');
 assert.match(mainSrc, /if\(gfxUltraOn\('lightTint'\) && POST_FX\.drawLightTintPass\)/, 'light tint pass is gated');
 assert.match(mainSrc, /if\(gfxUltraOn\('heatShimmer'\) && POST_FX\.drawHeatShimmerPass\)/, 'heat shimmer pass is gated');
 assert.match(mainSrc, /pools:\(GEOTHERMAL && GEOTHERMAL\.poolsNear\)/, 'heat shimmer covers geothermal pools via the existing registry');
@@ -1102,7 +1234,10 @@ assert.match(meteorGlowSrc, /if\(m\.x<vx0 \|\| m\.x>vx1 \|\| m\.y<vy0 \|\| m\.y>
 // metrics chain (~11 allocations), and the gfx call sites used to call it — or
 // currentDaylight() around it — up to nine times per frame.
 assert.match(mainSrc, /frameTimeInfo=\(BACKGROUND && BACKGROUND\.timeInfo\)\?BACKGROUND\.timeInfo\(\):null;\n frameDaylight=currentDaylight\(\);/, 'draw() refreshes the frame time snapshot first');
-assert.match(mainSrc, /time:frameTimeInfo,daylight:frameDaylight,frameMs:lastFrameMs\}\);/, 'god rays ride the frame snapshot');
+// The pass never read frameMs — it was dead plumbing, and dead plumbing next to
+// a frame-time variable is how a degradation gets added by accident later.
+assert.match(mainSrc, /time:frameTimeInfo,daylight:frameDaylight\}\);/, 'god rays ride the frame snapshot');
+assert.ok(!/drawGodRaysPass\(ctx,\{[^}]*frameMs/.test(mainSrc), 'god rays are not even handed the frame clock');
 assert.match(mainSrc, /sunlit:gy<=shSurf,time:frameTimeInfo\}/, 'the caster shadow rides the frame snapshot');
 assert.match(mainSrc, /visibleAt:worldFxVisible,time:frameTimeInfo,frameMs:lastFrameMs\}/, 'tree shadows ride the frame snapshot');
 const iEmissive = mainSrc.indexOf('POST_FX.drawGlowPass(ctx');

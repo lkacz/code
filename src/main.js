@@ -15341,10 +15341,13 @@ function draw(){ // Background first
  // Mirrors are deliberately late: their clipped second hero render captures the
  // finished live pose, then smoke, cave lighting and fog still affect the glass.
  if(FURNISHINGS && FURNISHINGS.drawMirrors) FURNISHINGS.drawMirrors(ctx,TILE,sx,sy,viewX,viewY,getTile,worldFxVisible,{player,maxDistance:HOME_MIRROR_RANGE,renderReflection:drawHomeMirrorReflection});
- // Ultra god rays: additive shafts through canopy gaps, leaning with the same
- // solar model as the dynamic shadows — drawn over the world content so the
- // light reads volumetric, before smoke/darkness/fog still veil it.
- if(gfxUltraOn('godRays') && POST_FX.drawGodRaysPass) POST_FX.drawGodRaysPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,isCanopy:(t)=>isLeaf(t)||isWood(t),visibleAt:worldFxVisible,time:frameTimeInfo,daylight:frameDaylight,frameMs:lastFrameMs});
+ // Ultra god rays: additive shafts of lit air falling through holes in a forest
+ // ROOF, leaning with the same solar model as the dynamic shadows — drawn over
+ // the world content so the light reads volumetric, before smoke/darkness/fog
+ // still veil it. isCanopy is FOLIAGE only: a roof is made of leaves, and
+ // handing the scan trunks as well put the roof's underside on the ground.
+ // The pass owns its own cap and cadence, and never sees the frame clock.
+ if(gfxUltraOn('godRays') && POST_FX.drawGodRaysPass) POST_FX.drawGodRaysPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,isCanopy:isLeaf,visibleAt:worldFxVisible,time:frameTimeInfo,daylight:frameDaylight});
  // Black smoke is a composited density layer: it can overlap ordinary gases and
  // obscures creatures/objects, while lighting still colours the finished scene.
  if(SMOKE && SMOKE.draw) SMOKE.draw(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible);

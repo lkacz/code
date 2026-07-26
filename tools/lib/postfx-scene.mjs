@@ -37,15 +37,39 @@ export const STAGE = `(async()=>{
 	for(let i=-6;i<=6;i+=3){ W.setTile(bx+i, by-3, 3); W.setTile(bx+i, by-4, 16); }
 	// lava pool right (shimmer + tint + glow)
 	for(let x=bx+8;x<=bx+15;x++){ W.setTile(x,by,13); W.setTile(x,by-1,0); W.setTile(x,by-2,0); }
-	// pond left, then an ice sheet just beyond it (both still inside the window)
-	for(let x=bx-9;x<=bx-4;x++){ W.setTile(x,by,8); W.setTile(x,by-1,0); }
-	for(let x=bx-17;x<=bx-10;x++){ W.setTile(x,by,12); W.setTile(x,by-1,0); }
+	// pond left, then an ice sheet just beyond it (both still inside the window).
+	// Anchored per COLUMN, not on the hero's row: collectIceRuns reads
+	// surfaceHeight(x) for every column and scans DOWN to it, so on rolling
+	// terrain a flat row of ice sits below the anchor and is never reached. It
+	// had been staged flat since this scene was written, which means the ice case
+	// was timing an empty pass the whole time — the draw-count guard in the GPU
+	// harness is there so that can never again pass for a measurement.
+	// The air ABOVE them has to be cleared, and that is the part that was missing:
+	// collectIceRuns walks each column from high above DOWN to the surface and
+	// stops at the first tile it meets, so one natural tree standing over the
+	// sheet hides the whole run. Worldgen puts trees here, so the ice case had
+	// been timing an empty pass since this scene was written.
+	const clearAbove=(x,s)=>{ for(let y=s-1;y>=s-18;y--) W.setTile(x,y,0); };
+	for(let x=bx-9;x<=bx-4;x++){ const s=WG.surfaceHeight(x); clearAbove(x,s); W.setTile(x,s,8); }
+	for(let x=bx-17;x<=bx-10;x++){ const s=WG.surfaceHeight(x); clearAbove(x,s); W.setTile(x,s,12); }
 	// a trunk with a canopy that has a deliberate gap: tree shadows + god rays
 	for(let y=by-1;y>=by-6;y--) W.setTile(bx-2,y,5);
-	for(const dx of [-5,-4,-3,-1,0,1]) W.setTile(bx+dx, by-7, 6);
+	// A WIDE roof with a three-column hole over the hero. Three constraints, all
+	// paid for in wasted measurements:
+	//  * wide, because god rays weigh a site by how enclosed it is over nine
+	//    columns each side — the old six-tile token canopy scores 0.32 and draws
+	//    NOTHING, so both harnesses would have gone on timing an empty pass and
+	//    reporting the number as though it meant something;
+	//  * it stops short of the ice sheet (dx <= -10), whose scan halts at the
+	//    first tile above the crust — one leaf there deletes the ice case;
+	//  * it stops short of the lava (dx >= 8), whose plume is clipped to the open
+	//    air above it, so a roof would shorten the shimmer case's work.
+	// by-7 and not higher: a floating leaf 14 rows up is claimed as an
+	// unsupported player build and sheds within the frame, measured.
+	for(let dx=-9;dx<=7;dx++){ if(dx>=-1 && dx<=1) continue; W.setTile(bx+dx, by-7, 6); }
 	await sleep(900);
 	if(window.player) player.hp=player.maxHp;
-	return 'OK '+JSON.stringify({bx,by,lava:W.getTile(bx+10,by),pond:W.getTile(bx-6,by),ice:W.getTile(bx-12,by),trunk:W.getTile(bx-2,by-3),leaf:W.getTile(bx-4,by-7)});
+	return 'OK '+JSON.stringify({bx,by,lava:W.getTile(bx+10,by),pond:W.getTile(bx-6,by),ice:W.getTile(bx-12,by),trunk:W.getTile(bx-2,by-3),leaf:W.getTile(bx-3,by-7),hole:W.getTile(bx,by-7)});
 })()`;
 
 // The per-case driver source, shared so both harnesses call the passes with the

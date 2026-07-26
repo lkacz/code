@@ -208,8 +208,8 @@ ${CASES_SRC}
 		const rows = Object.entries(out.us).sort((a, b) => b[1] - a[1]);
 		console.log(NL + '  renderer: ' + gpu.renderer);
 		console.log('  frame beat (idle rAF): ' + out.vsyncMs + 'ms');
-		console.log(NL + '     GPU us   % of 60fps frame       N   delta(ms)   pass');
-		console.log('     ------   ----------------   -----   ---------   ------------------------');
+		console.log(NL + '     GPU us   % of 60fps frame       N   delta(ms)   draws   pass');
+		console.log('     ------   ----------------   -----   ---------   -----   ------------------------');
 		for (const [name, us] of rows){
 			const pct = (us / budget * 100);
 			// A delta smaller than a few frame beats is quantisation, not signal:
@@ -217,8 +217,21 @@ ${CASES_SRC}
 			// a measurement and a decoration.
 			const coarse = out.deltaMs[name] < out.vsyncMs * 4;
 			console.log('   ' + (coarse ? '<' : ' ') + String(us).padStart(7) + '   ' + (pct.toFixed(2) + '%').padStart(16) + '   '
-				+ String(out.n[name]).padStart(5) + '   ' + String(out.deltaMs[name]).padStart(9) + '   ' + name
+				+ String(out.n[name]).padStart(5) + '   ' + String(out.deltaMs[name]).padStart(9) + '   '
+				+ String(out.shape[name] === undefined ? '-' : out.shape[name]).padStart(5) + '   ' + name
 				+ (coarse ? '   (below resolution)' : ''));
+		}
+		// A pass that drew NOTHING still produces a small, plausible-looking time,
+		// and that number is pure noise dressed as a measurement. The scene is
+		// fragile in ways that are invisible from here — a canopy shed by the
+		// falling system, an ice sheet capped by one leaf — so the harness has to
+		// say so rather than publish a decoration. The software bench prints its
+		// draw counts for the same reason; this one only collected them.
+		const silent = rows.filter(([name]) => !(out.shape[name] > 0)).map(([name]) => name);
+		if (silent.length){
+			failed = true;
+			console.error(NL + '  NOTHING DREW: ' + silent.join(', ') + NL
+				+ '  Their microseconds are noise — the staged scene no longer feeds these passes.');
 		}
 		const worst = rows.length ? rows[0][1] : 0;
 		console.log(NL + '  The heaviest pass eats ' + (worst / budget * 100).toFixed(2) + '% of a 60fps frame.');

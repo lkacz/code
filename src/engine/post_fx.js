@@ -714,44 +714,194 @@ export function wetGroundStep(wetness, dtSec, raining){
 	return Math.max(0, Math.min(1, raining ? w + dt / 8 : w - dt / 45));
 }
 
-// Canopy-gap finder for god rays: a beam site is a run of open surface
-// columns (width<=4) flanked by canopy (leaves/wood within 14 tiles above the
-// surface) on both sides — the classic hole in the forest roof. Pure and
-// injected with predicates so the suite can drive it with a fake world.
+function smooth01(t){ const u = t < 0 ? 0 : (t > 1 ? 1 : t); return u * u * (3 - 2 * u); }
+
+// Canopy-gap finder for god rays. A beam site is a NARROW break in a forest
+// ROOF — a run of at most GAP_MAX_WIDTH open surface columns closed by canopy
+// on both sides — and, the part that decides whether the shaft reads as light
+// at all, a site whose surroundings are dense enough for the air below to be
+// SHADED.
+//
+// A sunbeam is lit air, and lit air is invisible next to a bright sky: real
+// forest rays show up only where the contrast does, under a closed roof. The
+// old finder accepted any clearing between two trees, which is precisely why
+// it laid broad slabs of light over open ground. `cover` measures that
+// enclosure once, here, and godRayWeight turns it into the beam's strength.
+//
+// Every column is probed EXACTLY ONCE and the spans are reused for both the
+// flanks and the cover window; the old version re-probed each flank up to
+// three times and still could not tell a clearing from a hole in a roof.
+export const GAP_CANOPY_PROBE = 16;   // rows above the surface a roof may occupy
+// A roof is something you can stand under. Below this, foliage is undergrowth:
+// it shades nothing, and counting it would put a shaft's mouth at ankle height.
+// It is also what keeps a TRUNK from being read as a roof's underside — the
+// scan is handed a foliage predicate, but a low bush would have fooled it too.
+export const GAP_ROOF_MIN = 3;
+// Columns each side that decide "is it dark down here". Wide on purpose: at
+// four, ONE pair of isolated trees scored 0.89 and cast a bright shaft standing
+// against open blue sky — the metric said "roofed" because a single crown spans
+// many columns, while the eye said "two trees in a field". Nine columns each
+// side asks the question that actually matters, which is not "is there a leaf
+// above me" but "am I inside a forest".
+export const GAP_COVER_SPAN = 9;
+export const GAP_COVER_MIN = 0.5;     // at or below this the site is a clearing, not a roof
+export const GAP_MAX_WIDTH = 3;       // a wider break is a clearing, not a hole
+
+// Cover -> beam strength. Zero AT the threshold and smooth from there, so a
+// site fades in as the roof closes over it instead of popping into existence
+// the moment one more leaf column scrolls into the scan.
+export function godRayWeight(cover){
+	const c = Number.isFinite(cover) ? cover : 0;
+	if(c <= GAP_COVER_MIN) return 0;
+	return smooth01((c - GAP_COVER_MIN) / (1 - GAP_COVER_MIN));
+}
+
+// Deterministic per-site variation. A stand of identical beams reads as a
+// pattern, and a pattern reads as a rendering artefact rather than as light.
+// Hashed on the site's own column, so a beam keeps its character across scans
+// instead of re-rolling every time the scan runs again.
+export function godRayJitter(x, salt){
+	let h = (Math.imul(x | 0, 374761393) + Math.imul(salt | 0, 668265263)) | 0;
+	h = Math.imul(h ^ (h >>> 13), 1274126177) | 0;
+	return ((h ^ (h >>> 16)) >>> 0) % 1000000 / 1000000;
+}
+
 export function collectCanopyGaps(opts){
 	const out = [];
 	if(!opts || typeof opts.getTile !== 'function' || typeof opts.surfaceHeight !== 'function' || typeof opts.isCanopy !== 'function') return out;
 	const maxBeams = Number.isFinite(opts.maxBeams) ? opts.maxBeams : 24;
-	const canopyTop = (x, surf) => {
-		for(let dy = 1; dy <= 14; dy++){
-			if(opts.isCanopy(opts.getTile(x, surf - dy))) {
-				let top = surf - dy;
-				for(let up = dy + 1; up <= 14; up++){ if(opts.isCanopy(opts.getTile(x, surf - up))) top = surf - up; }
-				return top;
+	const x0 = Math.floor(opts.x0), x1 = Math.floor(opts.x1);
+	const n = x1 - x0 + 1;
+	if(!(n > 0) || !(maxBeams > 0)) return out;
+	// pass 1 — one probe per column. Two rows matter and they are NOT the same
+	// row: the crown (topmost canopy tile) says how tall the tree is, while the
+	// UNDERSIDE (first canopy tile going up from the ground) is where a shaft
+	// enters shaded air and therefore where it becomes visible.
+	const surfs = new Array(n), tops = new Array(n), bots = new Array(n);
+	for(let i = 0; i < n; i++){
+		const x = x0 + i;
+		const surf = opts.surfaceHeight(x);
+		surfs[i] = surf; tops[i] = null; bots[i] = null;
+		if(!Number.isFinite(surf)) continue;
+		for(let dy = GAP_ROOF_MIN; dy <= GAP_CANOPY_PROBE; dy++){
+			if(!opts.isCanopy(opts.getTile(x, surf - dy))) continue;
+			const y = surf - dy;
+			if(bots[i] === null) bots[i] = y;
+			tops[i] = y;
+		}
+	}
+	// pass 2 — runs of open columns closed by canopy on both sides
+	let i = 0;
+	while(i < n && out.length < maxBeams){
+		if(!Number.isFinite(surfs[i]) || tops[i] !== null){ i++; continue; }
+		let end = i;
+		while(end + 1 < n && end - i < GAP_MAX_WIDTH - 1 && Number.isFinite(surfs[end + 1]) && tops[end + 1] === null) end++;
+		const left = i - 1, right = end + 1;
+		if(left >= 0 && right < n && tops[left] !== null && tops[right] !== null){
+			let cov = 0, seen = 0;
+			for(let j = Math.max(0, i - GAP_COVER_SPAN); j <= Math.min(n - 1, end + GAP_COVER_SPAN); j++){ seen++; if(tops[j] !== null) cov++; }
+			const cover = seen ? cov / seen : 0;
+			const weight = godRayWeight(cover);
+			if(weight > 0.02){
+				let groundY = surfs[i], groundX = x0 + i;
+				for(let j = i; j <= end; j++){ if(surfs[j] > groundY){ groundY = surfs[j]; groundX = x0 + j; } }
+				out.push({
+					x0: x0 + i, x1: x0 + end, groundX, groundY,
+					topY: Math.min(tops[left], tops[right]),
+					mouthY: (bots[left] + bots[right]) / 2,
+					cover, weight,
+					jitterW: godRayJitter(x0 + i, 1), jitterA: godRayJitter(x0 + i, 2)
+				});
 			}
 		}
-		return null;
-	};
-	let x = opts.x0;
-	while(x <= opts.x1 && out.length < maxBeams){
-		const surf = opts.surfaceHeight(x);
-		if(!Number.isFinite(surf) || canopyTop(x, surf) !== null){ x++; continue; }
-		let end = x;
-		while(end + 1 <= opts.x1 && end - x < 3){
-			const s2 = opts.surfaceHeight(end + 1);
-			if(!Number.isFinite(s2) || canopyTop(end + 1, s2) !== null) break;
-			end++;
-		}
-		const leftTop = x - 1 >= opts.x0 - 2 ? canopyTop(x - 1, opts.surfaceHeight(x - 1)) : null;
-		const rightTop = canopyTop(end + 1, opts.surfaceHeight(end + 1));
-		if(leftTop !== null && rightTop !== null){
-			let groundY = surf, groundX = x;
-			for(let gx = x; gx <= end; gx++){ const s3 = opts.surfaceHeight(gx); if(Number.isFinite(s3) && s3 > groundY){ groundY = s3; groundX = gx; } }
-			out.push({ x0: x, x1: end, groundX, topY: Math.min(leftTop, rightTop), groundY });
-		}
-		x = end + 1;
+		i = end + 1;
 	}
 	return out;
+}
+
+// --- god ray beam sprite ----------------------------------------------------
+// A shaft is ONE textured quad, not a polygon. The old pass filled a hard-edged
+// parallelogram with a vertical gradient, which fails three ways at once: the
+// sides have a rim (real beams dissolve into the air on every side), the width
+// is constant (so nothing suggests where the light came from), and the top edge
+// is a bright horizontal cut hanging in the sky.
+//
+// Baking the whole 2-D profile — soft cross-section x length falloff x the
+// wedge itself — into a cached sprite fixes all three and costs one drawImage
+// per beam, with ZERO allocation per frame (the old pass built a gradient and
+// two stop strings for every beam, every frame).
+export const GODRAY_SPRITE_W = 64;
+export const GODRAY_SPRITE_H = 128;
+export const GODRAY_SCAN_MS = 400;    // re-scan cadence; a forest roof does not move
+export const GODRAY_MAX_BEAMS = 24;   // fixed cap — never a frame-time reaction
+export const GODRAY_LEAN = 0.55;      // shaft tilt as a fraction of the shadow skew
+// How far up-sun the wedge's apex sits, in tiles. This is a PERSPECTIVE
+// distance, not the real one: it sets how fast a shaft widens. 14 tiles gives a
+// typical 12-tile beam a foot ~1.85x its mouth — plainly spreading, still
+// obviously a shaft rather than a cone.
+export const GODRAY_SUN_TILES = 14;
+// Spread buckets: how much wider the foot is than the mouth. Quantised because
+// the sprite bakes the wedge, and a 0.4 step in spread is invisible on a shape
+// this soft while keeping the cache to a handful of entries.
+export const GODRAY_SPREADS = Object.freeze([1.25, 1.5, 1.8, 2.2, 2.7]);
+// Sunlight reddens as its path through the air lengthens (Rayleigh scattering
+// takes the blue out first) — the same physics that makes the low-sun beams the
+// strong ones. Three buckets: high sun, golden hour, horizon.
+export const GODRAY_TINTS = Object.freeze(['255,248,220', '255,234,178', '255,209,142']);
+const GODRAY_CROSS_STOPS = Object.freeze([-1, -0.85, -0.7, -0.55, -0.4, -0.25, -0.1, 0, 0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1]);
+
+// Along the shaft: 0 at the canopy mouth, 1 where it lands. Brightest at the
+// mouth and progressively fainter with distance (the beam scatters out of
+// itself), with BOTH ends eased so neither terminates in a visible line.
+//
+// The decay is deliberately GENTLE, and that is a measured decision, not a
+// guess. The first version fell off as (1-v)^1.15 to a floor of 0.20; the shape
+// underneath was a widening wedge, but it dimmed faster than it widened, so the
+// visible shaft still tapered towards the ground — the exact silhouette the
+// rebuild exists to get rid of. Falling to 0.38 keeps the tail alive long
+// enough for the spread to read.
+export function godRayProfile(v){
+	if(!(v >= 0) || v > 1) return 0;
+	const mouth = smooth01(v / 0.14);        // emerges from the leaves
+	const foot = smooth01((1 - v) / 0.12);   // dissolves before the ground
+	return mouth * foot * (0.38 + 0.62 * (1 - v));
+}
+// Across the shaft: 1 in the core, 0 at the edges, no rim anywhere. (1-u^2)^2.5.
+export function godRayCross(u){
+	const a = u < 0 ? -u : u;
+	if(a >= 1) return 0;
+	const s = 1 - a * a;
+	return s * s * Math.sqrt(s);
+}
+
+const godRaySprites = new Map(); // spreadIdx*8+tintIdx -> baked beam
+function godRaySpriteFor(spreadIdx, tintIdx){
+	if(typeof document === 'undefined') return null;
+	const key = spreadIdx * 8 + tintIdx;
+	let spr = godRaySprites.get(key);
+	if(spr) return spr;
+	const c = document.createElement('canvas');
+	c.width = GODRAY_SPRITE_W; c.height = GODRAY_SPRITE_H;
+	const g = c.getContext('2d');
+	if(!g) return null;
+	const spread = GODRAY_SPREADS[spreadIdx] || GODRAY_SPREADS[0];
+	const rgb = GODRAY_TINTS[tintIdx] || GODRAY_TINTS[0];
+	const cx = GODRAY_SPRITE_W / 2;
+	// Row by row, because the wedge means every row has its own width. The foot
+	// spans the full sprite, so drawing the sprite into a rect of width W puts
+	// the mouth at W/spread — the caller only has to size the FOOT.
+	for(let iy = 0; iy < GODRAY_SPRITE_H; iy++){
+		const v = iy / (GODRAY_SPRITE_H - 1);
+		const a = godRayProfile(v);
+		if(a <= 0.002) continue;
+		const half = cx * (1 + (spread - 1) * v) / spread;
+		const grad = g.createLinearGradient(cx - half, 0, cx + half, 0);
+		for(const u of GODRAY_CROSS_STOPS) grad.addColorStop((u + 1) / 2, 'rgba(' + rgb + ',' + (a * godRayCross(u)).toFixed(4) + ')');
+		g.fillStyle = grad;
+		g.fillRect(cx - half, iy, half * 2, 1);
+	}
+	godRaySprites.set(key, spr = c);
+	return spr;
 }
 
 // Ice-run finder: frozen water lives at the WATER LINE, which sits ABOVE the
@@ -1646,9 +1796,10 @@ const api = {
 		metrics.tintDraws += drawn;
 		return drawn;
 	},
-	// God rays: additive light shafts through canopy gaps, leaning with the
-	// same solar model the shadows use (a beam points the way shadows fall).
-	// Gap sites come from a cadence-cached scan; strongest at golden hour.
+	// God rays: additive shafts of lit air falling through holes in a forest
+	// roof, leaning with the same solar model the shadows use (a beam travels
+	// the way the shadows fall). Gap sites come from a cadence-cached scan and
+	// carry their own strength; the pass itself allocates nothing per frame.
 	drawGodRaysPass(ctx, opts){
 		if(!api.on('godRays')){ godRayKey = ''; godRayBeams.length = 0; return 0; }
 		if(!ctx || !opts || typeof opts.getTile !== 'function' || typeof opts.surfaceHeight !== 'function' || typeof opts.isCanopy !== 'function') return 0;
@@ -1657,50 +1808,72 @@ const api = {
 		const t = time && Number.isFinite(time.tDay) ? Math.max(0, Math.min(1, time.tDay)) : 0.5;
 		const arc = Math.sin(t * Math.PI);
 		const daylight = Math.max(0, Math.min(1, Number.isFinite(opts.daylight) ? opts.daylight : 1));
-		const alpha = daylight * (0.11 + 0.15 * (1 - arc));
+		// Stronger than the old slab's alpha, and it has to be: that pass spread a
+		// flat value over a hard-edged quad, so nearly every pixel sat at full
+		// strength. A soft profile puts most of its pixels well below the core, so
+		// the same number reads as a fraction of the light. Calibrated against the
+		// peak luminance god-rays-qa measures off the framebuffer, not by eye.
+		const alpha = daylight * (0.22 + 0.30 * (1 - arc));
 		if(alpha <= 0.01) return 0;
 		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
 		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
-		const x0 = Math.floor(opts.sx) - 2, x1 = Math.ceil(opts.sx + opts.viewX) + 2;
+		// The scan is padded past the view by the cover window, so a beam's
+		// strength is decided by the same columns whether it sits mid-screen or
+		// at the edge — otherwise every shaft would brighten as you walked.
+		const pad = GAP_COVER_SPAN + 2;
+		const x0 = Math.floor(opts.sx) - pad, x1 = Math.ceil(opts.sx + opts.viewX) + pad;
 		const key = x0 + '|' + x1;
-		if(key !== godRayKey || now - godRayScanAt > 400){
-			godRayBeams = collectCanopyGaps({ x0, x1, getTile: opts.getTile, surfaceHeight: opts.surfaceHeight, isCanopy: opts.isCanopy, maxBeams: 24 });
+		if(key !== godRayKey || now - godRayScanAt > GODRAY_SCAN_MS){
+			godRayBeams = collectCanopyGaps({ x0, x1, getTile: opts.getTile, surfaceHeight: opts.surfaceHeight, isCanopy: opts.isCanopy, maxBeams: GODRAY_MAX_BEAMS });
 			godRayKey = key; godRayScanAt = now;
 		}
 		if(!godRayBeams.length) return 0;
 		const p = shadowParams(time);
 		const visibleAt = typeof opts.visibleAt === 'function' ? opts.visibleAt : null;
+		// One lean for the whole frame: the sun is one sun.
+		const lean = Math.max(-1.15, Math.min(1.15, p.skew * GODRAY_LEAN));
+		const ang = Math.atan(lean);
+		const cos = Math.cos(ang);
+		const tintIdx = arc > 0.72 ? 0 : (arc > 0.40 ? 1 : 2);
 		let drawn = 0;
-		// alpha is fixed for the whole frame — build the two stop strings once,
-		// not per beam (they were 48 string builds a frame at the 24-beam cap).
-		const rayTop = 'rgba(255,244,200,' + alpha.toFixed(3) + ')';
-		const rayBot = 'rgba(255,244,200,' + (alpha * 0.45).toFixed(3) + ')';
 		ctx.save();
 		ctx.globalCompositeOperation = 'lighter';
-		for(const b of godRayBeams){
+		for(let i = 0; i < godRayBeams.length; i++){
+			const b = godRayBeams[i];
 			// probe the fog on the column that produced the beam's landing row —
 			// x0 may be a shallower column whose visibility says nothing about it
 			if(visibleAt && !visibleAt(Number.isFinite(b.groundX) ? b.groundX : b.x0, b.groundY)) continue;
-			const topPx = b.topY * TILE, groundPx = b.groundY * TILE;
-			const h = groundPx - topPx;
+			const mouthPx = b.mouthY * TILE, groundPx = b.groundY * TILE;
+			const h = groundPx - mouthPx;
 			if(h <= TILE) continue;
-			// the beam's MOUTH is the canopy gap: anchor the top there and lean
-			// the FOOT along the light direction (the way shadows fall); the
-			// clamp keeps an unusually tall beam from sliding its foot into
-			// columns the gap never measured
-			const drop = Math.max(-4 * TILE, Math.min(4 * TILE, p.skew * h * 0.5));
-			const gx0 = b.x0 * TILE, gx1 = (b.x1 + 1) * TILE;
-			const grad = ctx.createLinearGradient(0, topPx, 0, groundPx);
-			grad.addColorStop(0, rayTop);
-			grad.addColorStop(1, rayBot);
-			ctx.fillStyle = grad;
-			ctx.beginPath();
-			ctx.moveTo(gx0, topPx);
-			ctx.lineTo(gx1, topPx);
-			ctx.lineTo(gx1 + drop, groundPx);
-			ctx.lineTo(gx0 + drop, groundPx);
-			ctx.closePath();
-			ctx.fill();
+			const len = h / cos;   // a leaning shaft is longer than the drop it covers
+			// Apparent divergence. Crepuscular rays are very nearly PARALLEL —
+			// they only look like they fan out because the eye reads their
+			// perspective, and the vanishing point of that perspective is the
+			// sun. Reproduced by placing the wedge's apex a fixed distance
+			// up-sun, which is the one thing a constant-width parallelogram can
+			// never express: narrow where the light pierces the roof, wide where
+			// it lands. The distance is fixed, so the divergence stays gentle —
+			// a floodlight cone would be the opposite error.
+			const spread = (GODRAY_SUN_TILES + len / TILE) / GODRAY_SUN_TILES;
+			let si = 0;
+			for(let k = 1; k < GODRAY_SPREADS.length; k++){
+				if(Math.abs(GODRAY_SPREADS[k] - spread) < Math.abs(GODRAY_SPREADS[si] - spread)) si = k;
+			}
+			const spr = godRaySpriteFor(si, tintIdx);
+			if(!spr) continue;   // a bucket that failed to bake must not drop the others
+			// The mouth is deliberately narrower than the gap that made it: what
+			// the eye reads as the shaft is the bright core, not the full width
+			// of the aperture.
+			const mouthW = Math.max(TILE * 0.45, Math.min(TILE * 1.7, (b.x1 - b.x0 + 1) * TILE * 0.5 * (0.84 + 0.32 * b.jitterW)));
+			const footW = mouthW * GODRAY_SPREADS[si];
+			const cxPx = (b.x0 + b.x1 + 1) * 0.5 * TILE;
+			ctx.globalAlpha = alpha * b.weight * (0.80 + 0.40 * b.jitterA);
+			ctx.translate(cxPx, mouthPx);
+			ctx.rotate(ang);
+			ctx.drawImage(spr, -footW * 0.5, 0, footW, len);
+			ctx.rotate(-ang);
+			ctx.translate(-cxPx, -mouthPx);
 			drawn++;
 		}
 		ctx.restore();

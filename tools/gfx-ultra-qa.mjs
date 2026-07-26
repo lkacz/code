@@ -129,7 +129,7 @@ const STAGE_D = `(async()=>{
 	const mock={n:0,di:0,fillStyle:'',globalAlpha:1,globalCompositeOperation:'',imageSmoothingEnabled:false,
 		canvas:mockCanvas,
 		getTransform(){ return {a:1,b:0,c:0,d:1,e:0,f:200}; },
-		save(){},restore(){},beginPath(){},rect(){},clip(){},translate(){},scale(){},moveTo(){},lineTo(){},closePath(){},fill(){},ellipse(){},
+		save(){},restore(){},beginPath(){},rect(){},clip(){},translate(){},scale(){},rotate(){},moveTo(){},lineTo(){},closePath(){},fill(){},ellipse(){},
 		fillRect(){ this.n++; },drawImage(){ this.di++; },
 		createLinearGradient(){ return {addColorStop(){}}; }};
 	const P=MM.postFx;
@@ -140,7 +140,7 @@ const STAGE_D = `(async()=>{
 	const r={};
 	try{ r.wet=P.drawWetGroundPass(mock,{...base,rainingAt:()=>false,skipWetTile:()=>false,daylight:1}); }catch(e){ r.wet='ERR '+e.message; }
 	try{ r.ice=P.drawIceReflectionsPass(mock,{...base}); }catch(e){ r.ice='ERR '+e.message; }
-	try{ r.rays=P.drawGodRaysPass(mock,{...base,isCanopy:t=>t===5||t===6,time:{tDay:0.3,isDay:true},daylight:1}); }catch(e){ r.rays='ERR '+e.message; }
+	try{ r.rays=P.drawGodRaysPass(mock,{...base,isCanopy:t=>t===6||t===39,time:{tDay:0.3,isDay:true},daylight:1}); }catch(e){ r.rays='ERR '+e.message; }
 	try{ r.tint=P.drawLightTintPass(mock,{...base}); }catch(e){ r.tint='ERR '+e.message; }
 	try{ r.shim=P.drawHeatShimmerPass(mock,{...base,pools:null}); }catch(e){ r.shim='ERR '+e.message; }
 	delete window.__mmForceWet;
@@ -182,10 +182,14 @@ const STAGE_C = `(async()=>{
 	// bare STONE (literal id 3 — pond.solidId could be frozen dirt in a frozen
 	// band, which gfxWetSkipTile would skip) for the wet sheen
 	for(let k=26;k<=29;k++){ const x=pond.px0+k; MM.world.setTile(x,sh(x),3); }
-	// canopy with a guaranteed gap, anchored per COLUMN surface so rolling
-	// terrain keeps both flanks inside the canopy scan's 14-tile window
-	for(const cx of [pond.sx0-6,pond.sx0-5,pond.sx0-4,pond.sx0+1,pond.sx0+2,pond.sx0+3]){
-		MM.world.setTile(cx,sh(cx)-7,6);
+	// A closed canopy ROOF with a guaranteed three-column hole, anchored per
+	// COLUMN surface so rolling terrain keeps every column inside the scan's
+	// window. It has to be a roof and the hole has to be narrow: beams are gated
+	// on how enclosed the site is (a shaft is lit air, invisible against open
+	// sky) and a break wider than GAP_MAX_WIDTH is a clearing, not a hole.
+	for(let k=-9;k<=7;k++){
+		if(k>=-2 && k<=0) continue;            // the hole the light comes through
+		const cx=pond.sx0+k; MM.world.setTile(cx,sh(cx)-7,6);
 	}
 	MM.background.importState({cycleT:0.15}); // guaranteed daytime morning sun
 	window.__mmForceWet=true;
