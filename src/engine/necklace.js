@@ -338,15 +338,15 @@ root.MM = root.MM || {};
       }
     }
   }
+  // The glow attribute for a charged pendant. Registered rather than painted here,
+  // so the gem's light survives the darkness overlay and draws a streak as the
+  // hero runs — the same rule every other light in the game follows.
+  // Radius follows the gem's own size, alpha follows its charge.
+  const GEM_GLOW=Object.freeze({color:'#fff6aa', a:0.30, spread:3.4});
   function drawGem(ctx,x,y,r,pal,glow,spin){
     if(glow>0.05){
-      const rg=ctx.createRadialGradient(x,y,1,x,y,r*3.4);
-      rg.addColorStop(0,'rgba(255,246,170,'+(0.25*glow).toFixed(3)+')');
-      rg.addColorStop(1,'rgba(255,246,170,0)');
-      ctx.fillStyle=rg;
-      ctx.beginPath();
-      ctx.arc(x,y,r*3.4,0,Math.PI*2);
-      ctx.fill();
+      const P=(typeof window!=='undefined' && window.MM) ? window.MM.postFx : null;
+      if(P && P.addEmissive) P.addEmissive({x,y,r:r*GEM_GLOW.spread,color:GEM_GLOW.color,a:GEM_GLOW.a*glow,key:'necklaceGem',trail:true});
     }
     ctx.save();
     ctx.translate(x,y);

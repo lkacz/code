@@ -308,6 +308,33 @@ INFO[T.VINE]={hp:1,color:'#3f7d3a',drop:'vine',passable:true,flammable:true,burn
 INFO[T.PIT_PROP]={hp:4,color:'#8a6236',drop:'wood',passable:true,flammable:true,burnTime:2.2};
 INFO[T.SAPLING]={hp:1,color:'#5fae4a',drop:'wood',passable:true,flammable:true,burnTime:0.9};
 INFO[T.KILN]={hp:14,color:'#9c5b3a',drop:'brick',passable:false,machine:true};
+// --- the glow attribute -------------------------------------------------------
+// ONE declaration that a thing emits light. Tiles carry it here; creatures,
+// weapons, projectiles, drops and effects carry the same shape on their own
+// objects. engine/post_fx.js turns any glow attribute into a halo and, when the
+// thing moves, into a light streak — no draw site paints its own.
+//
+//   level  0..15, the light system's own units (a torch at 13 throws a wider
+//          halo than a glowshroom at 9), so lighting.js and the renderer cannot
+//          drift apart. Entities use `r` in world pixels instead.
+//   color  '#rgb' | '#rrggbb' | 'r,g,b'
+//
+// A furnishing declares `lightLevel` instead (see HOME_FURNISHING_TILE_SPECS)
+// and glows off that, power-gated. Chests are deliberately absent: their pulsing
+// tier aura is registered by the chest renderer, which knows the pulse.
+export const TILE_GLOW = Object.freeze({
+  [T.TORCH]:              Object.freeze({level:13, color:'255,176,84'}),
+  [T.LAVA]:               Object.freeze({level:12, color:'255,124,44'}),
+  [T.MOTHER_LAVA]:        Object.freeze({level:12, color:'255,124,44'}),
+  [T.GLOWSHROOM]:         Object.freeze({level:9,  color:'96,240,192'}),
+  [T.ALTAR]:              Object.freeze({level:8,  color:'196,128,255'}),
+  [T.RADIOACTIVE_ORE]:    Object.freeze({level:8,  color:'128,255,96'}),
+  [T.ANTIMATTER_CRYSTAL]: Object.freeze({level:8,  color:'128,220,255'})
+});
+for(const tileId of Object.keys(TILE_GLOW)){
+  if(INFO[tileId]) INFO[tileId].glow = TILE_GLOW[tileId];
+}
+
 // Rows above (i.e. numerically below) this line get snow cover; tuned for the v2
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;
@@ -351,6 +378,7 @@ if (typeof window !== 'undefined') {
     SAND_DEPTH,
     T,
     INFO,
+    TILE_GLOW,
     SNOW_LINE,
     MOVE,
     CAPE,

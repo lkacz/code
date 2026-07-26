@@ -29,12 +29,13 @@ import { getByTile as getFurnishingByTile } from './furnishings.js';
   const PAD = 10;            // window margin beyond the view, tiles
   const SKY_SCAN_UP = 24;    // roof lookback above the window for the skylight scan
   const FIRE_LEVEL = 12;
+  // Torches, lava, glowshrooms, altars and the rest declare their level ON THE
+  // TILE (constants.js TILE_GLOW -> INFO[t].glow), which is the same number the
+  // renderer turns into a halo — one declaration, so the light field and the glow
+  // can never drift apart. Only the chest ladder stays local: chests light a room
+  // but their VISIBLE glow is the pulsing tier aura the chest renderer owns, so
+  // they are deliberately absent from the tile glow attribute.
   const EMITTERS = {
-    [T.TORCH]: 13,
-    [T.LAVA]: 12,
-    [T.MOTHER_LAVA]: 12,
-    [T.ALTAR]: 8, // summoning altars smoulder visibly in the dark
-    [T.GLOWSHROOM]: 9, // bioluminescent fungus — mushroom chambers glow teal
     [T.CHEST_COMMON]: 4,
     [T.CHEST_UNCOMMON]: 4,
     [T.CHEST_RARE]: 5,
@@ -43,6 +44,9 @@ import { getByTile as getFurnishingByTile } from './furnishings.js';
   };
 
   function tileEmitterLevel(t,x,y,opts){
+    const attr = INFO[t] && INFO[t].glow;
+    const declaredGlow = Number(attr && attr.level);
+    if(Number.isFinite(declaredGlow) && declaredGlow > 0) return Math.max(0, Math.min(LEVELS, Math.round(declaredGlow)));
     const fixed = EMITTERS[t] || 0;
     if(fixed) return fixed;
     const furnishing=getFurnishingByTile(t);

@@ -9,6 +9,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
 
   const ACTIVE_RANGE = 760;
   const MASTER_INTERVAL = 600; // about ten minutes while the volcano is active
+  // The glow attribute for a hurled master sigil (post_fx draws halo + streak).
+  const MASTER_SHOT_GLOW=Object.freeze({color:'#ff5028', rTiles:0.72, a:0.48, trail:true});
   const MASTER_FLOOR_SECONDS = 10;
   const SERVANT_FLOOR_SECONDS = 10;
   const MASTER_EJECTION_FORCE = 3;
@@ -602,9 +604,16 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     }
     ctx.save();
     ctx.globalCompositeOperation='lighter';
+    const EMISSIVE=(typeof window!=='undefined' && window.MM && window.MM.postFx && window.MM.postFx.glow) ? window.MM.postFx : null;
+    let shotSeq=0;
     for(const m of masterShots){
       if(!tileVisible(m.x,m.y)) continue;
       const pulse=Math.sin(now*0.012 + m.x)*0.5+0.5;
+      // a hurled sigil is a moving light: halo + streak through the glow attribute
+      if(EMISSIVE){
+        if(!m._gk) m._gk='vs'+(++shotSeq)+':'+(m.x|0);
+        EMISSIVE.glow(m.x*TILE,m.y*TILE,MASTER_SHOT_GLOW,m._gk,TILE);
+      }
       drawMasterGlyph(ctx,m.x*TILE,m.y*TILE,TILE*0.46,pulse,m.rot||0,'master');
     }
     for(const mt of masterTiles.values()){

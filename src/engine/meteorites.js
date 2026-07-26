@@ -2019,7 +2019,13 @@ const meteorites = (function(){
     const visible=typeof canDrawTile==='function' ? canDrawTile : null;
     return (x,y)=> !visible || visible(Math.floor(x),Math.max(0,Math.min(WORLD_BOTTOM-1,Math.floor(y))));
   }
+  // The glow attribute for a fireball in flight (post_fx draws it above darkness).
+  const METEOR_GLOW=Object.freeze({color:'#ffd85b', rTiles:2.4, a:0.66});
+  function emissiveApi(){
+    return (typeof window!=='undefined' && window.MM && window.MM.postFx && window.MM.postFx.glow) ? window.MM.postFx : null;
+  }
   function drawMeteor(ctx,TILE,m){
+    const EMISSIVE=emissiveApi();
     const profile=classProfile(m && m.classId);
     const ang=Math.atan2(m.vy,m.vx);
     ctx.save();
@@ -2041,14 +2047,11 @@ const meteorites = (function(){
       ctx.stroke();
     }
     const px=m.x*TILE, py=m.y*TILE;
-    const glowR=TILE*2.4;
-    const glow=ctx.createRadialGradient(px,py,1,px,py,glowR);
-    glow.addColorStop(0,profile.glow1 || 'rgba(255,255,236,0.95)');
-    glow.addColorStop(0.18,profile.glow2 || 'rgba(255,216,91,0.86)');
-    glow.addColorStop(0.48,profile.glow3 || 'rgba(255,78,22,0.42)');
-    glow.addColorStop(1,'rgba(255,24,0,0)');
-    ctx.fillStyle=glow;
-    ctx.beginPath(); ctx.arc(px,py,glowR,0,Math.PI*2); ctx.fill();
+    // The fireball's own light goes through the glow attribute, so it lands above
+    // the darkness overlay instead of being dimmed by the night it lights up. The
+    // streak above stays bespoke: a falling star's two-tone tail is richer than
+    // the generic one, and it already IS world-space position history.
+    if(EMISSIVE) EMISSIVE.glow(px,py,METEOR_GLOW,null,TILE);
     ctx.translate(px,py);
     ctx.rotate(ang);
     ctx.fillStyle=profile.body || '#fff7c9';

@@ -48,38 +48,25 @@ export function bloomScanIntervalMs(frameMs){
 	return 120;
 }
 
-// Declarative bloom sources: fixed levels for the classic emitters the
-// lighting BFS also knows, INFO[t].lightLevel for powered furnishings, and a
-// color table where the default warm white would read wrong. Chest tiles are
-// excluded — the pulsing tier aura in drawWorldVisible is already their glow.
-const BLOOM_LEVELS = {
-	[T.TORCH]: 13,
-	[T.LAVA]: 12,
-	[T.MOTHER_LAVA]: 12,
-	[T.GLOWSHROOM]: 9,
-	[T.ALTAR]: 8,
-	[T.RADIOACTIVE_ORE]: 8,
-	[T.ANTIMATTER_CRYSTAL]: 8
-};
-const BLOOM_COLORS = {
-	[T.TORCH]: '255,176,84',
-	[T.LAVA]: '255,124,44',
-	[T.MOTHER_LAVA]: '255,124,44',
-	[T.GLOWSHROOM]: '96,240,192',
-	[T.ALTAR]: '196,128,255',
-	[T.RADIOACTIVE_ORE]: '128,255,96',
-	[T.ANTIMATTER_CRYSTAL]: '128,220,255'
-};
+// Tile glow reads the TILE ATTRIBUTE (constants.js TILE_GLOW stamps INFO[t].glow)
+// or a furnishing's declared lightLevel — never a private table in here, so the
+// lighting BFS and the renderer cannot drift apart. Chest tiles are excluded:
+// their pulsing tier aura registers itself, because only the chest renderer
+// knows the pulse.
 export const BLOOM_MIN_LEVEL = 6;
 export const BLOOM_MAX_EMITTERS = 160;
 
 export function bloomSourceFor(t){
-	if(INFO[t] && INFO[t].chestTier) return null;
-	const fixed = BLOOM_LEVELS[t] || 0;
-	const declared = Number(INFO[t] && INFO[t].lightLevel);
-	const level = Math.max(fixed, Number.isFinite(declared) ? declared : 0);
+	const info = INFO[t];
+	if(info && info.chestTier) return null;
+	const attr = info && info.glow;
+	const declared = Number(info && info.lightLevel);
+	const level = Math.max(
+		Number(attr && attr.level) || 0,
+		Number.isFinite(declared) ? declared : 0
+	);
 	if(level < BLOOM_MIN_LEVEL) return null;
-	return { level: Math.min(15, Math.round(level)), color: BLOOM_COLORS[t] || '255,236,190' };
+	return { level: Math.min(15, Math.round(level)), color: (attr && attr.color) || '255,236,190' };
 }
 
 // Viewport scan for glow-worthy tiles. visibleAt is the caller's fog/vision
@@ -122,26 +109,36 @@ export function collectBloomEmitters(opts){
 	return out;
 }
 
-// --- entity emissive glow (poświata istot) -----------------------------------
-// Every glowing creature part in the game used to hand-roll its own halo: a
-// flat additive ellipse or a filled arc at one constant alpha. Two things are
-// wrong with that. A constant-alpha disc has a HARD rim, so it reads as a
-// coloured blob glued onto the sprite instead of light leaving a body; and it is
-// drawn INSIDE the entity pass, i.e. underneath the darkness overlay that
-// follows, so the night dims the one thing that exists to survive the night.
+// --- the glow attribute (poświata) -------------------------------------------
+// ONE rule for the whole game: anything that emits light — a tile, a creature, a
+// part of a creature, a held weapon, a projectile, a dropped item, a machine
+// lamp, an effect — carries a `glow` DESCRIPTOR, and that attribute alone makes
+// it bloom and, when it moves, leave a light streak. No draw site paints its own
+// halo any more.
 //
-// Entities now REGISTER their emissive parts in world pixels and one batched
-// pass draws the lot where tile bloom draws — above darkness, below fog —
-// through the same pre-baked radial falloff sprite.
+//   {color}   '#rgb' | '#rrggbb' | 'r,g,b'
+//   {r}       radius in WORLD pixels — entities, parts, effects
+//   {level}   0..15 light units instead of r — tiles, so the renderer and the
+//             lighting BFS read the same number (constants.js TILE_GLOW)
+//   {a}       peak alpha; derived from level/r when absent
+//   {trail}   true → motion streak (needs a stable key at the call site)
+//   {pulse}   0..1 breathing depth, phase derived from the position
 //
-// It carries NO toggle, at full quality (wide bleed + core + motion streak),
-// because it was measured rather than assumed: 3.4 us per still source and
-// 9.8 us per streaking source (tools/mob-glow-qa.mjs, 400 cycles, software
-// canvas). A firefly field puts ~9 sources on screen, a bat cave 16, so the pass
-// costs ~0.2-1% of a 60 fps frame — cheaper than hiding it behind an option.
-// emissiveTier() is therefore 1 normally and 0 only under the QA kill switch
-// (__mmNoPostFX), which keeps screenshot goldens comparable.
-export const EMISSIVE_MAX = 96;        // per-frame queue cap (bloom's is 160)
+// Why every glow was wrong before: each site hand-rolled a flat additive ellipse
+// or arc at one constant alpha (a HARD rim, so it read as a coloured blob glued
+// onto the sprite instead of light leaving a body), and drew it INSIDE the entity
+// pass — underneath the darkness overlay that follows, so the night dimmed the
+// one thing that exists to survive the night. Now every source, tile or entity,
+// lands in one batched pass above the darkness and below the fog.
+//
+// No toggle, because it was measured rather than assumed (tools/mob-glow-qa.mjs,
+// 400 cycles, software canvas): ~120-160 us per frame for a typical 12-source
+// scene, ~460 us for a pessimistic 40, and 9 us for the tile scan+draw. Well
+// under 1% of a 60 fps frame is cheaper to ship than to hide behind an option.
+// glowTier() is 1 normally, 2 with the `bloom` component on (which now AMPLIFIES
+// every source uniformly instead of owning tiles alone), and 0 under the QA kill
+// switch (__mmNoPostFX), which keeps screenshot goldens comparable.
+export const EMISSIVE_MAX = 128;       // per-frame entity queue cap
 export const EMISSIVE_TRAIL_MAX = 32;  // trailed sources per frame
 export const TRAIL_PTS = 7;            // history depth
 export const TRAIL_SAMPLE_MS = 26;     // ~6 samples over ~170 ms of movement
@@ -208,6 +205,37 @@ export function trailTaper(i, n){
 	if(!(n > 1)) return 1;
 	const t = Math.max(0, Math.min(1, i / (n - 1)));
 	return t * t;
+}
+
+// The descriptor normaliser: turns a `glow` attribute as any object may write it
+// into the exact numbers the pass draws, or null when the thing does not glow.
+// Pure, so the suite can pin the ramps that decide how big and bright a level-13
+// torch is versus a level-9 glowshroom.
+export function normalizeGlow(spec, TILE){
+	if(!spec || typeof spec !== 'object') return null;
+	const tile = (Number.isFinite(TILE) && TILE > 0) ? TILE : 20;
+	const level = Number(spec.level);
+	const hasLevel = Number.isFinite(level) && level > 0;
+	let r = Number(spec.r);
+	if(!(r > 0)){
+		// rTiles lets a world object declare its radius in TILES, so its descriptor
+		// can be a frozen constant instead of an object rebuilt every frame.
+		const rt = Number(spec.rTiles);
+		if(rt > 0) r = tile * rt;
+		else if(hasLevel) r = tile * (0.7 + Math.min(15, level) * 0.2); // the tile ramp
+		else return null;
+	}
+	let a = Number(spec.a);
+	if(!Number.isFinite(a)){
+		a = hasLevel ? Math.min(0.68, 0.3 + Math.min(15, level) * 0.018) : 0.55;
+	}
+	return {
+		rgb: emissiveRgb(spec.color),
+		r: Math.min(320, r),
+		a: Math.max(0, Math.min(1, a)),
+		trail: spec.trail === true,
+		pulse: Math.max(0, Math.min(1, Number(spec.pulse) || 0))
+	};
 }
 
 // --- hero sheen (środowiskowa powłoka bohatera) ------------------------------
@@ -484,6 +512,10 @@ let emissiveCount = 0;
 let emissiveFrame = 0;
 const emissiveTrails = new Map(); // key -> {pts:[{x,y}], at, seen, frame}
 let emissiveTrailSweepAt = 0;
+// Remembered tile size so api.glow() can turn a {level} attribute into a radius
+// without every caller having to hand TILE in.
+let lastGlowTilePx = 20;
+const NO_TILES = Object.freeze([]);
 let godRayBeams = [];
 let godRayKey = '';
 let godRayScanAt = 0;
@@ -822,61 +854,91 @@ const api = {
 		metrics.bladeSheens++;
 		return 1;
 	},
-	// Effective emissive tier: 1 normally, 0 under the QA kill switch. Not a
-	// component flag — the glow REPLACES art the entities used to draw for
-	// themselves, so switching it off would delete a firefly's light rather than
-	// remove an optional extra.
-	emissiveTier(){
-		return (HAS_WINDOW && window.__mmNoPostFX) ? 0 : 1;
+	// Effective glow tier: 1 normally, 2 with the `bloom` component on (it now
+	// AMPLIFIES every source — tiles, creatures, projectiles — instead of owning
+	// tiles alone), 0 under the QA kill switch. Tier 1 is not optional: the glow
+	// REPLACES art the sources used to draw for themselves, so switching it off
+	// would delete a firefly's light rather than remove an extra.
+	glowTier(){
+		if(HAS_WINDOW && window.__mmNoPostFX) return 0;
+		return api.on('bloom') ? 2 : 1;
 	},
-	// Registry inlet. Called from entity draw code in WORLD pixels; nothing is
-	// painted here, so the caller cannot accidentally land its glow under the
-	// darkness overlay. `key` is required for a trail (a stable per-entity-part
-	// identity); without one the source is a still light.
+	emissiveTier(){ return api.glowTier(); },  // earlier name, kept for QA seams
+	// THE attribute seam. Hand it the object's own `glow` descriptor and where the
+	// glowing part is (world pixels) and the renderer does the rest. Every domain —
+	// mobs, weapons, projectiles, drops, machines, effects — comes through here, so
+	// a new glowing thing is a DATA change, not a draw change.
+	glow(x, y, spec, key, TILE){
+		const g = normalizeGlow(spec, Number.isFinite(TILE) ? TILE : lastGlowTilePx);
+		if(!g) return false;
+		return api.addEmissive({ x, y, r: g.r, color: g.rgb, a: g.a, pulse: g.pulse,
+			key, trail: g.trail && typeof key === 'string' && !!key });
+	},
+	// Low-level inlet: radius already in world pixels. Nothing is painted here, so
+	// a caller cannot accidentally land its glow under the darkness overlay. `key`
+	// is required for a trail (a stable per-source identity); without one the
+	// source is a still light.
 	addEmissive(src){
 		if(!src || !Number.isFinite(src.x) || !Number.isFinite(src.y)) return false;
 		const r = Number(src.r);
 		if(!(r > 0)) return false;
-		if(api.emissiveTier() < 1) return false;
+		if(api.glowTier() < 1) return false;
 		if(emissiveCount >= EMISSIVE_MAX) return false;
 		let e = emissiveQueue[emissiveCount];
-		if(!e) e = emissiveQueue[emissiveCount] = { x: 0, y: 0, r: 0, rgb: '', a: 1, key: '', trail: false };
+		if(!e) e = emissiveQueue[emissiveCount] = { x: 0, y: 0, r: 0, rgb: '', a: 1, key: '', trail: false, pulse: 0 };
 		e.x = src.x; e.y = src.y;
 		e.r = Math.min(320, r);
 		e.rgb = emissiveRgb(src.color);
 		e.a = Math.max(0, Math.min(1, Number.isFinite(src.a) ? src.a : 0.55));
+		e.pulse = Math.max(0, Math.min(1, Number(src.pulse) || 0));
 		e.key = (src.trail && typeof src.key === 'string') ? src.key : '';
 		e.trail = !!e.key;
 		emissiveCount++;
 		return true;
 	},
 	emissiveQueued(){ return emissiveCount; },
-	// Entity glow frame driver. Runs in WORLD space next to bloom: above the
-	// darkness overlay (glow is what lives in the dark), below the fog pass
-	// (undiscovered black still wins). Drains the queue unconditionally — an
-	// early return that left entries behind would draw last frame's glow at
-	// stale positions.
-	drawEmissivePass(ctx, opts){
+	// ONE glow frame driver for the whole game. Runs in WORLD space, called from
+	// main.js above the darkness overlay (glow is what lives in the dark) and below
+	// the fog pass (undiscovered black still wins on top). Two kinds of source land
+	// in the same draw with the same two-layer look:
+	//   TILES     found by a cadence-cached viewport scan of the tile glow attribute
+	//             (INFO[t].glow) — hundreds of STATIC emitters, so scanning beats
+	//             registering each one every frame, and a tile cannot streak.
+	//   ENTITIES  registered during their own draw via api.glow / addEmissive, which
+	//             is also what earns them a motion streak.
+	// Drains the entity queue unconditionally: an early return that left entries
+	// behind would draw last frame's glow at stale positions.
+	drawGlowPass(ctx, opts){
 		const n = emissiveCount;
 		emissiveCount = 0;
-		// Killed: drop the histories too, so coming back cannot resume a streak
-		// from wherever an entity used to be. A merely EMPTY frame keeps them —
-		// expiry is the TTL sweep's job, not a one-frame cull's.
-		if(api.emissiveTier() < 1){
+		const tier = api.glowTier();
+		if(tier < 1){
+			// Killed: drop the histories too, so coming back cannot resume a streak
+			// from wherever a source used to be. A merely EMPTY frame keeps them —
+			// expiry is the TTL sweep's job, not a one-frame cull's.
 			if(emissiveTrails.size) emissiveTrails.clear();
+			if(!api.on('lightTint') && !api.on('heatShimmer')){ bloomEmitters.length = 0; bloomScanKey = ''; }
 			return 0;
 		}
-		if(!ctx || !n) return 0;
-		metrics.emissiveSources += n;
+		if(!ctx) return 0;
+		const TILE = (opts && Number.isFinite(opts.TILE)) ? opts.TILE : lastGlowTilePx;
+		lastGlowTilePx = TILE;
 		const now = (opts && Number.isFinite(opts.now)) ? opts.now
 			: ((typeof performance !== 'undefined' && performance.now) ? performance.now() : 0);
+		const tiles = (opts && typeof opts.getTile === 'function') ? ensureEmitterScan(opts) : NO_TILES;
+		if(!n && !tiles.length) return 0;
+		// Tier 2 is the `bloom` component: it AMPLIFIES every source uniformly —
+		// tiles, creatures, projectiles alike — instead of owning tiles alone.
+		const ampR = tier >= 2 ? 1.30 : 1;
+		const ampA = tier >= 2 ? 1.22 : 1;
+		metrics.emissiveSources += n;
 		emissiveFrame++;
-		let halos = 0, streaks = 0;
+		let halos = 0, streaks = 0, drawn = 0;
 		ctx.save();
 		ctx.globalCompositeOperation = 'lighter';
 		ctx.imageSmoothingEnabled = true;
 		// Streaks first so the head halo always caps the tail it belongs to.
-		{
+		if(n){
 			ctx.lineCap = 'round';
 			ctx.lineJoin = 'round';
 			let trailed = 0;
@@ -902,13 +964,12 @@ const api = {
 				}
 				const pts = hist.pts;
 				if(pts.length < 2) continue;
-				// One colour per source, alpha per segment: varying globalAlpha
-				// instead of rebuilding an rgba() string keeps the whole streak
-				// allocation-free.
+				// One colour per source, alpha per segment: varying globalAlpha instead
+				// of rebuilding an rgba() string keeps the whole streak allocation-free.
 				ctx.strokeStyle = 'rgb(' + e.rgb + ')';
 				for(let s = 1; s < pts.length; s++){
 					const w = trailTaper(s, pts.length);
-					ctx.globalAlpha = Math.min(0.5, e.a * 0.42 * w);
+					ctx.globalAlpha = Math.min(0.55, e.a * 0.42 * ampA * w);
 					ctx.lineWidth = Math.max(0.7, e.r * 0.42 * w);
 					ctx.beginPath();
 					ctx.moveTo(pts[s - 1].x, pts[s - 1].y);
@@ -916,8 +977,8 @@ const api = {
 					ctx.stroke();
 					streaks++;
 				}
-				// close the gap between the newest sample and where the body is NOW
-				ctx.globalAlpha = Math.min(0.5, e.a * 0.42);
+				// close the gap between the newest sample and where the source is NOW
+				ctx.globalAlpha = Math.min(0.55, e.a * 0.42 * ampA);
 				ctx.lineWidth = Math.max(0.7, e.r * 0.42);
 				ctx.beginPath();
 				ctx.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
@@ -926,63 +987,59 @@ const api = {
 				streaks++;
 			}
 		}
+		const tSec = now / 1000;
+		// A wide dim bleed UNDER a tight bright core: the two-layer shape of a real
+		// bloom, and the thing that makes a glow read as light instead of as a
+		// coloured disc stuck on the sprite. Both source kinds get it.
 		for(let i = 0; i < n; i++){
 			const e = emissiveQueue[i];
 			const spr = glowSpriteFor(e.rgb);
 			if(!spr) break;
-			// A wide dim bleed UNDER a tight bright core: the two-layer shape of a
-			// real bloom, and the thing that makes a glow read as light instead of
-			// as a coloured disc stuck on the sprite.
-			const wr = e.r * 1.85;
-			ctx.globalAlpha = e.a * 0.34;
+			const beat = e.pulse > 0
+				? (1 - e.pulse) + e.pulse * (0.82 + 0.18 * Math.sin(tSec * 2.1 + e.x * 0.07 + e.y * 0.04))
+				: 1;
+			const r = e.r * beat;
+			const wr = r * 1.85 * ampR;
+			ctx.globalAlpha = Math.min(1, e.a * 0.34 * ampA);
 			ctx.drawImage(spr, e.x - wr, e.y - wr, wr * 2, wr * 2);
-			halos++;
-			ctx.globalAlpha = e.a;
-			ctx.drawImage(spr, e.x - e.r, e.y - e.r, e.r * 2, e.r * 2);
-			halos++;
+			ctx.globalAlpha = Math.min(1, e.a * ampA);
+			ctx.drawImage(spr, e.x - r, e.y - r, r * 2, r * 2);
+			halos += 2;
+		}
+		for(const e of tiles){
+			const spr = glowSpriteFor(e.color);
+			if(!spr) break;
+			// Per-emitter phase from the tile position: deterministic, so a torch
+			// breathes without a stored animation state.
+			const pulse = 0.82 + 0.18 * Math.sin(tSec * 2.1 + e.x * 0.73 + e.y * 0.41);
+			const r = TILE * (0.7 + e.level * 0.2) * pulse;   // normalizeGlow's ramp
+			const wr = r * 1.85 * ampR;
+			const a = Math.min(0.68, 0.3 + e.level * 0.018);
+			const cx = e.x * TILE + TILE * 0.5, cy = e.y * TILE + TILE * 0.5;
+			ctx.globalAlpha = Math.min(1, a * 0.34 * ampA);
+			ctx.drawImage(spr, cx - wr, cy - wr, wr * 2, wr * 2);
+			ctx.globalAlpha = Math.min(1, a * ampA);
+			ctx.drawImage(spr, cx - r, cy - r, r * 2, r * 2);
+			drawn++;
 		}
 		ctx.restore();
 		metrics.emissiveHalos += halos;
 		metrics.emissiveStreaks += streaks;
-		// Histories of entities that stopped being drawn (dead, culled, fogged)
-		// expire on a slow sweep rather than per frame.
+		metrics.bloomDraws += drawn;
+		// Histories of sources that stopped being drawn (dead, culled, fogged) expire
+		// on a slow sweep rather than per frame.
 		if(emissiveTrails.size && now - emissiveTrailSweepAt > 500){
 			emissiveTrailSweepAt = now;
 			for(const [key, hist] of emissiveTrails){
 				if(now - hist.seen > TRAIL_TTL_MS) emissiveTrails.delete(key);
 			}
 		}
-		return halos;
+		return halos + drawn;
 	},
-	// Bloom frame driver. Runs in WORLD space (main.js calls it under the world
-	// transform, after the darkness overlay and before fog): emitter list is
-	// rescanned on a frame-health cadence or when the tile window moves; halos
-	// draw every frame so panning cannot smear or lag them.
-	drawBloomPass(ctx, opts){
-		if(!api.on('bloom')){ if(!api.on('lightTint') && !api.on('heatShimmer')){ bloomEmitters.length = 0; bloomScanKey = ''; } return 0; }
-		if(!ctx || !opts || typeof opts.getTile !== 'function') return 0;
-		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
-		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
-		ensureEmitterScan(opts);
-		if(!bloomEmitters.length) return 0;
-		const tSec = now / 1000;
-		let drawn = 0;
-		ctx.save();
-		ctx.globalCompositeOperation = 'lighter';
-		ctx.imageSmoothingEnabled = true;
-		for(const e of bloomEmitters){
-			const spr = glowSpriteFor(e.color);
-			if(!spr) break;
-			const pulse = 0.82 + 0.18 * Math.sin(tSec * 2.1 + e.x * 0.73 + e.y * 0.41);
-			const r = TILE * (0.7 + e.level * 0.2) * pulse;
-			ctx.globalAlpha = Math.min(0.68, 0.3 + e.level * 0.018);
-			ctx.drawImage(spr, e.x * TILE + TILE * 0.5 - r, e.y * TILE + TILE * 0.5 - r, r * 2, r * 2);
-			drawn++;
-		}
-		ctx.restore();
-		metrics.bloomDraws += drawn;
-		return drawn;
-	},
+	// Former names, kept so QA seams and the cost harness keep working: both halves
+	// of the old split now run through the one pass above.
+	drawEmissivePass(ctx, opts){ return api.drawGlowPass(ctx, opts); },
+	drawBloomPass(ctx, opts){ return api.on('bloom') ? api.drawGlowPass(ctx, opts) : 0; },
 	// Hero coating frame driver. Runs in WORLD space right after the hero
 	// sprite. Environment is resampled on a short cadence (or when the hero
 	// changes tile / dives), the drawn stops chase it exponentially, and the

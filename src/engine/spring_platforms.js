@@ -3,6 +3,8 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
 const springPlatforms = (function(){
   const MM = window.MM = window.MM || {};
 
+  // The glow attribute for a charged launch pad (post_fx draws it).
+  const PAD_GLOW=Object.freeze({color:'#fff6a0', rTiles:0.78, a:0.26, pulse:0.35});
   const CAPACITY = 70;
   const CHARGE_RATE = 34;
   const LAUNCH_COST = 28;
@@ -248,15 +250,11 @@ const springPlatforms = (function(){
       ctx.fillRect(px+TILE*0.25,py+TILE*0.82,Math.max(1,barW*k),TILE*0.055);
       ctx.globalAlpha=1;
     }
+    // A charged pad emits: the glow attribute replaces the per-frame radial
+    // gradient, so the halo survives the darkness overlay like every other light.
     if(p>0.02){
-      const rg=ctx.createRadialGradient(px+TILE*0.5,py+TILE*0.42,1,px+TILE*0.5,py+TILE*0.42,TILE*0.76);
-      rg.addColorStop(0,'rgba(255,246,160,'+(0.18*p).toFixed(3)+')');
-      rg.addColorStop(0.48,'rgba(113,220,255,'+(0.16*p).toFixed(3)+')');
-      rg.addColorStop(1,'rgba(113,220,255,0)');
-      ctx.fillStyle=rg;
-      ctx.beginPath();
-      ctx.arc(px+TILE*0.5,py+TILE*0.42,TILE*0.76,0,Math.PI*2);
-      ctx.fill();
+      const P=(typeof window!=='undefined' && window.MM) ? window.MM.postFx : null;
+      if(P && P.glow) P.glow(px+TILE*0.5, py+TILE*0.42, PAD_GLOW, null, TILE);
     }
     ctx.restore();
   }

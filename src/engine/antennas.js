@@ -330,14 +330,14 @@ window.MM = window.MM || {};
     const cooling = !running && t < st.cdUntil;
     const pulse = running ? 0.75 + 0.25 * Math.sin(t * 0.02) : 0.45 + 0.2 * Math.sin(t * 0.006);
     const r = Math.max(1, T * 0.05);
+    // The antenna tip is a lamp on a moving hero: registered through the glow
+    // attribute, so it survives the darkness overlay and streaks as he runs.
     if(!cooling){
-      const rg = ctx.createRadialGradient(tip.x * T, tip.y * T, 0.5, tip.x * T, tip.y * T, r * 2.4);
-      rg.addColorStop(0, 'rgba(255,255,255,' + (0.12 * pulse).toFixed(3) + ')');
-      rg.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = rg;
-      ctx.beginPath();
-      ctx.arc(tip.x * T, tip.y * T, r * 2.4, 0, Math.PI * 2);
-      ctx.fill();
+      const P = (typeof window !== 'undefined' && window.MM) ? window.MM.postFx : null;
+      if(P && P.addEmissive){
+        P.addEmissive({ x: tip.x * T, y: tip.y * T, r: r * 3.2, color: '#ffffff',
+          a: 0.16 * pulse, key: 'antennaTip', trail: true });
+      }
     }
     ctx.globalAlpha *= cooling ? 0.55 : 1;
     ctx.fillStyle = pal.orb;

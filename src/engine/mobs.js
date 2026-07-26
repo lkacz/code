@@ -8530,6 +8530,20 @@ const mobs = (function(){
     ctx.restore();
   }
 
+  // The glow attribute for mob shots, one row per projectile kind. A bolt of
+  // stormlight emits, a thrown rock does not; the registry turns any row here
+  // into a halo plus a streak along the flight path.
+  const PROJECTILE_GLOW={
+    dragon_fire: Object.freeze({color:'#ff8228', r:10,  a:0.50, trail:true}),
+    radiant:     Object.freeze({color:'#fff0aa', r:9,   a:0.52, trail:true}),
+    stormbolt:   Object.freeze({color:'#96dcff', r:9,   a:0.50, trail:true}),
+    voidbolt:    Object.freeze({color:'#9650dc', r:9,   a:0.46, trail:true}),
+    skybomb:     Object.freeze({color:'#ffb45a', r:8,   a:0.38, trail:true}),
+    sporeburst:  Object.freeze({color:'#a0ffaa', r:7.5, a:0.34, trail:true}),
+    iceshard:    Object.freeze({color:'#bfe9ff', r:6.5, a:0.30, trail:true}),
+    spit:        Object.freeze({color:'#b4d24a', r:6,   a:0.24, trail:true}),
+    gold_pick:   Object.freeze({color:'#ffd24a', r:7,   a:0.32, trail:true})
+  };
   // Per-instance identity for glow trails. spawnT alone collides — a spawnBatch
   // lands six piranhas in the same millisecond — and two entities sharing a
   // trail key would swap streaks between them, so this is a lazily assigned
@@ -8539,6 +8553,10 @@ const mobs = (function(){
   function mobGlowKey(m){
     if(!m._gk) m._gk='m'+(++glowKeySeq)+':';
     return m._gk;
+  }
+  function projectileGlowKey(pr){
+    if(!pr._gk) pr._gk='pr'+(++glowKeySeq);
+    return pr._gk;
   }
 
   function draw(ctx, TILE, camX,camY, zoom, canDrawTile, viewX,viewY){
@@ -10589,6 +10607,13 @@ const mobs = (function(){
     // Mob projectiles: spinning bone shards
     for(const pr of mobProjectiles){
       if(visibleTile && !visibleTile(Math.floor(pr.x), Math.floor(pr.y))) continue;
+      // The shot's own light comes from the PROJECTILE_GLOW table keyed on its
+      // kind — one declaration per kind, and the registry adds the halo and the
+      // streak along the flight path. Nothing below paints a halo any more.
+      if(EMISSIVE){
+        const pg=PROJECTILE_GLOW[pr.type];
+        if(pg) EMISSIVE.glow(pr.x*TILE, pr.y*TILE, pg, projectileGlowKey(pr), TILE);
+      }
       ctx.save();
       ctx.translate(pr.x*TILE, pr.y*TILE); ctx.rotate(pr.spin);
       if(pr.type==='spit'){

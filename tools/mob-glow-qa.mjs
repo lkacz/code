@@ -8,8 +8,8 @@
 //      switch removes exactly that light, which is the A/B.
 //   2. moving lamps leave a streak (world-space position history), and removing
 //      every creature stops the streaks instead of leaving light hanging.
-//   3. the bloom toggle does NOT change creature light — tile emitters are its
-//      business, creatures own theirs.
+//   3. the bloom component AMPLIFIES the same sources rather than owning tiles:
+//      the tier goes 1->2 and nothing new is invented.
 //   4. cost: the pass is timed directly (400 cycles, 40 sources) instead of
 //      guessed from frame deltas — headless frame-rate A/B is worthless here,
 //      it once reported "all 12 ultra passes on" as faster than standard.
@@ -56,11 +56,24 @@ const HELPERS = `
 			const b=this.snap();
 			return {s:b.s-a.s,h:b.h-a.h,t:b.t-a.t,b:b.b-a.b};
 		},
+		// Both halves of the brightness A/B from CONSECUTIVE frames: sampling them
+		// a second apart let the world move in between, which once made the killed
+		// frame the brighter one. Leaves the kill switch SET for the caller to clear.
+		async abLight(){
+			const on=this.light();
+			window.__mmNoPostFX=true;
+			await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+			const off=this.light();
+			return {on,off};
+		},
 		light(){
 			const cv=document.getElementById('game');
 			const g=cv.getContext('2d');
-			const x0=Math.max(0,(cv.width>>1)-400), y0=Math.max(0,(cv.height>>1)-250);
-			const w=Math.min(800,cv.width-x0), h=Math.min(500,cv.height-y0);
+			// A TIGHT box around the hero: over a full 800x500 the terrain dominates the
+			// mean and a real glow reads as a fraction of a percent. The light has to be
+			// the dominant thing in the sample for the number to mean anything.
+			const x0=Math.max(0,(cv.width>>1)-190), y0=Math.max(0,(cv.height>>1)-130);
+			const w=Math.min(380,cv.width-x0), h=Math.min(260,cv.height-y0);
 			const d=g.getImageData(x0,y0,w,h).data;
 			let sum=0, lit=0, peak=0;
 			for(let i=0;i<d.length;i+=16){
@@ -102,14 +115,12 @@ const SCENE_FIREFLY = `(async()=>{
 	if(window.player) player.hp=player.maxHp;
 	// standard tier with the light, then the same frame with it killed
 	const on=await window.__mg.delta(700);
-	const lightOn=window.__mg.light();
-	window.__mmNoPostFX=true;
-	await sleep(500);
+	const ab=await window.__mg.abLight();
+	const lightOn=ab.on, lightOff=ab.off;
 	const off=await window.__mg.delta(700);
-	const lightOff=window.__mg.light();
 	delete window.__mmNoPostFX;
 	await sleep(400);
-	return 'OK '+JSON.stringify({n,on,off,lightOn,lightOff,tier:MM.postFx.emissiveTier()});
+	return 'OK '+JSON.stringify({n,on,off,lightOn,lightOff,tier:MM.postFx.glowTier()});
 })()`;
 
 // The same field with bloom ON: creature light must be untouched by that toggle,
@@ -118,6 +129,7 @@ const SCENE_FIREFLY_BLOOM = `(async()=>{
 	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 	MM.postFx.set('bloom',true);
 	await sleep(900);
+	const tierWithBloom=MM.postFx.glowTier();
 	const withBloom=await window.__mg.delta(900);
 	MM.postFx.set('bloom',false);
 	await sleep(600);
@@ -129,7 +141,7 @@ const SCENE_FIREFLY_BLOOM = `(async()=>{
 	return 'OK '+JSON.stringify({
 		withBloom:{...withBloom,ratio:ratio(withBloom)},
 		withoutBloom:{...withoutBloom,ratio:ratio(withoutBloom)},
-		empty, tier:MM.postFx.emissiveTier()
+		empty, tierWithBloom, tier:MM.postFx.glowTier()
 	});
 })()`;
 
@@ -151,13 +163,10 @@ const SCENE_BAT = `(async()=>{
 	await sleep(1600);
 	if(window.player) player.hp=player.maxHp;
 	const d=await window.__mg.delta(900);
-	const light=window.__mg.light();
-	window.__mmNoPostFX=true;
-	await sleep(500);
-	const lightOff=window.__mg.light();
+	const ab=await window.__mg.abLight();
 	delete window.__mmNoPostFX;
-	await sleep(400);
-	return 'OK '+JSON.stringify({n,d,light,lightOff});
+	await sleep(300);
+	return 'OK '+JSON.stringify({n,d,light:ab.on,lightOff:ab.off});
 })()`;
 
 // The radiation cockroach: named in the report as "just a green outline drawn on".
@@ -171,13 +180,10 @@ const SCENE_ROACH = `(async()=>{
 	await sleep(1800);
 	if(window.player) player.hp=player.maxHp;
 	const d=await window.__mg.delta(900);
-	const light=window.__mg.light();
-	window.__mmNoPostFX=true;
-	await sleep(500);
-	const lightOff=window.__mg.light();
+	const ab=await window.__mg.abLight();
 	delete window.__mmNoPostFX;
-	await sleep(400);
-	return 'OK '+JSON.stringify({n,d,light,lightOff});
+	await sleep(300);
+	return 'OK '+JSON.stringify({n,d,light:ab.on,lightOff:ab.off});
 })()`;
 
 // Direct cost of the entity pass, plus the tile bloom pass for comparison — the
@@ -195,11 +201,19 @@ const SCENE_COST = `(()=>{
 				key:withTrail?('bench'+i):undefined,trail:withTrail});
 		}
 	};
+	// Three reps, keep the MINIMUM: a shared-CPU headless run has other work
+	// landing between frames, and the mean of a single rep swung 2x between
+	// otherwise identical runs. The minimum answers what the number is for — how
+	// long the work takes when it is not being preempted.
 	const run=(count,withTrail)=>{
-		for(let i=0;i<40;i++){ queue(count,withTrail); P.drawEmissivePass(ctx,{now:performance.now()}); }
-		const t0=performance.now();
-		for(let i=0;i<N;i++){ queue(count,withTrail); P.drawEmissivePass(ctx,{now:performance.now()+i*20}); }
-		return +(((performance.now()-t0)/N)*1000).toFixed(1);
+		for(let i=0;i<40;i++){ queue(count,withTrail); P.drawGlowPass(ctx,{now:performance.now()}); }
+		let best=Infinity;
+		for(let rep=0;rep<3;rep++){
+			const t0=performance.now();
+			for(let i=0;i<N;i++){ queue(count,withTrail); P.drawGlowPass(ctx,{now:performance.now()+i*20}); }
+			best=Math.min(best,(performance.now()-t0)/N);
+		}
+		return +(best*1000).toFixed(1);
 	};
 	ctx.save();
 	P.set('bloom',false);
@@ -210,9 +224,9 @@ const SCENE_COST = `(()=>{
 	P.set('bloom',true);
 	const bopts={TILE,sx:Math.floor(player.x)-40,sy:Math.floor(player.y)-25,viewX:80,viewY:50,
 		getTile:MM.world.getTile,frameMs:16};
-	for(let i=0;i<40;i++) P.drawBloomPass(ctx,bopts);
+	for(let i=0;i<40;i++) P.drawGlowPass(ctx,bopts);
 	const b0=performance.now();
-	for(let i=0;i<N;i++) P.drawBloomPass(ctx,bopts);
+	for(let i=0;i<N;i++) P.drawGlowPass(ctx,bopts);
 	const bloomUs=+(((performance.now()-b0)/N)*1000).toFixed(1);
 	const emitters=P.metrics.bloomEmitters|0;
 	ctx.restore();
@@ -320,16 +334,19 @@ async function main(){
 				['species register their light every frame', fly.on.s > 0],
 				['two blits per source: wide bleed under a tight core', fly.on.h >= fly.on.s * 1.8],
 				['wandering lamps leave a streak with every ultra pass off', fly.on.t > 0],
-				['tile bloom stays off in standard mode', fly.on.b === 0],
+				['an open night field has no emissive tiles to halo', fly.on.b === 0],
 				['the kill switch removes the creature light entirely', fly.off.s === 0 && fly.off.h === 0 && fly.off.t === 0],
 				// the whole point: the light must be VISIBLE, not merely executed
 				['the firefly field measurably brightens the night', fly.lightOn.mean > fly.lightOff.mean],
 				['the glow raises lit-pixel count', fly.lightOn.lit > fly.lightOff.lit],
 				// the bloom toggle owns TILE emitters; creatures own their own light
-				['the bloom toggle does not change creature light', flyB.tier === 1 && Math.abs(flyB.withBloom.ratio - flyB.withoutBloom.ratio) < 0.2],
+				['bloom AMPLIFIES the same sources instead of inventing any', flyB.tierWithBloom === 2 && flyB.tier === 1 && Math.abs(flyB.withBloom.ratio - flyB.withoutBloom.ratio) < 0.2],
 				['removing every creature stops the streaks (no light left hanging)', flyB.empty.t === 0 && flyB.empty.s === 0],
 				['bats spawned in the sealed room', bat.n >= 4],
 				['bat eyes register light', bat.d.s > 0],
+				// the underground rooms sit near lava: tiles glow in STANDARD mode now,
+				// which is the whole point of one rule for every light
+				['emissive TILES halo in standard mode too', bat.d.b > 0 && roach.d.b > 0],
 				['bat eyes streak across the room', bat.d.t > 0],
 				['the sealed room is measurably lit by the eyes alone', bat.light.mean > bat.lightOff.mean],
 				// the named regression: "just a green outline drawn on"

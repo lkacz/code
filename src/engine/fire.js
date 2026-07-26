@@ -351,6 +351,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   let flameWidth=0,flameHeight=0;
   const FRAMES=16;
   const FLAME_VARIANTS=4;
+  // The glow attribute for a burning block. Level 12 is the same number the light
+  // field has always used for fire (lighting.js FIRE_LEVEL), so the halo and the
+  // lit area agree instead of being tuned twice.
+  const BURN_GLOW=Object.freeze({level:12, color:'#ff8c32', pulse:0.30});
   const FLAME_SUPERSAMPLE=2;
   const BLOCK_FLAME_PUFFS=6;
   function flameRand(variant,index){
@@ -599,6 +603,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   }
   function draw(ctx,TILE,sx,sy,viewX,viewY,getTile,visibility){
     if(spriteTile!==TILE || !glowSprite) buildSprites(TILE);
+    const EMISSIVE=(typeof window!=='undefined' && window.MM && window.MM.postFx && window.MM.postFx.glow) ? window.MM.postFx : null;
     const now=performance.now();
     const canSee = visibility && typeof visibility.visible==='function' ? visibility.visible : null;
     const revealAll = !!(visibility && visibility.revealAll);
@@ -618,6 +623,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       // charring overlay
       ctx.fillStyle='rgba(20,12,8,'+(0.25+stage*0.45).toFixed(2)+')';
       ctx.fillRect(px,py,TILE,TILE);
+      // A burning block IS a light source — the light field has always treated it
+      // as level 12 — so it declares the same glow attribute every other light in
+      // the game uses and blooms above the darkness overlay. The baked sprite
+      // below stays as the tile's own art: the warm pool ON the block.
+      if(EMISSIVE) EMISSIVE.glow(px+TILE/2, py+TILE*0.45, BURN_GLOW, null, TILE);
       // glow (baked radial sprite, alpha-flickered)
       ctx.globalAlpha=0.6+0.4*flick;
       ctx.drawImage(glowSprite, px+TILE/2-GS/2, py+TILE/2-GS/2);

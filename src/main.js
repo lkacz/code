@@ -6481,6 +6481,17 @@ function invalidateAllChunkRenderCaches(){ chunkCanvases.clear(); chunkRenderDir
 // Ultra specular: reflective materials whose bake collects per-chunk glint
 // points (the entry.chests pattern) for the budgeted live twinkle pass.
 const SPEC_GLINT_TILES=new Set([T.GOLD_ORE,T.SILVER_ORE,T.SILVER_INGOT,T.DIAMOND,T.ICE,T.MOTHER_ICE,T.GLASS,T.STEEL,T.IRIDIUM,T.METEORIC_IRON,T.OBSIDIAN,T.ANTIMATTER_CRYSTAL,T.GOLDEN_WOOD]);
+// The glow attribute for treasure. Chests deliberately stay OUT of TILE_GLOW
+// (post_fx would then halo them from the tile scan, losing the tier pulse this
+// pass owns) and register their own descriptor instead — one renderer, one look.
+const CHEST_TIER_GLOW={
+	[T.CHEST_LEGENDARY]:Object.freeze({color:'#58e0d8', rTiles:0.85, a:0.58, pulse:0.45}),
+	[T.CHEST_EPIC]:     Object.freeze({color:'#e0b341', rTiles:0.80, a:0.54, pulse:0.45}),
+	[T.CHEST_RARE]:     Object.freeze({color:'#a74cc9', rTiles:0.74, a:0.50, pulse:0.45}),
+	[T.CHEST_UNCOMMON]: Object.freeze({color:'#3fa650', rTiles:0.68, a:0.46, pulse:0.45}),
+	[T.CHEST_COMMON]:   Object.freeze({color:'#b07f2c', rTiles:0.64, a:0.44, pulse:0.45}),
+	def:                Object.freeze({color:'#b07f2c', rTiles:0.64, a:0.44, pulse:0.45})
+};
 function hash32(x,y){ let h = (x|0)*374761393 + (y|0)*668265263; h = (h^(h>>>13))*1274126177; h = h^(h>>>16); return h>>>0; }
 const shadeColorCache=new Map(); // (hex,delta) pairs recur thousands of times per section bake
 function shadeColor(hex,delta){ // hex like #rgb or #rrggbb (we use rrggbb)
@@ -9720,18 +9731,13 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 					const wx=ch.x, y=ch.y, t=ch.t;
 					if(y<y0 || y>=y1) continue;
 					if(!chestDebug && !worldFxVisible(wx,y)) continue;
-					const pulse=Math.sin(nowA*0.004 + wx*0.7 + y*0.3)*0.5+0.5;
-					const rad=TILE*0.6 + pulse*TILE*0.25;
 					const cxp=(localLayer?(wx-camDrawX):wx)*TILE+TILE/2;
 					const cyp=(localLayer?(y-camDrawY):y)*TILE+TILE/2;
-					const g=ctx.createRadialGradient(cxp,cyp,rad*0.2,cxp,cyp,rad);
-					const col = t===T.CHEST_LEGENDARY? 'rgba(88,224,216,' : t===T.CHEST_EPIC? 'rgba(224,179,65,' : t===T.CHEST_RARE? 'rgba(167,76,201,' : t===T.CHEST_UNCOMMON? 'rgba(63,166,80,' : 'rgba(176,127,44,';
-					g.addColorStop(0,col+(0.45+0.35*pulse)+(chestDebug?0.15:0)+')');
-					g.addColorStop(1,col+'0)');
-					ctx.fillStyle=g;
-					ctx.beginPath();
-					ctx.arc(cxp,cyp,rad*(chestDebug?1.15:1),0,Math.PI*2);
-					ctx.fill();
+					// A chest's tier aura IS its light. It stays out of the tile glow
+					// attribute (only this pass knows the pulse and the debug widening)
+					// and instead registers a glow descriptor per chest, so treasure
+					// halos and every other light in the game share one renderer.
+					POST_FX.glow(cxp,cyp,CHEST_TIER_GLOW[t]||CHEST_TIER_GLOW.def,null,TILE);
 					if(chestDebug){ ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.strokeRect((localLayer?(wx-camDrawX):wx)*TILE+1,(localLayer?(y-camDrawY):y)*TILE+1,TILE-2,TILE-2); }
 				}
 			}
@@ -10182,7 +10188,7 @@ function ensurePausePanel(){
 	// the render cache for an immediate visual switch; bloom and reflections are
 	// live passes that just start/stop drawing.
 	const gfxComponentRows=[
-		['💡 Bloom (poświata)','bloom'],
+		['💡 Bloom (mocniejsza poświata)','bloom'],
 		['🌑 Okluzja otoczenia (AO)','ao'],
 		['💠 Refleksy materiałów','specular'],
 		['🌊 Odbicia w wodzie','reflections'],
@@ -15344,17 +15350,16 @@ function draw(){ // Background first
  // uses, painted over the darkness overlay so torch rooms warm up and
  // glowshroom chambers go teal — then bloom adds the tight bright cores.
  if(gfxUltraOn('lightTint') && POST_FX.drawLightTintPass) POST_FX.drawLightTintPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs});
- // Ultra bloom: additive halos over emissive tiles, drawn in world space above
- // the darkness overlay (the glow is what lives in the dark) and before the
- // fog pass below so undiscovered black still wins on top. The gate keeps
- // standard mode from even building the opts object each frame.
- if(gfxUltraOn('bloom') && POST_FX.drawBloomPass) POST_FX.drawBloomPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs});
- // Entity glow: the halos creatures registered during their own pass above, now
- // painted in the same place tile bloom lands — over the darkness, under the fog.
- // NOT gated on a toggle: at standard tier this IS the creature's light (it
- // replaced the flat ellipses the species used to draw), and the call also
- // DRAINS the queue, so skipping it would show stale positions next frame.
- if(POST_FX.drawEmissivePass) POST_FX.drawEmissivePass(ctx,{now:performance.now()});
+ // THE glow pass: every light in the game in one draw — emissive TILES found by
+ // the cadence-cached attribute scan, plus every entity part that registered its
+ // own `glow` during the passes above (creatures, held weapons, projectiles,
+ // drops, machine lamps, effects), with motion streaks for the ones that move.
+ // Placed over the darkness overlay (glow is what lives in the dark) and under
+ // the fog pass below (undiscovered black still wins on top).
+ // NOT gated on a toggle: this IS the light those things used to draw for
+ // themselves, and the call also DRAINS the registry queue, so skipping it would
+ // show stale positions next frame. The `bloom` component amplifies it instead.
+ if(POST_FX.drawGlowPass) POST_FX.drawGlowPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs,now:performance.now()});
  // Ghost block preview — recomputed each frame so camera motion can't leave it stale.
  // Green = placement allowed right now; red = blocked (reach/support/no blocks).
  if(isToolMode() && lastPointer.has && !pinch && !mining){

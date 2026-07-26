@@ -7,6 +7,9 @@ import { isHeroPassableTile } from './material_physics.js';
 (function(){
   window.MM = window.MM || {};
 
+  // The glow attribute for a charged gate (engine/post_fx.js draws every light in
+  // the game from one of these).
+  const PORTAL_GLOW=Object.freeze({color:'#7cf7ff', rTiles:0.62, a:0.34, pulse:0.30});
   const machines = new Map(); // "x,y" -> {x,y,energy,pulse,cooldown,lastUse}
   const networkCache = new Map(); // teleporter key -> {rev,dynamos:[{x,y}]}
   const wireActivity = new Map(); // "x,y" -> {x,y,ttl,level}
@@ -1398,14 +1401,13 @@ import { isHeroPassableTile } from './material_physics.js';
     ctx.beginPath();
     ctx.arc(px+TILE*0.5,py+TILE*0.5,TILE*(0.19+0.03*Math.sin(phase)),0,Math.PI*2);
     ctx.stroke();
-    const rg=ctx.createRadialGradient(px+TILE*0.5,py+TILE*0.5,1,px+TILE*0.5,py+TILE*0.5,TILE*0.58);
-    rg.addColorStop(0,'rgba(124,247,255,'+(0.34*glow).toFixed(3)+')');
-    rg.addColorStop(0.52,'rgba(116,88,255,'+(0.20*glow).toFixed(3)+')');
-    rg.addColorStop(1,'rgba(116,88,255,0)');
-    ctx.fillStyle=rg;
-    ctx.beginPath();
-    ctx.arc(px+TILE*0.5,py+TILE*0.5,TILE*0.58,0,Math.PI*2);
-    ctx.fill();
+    // A charged gate emits: the glow attribute replaces the per-frame radial
+    // gradient this drew for itself, so the halo lands above the darkness overlay
+    // and scales with the charge that actually powers the gate.
+    if(glow>0.02){
+      const P=(typeof window!=='undefined' && window.MM) ? window.MM.postFx : null;
+      if(P && P.glow) P.glow(px+TILE*0.5, py+TILE*0.5, PORTAL_GLOW, null, TILE);
+    }
     drawBatteryLines(ctx,TILE,px,py,charge,pulse);
     ctx.restore();
   }

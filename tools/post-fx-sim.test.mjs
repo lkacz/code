@@ -38,10 +38,10 @@ const {
 	bloomSourceFor, collectBloomEmitters, BLOOM_MIN_LEVEL, BLOOM_MAX_EMITTERS,
 	heroSheenEnvSample, heroMirrorCurve, shadowParams,
 	wetGroundStep, collectCanopyGaps, collectIceRuns,
-	emissiveRgb, trailSampleDue, trailBroken, trailTaper,
+	emissiveRgb, normalizeGlow, trailSampleDue, trailBroken, trailTaper,
 	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX
 } = await import('../src/engine/post_fx.js');
-const { T, INFO } = await import('../src/constants.js');
+const { T, INFO, TILE_GLOW } = await import('../src/constants.js');
 await import('../src/engine/furnishings.js'); // stamps INFO[t].requiresHomePower like the live game
 const { NEW_GAME_PREFERENCE_KEYS } = await import('../src/engine/new_game.js');
 
@@ -120,7 +120,39 @@ assert.equal(powered.length, 2, 'a running powered furnishing blooms');
 const unpowered = collectBloomEmitters({ x0: 0, y0: 0, x1: 6, y1: 6, getTile: houseTile, poweredAt: () => false });
 assert.deepEqual(unpowered.map(e => e.t), [T.TORCH], 'a dead appliance never halos');
 
-// --- drawBloomPass behavior ---------------------------------------------------
+// --- tile glow attribute ------------------------------------------------------
+// The declaration that a tile emits light lives ON THE TILE (constants.js
+// TILE_GLOW stamps INFO[t].glow) and is read by BOTH the light field and the
+// renderer, so the two can never drift apart.
+assert.ok(TILE_GLOW[T.TORCH] && TILE_GLOW[T.TORCH].level === 13, 'the torch declares its level as a tile attribute');
+assert.equal(INFO[T.TORCH].glow, TILE_GLOW[T.TORCH], 'TILE_GLOW is stamped onto INFO');
+assert.equal(INFO[T.STONE].glow, undefined, 'inert terrain carries no glow attribute');
+for(const key of Object.keys(TILE_GLOW)){
+	const spec = TILE_GLOW[key];
+	assert.ok(spec.level >= BLOOM_MIN_LEVEL, 'every declared tile glow is bright enough to halo: ' + key);
+	assert.match(spec.color, /^\d{1,3},\d{1,3},\d{1,3}$/, 'tile glow colours are sprite-cache triplets: ' + key);
+}
+const lightingSrc = readFileSync(new URL('../src/engine/lighting.js', import.meta.url), 'utf8');
+assert.match(lightingSrc, /const attr = INFO\[t\] && INFO\[t\]\.glow;/, 'the light field reads the same tile attribute the renderer does');
+assert.ok(!/\[T\.TORCH\]: 13/.test(lightingSrc), 'lighting no longer keeps its own copy of the torch level');
+
+// --- normalizeGlow: the descriptor ramp ---------------------------------------
+// ONE ramp turns a level into a radius and an alpha, so a level-13 torch is
+// bigger and brighter than a level-9 glowshroom by construction.
+const torchGlow = normalizeGlow({ level: 13, color: '#ffb054' }, 20);
+const shroomGlow = normalizeGlow({ level: 9, color: '96,240,192' }, 20);
+assert.equal(torchGlow.r, 20 * (0.7 + 13 * 0.2), 'the level->radius ramp is the one the tile pass draws with');
+assert.equal(torchGlow.a, Math.min(0.68, 0.3 + 13 * 0.018), 'the level->alpha ramp matches too');
+assert.ok(torchGlow.r > shroomGlow.r && torchGlow.a > shroomGlow.a, 'a brighter level really is bigger and brighter');
+assert.equal(torchGlow.rgb, '255,176,84', 'hex colours normalise to the sprite-cache triplet');
+assert.equal(normalizeGlow({ r: 8, color: '#fff' }, 20).r, 8, 'an entity radius is taken in world pixels as given');
+assert.equal(normalizeGlow({ color: '#fff' }, 20), null, 'a descriptor with neither r nor level is not a glow');
+assert.equal(normalizeGlow(null, 20), null, 'a missing attribute is not a glow');
+assert.equal(normalizeGlow({ r: 5, color: '#fff', trail: true }, 20).trail, true, 'trail rides on the descriptor');
+assert.equal(normalizeGlow({ r: 5, color: '#fff' }, 20).trail, false, 'no trail unless the attribute asks for one');
+assert.ok(normalizeGlow({ r: 900, color: '#fff' }, 20).r <= 320, 'a runaway radius is clamped');
+
+// --- tile glow draw behavior --------------------------------------------------
 function makeCtx(){
 	const calls = [];
 	return {
@@ -133,16 +165,30 @@ function makeCtx(){
 		drawImage(){ calls.push('drawImage'); }
 	};
 }
-const offCtx = makeCtx();
-assert.equal(postFx.drawBloomPass(offCtx, { TILE: 20, sx: 0, sy: 0, viewX: 8, viewY: 8, getTile }), 0, 'bloom disabled draws nothing');
-assert.equal(offCtx.calls.length, 0, 'bloom disabled touches no canvas state');
-window.__mmForceGfxUltra = true;
-const onCtx = makeCtx();
-const drawn = postFx.drawBloomPass(onCtx, { TILE: 20, sx: 0, sy: 0, viewX: 8, viewY: 8, getTile, frameMs: 16 });
-assert.ok(drawn >= 2, 'forced ultra draws a halo per visible emitter');
-assert.ok(onCtx.calls.includes('drawImage') && onCtx.calls[0] === 'save' && onCtx.calls[onCtx.calls.length - 1] === 'restore', 'bloom wraps its composite state in save/restore');
-assert.ok(postFx.metrics.bloomScans >= 1 && postFx.metrics.bloomDraws >= 2, 'bloom metrics record scans and draws');
-delete window.__mmForceGfxUltra;
+// Emissive TILES glow in standard mode now: a torch is light, not an option.
+const tileOpts = { TILE: 20, sx: 0, sy: 0, viewX: 8, viewY: 8, getTile, frameMs: 16 };
+const stdCtx = makeCtx();
+const stdDrawn = postFx.drawGlowPass(stdCtx, tileOpts);
+assert.ok(stdDrawn >= 2, 'standard mode halos every visible emissive tile');
+assert.ok(stdCtx.calls.includes('drawImage') && stdCtx.calls[0] === 'save' && stdCtx.calls[stdCtx.calls.length - 1] === 'restore', 'the glow pass wraps its composite state in save/restore');
+assert.ok(postFx.metrics.bloomScans >= 1 && postFx.metrics.bloomDraws >= 2, 'tile glow metrics record scans and draws');
+// The QA kill switch is the only thing that silences it (screenshot goldens).
+window.__mmNoPostFX = true;
+const killCtx = makeCtx();
+assert.equal(postFx.drawGlowPass(killCtx, tileOpts), 0, 'the kill switch silences tile glow');
+assert.equal(killCtx.calls.length, 0, 'a killed pass touches no canvas state');
+delete window.__mmNoPostFX;
+// The `bloom` component AMPLIFIES the same sources instead of owning tiles.
+const beforeAmp = postFx.metrics.bloomDraws;
+postFx.set('bloom', true);
+const ampCtx = makeCtx();
+const ampDrawn = postFx.drawGlowPass(ampCtx, tileOpts);
+postFx.set('bloom', false);
+assert.equal(ampDrawn, stdDrawn, 'amplifying does not invent extra sources — it makes the same ones bigger');
+assert.ok(postFx.metrics.bloomDraws > beforeAmp, 'the amplified pass still records its tile draws');
+// The former entry points stay callable for QA seams: drawBloomPass keeps its
+// component gate so the pass-matrix contract below still describes it.
+assert.equal(postFx.drawBloomPass(makeCtx(), tileOpts), 0, 'drawBloomPass (the ultra alias) stays gated on its component');
 
 // --- hero sheen environment probe (2D matcap) ---------------------------------
 // The coat samples the ACTUAL world through the caller's tile->color table:
@@ -378,12 +424,13 @@ assert.ok(trailTaper(3, 7) < 0.5, 'the taper is convex — the tail thins fast, 
 // it is standard at full quality because it was measured (3.4 us per still
 // source, 9.8 us per streaking one; tools/mob-glow-qa.mjs) — so the only thing
 // that can silence it is the QA kill switch.
-assert.equal(postFx.emissiveTier(), 1, 'creature light is standard, not an ultra option');
+assert.equal(postFx.glowTier(), 1, 'glow is standard, not an ultra option');
 postFx.set('bloom', true);
-assert.equal(postFx.emissiveTier(), 1, 'the bloom toggle does not change creature light (tile emitters are its business)');
+assert.equal(postFx.glowTier(), 2, 'the bloom component AMPLIFIES every source uniformly');
 postFx.set('bloom', false);
+assert.equal(postFx.emissiveTier(), postFx.glowTier(), 'the earlier name still answers for QA seams');
 window.__mmNoPostFX = true;
-assert.equal(postFx.emissiveTier(), 0, 'the QA kill switch silences the glow for goldens');
+assert.equal(postFx.glowTier(), 0, 'the QA kill switch silences the glow for goldens');
 assert.equal(postFx.addEmissive({ x: 10, y: 10, r: 6, color: '#fff' }), false, 'a killed registry accepts nothing');
 delete window.__mmNoPostFX;
 
@@ -461,15 +508,17 @@ assert.ok(!/drawImage\(ctx\.canvas/.test(postFxSrc), 'no post_fx pass blits the 
 const passCalls = [...mainSrc.matchAll(/POST_FX\.draw\w+\(ctx/g)];
 assert.ok(passCalls.length >= 10, 'all pass invocations are present in main.js');
 for(const m of passCalls){
-	// The entity glow is the ONE deliberate exception. It is not an optional
-	// extra: at standard tier it IS the light creatures used to draw for
-	// themselves, and the call also DRAINS the registry queue, so gating it would
-	// strand queued sources and redraw them at stale positions next frame.
-	if(mainSrc.startsWith('POST_FX.drawEmissivePass(ctx', m.index)) continue;
+	// The glow pass is the ONE deliberate exception. It is not an optional extra:
+	// this IS the light every source used to draw for itself — the creatures' flat
+	// ellipses and the emissive tiles alike — and the call also DRAINS the registry
+	// queue, so gating it would strand queued sources and redraw them at stale
+	// positions next frame. The `bloom` component amplifies it instead of gating it.
+	if(mainSrc.startsWith('POST_FX.drawGlowPass(ctx', m.index)) continue;
 	const back = mainSrc.slice(Math.max(0, m.index - 420), m.index);
 	assert.ok(back.includes("gfxUltraOn('") || back.includes("POST_FX.on('"), 'pass invocation missing a component gate near: ' + mainSrc.slice(m.index, m.index + 60));
 }
-assert.match(mainSrc, /if\(POST_FX\.drawEmissivePass\) POST_FX\.drawEmissivePass\(ctx,\{now:performance\.now\(\)\}\);/, 'the entity glow pass runs every frame, ungated, and drains the queue');
+assert.match(mainSrc, /if\(POST_FX\.drawGlowPass\) POST_FX\.drawGlowPass\(ctx,\{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:\(x,y\)=>furnishingPoweredAt\(x,y\),frameMs:lastFrameMs,now:performance\.now\(\)\}\);/, 'ONE ungated glow pass carries tiles and entities and drains the queue');
+assert.equal((mainSrc.match(/POST_FX\.drawGlowPass\(ctx/g) || []).length, 1, 'exactly one glow pass invocation exists — two would double every halo');
 
 assert.match(mainSrc, /import \{ postFx as POST_FX \} from '\.\/engine\/post_fx\.js';/, 'main.js wires the post_fx module');
 assert.match(mainSrc, /function gfxUltraOn\(name\)\{ return !!\(POST_FX && POST_FX\.on && POST_FX\.on\(name\)\); \}/, 'every ultra hook gates through one helper');
@@ -486,17 +535,19 @@ assert.match(mainSrc, /const specStressed=lastFrameMs>32;/, 'live specular glint
 assert.match(mainSrc, /let specBudget=specStressed\?48:120, specDrawn=0, specScan=specStressed\?600:1500;/, 'specular pass bounds the point WALK, with a reduced stressed-frame budget');
 assert.match(mainSrc, /if\(\(cx3\+1\)\*CHUNK_W<sx-1 \|\| cx3\*CHUNK_W>sx\+viewX\+2\) continue;/, 'off-screen chunk columns are culled from the glint walk');
 assert.match(mainSrc, /POST_FX\.metrics\.specGlints\+=specDrawn;/, 'specular pass reports its draw count');
-assert.match(mainSrc, /POST_FX\.drawBloomPass\(ctx,\{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:\(x,y\)=>furnishingPoweredAt\(x,y\),frameMs:lastFrameMs\}\)/, 'bloom pass receives the fog predicate, the furnishing power gate, and the frame-health signal');
+assert.match(mainSrc, /visibleAt:worldFxVisible,poweredAt:\(x,y\)=>furnishingPoweredAt\(x,y\),frameMs:lastFrameMs,now:performance\.now\(\)/, 'the glow pass receives the fog predicate, the furnishing power gate and the frame-health signal');
 
-// Frame ordering: bloom sits above the darkness overlay and below the fog pass.
+// Frame ordering: the glow pass sits above the darkness overlay and below fog.
 const iLight = mainSrc.indexOf('drawLightingOverlay(sx,sy,viewX,viewY,{camX:camRenderX');
-const iBloom = mainSrc.indexOf('POST_FX.drawBloomPass');
+const iBloom = mainSrc.indexOf('POST_FX.drawGlowPass');
 const iFog = mainSrc.indexOf('drawFogOverlay(sx,sy,viewX,viewY,{camX:camRenderX');
-assert.ok(iLight > 0 && iBloom > iLight && iFog > iBloom, 'bloom draws after cave darkness and before fog (undiscovered black wins)');
+assert.ok(iLight > 0 && iBloom > iLight && iFog > iBloom, 'glow draws after cave darkness and before fog (undiscovered black wins)');
 
 // Pause panel: master switch + one Polish row per component, resynced on reopen.
 assert.match(mainSrc, /'✨ Grafika Ultra \(wszystko\)'/, 'master ultra row exists');
-assert.match(mainSrc, /\['💡 Bloom \(poświata\)','bloom'\]/, 'bloom row maps to its component');
+// The label says what the component now DOES: every glow is standard, and this
+// row makes them all stronger (it used to own tile emitters alone).
+assert.match(mainSrc, /\['💡 Bloom \(mocniejsza poświata\)','bloom'\]/, 'the bloom row is labelled as an amplifier');
 assert.match(mainSrc, /\['🌑 Okluzja otoczenia \(AO\)','ao'\]/, 'AO row maps to its component');
 assert.match(mainSrc, /\['💠 Refleksy materiałów','specular'\]/, 'specular row maps to its component');
 assert.match(mainSrc, /\['🌊 Odbicia w wodzie','reflections'\]/, 'reflections row maps to its component');
@@ -652,11 +703,76 @@ assert.match(threatSrc, /fx\.addEmissive\(\{x:gx,y:gy,r:r\*3\.4,color:col,a:0\.4
 assert.match(threatSrc, /function staffGlowKey\(m\)\{/, 'the staff focus has its own per-instance trail identity');
 // Trails are world-space by construction. A screen-space accumulation buffer is
 // the other standard answer and it is WRONG here: it smears with the camera.
-assert.ok(!/emissive[\s\S]{0,400}canvas\.width = /i.test(postFxSrc.slice(postFxSrc.indexOf('drawEmissivePass'))), 'the glow pass allocates no full-screen accumulation buffer');
-const iEmissive = mainSrc.indexOf('POST_FX.drawEmissivePass(ctx');
+assert.ok(!/canvas\.width = /.test(postFxSrc.slice(postFxSrc.indexOf('drawGlowPass('), postFxSrc.indexOf('drawHeroSheenPass'))), 'the glow pass allocates no full-screen accumulation buffer');
+const iEmissive = mainSrc.indexOf('POST_FX.drawGlowPass(ctx');
 const iFogPass = mainSrc.indexOf('drawFogOverlay(sx,sy,viewX,viewY,{camX:camRenderX');
 assert.ok(iEmissive > iDark, 'creature light draws ABOVE the darkness overlay (that is the whole point)');
+assert.ok(iEmissive > iSceneGrab, 'the hero-coat scene grab happens before the glow lands (the coat must not mirror halos)');
 assert.ok(iFogPass > iEmissive, 'creature light stays BELOW the fog pass (undiscovered black still wins)');
+
+// --- the glow attribute across every domain ------------------------------------
+// The rule: a thing that emits light DECLARES a glow descriptor and post_fx draws
+// it. These pins are what stops a domain from quietly going back to painting its
+// own halo — and what stops a converted one from losing its light.
+const domainSrc = (rel) => readFileSync(new URL('../src/engine/' + rel, import.meta.url), 'utf8');
+const weaponsGlowSrc = weaponsSrc;
+// hero shots
+assert.match(weaponsGlowSrc, /const PROJECTILE_GLOW=\{/, 'weapons declare which shots glow as a table, not per draw site');
+assert.match(weaponsGlowSrc, /function registerProjectileGlow\(a,TILE\)\{/, 'one seam registers a shot\'s light');
+assert.match(weaponsGlowSrc, /if\(!a\.stuck && !a\.embeddedMob\) registerProjectileGlow\(a,TILE\);/, 'a shot in flight registers its light; a stuck one does not');
+// The projectile trail's glow no longer comes from shadowBlur — the most
+// expensive way Canvas2D can fake one. (The held-weapon CHARGE fx still use it
+// for their short bursts; the steady light they sit on is registered instead.)
+const iPrestigeTrail = weaponsGlowSrc.indexOf('function drawProjectilePrestigeTrail(');
+const prestigeTrailBody = weaponsGlowSrc.slice(iPrestigeTrail, weaponsGlowSrc.indexOf('\n  }', iPrestigeTrail));
+assert.ok(iPrestigeTrail > 0 && !/ctx\.shadowBlur=/.test(prestigeTrailBody), 'the projectile trail no longer fakes its glow with shadowBlur');
+assert.match(weaponsGlowSrc, /key:'heldWeaponLight',trail:true/, 'a glowing held weapon registers its light and streaks with the hero');
+assert.match(weaponsGlowSrc, /glow:\{color:'#8fdd7f', r:6, a:0\.30, trail:true\}/, 'ammo can carry its own glow attribute (toxic snowball)');
+// mob shots
+assert.match(mobsSrc, /const PROJECTILE_GLOW=\{/, 'mob shots declare their light one row per kind');
+assert.match(mobsSrc, /const pg=PROJECTILE_GLOW\[pr\.type\];/, 'the projectile loop looks the attribute up by kind');
+for(const kind of ['dragon_fire', 'radiant', 'stormbolt', 'voidbolt']){
+	assert.ok(mobsSrc.includes(kind + ':'), 'the bolt kind ' + kind + ' declares a glow');
+}
+// ground loot
+const dropsSrc = domainSrc('drops.js');
+assert.match(dropsSrc, /const TIER_GLOW=\{/, 'loot declares one frozen glow descriptor per tier');
+assert.match(dropsSrc, /EMISSIVE\.glow\(px,py,spec,d\.settled\?null:dropGlowKey\(d\),TILE\)/, 'a drop still in the air streaks; a settled one does not');
+assert.ok(!dropsSrc.includes('function haloSprite('), 'loot no longer bakes its own private halo sprite');
+// fire: the halo level and the LIT level are the same number
+const fireSrc = domainSrc('fire.js');
+assert.match(fireSrc, /const BURN_GLOW=Object\.freeze\(\{level:12, color:'#ff8c32', pulse:0\.30\}\);/, 'a burning block declares its glow at the light field\'s own level');
+assert.match(lightingSrc, /const FIRE_LEVEL = 12;/, 'the light field still rates fire at 12 — the two must agree');
+// machines
+const teleSrc = domainSrc('teleporters.js');
+assert.match(teleSrc, /const PORTAL_GLOW=Object\.freeze\(/, 'a charged gate declares its glow');
+assert.ok(!/rg\.addColorStop\(0,'rgba\(124,247,255,'/.test(teleSrc), 'the gate no longer builds a radial gradient per frame');
+const padSrc = domainSrc('spring_platforms.js');
+assert.match(padSrc, /const PAD_GLOW=Object\.freeze\(/, 'a charged launch pad declares its glow');
+assert.ok(!/rg\.addColorStop\(0,'rgba\(255,246,160,'/.test(padSrc), 'the pad no longer builds a radial gradient per frame');
+const turretSrc = domainSrc('turrets.js');
+assert.match(turretSrc, /const PUFF_GLOW=\{/, 'turret tracers declare their glow per kind');
+assert.match(turretSrc, /trail:true/, 'a tracer in flight streaks');
+// falling fire and hurled sigils
+const meteorSrc = domainSrc('meteorites.js');
+assert.match(meteorSrc, /const METEOR_GLOW=Object\.freeze\(/, 'a fireball declares its glow');
+assert.match(meteorSrc, /for\(let i=m\.trail\.length-1;i>0;i--\)/, 'the meteor keeps its own two-tone tail (richer than the generic streak, and already world-space)');
+const volcanoSrc = domainSrc('volcano.js');
+assert.match(volcanoSrc, /const MASTER_SHOT_GLOW=Object\.freeze\(\{color:'#ff5028', rTiles:0\.72, a:0\.48, trail:true\}\);/, 'a hurled sigil declares glow AND streak');
+// hero-worn light
+const necklaceSrc = domainSrc('necklace.js');
+assert.match(necklaceSrc, /key:'necklaceGem',trail:true/, 'a charged pendant streaks as the hero runs');
+assert.ok(!/rg\.addColorStop\(0, ?'rgba\(255,246,170,'/.test(necklaceSrc), 'the pendant no longer builds its own gradient halo');
+const antennaSrc = domainSrc('antennas.js');
+assert.match(antennaSrc, /key: 'antennaTip', trail: true/, 'the antenna tip streaks as the hero runs');
+// treasure
+assert.match(mainSrc, /const CHEST_TIER_GLOW=\{/, 'chests declare a glow descriptor per tier');
+assert.match(mainSrc, /POST_FX\.glow\(cxp,cyp,CHEST_TIER_GLOW\[t\]\|\|CHEST_TIER_GLOW\.def,null,TILE\);/, 'the chest aura goes through the shared renderer');
+assert.equal(bloomSourceFor(T.CHEST_LEGENDARY), null, 'chests stay OUT of the tile scan (only their own pass knows the pulse)');
+// Descriptors are DATA: frozen so a draw site cannot mutate a shared row, and
+// only the documented keys mean anything.
+assert.equal(normalizeGlow({ color: '#fff', nonsense: 5 }, 20), null, 'an unknown key alone does not make a glow');
+assert.ok(Object.isFrozen(TILE_GLOW[T.TORCH]), 'tile glow rows are frozen');
 
 // Celestial bloom: the sun/moon are screen-space (no tile the emitter scan can
 // find), so background.js carries its own gated halo — one per body.

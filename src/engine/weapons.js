@@ -75,7 +75,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     // Utility ammo, deliberately below wood so 'auto' never wastes real arrows on
     // it — pin it from the HUD pips. Splats on impact: poison + chill instead of
     // raw damage (crafted from TOXIC_SNOW mined under gas-tainted blizzards).
-    {id:'toxicSnowball', key:'toxicSnowball', label:'toksyczne śnieżki', damage:0.55, speed:0.82, life:0.90, spread:0.055, color:'#8fdd7f', head:'#d9ffd0', snowball:true},
+    {id:'toxicSnowball', key:'toxicSnowball', label:'toksyczne śnieżki', damage:0.55, speed:0.82, life:0.90, spread:0.055, color:'#8fdd7f', head:'#d9ffd0', snowball:true, glow:{color:'#8fdd7f', r:6, a:0.30, trail:true}},
     // Grapple hook: a MOVEMENT arrow, never a combat shaft. It has no break
     // chance (a rope, not a shaft — excluded from the durability map) and is
     // skipped by 'auto' AND hidden from the pip row until owned/pinned, just
@@ -90,7 +90,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   //   rock  — plain stone chips; the damage is in the direct hit itself
   const THROWN_KINDS={
     snowball:      {key:'snowball',      label:'Śnieżki',           color:'#eef7ff', head:'#ffffff', speed:15.5, lob:-2.2, life:2.4, splat:'snow', ball:true},
-    toxicSnowball: {key:'toxicSnowball', label:'Toksyczne śnieżki', color:'#8fdd7f', head:'#d9ffd0', speed:15.0, lob:-2.2, life:2.4, splat:'toxic', ball:true},
+    toxicSnowball: {key:'toxicSnowball', label:'Toksyczne śnieżki', color:'#8fdd7f', head:'#d9ffd0', speed:15.0, lob:-2.2, life:2.4, splat:'toxic', ball:true, glow:{color:'#8fdd7f', r:6, a:0.30, trail:true}},
     stone:         {key:'throwingStone', label:'Kamienie',          color:'#9aa0a8', head:'#c9ced6', speed:16.5, lob:-2.8, life:2.6, splat:'rock', rock:true},
     // ^ the stone throw is TIERED like arrows: STONE_TIERS below picks the best
     //   owned rock material (any stone type can be knapped into throwing rocks),
@@ -194,6 +194,40 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   // box: the sheen is clipped to a rectangle, so a polygon head (axe, spear
   // point, trident prongs) would spill the reflection onto the background.
   const SHEEN_MATERIALS=new Set(['steel','diamond','iridium','obsidian','aquatic','arc','exotic']);
+  // --- the glow attribute for shots -------------------------------------------
+  // What a projectile EMITS, derived from what it IS. post_fx turns any of these
+  // descriptors into a bloom halo plus a light streak along the flight path;
+  // weapons.js only declares WHICH shot glows and in what colour. A lit arrow
+  // burns, an enchanted shaft carries its prestige colour, a spit is toxic.
+  const PROJECTILE_GLOW={
+    fire: Object.freeze({color:'#ff9430', r:9,   a:0.52, trail:true}),
+    spit: Object.freeze({color:'#a8ff6a', r:7,   a:0.42, trail:true}),
+    water:Object.freeze({color:'#9fd8ff', r:6,   a:0.26, trail:true})
+  };
+  const PRESTIGE_GLOW_R=[0,0,6.5,8.5,10.5];
+  function projectileGlow(a){
+    if(!a) return null;
+    if(a.fire) return PROJECTILE_GLOW.fire;
+    if(a.toxicSpit) return PROJECTILE_GLOW.spit;
+    if(a.waterJet || a.hose) return PROJECTILE_GLOW.water;
+    const rank=Math.max(0,Math.min(4,Number(a.weaponPrestige)||0));
+    if(rank>=2 && a.weaponGlow) return {color:a.weaponGlow, r:PRESTIGE_GLOW_R[rank], a:0.28+rank*0.06, trail:true};
+    // ammo that carries its own attribute (see ARROW_TIERS / THROWN_KINDS)
+    const tier=ARROW_TIERS.find(t=>t.id===a.tier) || THROWN_KINDS[a.tier];
+    return (tier && tier.glow) || null;
+  }
+  let projGlowSeq=0;
+  function projectileGlowKey(a){
+    if(!a._gk) a._gk='p'+(++projGlowSeq);
+    return a._gk;
+  }
+  function registerProjectileGlow(a,TILE){
+    const spec=projectileGlow(a);
+    if(!spec) return false;
+    const P=(typeof window!=='undefined' && window.MM) ? window.MM.postFx : null;
+    if(!P || !P.glow) return false;
+    return P.glow(a.x*TILE, a.y*TILE, spec, projectileGlowKey(a), TILE);
+  }
   function drawBladeSheen(ctx,material,x,y,w,h){
     if(!material || !SHEEN_MATERIALS.has(material.id)) return;
     const P=(typeof window!=='undefined' && window.MM) ? window.MM.postFx : null;
@@ -319,6 +353,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(!light||typeof ctx.createRadialGradient!=='function') return false;
     const now=nowMs()*0.001, pulse=0.90+0.10*Math.sin(now*(light.action?5.2:2.1)+weaponVisualSeed(equippedWeapon())*6.28);
     const x=light.x*TILE,y=light.y*TILE,r=light.radius*TILE*(light.underwater?1.18:1)*pulse;
+    // A glowing weapon is a light the hero CARRIES: registered through the glow
+    // attribute (the same level the light field uses), so it blooms above the
+    // darkness overlay and streaks as he runs and swings. The pool below stays as
+    // the weapon's own art on the ground around him.
+    const P=(typeof window!=='undefined' && window.MM) ? window.MM.postFx : null;
+    if(P && P.addEmissive){
+      P.addEmissive({x,y,r:r*0.62,color:light.color,
+        a:Math.min(0.62,0.20+light.intensity*1.5),key:'heldWeaponLight',trail:true});
+    }
     ctx.save(); ctx.globalCompositeOperation='lighter';
     const g=ctx.createRadialGradient(x,y,0,x,y,r);
     g.addColorStop(0,weaponLightRgba(light.color,light.intensity*(light.underwater?0.18:0.24)));
@@ -3123,8 +3166,12 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const ang=Math.atan2(a.vy||0,a.vx||1), col=a.weaponGlow||'#d7f5ff';
     const pulse=0.78+0.22*Math.sin(nowMs()*0.012+(a.x||0)*0.7+(a.y||0)*0.43);
     ctx.save(); ctx.translate(a.x*TILE,a.y*TILE); ctx.rotate(ang);
-    ctx.globalCompositeOperation='lighter'; ctx.strokeStyle=col; ctx.fillStyle=col; ctx.shadowColor=col;
-    ctx.shadowBlur=(rank===4?9:rank===3?6:3); ctx.lineCap='round';
+    // No shadowBlur here any more: the enchantment's GLOW is registered with
+    // post_fx (which owns falloff and the streak, above the darkness overlay),
+    // and shadowBlur is the most expensive way Canvas2D can fake one. What stays
+    // is the art this rank draws — the wake bubbles and the rank-4 spark.
+    ctx.globalCompositeOperation='lighter'; ctx.strokeStyle=col; ctx.fillStyle=col;
+    ctx.lineCap='round';
     if(a.aquatic && a.inWater){
       const bubbles=rank===4?4:rank===3?3:2;
       for(let i=0;i<bubbles;i++){
@@ -3152,6 +3199,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       ctx.save();
       for(const a of arrows){
         if(!tileVisible(a.x,a.y)) continue;
+        // The shot's own light: registered, so it blooms ABOVE the darkness
+        // overlay and streaks along the flight path like any other glow source.
+        if(!a.stuck && !a.embeddedMob) registerProjectileGlow(a,TILE);
         drawProjectilePrestigeTrail(ctx,TILE,a);
         if(a.sandSpray){
           // Each throw owns a different stable spray: grain count, tail length,

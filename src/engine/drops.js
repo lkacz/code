@@ -60,6 +60,32 @@ const drops = (function(){
   const isHighTier=t=>t==='epic'||t==='legendary';
   const KIND_GLYPH={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', charm:'🔮'};
   const RES_GLYPH={meatScrap:'🍖', fish:'🐟', goldenFish:'🐠', springAntler:'🦌', summerHorn:'🐂', autumnHeartwood:'🌳', winterFur:'🐻'};
+  // The glow attribute for ground loot: one frozen descriptor per tier (rTiles so
+  // it never has to be rebuilt per frame), pulsing, and trailing while the drop is
+  // still in the air. The radii and alphas carry over from the halo this module
+  // used to blit itself, so a legendary still reads from across the screen.
+  const TIER_GLOW={
+    common:    Object.freeze({color:'#b07f2c', rTiles:0.60, a:0.26, pulse:0.35, trail:true}),
+    uncommon:  Object.freeze({color:'#3fa650', rTiles:0.72, a:0.32, pulse:0.35, trail:true}),
+    rare:      Object.freeze({color:'#a74cc9', rTiles:0.85, a:0.38, pulse:0.35, trail:true}),
+    epic:      Object.freeze({color:'#e0b341', rTiles:1.05, a:0.44, pulse:0.35, trail:true}),
+    legendary: Object.freeze({color:'#58e0d8', rTiles:1.20, a:0.50, pulse:0.35, trail:true})
+  };
+  const jewelGlowCache=new Map();
+  function jewelGlow(color){
+    const key=color||'#ffffff';
+    let spec=jewelGlowCache.get(key);
+    if(!spec){
+      spec=Object.freeze({color:key, rTiles:1.80, a:0.62, pulse:0.35, trail:true});
+      if(jewelGlowCache.size<32) jewelGlowCache.set(key,spec);
+    }
+    return spec;
+  }
+  let dropGlowSeq=0;
+  function dropGlowKey(d){
+    if(!d._gk) d._gk='d'+(++dropGlowSeq);
+    return d._gk;
+  }
   const JEWEL_STYLE={
     jewelBlessed:{label:'Kamień błogosławionych',color:'#ffd96a',edge:'#fff4b0',tier:'rare'},
     jewelDevout:{label:'Kamień nabożnych',color:'#9b8cff',edge:'#e6ddff',tier:'epic'},
@@ -924,16 +950,8 @@ const drops = (function(){
     }
     return s;
   }
-  function haloSprite(color){
-    return fxSprite('halo:'+color,()=>{
-      const c=document.createElement('canvas'); c.width=64; c.height=64;
-      const g=c.getContext('2d');
-      const grad=g.createRadialGradient(32,32,1,32,32,32);
-      grad.addColorStop(0,color); grad.addColorStop(1,'rgba(0,0,0,0)');
-      g.fillStyle=grad; g.fillRect(0,0,64,64);
-      return c;
-    });
-  }
+  // (The private tier-halo sprite lived here. Ground loot now declares a glow
+  // attribute instead and post_fx draws every light in the game the same way.)
   function beamSprite(color){
     return fxSprite('beam:'+color,()=>{
       const c=document.createElement('canvas'); c.width=16; c.height=64;
@@ -1011,6 +1029,7 @@ const drops = (function(){
   }
   function draw(ctx,TILE,camX,camY,zoom,canDrawTile,player,viewX,viewY){
     if(!ctx || (!list.length && !arrowCollectFx.length)) return;
+    const EMISSIVE=(typeof window!=='undefined' && window.MM && window.MM.postFx && window.MM.postFx.glow) ? window.MM.postFx : null;
     const visible=typeof canDrawTile==='function' ? canDrawTile : null;
     const tilesWide=Math.max(0,viewX), tilesHigh=Math.max(0,viewY);
     const viewL=camX-2, viewR=camX+tilesWide+2;
@@ -1033,17 +1052,13 @@ const drops = (function(){
       const bob=d.kind==='chest' ? 0 : (d.settled ? Math.sin(now*0.003+d.id)*0.07 : 0);
       const px=d.x*TILE, py=(d.y+bob)*TILE;
       const tint=d.kind==='gear' ? (TIER_COLORS[d.tier]||TIER_COLORS.common) : (d.color||'#c9a15a');
-      // tier halo: the promise of quality reads from across the screen
+      // Tier halo: quality IS light here, so it goes through the glow attribute —
+      // which means it now survives the darkness overlay (a legendary in a black
+      // cave used to be dimmed by the very night it should cut through) and draws
+      // a streak while the drop is still arcing through the air.
       if(d.kind==='gear'||d.kind==='jewel'){
-        const halo=haloSprite(d.kind==='jewel'?(d.color||'#ffffff'):(TIER_COLORS[d.tier]||TIER_COLORS.common));
-        if(halo){
-          const pulse=0.65+0.35*Math.sin(now*0.005+d.id);
-          const rank=tierRank(d.tier);
-          const haloR=TILE*(d.kind==='jewel'?1.72+rank*0.08:d.tier==='legendary'?1.2:d.tier==='epic'?1.05:rank===2?0.85:rank===1?0.72:0.6);
-          ctx.globalAlpha=(d.kind==='jewel'?0.62:d.tier==='legendary'?0.4:d.tier==='epic'?0.34:rank===2?0.28:rank===1?0.22:0.16)*pulse;
-          ctx.drawImage(halo,px-haloR,py-haloR,haloR*2,haloR*2);
-          ctx.globalAlpha=1;
-        }
+        const spec=d.kind==='jewel' ? jewelGlow(d.color) : (TIER_GLOW[d.tier]||TIER_GLOW.common);
+        if(EMISSIVE) EMISSIVE.glow(px,py,spec,d.settled?null:dropGlowKey(d),TILE);
       }
       if(isHighTier(d.tier)||d.kind==='jewel'){
         // vertical light beam: "something great fell HERE" — tall, breathing,

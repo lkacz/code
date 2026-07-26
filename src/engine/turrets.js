@@ -806,11 +806,23 @@ const turrets = (function(){
     ctx.restore();
   }
 
+  // The glow attribute for a turret's tracer: a burning pellet emits, a water jet
+  // barely does. post_fx adds the halo and a streak along the flight path.
+  const PUFF_GLOW={
+    fire: Object.freeze({color:'#ff701e', rTiles:0.34, a:0.44, trail:true}),
+    water:Object.freeze({color:'#55d8ff', rTiles:0.24, a:0.24, trail:true})
+  };
+  let puffGlowSeq=0;
   function drawPuff(ctx,TILE,p){
     const total=Math.max(0.001,p.total||0.3);
     const a=clamp(p.life/total,0,1);
     if(a<=0.01) return;
     const x=p.x*TILE, y=p.y*TILE;
+    const P=(typeof window!=='undefined' && window.MM) ? window.MM.postFx : null;
+    if(P && P.glow){
+      if(!p._gk) p._gk='tp'+(++puffGlowSeq);
+      P.glow(x,y,p.kind==='fire'?PUFF_GLOW.fire:PUFF_GLOW.water,p._gk,TILE);
+    }
     ctx.save();
     ctx.globalCompositeOperation='lighter';
     if(p.kind==='fire'){
