@@ -860,6 +860,20 @@ function persistedBody(gid, room = ROOM){
 
 const flush = () => new Promise(r => setTimeout(r, 15)); // let BroadcastChannel deliver both ways
 const settle = () => new Promise(r => setTimeout(r, 95)); // long enough for a bodyTick cadence
+// A fixed flush is a bet that the machine is idle. Under the load of the full gate
+// a hello -> snapshot -> plane round trip over BroadcastChannel does not always land
+// inside 15 ms, and the join assertions below bounced two pushes on exactly that
+// while passing 5/5 standalone. Wait for the frame to ARRIVE instead of assuming it
+// did; a real regression still fails, it just takes the timeout to say so.
+async function waitFor(fn, ms = 3000){
+	const t0 = Date.now();
+	for(;;){
+		if(fn()) return true;
+		if(Date.now() - t0 > ms) return false;
+		await flush();
+	}
+}
+const joined = (g, type) => waitFor(() => !!g.last(type));
 function tickHost(){ try{ ghostHost.frame(0.1, performance.now()); }catch(e){ /* ignore */ } }
 // The host's first-action rate floors compare performance.now() against a zero
 // default (now() - (lastX || 0) < FLOOR). In a browser now() is seconds-large by the
@@ -936,7 +950,7 @@ try{
 			MM.boats = { snapshot: () => { builds.boats++; return countedMachSnapshot(); } };
 			MM.mechs = { snapshot: () => { builds.mechs++; return countedMachSnapshot(); }, anyGuestDriven: () => false };
 
-			const first = makeGuest('c-late-one'); first.hello('gid-late-one'); await flush();
+			const first = makeGuest('c-late-one'); first.hello('gid-late-one'); await joined(first,'infra');
 			check(first.last('infra')?.data?.rev === 1 && first.last('infra')?.bg?.rev === 1,
 				'first viewer receives current infrastructure planes after its snapshot');
 			rev = 2;
@@ -944,7 +958,7 @@ try{
 			const planeTypes = ['infra', 'pwat', 'drift', 'gfx', 'mach'];
 			const firstCounts = Object.fromEntries(planeTypes.map(type => [type, first.all(type).length]));
 
-			const second = makeGuest('c-late-two'); second.hello('gid-late-two'); await flush();
+			const second = makeGuest('c-late-two'); second.hello('gid-late-two'); await joined(second,'mach');
 			const infra = second.last('infra'), pwat = second.last('pwat'), drift = second.last('drift');
 			const gfx = second.last('gfx'), mach = second.last('mach');
 			check(saveBuilds === 1, 'second viewer reuses the cached base snapshot');
@@ -964,7 +978,7 @@ try{
 			// A third spectator in the same short burst gets the same targeted frames,
 			// without rebuilding/sorting every full plane again.
 			const afterSecondBuilds = Object.assign({}, builds);
-			const third = makeGuest('c-late-three'); third.hello('gid-late-three'); await flush();
+			const third = makeGuest('c-late-three'); third.hello('gid-late-three'); await joined(third,'drift');
 			check(Object.keys(builds).every(k => builds[k] === afterSecondBuilds[k]),
 				'a burst third viewer reuses the bounded join-plane build cache');
 			check(third.last('infra')?.data?.rev === 2 && third.last('pwat')?.sync === 1
@@ -972,12 +986,12 @@ try{
 				'coalesced join planes remain targeted snapshot corrections for the third viewer');
 			await bye(third); third.close();
 			const afterSpectatorDropBuilds = Object.assign({}, builds);
-			const fourth = makeGuest('c-late-four'); fourth.hello('gid-late-four'); await flush();
+			const fourth = makeGuest('c-late-four'); fourth.hello('gid-late-four'); await joined(fourth,'infra');
 			check(Object.keys(builds).every(k => builds[k] === afterSpectatorDropBuilds[k]),
 				'a watch-only disconnect does not defeat burst join-plane coalescing');
 			const beforeTtlExpiryBuilds = Object.assign({}, builds);
 			await new Promise(r => setTimeout(r, 1050));
-			const fifth = makeGuest('c-late-five'); fifth.hello('gid-late-five'); await flush();
+			const fifth = makeGuest('c-late-five'); fifth.hello('gid-late-five'); await joined(fifth,'infra');
 			check(builds.infra > beforeTtlExpiryBuilds.infra && builds.gfx > beforeTtlExpiryBuilds.gfx
 				&& builds.boats > beforeTtlExpiryBuilds.boats,
 				'the one-second join-plane cache expires and rebuilds current truth even without an invalidation event');
