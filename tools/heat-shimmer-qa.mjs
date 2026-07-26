@@ -187,22 +187,28 @@ const COST = `(async()=>{
 	// scene for the next ~120ms, and a min-of-reps happily reported 0.8us for all
 	// four. A min is only valid across reps that measure the SAME work.
 	const CASES=[
-		['pool8', 0, (cx)=>{ for(let i=0;i<8;i++) W.setTile(cx-4+i, cy+1, 13); }],
-		['lake40', 120, (cx)=>{ for(let i=0;i<40;i++) W.setTile(cx-20+i, cy+1, 13); }],
-		// 12 separate plumes: the expensive shape, because every band copies its own
-		// strip. Bounded by the band cap, which is exactly why this is worth measuring.
-		['scattered12', 240, (cx)=>{ for(let i=0;i<12;i++) W.setTile(cx-24+i*4, cy+1, 13); }],
-		['nothing-hot', 360, ()=>{}]
+		['pool8', 0, (cx)=>{ for(let i=0;i<8;i++) W.setTile(cx-4+i, cy+1, 13); }, null],
+		['lake40', 120, (cx)=>{ for(let i=0;i<40;i++) W.setTile(cx-20+i, cy+1, 13); }, null],
+		// 12 separate plumes, far enough apart that nothing merges: the expensive
+		// shape, because every band copies its own strip and pays its own rows.
+		['scattered12', 240, (cx)=>{ for(let i=0;i<12;i++) W.setTile(cx-24+i*4, cy+1, 13); }, null],
+		// THE A/B for gap merging: identical sources, two tiles of open air apart,
+		// measured with the merge on and with it forced off. Merging trades bands for
+		// area (the plume now spans the gaps too), so which way it goes is a
+		// measurement, not an assumption.
+		['gap2-merged', 360, (cx)=>{ for(let i=0;i<12;i++) W.setTile(cx-18+i*3, cy+1, 13); }, {mergeGap:2}],
+		['gap2-split', 480, (cx)=>{ for(let i=0;i<12;i++) W.setTile(cx-18+i*3, cy+1, 13); }, {mergeGap:0}],
+		['nothing-hot', 600, ()=>{}, null]
 	];
 	const home=Math.floor(player.x)+400;
-	const prepared=CASES.map(([label,off,fill])=>{
+	const prepared=CASES.map(([label,off,fill,extra])=>{
 		const cx=home+off;
 		for(let x=cx-30;x<=cx+30;x++) for(let y=cy-20;y<=cy+2;y++) W.setTile(x,y,0);
 		for(let x=cx-30;x<=cx+30;x++) W.setTile(x,cy+2,3);
 		fill(cx);
 		const base={TILE:20,sx:cx-20,sy:cy-14,viewX:40,viewY:28,getTile:W.getTile,visibleAt:()=>true,poweredAt:()=>true,frameMs:16};
 		const drive=(t)=>{ ctx.save(); ctx.setTransform(2,0,0,2, 800-40*(cx+0.5), 600-40*(cy+1));
-			const r=MM.postFx.drawHeatShimmerPass(ctx,{...base,pools:null,burning:null,now:t}); ctx.restore(); return r; };
+			const r=MM.postFx.drawHeatShimmerPass(ctx,{...base,pools:null,burning:null,...(extra||{}),now:t}); ctx.restore(); return r; };
 		return {label,drive};
 	});
 	const N=250, REPS=4;
@@ -223,7 +229,8 @@ const COST = `(async()=>{
 		}
 	}
 	const fmt=prepared.map(c=>c.label+'='+(best[c.label]*1000).toFixed(1)+'us('+shape[c.label].bands+'b/'+shape[c.label].rows+'r)');
-	return 'OK '+JSON.stringify({cost:fmt.join(' | '), shape});
+	const us={}; for(const c of prepared) us[c.label]=+(best[c.label]*1000).toFixed(1);
+	return 'OK '+JSON.stringify({cost:fmt.join(' | '), shape, us});
 })()`;
 
 // CONFINEMENT, measured exactly. A live-frame A/B cannot answer this: two
@@ -390,7 +397,13 @@ async function main(){
 			['nothing is touched below the hot block', !!box && box.by1 <= exp.base],
 			['nothing is touched above the plume top', !!box && box.by0 >= exp.top],
 			['the disturbance really does reach a block or more above the source', boxH > tileDev],
-			['the work cap is a fixed row budget', struct.rowBudget > 0]
+			['the work cap is a fixed row budget', struct.rowBudget > 0],
+			// GAP MERGING, measured both ways on identical sources. Merging trades
+			// bands for area, so this is the check that it is actually a win.
+			['twelve sources two tiles apart collapse into ONE plume', (cost.shape || {})['gap2-merged'] && cost.shape['gap2-merged'].bands === 1],
+			['paying per plume really does cost more bands', (cost.shape || {})['gap2-split'] && cost.shape['gap2-split'].bands > 1],
+			['...and more time', (cost.us || {})['gap2-merged'] < (cost.us || {})['gap2-split']],
+			['...and it drops plumes the budget cannot afford, which merging keeps', (cost.shape || {})['gap2-split'] && cost.shape['gap2-split'].bands < 12]
 		];
 		console.log('\ncost: ' + (cost.cost || '(none)'));
 		console.log('confinement: changed ' + conf.n + 'px, box ' + JSON.stringify(box) +

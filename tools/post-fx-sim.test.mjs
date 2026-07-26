@@ -42,7 +42,7 @@ const {
 	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX,
 	heatSourceFor, heatPlumeTiles, heatAmpPx, heatEnvelope, heatOffsetPx, buildHeatBands,
 	heatRowHeight, heatRowCount,
-	HEAT_WAVE_PX, HEAT_RISE, HEAT_RISE_2, HEAT_ROW_PX, HEAT_ROW_BUDGET, HEAT_BAND_CAP, HEAT_PLUME_TILES, HEAT_AMP_PX
+	HEAT_WAVE_PX, HEAT_RISE, HEAT_RISE_2, HEAT_ROW_PX, HEAT_ROW_BUDGET, HEAT_BAND_CAP, HEAT_MERGE_GAP, HEAT_PLUME_TILES, HEAT_AMP_PX
 } = await import('../src/engine/post_fx.js');
 const { T, INFO, TILE_GLOW, TILE_HEAT } = await import('../src/constants.js');
 await import('../src/engine/furnishings.js'); // stamps INFO[t].requiresHomePower like the live game
@@ -493,6 +493,27 @@ assert.equal(heatLake[0].x0, 0, 'the merged band starts at the run start');
 assert.equal(heatLake[0].x1, 39, 'and ends at the run end');
 const heatSplit = buildHeatBands([{ x: 0, y: 30, strength: 1 }, { x: 1, y: 30, strength: 1 }, { x: 5, y: 30, strength: 1 }, { x: 0, y: 12, strength: 1 }], { TILE: 20, scale: 1, focusX: 0 });
 assert.equal(heatSplit.length, 3, 'a gap in the run and a different row both break the band');
+// Bridging a small gap of OPEN AIR: two fires a tile or two apart share one body
+// of rising air, and one band over both costs one set of rows instead of two.
+// Measured: twelve sources two tiles apart cost 514us as eight separate bands
+// (which is also all the row budget could afford — four plumes were being dropped)
+// against 325us as one band covering every one of them.
+const heatGapped = [];
+for(let i = 0; i < 12; i++) heatGapped.push({ x: i * 3, y: 30, strength: 1 });
+const openAll = () => true;
+assert.equal(buildHeatBands(heatGapped, { TILE: 20, scale: 2, focusX: 0, airAbove: openAll }).length, 1, 'twelve sources two tiles apart merge into ONE plume when the gaps are open air');
+assert.ok(buildHeatBands(heatGapped, { TILE: 20, scale: 2, focusX: 0 }).length > 1, 'without an air probe the merger stays conservative — only true neighbours join');
+const heatSplitAll = buildHeatBands(heatGapped, { TILE: 20, scale: 2, focusX: 0, airAbove: openAll, mergeGap: 0 });
+assert.equal(heatSplitAll.length, 8, 'mergeGap 0 forces strict adjacency (the QA A/B seam)');
+assert.ok(heatSplitAll.length < 12, 'and paying per plume costs COVERAGE too — the row budget cannot afford all twelve, so merging is both cheaper and more complete');
+// A pillar between two plumes must BREAK the band. Merging through it would clip
+// the whole thing to the pillar's zero headroom and lose both plumes at once.
+const wall = (x) => x !== 2;
+const twoApart = [{ x: 0, y: 30, strength: 1 }, { x: 3, y: 30, strength: 1 }];
+assert.equal(buildHeatBands(twoApart, { TILE: 20, scale: 1, focusX: 0, airAbove: openAll }).length, 1, 'a two-tile air gap is bridged');
+assert.equal(buildHeatBands(twoApart, { TILE: 20, scale: 1, focusX: 0, airAbove: wall }).length, 2, 'a pillar standing in the gap keeps the two plumes separate');
+assert.equal(buildHeatBands([{ x: 0, y: 30, strength: 1 }, { x: 9, y: 30, strength: 1 }], { TILE: 20, scale: 1, focusX: 0, airAbove: openAll }).length, 2, 'a wide gap is never bridged, however open it is');
+assert.ok(HEAT_MERGE_GAP > 0 && HEAT_MERGE_GAP <= 3, 'the bridge stays short — a long one would shimmer cold ground between two distant fires');
 const heatMixed = buildHeatBands([{ x: 3, y: 30, strength: 0.3 }, { x: 4, y: 30, strength: 1 }], { TILE: 20, scale: 1, focusX: 0 });
 assert.equal(heatMixed.length, 1, 'touching sources of different heat still merge');
 assert.equal(heatMixed[0].strength, 1, 'and the merged band takes the hottest strength in the run');
@@ -642,6 +663,11 @@ assert.match(shimBody, /ctx\.setTransform\(1, 0, 0, 1, 0, 0\);/, 'the pass works
 assert.ok(!/frameMs\s*>|stressed/.test(shimBody), 'the shimmer never degrades itself on a frame-time threshold — a weak machine sees the full effect');
 assert.match(shimBody, /rowBudget: HEAT_ROW_BUDGET, bandCap: HEAT_BAND_CAP/, 'work is capped by fixed row and band budgets instead');
 assert.match(shimBody, /while\(k < openTiles && getTile\(x, band\.y - 1 - k\) === T\.AIR\) k\+\+;/, 'the plume is clipped to the open air above the run — never through a cavern ceiling');
+// The merger gets the SAME probe the clip uses. Anything looser and it could bridge
+// a gap with a pillar in it, whose zero headroom would then clip the merged band to
+// nothing and lose both plumes.
+assert.match(shimBody, /const airAbove = \(x, y, need\) => \{/, 'the pass lends the merger an air probe');
+assert.match(shimBody, /mergeGap: Number\.isFinite\(opts\.mergeGap\) \? opts\.mergeGap : HEAT_MERGE_GAP, airAbove/, 'gap merging is wired, with a QA seam to A/B it');
 
 // Standard-mode zero cost: EVERY pass invocation in main.js sits behind a
 // component gate (gfxUltraOn / POST_FX.on within the guarding block), so a

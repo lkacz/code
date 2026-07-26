@@ -106,6 +106,7 @@ export const HEAT_ROW_PX = [2, 6];
 // for a whole 40-tile lake.
 export const HEAT_ROW_BUDGET = 260;
 export const HEAT_BAND_CAP = 10;
+export const HEAT_MERGE_GAP = 2;       // tiles of open air a single plume bridges
 export const HEAT_PLUME_TILES = [1.15, 2.5];  // plume height by strength
 
 // Strength of a tile's plume, straight off the tile attribute (constants.js
@@ -170,14 +171,29 @@ export function buildHeatBands(sources, opts){
 		if(!list){ list = []; rows.set(y, list); }
 		list.push({ x: Math.round(s.x), strength: Math.min(1, s.strength) });
 	}
+	// Bridging a small GAP as well as strict adjacency: two fires a tile or two
+	// apart share one body of rising air, and one band over both costs one set of
+	// rows instead of two. The gap columns must be as OPEN as the sources are,
+	// checked with the same probe the ceiling clip uses — otherwise a pillar
+	// standing between two plumes would clip the merged band down to nothing and
+	// lose both. Without the predicate (pure callers, tests) only true neighbours
+	// merge, which is the conservative reading.
+	const mergeGap = (opts && Number.isFinite(opts.mergeGap)) ? Math.max(0, opts.mergeGap) : HEAT_MERGE_GAP;
+	const airAbove = (opts && typeof opts.airAbove === 'function') ? opts.airAbove : null;
 	for(const [y, list] of rows){
 		list.sort((a, b) => a.x - b.x);
 		let run = null;
 		for(const cell of list){
-			if(run && cell.x === run.x1 + 1){
-				run.x1 = cell.x;
-				run.strength = Math.max(run.strength, cell.strength);
-			} else if(run && cell.x === run.x1){
+			const gap = run ? cell.x - run.x1 - 1 : -1;
+			let join = false;
+			if(run && gap <= 0) join = true;
+			else if(run && gap <= mergeGap && airAbove){
+				const need = Math.ceil(heatPlumeTiles(Math.max(run.strength, cell.strength)));
+				join = true;
+				for(let gx = run.x1 + 1; gx < cell.x && join; gx++) if(!airAbove(gx, y, need)) join = false;
+			}
+			if(join){
+				run.x1 = Math.max(run.x1, cell.x);
 				run.strength = Math.max(run.strength, cell.strength);
 			} else {
 				run = { x0: cell.x, x1: cell.x, y, strength: cell.strength };
@@ -1500,7 +1516,15 @@ const api = {
 			}
 		}
 		if(!sources.length) return 0;
-		const bands = buildHeatBands(sources, { focusX: opts.sx + (Number(opts.viewX) || 0) * 0.5, TILE, scale: m.d, rowBudget: HEAT_ROW_BUDGET, bandCap: HEAT_BAND_CAP });
+		// The same probe the ceiling clip runs, lent to the merger so it only bridges
+		// a gap that is genuinely open air (QA seam: opts.mergeGap A/Bs the merge).
+		const airAbove = (x, y, need) => {
+			for(let k = 0; k < need; k++) if(getTile(x, y - 1 - k) !== T.AIR) return false;
+			return true;
+		};
+		const bands = buildHeatBands(sources, { focusX: opts.sx + (Number(opts.viewX) || 0) * 0.5, TILE, scale: m.d,
+			rowBudget: HEAT_ROW_BUDGET, bandCap: HEAT_BAND_CAP,
+			mergeGap: Number.isFinite(opts.mergeGap) ? opts.mergeGap : HEAT_MERGE_GAP, airAbove });
 		if(!bands.length) return 0;
 		const cw = ctx.canvas.width | 0, ch = ctx.canvas.height | 0;
 		if(cw < 2 || ch < 2) return 0;
