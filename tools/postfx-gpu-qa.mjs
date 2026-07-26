@@ -27,6 +27,18 @@
 //   * The GPU is VERIFIED, not assumed: the run fails loudly if the renderer
 //     string comes back as SwiftShader or any other software rasteriser.
 //
+// KNOWN LIMIT OF THE METHOD, stated because it changes how much two of these
+// numbers are worth. Repeating a pass N times per frame is exact for FILL: fill
+// is additive, so N fills cost N times one fill. It is only approximate for a
+// pass that COPIES the live canvas (heatShimmer's per-band region snapshot, the
+// hero coat's two grabs), because each copy is a read-after-write hazard that
+// drains the pipeline — N repeats mean N drains, and in the real frame there is
+// exactly one, taken against a full frame of queued work rather than 1/Nth of
+// one. So treat the copy-bound rows as the right ORDER and the right RANK, not
+// as a per-frame figure; the fill-bound rows (glow, lightTint, the washes) are
+// solid. This distinction is the whole finding: fill is what a GPU gives away,
+// copies are what it charges for.
+//
 // Usage: npm start (server on 8123), then:
 //   node tools/postfx-gpu-qa.mjs [--url=...] [--seed=777] [--frames=20] [--target=140]
 import { spawn } from 'node:child_process';
