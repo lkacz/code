@@ -14,6 +14,19 @@ globalThis.dispatchEvent = ()=>{};
 let saveMarks = 0;
 globalThis.__mmMarkWorldChanged = ()=>{ saveMarks++; };
 
+// The header above promises deterministic coverage, and until now it was not:
+// underground_boss.js makes ~48 unseeded Math.random() calls, so cairn placement
+// varied run to run. When a cairn happened to land on Mara's own tile, the sweep
+// that clears the cairns at 9999 damage killed her too and the next line read hp
+// off undefined — a flake that bounced two pushes. A seeded LCG installed BEFORE
+// the module imports (module init randomises too) makes the suite mean what it
+// says. Any test that needs a different draw should reseed explicitly.
+let rngState = 0x9e3779b9;
+Math.random = () => {
+	rngState = (rngState * 1664525 + 1013904223) >>> 0;
+	return rngState / 4294967296;
+};
+
 const { T, CHUNK_W, WORLD_H, WORLD_MAX_Y } = await import('../src/constants.js');
 const { worldGen: WG } = await import('../src/engine/worldgen.js');
 const { meteorites } = await import('../src/engine/meteorites.js');
