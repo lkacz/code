@@ -581,7 +581,77 @@ let treeShadowKey = '';
 let treeShadowScanAt = 0;
 
 // --- live pass state (browser only) -----------------------------------------
+// Every glow used to cost TWO blits: a wide dim bleed and, over it, a tight bright
+// core. Measured, the core blit was 24% of the pass -- and it is redundant, because
+// the two layers can be baked into ONE sprite whose radial profile is their sum.
+//
+// The equivalence is exact, not approximate, and pinned as arithmetic in
+// tools/post-fx-sim.test.mjs rather than eyeballed:
+//   wide output = A1*P(u),  core output = A2*P(g*u),  A2/A1 = 1/0.34 exactly
+// because neither globalAlpha ever clamps (the largest alpha any source declares is
+// 0.68, and 0.68*1.22 = 0.83 < 1). So one blit of profile
+//   Q(u) = P(u) + (1/0.34)*P(g*u)
+// drawn at alpha A1*Q(0) reproduces both layers. Q(0) > 1 so the sprite stores
+// Q normalised; the residual is 8-bit quantisation of the skirt, bounded at
+// 0.31/255 -- below one displayable level.
+// g is the core's radius ratio and depends on the bloom tier, so sprites are keyed
+// on (colour, tier). 128px, not 64: the core now gets MORE source pixels across its
+// radius than the separate core blit gave it, so detail improves.
+const GLOW_SPRITE_PX = 64;
+const GLOW_BAKED_PX = 128;
+const GLOW_STOP_INNER = 2 / 32;         // the plain sprite's inner flat radius
+const GLOW_CORE_WEIGHT = 1 / 0.34;      // the core layer's alpha relative to the bleed
+
+// The plain sprite's alpha profile, as the browser rasterises it: a radial gradient
+// from radius 2 to 32 with stops 0.55 / 0.18 / 0, i.e. flat inside r=2 and piecewise
+// linear outside. Stated here so the bake can be exact instead of eyeballed.
+export function glowProfile(u){
+	if(!(u > 0)) return 0.55;
+	if(u >= 1) return 0;
+	if(u <= GLOW_STOP_INNER) return 0.55;
+	const t = (u - GLOW_STOP_INNER) / (1 - GLOW_STOP_INNER);
+	if(t <= 0.45) return 0.55 + (0.18 - 0.55) * (t / 0.45);
+	return 0.18 * (1 - (t - 0.45) / 0.55);
+}
+// Gain applied at draw time to undo the normalisation baked into the sprite.
+export const GLOW_BAKE_GAIN = glowProfile(0) * (1 + GLOW_CORE_WEIGHT);
+export const GLOW_AMP_A = 1.22;          // the bloom tier's uniform alpha gain
+export const GLOW_A_MAX = 1 / GLOW_AMP_A;  // above this the two-layer bake stops being exact
+export function glowCoreRatio(tier){ return 1.85 * (tier >= 2 ? 1.30 : 1); }
+export function glowBakedProfile(u, g){
+	if(!(u >= 0) || u >= 1) return 0;
+	const inner = u * g;
+	return (glowProfile(u) + GLOW_CORE_WEIGHT * (inner < 1 ? glowProfile(inner) : 0)) / GLOW_BAKE_GAIN;
+}
+// Q is piecewise linear, so a stop at every breakpoint of BOTH terms makes the
+// gradient's own linear interpolation exact between them. Uniform sampling would
+// round the kink where the core term ends and cost ~2.6/255 there.
+export function glowBakeStops(g){
+	const out = [0, GLOW_STOP_INNER, GLOW_STOP_INNER + 0.45 * (1 - GLOW_STOP_INNER), 1];
+	for(const u of [GLOW_STOP_INNER, GLOW_STOP_INNER + 0.45 * (1 - GLOW_STOP_INNER), 1]) out.push(u / g);
+	return [...new Set(out.filter(u => u >= 0 && u <= 1))].sort((a, b) => a - b);
+}
+
 const glowSprites = new Map(); // color string -> prerendered radial sprite
+const glowBakedSprites = new Map(); // color|tier -> the one-blit two-layer sprite
+function glowBakedSpriteFor(color, tier){
+	if(typeof document === 'undefined') return null;
+	const key = color + '|' + tier;
+	let spr = glowBakedSprites.get(key);
+	if(spr) return spr;
+	const c = document.createElement('canvas');
+	c.width = GLOW_BAKED_PX; c.height = GLOW_BAKED_PX;
+	const g2 = c.getContext('2d');
+	if(!g2) return null;
+	const half = GLOW_BAKED_PX / 2;
+	const grad = g2.createRadialGradient(half, half, 0, half, half, half);
+	const g = glowCoreRatio(tier);
+	for(const u of glowBakeStops(g)) grad.addColorStop(u, 'rgba(' + color + ',' + glowBakedProfile(u, g).toFixed(5) + ')');
+	g2.fillStyle = grad;
+	g2.fillRect(0, 0, GLOW_BAKED_PX, GLOW_BAKED_PX);
+	glowBakedSprites.set(key, spr = c);
+	return spr;
+}
 const glowStrokes = new Map();  // color string -> 'rgb(r,g,b)', built once per colour
 // The streak stroke rebuilt this string per trailed source per frame -- up to 32
 // allocations plus 32 CSS colour parses -- two lines under a comment correctly
@@ -599,7 +669,7 @@ function glowSpriteFor(color){
 	let spr = glowSprites.get(color);
 	if(spr) return spr;
 	const c = document.createElement('canvas');
-	c.width = 64; c.height = 64;
+	c.width = GLOW_SPRITE_PX; c.height = GLOW_SPRITE_PX;
 	const g = c.getContext('2d');
 	if(!g) return null;
 	const grad = g.createRadialGradient(32, 32, 2, 32, 32, 32);
@@ -1084,7 +1154,11 @@ const api = {
 		e.x = src.x; e.y = src.y;
 		e.r = Math.min(320, r);
 		e.rgb = emissiveRgb(src.color);
-		e.a = Math.max(0, Math.min(1, Number.isFinite(src.a) ? src.a : 0.55));
+		// Ceiling is 1/ampA(max), not 1: above it the OLD core blit clamped to opaque
+		// while the baked profile would not, and the two stop being equivalent. The
+		// largest alpha anything in the game declares is 0.68, so this never fires
+		// today -- it is here so a future source cannot silently break the bake.
+		e.a = Math.max(0, Math.min(GLOW_A_MAX, Number.isFinite(src.a) ? src.a : 0.55));
 		e.pulse = Math.max(0, Math.min(1, Number(src.pulse) || 0));
 		e.key = (src.trail && typeof src.key === 'string') ? src.key : '';
 		e.trail = !!e.key;
@@ -1125,7 +1199,7 @@ const api = {
 		// Tier 2 is the `bloom` component: it AMPLIFIES every source uniformly —
 		// tiles, creatures, projectiles alike — instead of owning tiles alone.
 		const ampR = tier >= 2 ? 1.30 : 1;
-		const ampA = tier >= 2 ? 1.22 : 1;
+		const ampA = tier >= 2 ? GLOW_AMP_A : 1;
 		metrics.emissiveSources += n;
 		emissiveFrame++;
 		let halos = 0, streaks = 0, drawn = 0;
@@ -1188,33 +1262,27 @@ const api = {
 		// coloured disc stuck on the sprite. Both source kinds get it.
 		for(let i = 0; i < n; i++){
 			const e = emissiveQueue[i];
-			const spr = glowSpriteFor(e.rgb);
+			const spr = glowBakedSpriteFor(e.rgb, tier);
 			if(!spr) continue;   // one bad colour must not drop the rest
 			const beat = e.pulse > 0
 				? (1 - e.pulse) + e.pulse * (0.82 + 0.18 * Math.sin(tSec * 2.1 + e.x * 0.07 + e.y * 0.04))
 				: 1;
-			const r = e.r * beat;
-			const wr = r * 1.85 * ampR;
-			ctx.globalAlpha = Math.min(1, e.a * 0.34 * ampA);
+			const wr = e.r * beat * 1.85 * ampR;
+			ctx.globalAlpha = Math.min(1, e.a * 0.34 * ampA * GLOW_BAKE_GAIN);
 			ctx.drawImage(spr, e.x - wr, e.y - wr, wr * 2, wr * 2);
-			ctx.globalAlpha = Math.min(1, e.a * ampA);
-			ctx.drawImage(spr, e.x - r, e.y - r, r * 2, r * 2);
-			halos += 2;
+			halos += 1;
 		}
 		for(const e of tiles){
-			const spr = glowSpriteFor(e.color);
+			const spr = glowBakedSpriteFor(e.color, tier);
 			if(!spr) continue;   // one bad colour must not drop the rest
 			// Per-emitter phase from the tile position: deterministic, so a torch
 			// breathes without a stored animation state.
 			const pulse = 0.82 + 0.18 * Math.sin(tSec * 2.1 + e.x * 0.73 + e.y * 0.41);
-			const r = TILE * (0.7 + e.level * 0.2) * pulse;   // normalizeGlow's ramp
-			const wr = r * 1.85 * ampR;
+			const wr = TILE * (0.7 + e.level * 0.2) * pulse * 1.85 * ampR;   // normalizeGlow's ramp
 			const a = Math.min(0.68, 0.3 + e.level * 0.018);
 			const cx = e.x * TILE + TILE * 0.5, cy = e.y * TILE + TILE * 0.5;
-			ctx.globalAlpha = Math.min(1, a * 0.34 * ampA);
+			ctx.globalAlpha = Math.min(1, a * 0.34 * ampA * GLOW_BAKE_GAIN);
 			ctx.drawImage(spr, cx - wr, cy - wr, wr * 2, wr * 2);
-			ctx.globalAlpha = Math.min(1, a * ampA);
-			ctx.drawImage(spr, cx - r, cy - r, r * 2, r * 2);
 			drawn++;
 		}
 		ctx.restore();

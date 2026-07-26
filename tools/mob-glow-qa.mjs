@@ -332,7 +332,11 @@ async function main(){
 				['fireflies spawned', fly.n >= 8],
 				['creature light is standard, no ultra component needed', fly.tier === 1],
 				['species register their light every frame', fly.on.s > 0],
-				['two blits per source: wide bleed under a tight core', fly.on.h >= fly.on.s * 1.8],
+				// ONE blit per source now: the wide bleed and the tight core are baked into a
+				// single sprite profile, proven equivalent to within 8-bit rounding in
+				// tools/post-fx-sim.test.mjs. What matters here is that every source still
+				// produces a halo — one apiece, none silently dropped.
+				['one baked blit per source, none dropped', fly.on.s > 0 && fly.on.h === fly.on.s],
 				['wandering lamps leave a streak with every ultra pass off', fly.on.t > 0],
 				['an open night field has no emissive tiles to halo', fly.on.b === 0],
 				['the kill switch removes the creature light entirely', fly.off.s === 0 && fly.off.h === 0 && fly.off.t === 0],
@@ -358,7 +362,7 @@ async function main(){
 				['the sealed room is measurably lit by the eyes alone', bat.light.mean > bat.lightOff.mean],
 				// the named regression: "just a green outline drawn on"
 				['cockroaches spawned', roach.n >= 4],
-				['cockroach isotope light is registered, not a flat ellipse', roach.d.s > 0 && roach.d.h >= roach.d.s * 1.8],
+				['cockroach isotope light is registered, not a flat ellipse', roach.d.s > 0 && roach.d.h === roach.d.s],
 				['skittering cockroaches leave a streak', roach.d.t > 0],
 				['cockroach light survives the darkness overlay', roach.light.lit > roach.lightOff.lit && roach.light.peak > roach.lightOff.peak],
 				// Cost: the numbers behind the "standard, no toggle" decision. These

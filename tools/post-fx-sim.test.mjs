@@ -42,6 +42,7 @@ const {
 	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX,
 	heatSourceFor, heatPlumeTiles, heatAmpPx, heatEnvelope, heatOffsetPx, buildHeatBands,
 	heatRowHeight, heatRowCount,
+	glowProfile, glowBakedProfile, glowBakeStops, glowCoreRatio, GLOW_BAKE_GAIN, GLOW_AMP_A, GLOW_A_MAX,
 	HEAT_WAVE_PX, HEAT_RISE, HEAT_RISE_2, HEAT_ROW_PX, HEAT_ROW_BUDGET, HEAT_BAND_CAP, HEAT_MERGE_GAP, HEAT_PLUME_TILES, HEAT_AMP_PX
 } = await import('../src/engine/post_fx.js');
 const { T, INFO, TILE_GLOW, TILE_HEAT } = await import('../src/constants.js');
@@ -581,10 +582,10 @@ assert.equal(postFx.addEmissive({ x: NaN, y: 10, r: 6, color: '#fff' }), false, 
 assert.equal(postFx.addEmissive({ x: 10, y: 10, r: 0, color: '#fff' }), false, 'a zero radius is rejected');
 assert.equal(postFx.emissiveQueued(), 1, 'only the valid source queued');
 const emCtx = makeRichCtx();
-assert.equal(postFx.drawEmissivePass(emCtx, { now: 5000 }), 2, 'a still source draws the wide bleed plus the tight core');
+assert.equal(postFx.drawEmissivePass(emCtx, { now: 5000 }), 1, 'a still source draws ONE blit — the two-layer profile is baked into the sprite (see the equivalence proof above)');
 assert.equal(postFx.emissiveQueued(), 0, 'the pass DRAINS the queue (a stranded source would redraw at a stale position)');
 assert.equal(emCtx.strokes, 0, 'a source with no trail key paints no streak');
-assert.equal(emCtx.drawSources.length, 2, 'two sprite blits per source — the two-layer shape of a real bloom');
+assert.equal(emCtx.drawSources.length, 1, 'one sprite blit per source, carrying the bleed AND the core');
 assert.equal(postFx.drawEmissivePass(makeRichCtx(), { now: 5016 }), 0, 'an empty queue costs nothing');
 
 // A streak that grows as the source moves.
@@ -596,7 +597,7 @@ for(let step = 0; step < 6; step++){
 	postFx.drawEmissivePass(lastTrailCtx, { now: t2 });
 	t2 += 40;
 }
-assert.equal(lastTrailCtx.drawSources.length, 2, 'the moving source still gets bleed + core');
+assert.equal(lastTrailCtx.drawSources.length, 1, 'the moving source gets the same single baked blit');
 assert.ok(lastTrailCtx.strokes >= 5, 'the streak strokes one segment per history step plus the head, so it reaches the body: ' + lastTrailCtx.strokes);
 assert.equal(lastTrailCtx.lineCap, 'round', 'round caps keep a segmented streak from reading as beads');
 // A source that stops moving must not keep a growing tail, and dropping the
@@ -656,6 +657,60 @@ assert.ok(iCull > 0 && iSnap > 0 && iCull < iSnap, 'the ice pass returns on an e
 assert.match(iceBody, /iceCols\.push\(wxPx, topPx, sxDev, syDev, swDev, shDev, destH\);/, 'column geometry goes into a reusable flat scratch, not a fresh object per column');
 assert.match(iceBody, /syDev >= ch \|\| sxDev < 0 \|\| sxDev \+ swDev > cw/, 'the bounds checks moved to the LIVE canvas dims — the snapshot is no longer full-frame, so its size stopped being a proxy');
 assert.ok(!/drawImage\(ctx\.canvas/.test(postFxSrc), 'no post_fx pass blits the live canvas onto itself directly');
+
+// --- the two-layer bake, proven as arithmetic ---------------------------------
+// Every glow used to cost two blits: a wide dim bleed and a tight bright core over
+// it. The core blit was a measured 24% of the pass and is redundant, because the
+// two profiles sum. This block IS the proof that one blit reproduces both, so the
+// claim survives whoever touches the numbers next.
+assert.equal(glowProfile(0), 0.55, 'the plain profile peaks at the sprite centre');
+assert.equal(glowProfile(1), 0, 'and reaches zero at its rim, so no square edge can show');
+assert.equal(glowProfile(-1), 0.55, 'inside the inner flat radius it stays at the peak');
+assert.ok(glowProfile(0.03) === 0.55, 'the inner flat region matches the gradient r0=2 the sprite uses');
+let profPrev = Infinity;
+for(let u = 0; u <= 1.0001; u += 0.02){
+	const v = glowProfile(u);
+	assert.ok(v <= profPrev + 1e-12, 'the profile never brightens outward (u=' + u.toFixed(2) + ')');
+	profPrev = v;
+}
+assert.ok(Math.abs(glowCoreRatio(1) - 1.85) < 1e-9, 'tier 1 core ratio is the bleed multiplier');
+assert.ok(Math.abs(glowCoreRatio(2) - 1.85 * 1.30) < 1e-9, 'tier 2 widens the bleed, so the ratio grows with it');
+assert.ok(Math.abs(glowBakedProfile(0, glowCoreRatio(2)) - 1) < 1e-9, 'the baked profile is normalised to exactly 1 at the centre');
+assert.equal(glowBakedProfile(1, glowCoreRatio(2)), 0, 'and to zero at the rim');
+// THE equivalence: one blit at alpha A1*GAIN of the baked profile must reproduce
+// wide(A1*P(u)) + core(A2*P(g*u)) to better than one 8-bit level, for every alpha
+// any source may declare and both tiers.
+let bakeWorst = 0, bakeAt = '';
+for(const tier of [1, 2]){
+	const ampA = tier >= 2 ? GLOW_AMP_A : 1;
+	const g = glowCoreRatio(tier);
+	for(let a = 0.01; a <= GLOW_A_MAX + 1e-9; a += 0.01){
+		const A1 = a * 0.34 * ampA, A2 = a * ampA;
+		assert.ok(A1 <= 1 && A2 <= 1, 'neither layer alpha clamps — the whole proof rests on this (a=' + a.toFixed(2) + ', tier ' + tier + ')');
+		assert.ok(A1 * GLOW_BAKE_GAIN <= 1, 'and the single blit alpha does not clamp either');
+		for(let u = 0; u <= 1.0001; u += 0.005){
+			const two = A1 * glowProfile(u) + A2 * glowProfile(u * g);
+			const one = A1 * GLOW_BAKE_GAIN * glowBakedProfile(u, g);
+			const d = Math.abs(two - one);
+			if(d > bakeWorst){ bakeWorst = d; bakeAt = 'tier ' + tier + ' a=' + a.toFixed(2) + ' u=' + u.toFixed(3); }
+		}
+	}
+}
+assert.ok(bakeWorst < 1 / 255, 'one baked blit equals the two it replaced within an 8-bit level (worst ' + (bakeWorst * 255).toFixed(4) + '/255 at ' + bakeAt + ')');
+// Stops land on every breakpoint of BOTH terms, which is what makes the gradient's
+// own linear interpolation exact rather than a rounding of the kink.
+for(const tier of [1, 2]){
+	const g = glowCoreRatio(tier);
+	const stops = glowBakeStops(g);
+	assert.ok(stops[0] === 0 && stops[stops.length - 1] === 1, 'the stop list spans the whole sprite (tier ' + tier + ')');
+	assert.ok(stops.length >= 5 && stops.length <= 9, 'a handful of exact stops, not a uniform resample (tier ' + tier + ')');
+	for(let i = 1; i < stops.length; i++) assert.ok(stops[i] > stops[i - 1], 'stops are strictly increasing, as addColorStop requires');
+	assert.ok(stops.some(u => Math.abs(u - 1 / g) < 1e-9), 'including the kink where the core term ends — sampling past it costs ~2.6/255 (tier ' + tier + ')');
+}
+assert.match(postFxSrc, /const wr = e\.r \* beat \* 1\.85 \* ampR;\n\t\t\tctx\.globalAlpha = Math\.min\(1, e\.a \* 0\.34 \* ampA \* GLOW_BAKE_GAIN\);\n\t\t\tctx\.drawImage\(spr, e\.x - wr, e\.y - wr, wr \* 2, wr \* 2\);\n\t\t\thalos \+= 1;/, 'an entity glow is ONE blit now');
+assert.ok(!/halos \+= 2;/.test(postFxSrc), 'the second per-source blit is gone');
+assert.match(postFxSrc, /e\.a = Math\.max\(0, Math\.min\(GLOW_A_MAX, Number\.isFinite\(src\.a\) \? src\.a : 0\.55\)\);/, 'the inlet caps alpha at the ceiling the bake depends on');
+assert.ok(GLOW_A_MAX > 0.68, 'the ceiling sits above every alpha the game actually declares, so it never fires today');
 
 // --- hot-path invariants, each one a measured regression waiting to happen -----
 // The per-tile glow lookup is memoized: it was ~88% of the emitter scan (9.0ns per
