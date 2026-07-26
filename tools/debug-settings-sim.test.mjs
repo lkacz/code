@@ -7,7 +7,7 @@ const backgroundSrc = await readFile(new URL('../src/engine/background.js', impo
 const meteoritesSrc = await readFile(new URL('../src/engine/meteorites.js', import.meta.url), 'utf8');
 const htmlSrc = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 
-const { debugShortcutsEnabled } = await import('../src/engine/debug_shortcuts.js');
+const { debugShortcutsEnabled, devToolsArmed, applyDevToolsFlag } = await import('../src/engine/debug_shortcuts.js');
 function fakeDebugDocument({panelHidden=true,expanded='false',panelConnected=true,buttonConnected=true}={}){
 	const controls={
 		menuPanel:{hidden:panelHidden,isConnected:panelConnected},
@@ -23,7 +23,25 @@ assert.equal(debugShortcutsEnabled(fakeDebugDocument({panelHidden:true,expanded:
 assert.equal(debugShortcutsEnabled(fakeDebugDocument({panelHidden:false,expanded:'true',panelConnected:false})), false, 'stale developer controls cannot arm shortcuts');
 assert.equal(debugShortcutsEnabled(fakeDebugDocument({panelHidden:false,expanded:'true'})), true, 'opening the developer toolbox explicitly arms debug shortcuts');
 
-assert.match(mainSrc, /import \{ debugShortcutsEnabled \} from '\.\/engine\/debug_shortcuts\.js'/, 'main uses the shared debug-shortcut predicate');
+// The 🛠 trigger is CSS-gated on <html data-dev-tools='1'>; without a switch the
+// gate silently deleted the developer toolbox from the author's own game.
+assert.equal(devToolsArmed(''), true, 'a normal solo page arms the developer toolbox');
+assert.equal(devToolsArmed('?seed=777'), true, 'ordinary query parameters keep the toolbox armed');
+assert.equal(devToolsArmed('?watch=ROOM7'), false, 'a spectator/guest replica never gets world-writing debug panels');
+assert.equal(devToolsArmed('?via=rtc&watch=ROOM7'), false, 'the watch refusal does not depend on parameter order');
+assert.equal(devToolsArmed('?dev=0'), false, 'dev=0 is an explicit opt-out for clean captures');
+{
+	const attrs={};
+	const fakeRoot={setAttribute:(k,v)=>{ attrs[k]=v; },removeAttribute:k=>{ delete attrs[k]; }};
+	assert.equal(applyDevToolsFlag({documentElement:fakeRoot},''), true, 'applying the flag reports the armed decision');
+	assert.equal(attrs['data-dev-tools'], '1', 'the CSS gate is opened by the data-dev-tools attribute');
+	assert.equal(applyDevToolsFlag({documentElement:fakeRoot},'?watch=ROOM7'), false, 'a spectator page reports a disarmed toolbox');
+	assert.equal('data-dev-tools' in attrs, false, 'a spectator page leaves the CSS gate closed');
+	assert.equal(applyDevToolsFlag(null,''), true, 'the flag helper survives a document-less host (Node tests)');
+}
+assert.match(htmlSrc, /:root:not\(\[data-dev-tools='1'\]\) \.devOnly\{ display:none !important; \}/, 'developer-only UI stays hidden until the flag is published');
+assert.match(mainSrc, /import \{ applyDevToolsFlag, debugShortcutsEnabled \} from '\.\/engine\/debug_shortcuts\.js'/, 'main uses the shared debug-shortcut predicate');
+assert.match(mainSrc, /applyDevToolsFlag\(\);\nconst menuPanel=document\.getElementById\('menuPanel'\);/, 'boot publishes the dev-tools flag before wiring the toolbox');
 assert.match(mainSrc, /const debugKeysEnabled=debugShortcutsEnabled\(\);/, 'the keydown event takes one toolbox state snapshot');
 for(const key of ['f3','g','i','p','j','k','l','m','v','o']){
 	assert.match(mainSrc, new RegExp("if\\(debugKeysEnabled && k==='"+key+"'"), 'debug shortcut '+key.toUpperCase()+' is toolbox-gated');
