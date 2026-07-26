@@ -19,7 +19,7 @@ import { steamMachines as STEAM_MACHINES } from './engine/steam_machines.js';
 import { canPlaceLadderFixture, ladderConnections } from './engine/ladders.js';
 import { applyHorizontalMovement, applyJumpArcControl, surfaceTraction } from './engine/movement.js';
 import { BUILD_STROKE_CELL_LIMIT, rasterizeTileLine } from './engine/build_stroke.js';
-import { debugShortcutsEnabled } from './engine/debug_shortcuts.js';
+import { applyDevToolsFlag, debugShortcutsEnabled } from './engine/debug_shortcuts.js';
 import './engine/input_mode.js'; // stamps data-input-mode on <html>; touch clusters gate off it
 import {
 	createTouchJoystick,
@@ -5991,6 +5991,23 @@ function drawCape(){ if(deathTravelFx) return; CAPE.draw(ctx,TILE); }
 // The defend-face helpers moved out of drawPlayer with them: they are pure
 // reads of the block/flash clocks, so calling them from either site matches.
 let heroEyeReplay=null;
+// Bounding box of the live cape simulation in world PIXELS. The cape belongs to
+// the hero, not to the world, so the ultra coat must erase it from the grab it
+// mirrors — otherwise the hero wears his own cape reflected on his chest. The
+// pad covers the widest cape profile plus its flare (cape.js CAPE_STYLES).
+function heroCapeSpanPx(){
+	const segs=(CAPE && CAPE._segments) ? CAPE._segments : null;
+	if(!segs || !segs.length) return null;
+	let x0=Infinity, y0=Infinity, x1=-Infinity, y1=-Infinity;
+	for(const p of segs){
+		if(!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+		if(p.x<x0) x0=p.x; if(p.y<y0) y0=p.y;
+		if(p.x>x1) x1=p.x; if(p.y>y1) y1=p.y;
+	}
+	if(!Number.isFinite(x0) || !Number.isFinite(y1)) return null;
+	const pad=0.5;
+	return {x:(x0-pad)*TILE, y:(y0-pad)*TILE, w:(x1-x0+pad*2)*TILE, h:(y1-y0+pad*2)*TILE};
+}
 function heroDefendFaceT(){
 	const now=performance.now();
 	if(heroDefending(now)) return 1;
@@ -10169,7 +10186,7 @@ function ensurePausePanel(){
 		['🌑 Okluzja otoczenia (AO)','ao'],
 		['💠 Refleksy materiałów','specular'],
 		['🌊 Odbicia w wodzie','reflections'],
-		['🪞 Powłoka bohatera','heroSheen'],
+		['🪞 Powłoka bohatera i broni','heroSheen'],
 		['🌗 Dynamiczne cienie','shadows'],
 		['☀️ Promienie słoneczne','godRays'],
 		['🔥 Temperatura światła','lightTint'],
@@ -15161,7 +15178,7 @@ function draw(){ // Background first
  // sprite lands on the canvas — that snapshot is what the coat mirrors, so the
  // hero can never end up reflecting itself (or its own cape).
  if(!deathTravelFx && heroCloakA>=0.98 && POST_FX && POST_FX.captureHeroBackdrop && POST_FX.on('heroSheen')){
-	 POST_FX.captureHeroBackdrop(ctx,{bx:(player.x-player.w/2)*TILE, by:(player.y-player.h/2)*TILE, bw:player.w*TILE, bh:player.h*TILE});
+	 POST_FX.captureHeroBackdrop(ctx,{bx:(player.x-player.w/2)*TILE, by:(player.y-player.h/2)*TILE, bw:player.w*TILE, bh:player.h*TILE, erase:heroCapeSpanPx()});
  }
  if(!mirrorFacing){ if(heroCloakA<1) ctx.globalAlpha=heroCloakA; drawCape(); if(heroCloakA<1) ctx.globalAlpha=1; }
  if(GENERATED_NPCS && GENERATED_NPCS.draw) GENERATED_NPCS.draw(ctx,TILE,worldFxVisible,getTile,WORLDGEN,sx,sy,viewX,viewY);
@@ -15174,8 +15191,6 @@ function draw(){ // Background first
  if(mirrorFacing){ if(heroCloakA<1) ctx.globalAlpha=heroCloakA; drawCape(); if(heroCloakA<1) ctx.globalAlpha=1; }
  // Exceptional weapons tint the hand-facing side of the finished hero sprite.
  if(!deathTravelFx && heroCloakA>=0.98 && WEAPONS && WEAPONS.drawHeroReflection) WEAPONS.drawHeroReflection(ctx,TILE,player);
- // equipped weapon in hand (melee blades sweep during a swing)
- if(!deathTravelFx && heroCloakA>=0.98 && WEAPONS && WEAPONS.drawHeld) WEAPONS.drawHeld(ctx,TILE,player);
  // Ultra hero coating: a faked environment reflection over the finished hero
  // sprite (biome/daylight/depth matcap — no second world render). Skipped
  // while cloaked (a shimmer-hidden hero must not gleam) and during death travel.
@@ -15196,6 +15211,10 @@ function draw(){ // Background first
 	 // through the very routine that drew them, with the geometry it used.
 	 if(heroEyeReplay) drawHeroEyes(heroEyeReplay.bodyX,heroEyeReplay.bodyY,heroEyeReplay.bw,heroEyeReplay.bh,heroEyeReplay.style,heroEyeReplay.c);
  }
+ // Held weapon LAST of the hero group: a swung blade passes in front of the
+ // whole figure, eyes included, and its own metal sheen must not be painted
+ // over by the coat that only belongs to the suit.
+ if(!deathTravelFx && heroCloakA>=0.98 && WEAPONS && WEAPONS.drawHeld) WEAPONS.drawHeld(ctx,TILE,player);
  if(NPCS && NPCS.draw) NPCS.draw(ctx,TILE,worldFxVisible);
  // soot graffiti marks on walls/faces (world truth, fog-gated)
  if(GRAFFITI && GRAFFITI.draw) GRAFFITI.draw(ctx,TILE,worldFxVisible);
@@ -16043,6 +16062,9 @@ const godBtn=document.getElementById('godBtn'); if(godBtn) godBtn.addEventListen
 const immunityBtn=document.getElementById('immunityBtn'); if(immunityBtn) immunityBtn.addEventListener('click',toggleImmunity);
 updateGodBtn();
 updateImmunityBtn();
+// Unhide the 🛠 developer toolbox (its trigger + panel carry .devOnly, hidden
+// until <html data-dev-tools='1'> exists). Spectators and ?dev=0 stay dark.
+applyDevToolsFlag();
 const menuPanel=document.getElementById('menuPanel');
 if(MM.ui && MM.ui.initMenuToggle) MM.ui.initMenuToggle();
 function debugGasOrigin(){

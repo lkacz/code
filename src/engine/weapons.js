@@ -188,6 +188,18 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     arc:{id:'arc',body:'#3e5968',edge:'#efffff',accent:'#58eaff',glow:'#79f5ff',dark:'#1d303a',grip:'#3e434d'},
     exotic:{id:'exotic',body:'#62528b',edge:'#fff2b8',accent:'#e7b85b',glow:'#ffe27a',dark:'#28203d',grip:'#49354d'}
   };
+  // Ultra blade sheen (engine/post_fx.js drawBladeSheenPass): only genuinely
+  // polished materials mirror the world — a wooden stick and rough stone must
+  // stay matte. The rect passed in has to be the metal ITSELF, not its bounding
+  // box: the sheen is clipped to a rectangle, so a polygon head (axe, spear
+  // point, trident prongs) would spill the reflection onto the background.
+  const SHEEN_MATERIALS=new Set(['steel','diamond','iridium','obsidian','aquatic','arc','exotic']);
+  function drawBladeSheen(ctx,material,x,y,w,h){
+    if(!material || !SHEEN_MATERIALS.has(material.id)) return;
+    const P=(typeof window!=='undefined' && window.MM) ? window.MM.postFx : null;
+    if(!P || !P.drawBladeSheenPass || !P.on || !P.on('heroSheen')) return;
+    P.drawBladeSheenPass(ctx,{x,y,w,h});
+  }
   function weaponPrestigeRank(it){
     const base=it && WEAPON_TIER_RANK[it.tier] || 0;
     return it && it.unique ? Math.max(3,base) : base;
@@ -3667,6 +3679,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       const metal=it.meleeEffect==='panic'?'#75efff':it.meleeEffect==='stun'?'#aab0b8':material.edge;
       if(form==='trident'){
         ctx.fillStyle=material.body; ctx.fillRect(-1,-16,2,19);
+        drawBladeSheen(ctx,material,-1,-16,2,19); // the shaft is the metal here
         ctx.fillStyle=col||material.accent;
         ctx.fillRect(-1,-18,2,4); ctx.fillRect(-5,-17,2,5); ctx.fillRect(3,-17,2,5);
         ctx.fillRect(-5,-17,10,1.5);
@@ -3704,6 +3717,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         const bladeLen=prestige===4?17:prestige===3?15:14;
         ctx.fillStyle=metal; ctx.fillRect(-1.2,-bladeLen,2.4,bladeLen);
         ctx.beginPath(); ctx.moveTo(-1.2,-bladeLen); ctx.lineTo(0,-bladeLen-3.5); ctx.lineTo(1.2,-bladeLen); ctx.closePath(); ctx.fill();
+        drawBladeSheen(ctx,material,-1.2,-bladeLen,2.4,bladeLen); // rectangular blade body
         ctx.fillStyle=col||material.accent; ctx.fillRect(-2.6,0,5.2,1.6);
         ctx.fillStyle=material.grip; ctx.fillRect(-0.9,1.6,1.8,3.4);
         if(prestige>=3){

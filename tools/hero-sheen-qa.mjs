@@ -106,6 +106,30 @@ const SCENE_CAVE = `(async()=>{
 	return (before&&after) ? 'OK '+JSON.stringify({before,after,at:cx+','+cy,torchAlive,heroInRoom}) : 'FAIL no-sheen-state';
 })()`;
 
+// The blade sheen rides the same toggle: a POLISHED weapon mirrors the world
+// (anisotropically, along its length), a wooden stick must stay matte.
+const SCENE_BLADE = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const M=MM.postFx.metrics;
+	const swing=async()=>{ for(let i=0;i<5;i++){ try{ MM.weapons.fireHeld(player, player.x+3, player.y-0.2, 0.016); }catch(e){} await sleep(150); } };
+	// wooden stick first (the starting weapon): matte by design
+	let wood=null;
+	try{ wood=MM.inventory.grantItem({id:'qa_wood_stick',name:'Drewniany kij QA',kind:'weapon',tier:'common',stats:{attackDamage:2}},{equip:true}); }catch(e){}
+	await sleep(500);
+	const woodBefore=M.bladeSheens|0;
+	await swing();
+	const woodDelta=(M.bladeSheens|0)-woodBefore;
+	// then steel: the material profile keys off the item NAME
+	let steel=null;
+	try{ steel=MM.inventory.grantItem({id:'qa_steel_sword',name:'Stalowy miecz QA',kind:'weapon',tier:'rare',stats:{attackDamage:6}},{equip:true}); }catch(e){}
+	await sleep(500);
+	const steelBefore=M.bladeSheens|0;
+	await swing();
+	const steelDelta=(M.bladeSheens|0)-steelBefore;
+	if(window.player) player.hp=player.maxHp;
+	return 'OK '+JSON.stringify({wood,steel,woodDelta,steelDelta});
+})()`;
+
 const SCENE_WATER = `(async()=>{
 	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 	const peek=(x,y)=>{ try{ return MM.world.peekTile(x,y,0); }catch(e){ return 0; } };
@@ -213,15 +237,18 @@ async function main(){
 		await snapClip('sheen-grass.png');
 		const rCave = await evalStage('cave', SCENE_CAVE);
 		await snapClip('sheen-cave-torch.png');
+		const rBlade = await evalStage('blade', SCENE_BLADE);
+		await snapClip('sheen-blade.png');
 		const rWater = await evalStage('water', SCENE_WATER);
 		await snapClip('sheen-water.png');
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 5).join('\n---\n'));
 
-		if(![rSnow, rGrass, rCave, rWater].every(s => s.startsWith('OK '))){ failed = true; console.error('a scene failed'); }
+		if(![rSnow, rGrass, rCave, rBlade, rWater].every(s => s.startsWith('OK '))){ failed = true; console.error('a scene failed'); }
 		else {
 			const snow = JSON.parse(rSnow.slice(3));
 			const grass = JSON.parse(rGrass.slice(3));
 			const cave = JSON.parse(rCave.slice(3));
+			const blade = JSON.parse(rBlade.slice(3));
 			const water = JSON.parse(rWater.slice(3));
 			const checks = [
 				// the real mirror blit must actually run in every scene — the tint
@@ -244,7 +271,10 @@ async function main(){
 				['cave torch: stage torch survived', cave.torchAlive === true],
 				['cave torch: coat warms up (red rises)', cave.after.mid[0] > cave.before.mid[0] + 8],
 				['underwater: coat shifts blue in every zone', water.st.top[2] > water.st.top[0] && water.st.mid[2] > water.st.mid[0] && water.st.bot[2] > water.st.bot[0]],
-				['underwater: hero really submerged', water.inWater === true]
+				['underwater: hero really submerged', water.inWater === true],
+				['blade: QA weapons really got equipped', blade.wood === true && blade.steel === true],
+				['blade: a wooden stick stays matte', blade.woodDelta === 0],
+				['blade: polished steel mirrors the world', blade.steelDelta > 0]
 			];
 			for (const [label, ok] of checks){
 				console.log((ok ? 'PASS ' : 'FAIL ') + label);

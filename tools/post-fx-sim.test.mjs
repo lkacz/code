@@ -403,7 +403,7 @@ assert.match(mainSrc, /\['💡 Bloom \(poświata\)','bloom'\]/, 'bloom row maps 
 assert.match(mainSrc, /\['🌑 Okluzja otoczenia \(AO\)','ao'\]/, 'AO row maps to its component');
 assert.match(mainSrc, /\['💠 Refleksy materiałów','specular'\]/, 'specular row maps to its component');
 assert.match(mainSrc, /\['🌊 Odbicia w wodzie','reflections'\]/, 'reflections row maps to its component');
-assert.match(mainSrc, /\['🪞 Powłoka bohatera','heroSheen'\]/, 'hero coating row maps to its component');
+assert.match(mainSrc, /\['🪞 Powłoka bohatera i broni','heroSheen'\]/, 'hero coating row maps to its component (it covers the blade sheen too)');
 assert.match(mainSrc, /\['🌗 Dynamiczne cienie','shadows'\]/, 'dynamic shadows row maps to its component');
 assert.match(mainSrc, /\['☀️ Promienie słoneczne','godRays'\]/, 'god rays row maps to its component');
 assert.match(mainSrc, /\['🔥 Temperatura światła','lightTint'\]/, 'light temperature row maps to its component');
@@ -474,6 +474,35 @@ const iSceneGrab = mainSrc.indexOf('POST_FX.captureHeroScene(ctx);');
 const iMobsDraw = mainSrc.indexOf('if(MOBS && MOBS.draw) MOBS.draw(ctx,TILE,camRenderX,camRenderY,zoom,worldFxVisible,viewX,viewY);');
 const iDark = mainSrc.indexOf('drawLightingOverlay(sx,sy,viewX,viewY,{camX:camRenderX');
 assert.ok(iMobsDraw > 0 && iSceneGrab > iMobsDraw && iDark > iSceneGrab, 'scene grab: after the creatures/effects, before the darkness overlay');
+// The held weapon closes the hero group: a swung blade passes in FRONT of the
+// eyes, and the suit's coat must not paint over the blade's own sheen.
+const iHeld = mainSrc.indexOf('WEAPONS.drawHeld) WEAPONS.drawHeld(ctx,TILE,player);');
+assert.ok(iHeld > iEyeReplay, 'the held weapon draws after the coat AND the eye replay');
+// The cape belongs to the hero, so it is erased from the grab the coat mirrors.
+assert.match(mainSrc, /function heroCapeSpanPx\(\)\{/, 'the cape span is measured for the coat grab');
+assert.match(mainSrc, /erase:heroCapeSpanPx\(\)\}\);/, 'the grab erases the cape along with the body');
+assert.match(mainSrc, /const segs=\(CAPE && CAPE\._segments\) \? CAPE\._segments : null;/, 'the cape span reads the live cape simulation, not a guessed box');
+assert.match(postFxSrc, /if\(opts\.erase && Number\.isFinite\(opts\.erase\.x\)/, 'captureHeroBackdrop unions the erase rect into its patch');
+
+// --- blade sheen ---------------------------------------------------------------
+// Anisotropic by construction: the whole grabbed field is squeezed across the
+// blade and stretched along it, which is how polished metal actually reflects.
+const weaponsSrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+assert.match(weaponsSrc, /const SHEEN_MATERIALS=new Set\(\['steel','diamond','iridium','obsidian','aquatic','arc','exotic'\]\);/, 'only polished materials mirror the world (wood and rough stone stay matte)');
+assert.match(weaponsSrc, /function drawBladeSheen\(ctx,material,x,y,w,h\)\{/, 'weapons own the geometry, post_fx owns the look');
+assert.match(weaponsSrc, /P\.on\('heroSheen'\)/, 'the blade sheen rides the hero-coating toggle');
+assert.match(weaponsSrc, /drawBladeSheen\(ctx,material,-1\.2,-bladeLen,2\.4,bladeLen\);/, 'the sword blade rect gets the sheen');
+assert.match(weaponsSrc, /drawBladeSheen\(ctx,material,-1,-16,2,19\);/, 'the trident shaft gets the sheen');
+// A polygon head (axe/spear/prongs) must NOT be handed to a rectangular clip.
+assert.equal((weaponsSrc.match(/(?<!function )drawBladeSheen\(ctx,material,-/g) || []).length, 2, 'exactly the two rectangular metal shapes carry the sheen');
+postFx.set('heroSheen', true);
+const bladeCtx = makeRichCtx();
+postFx.captureHeroBackdrop(makeMirrorCtx(), { bx: 100, by: 100, bw: 14, bh: 19 });
+assert.equal(postFx.drawBladeSheenPass(bladeCtx, { x: -1.2, y: -14, w: 2.4, h: 14 }), 1, 'the blade sheen draws from the shared grab');
+assert.ok(bladeCtx.drawSources.length > 0, 'the blade sheen blits the grabbed field (not a flat gradient)');
+postFx.set('heroSheen', false);
+assert.equal(postFx.drawBladeSheenPass(makeRichCtx(), { x: 0, y: 0, w: 3, h: 14 }), 0, 'no blade sheen while the coat is off');
+postFx.releaseScratch();
 // The coat covers the WHOLE outfit rect (inventory.js drawOutfit fills a plain
 // rect + 1px outline). ANY inset is world-space, so it grows with zoom into a
 // visible ring of bare outfit colour between the outline and the coat.

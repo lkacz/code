@@ -383,7 +383,7 @@ export function collectIceRuns(opts){
 }
 
 const config = normalizeGfxConfig(null);
-const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0 };
+const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, bladeSheens: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0 };
 let bloomEmitters = [];
 let bloomScanAt = 0;
 let bloomScanKey = '';
@@ -629,12 +629,22 @@ const api = {
 		const bdx = (m.a * opts.bx + m.e - sx) * gk, bdy = (m.d * opts.by + m.f - sy) * gk;
 		const bdw = m.a * opts.bw * gk, bdh = m.d * opts.bh * gk;
 		const mx = bdw * 0.55, my = bdh * 0.15;
-		const px = Math.max(0, Math.min(cw, bdx - mx)), py = Math.max(0, Math.min(ch, bdy - my));
+		let ex0 = bdx - mx, ey0 = bdy - my, ex1 = bdx + bdw + mx, ey1 = bdy + bdh + my;
+		// opts.erase widens the patch over anything else that belongs to the hero
+		// rather than to the world — the cape, which trails a tile behind him and
+		// used to show up mirrored on his own chest.
+		if(opts.erase && Number.isFinite(opts.erase.x) && Number.isFinite(opts.erase.y) && opts.erase.w > 0 && opts.erase.h > 0){
+			const rx0 = (m.a * opts.erase.x + m.e - sx) * gk, ry0 = (m.d * opts.erase.y + m.f - sy) * gk;
+			ex0 = Math.min(ex0, rx0); ey0 = Math.min(ey0, ry0);
+			ex1 = Math.max(ex1, rx0 + m.a * opts.erase.w * gk);
+			ey1 = Math.max(ey1, ry0 + m.d * opts.erase.h * gk);
+		}
+		const px = Math.max(0, Math.min(cw, ex0)), py = Math.max(0, Math.min(ch, ey0));
 		heroGrabRect = {
 			sx, sy, sw, sh, cw, ch,
 			px, py,
-			pw: Math.max(0, Math.min(cw - px, bdw + 2 * mx)),
-			ph: Math.max(0, Math.min(ch - py, bdh + 2 * my))
+			pw: Math.max(0, Math.min(cw - px, ex1 - ex0)),
+			ph: Math.max(0, Math.min(ch - py, ey1 - ey0))
 		};
 		heroMirrorAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
 		return 1;
@@ -673,6 +683,46 @@ const api = {
 		g.drawImage(src, r.sx, r.sy, r.sw, r.sh, 0, 0, r.cw, r.ch);
 		if(r.pw > 0 && r.ph > 0) g.drawImage(heroMirrorCanvas, r.px, r.py, r.pw, r.ph, r.px, r.py, r.pw, r.ph);
 		heroSceneAt = now;
+		return 1;
+	},
+	// Blade sheen. A polished blade is a long, narrow mirror, and real metal
+	// reflects ANISOTROPICALLY: the image smears along the length (the same
+	// reason brushed metal stretches a highlight along its grain) because the
+	// surface curves across the blade and barely along it. So the grabbed field
+	// is squeezed hard across the blade and stretched over its whole length,
+	// plus the bright spine every polished edge carries.
+	// Called from weapons.js INSIDE the weapon's own transform, so a swing
+	// rotates the smear with the blade for free. The rect must be the metal
+	// itself (weapons.js only passes rectangular blades — a polygon head would
+	// let the sheen spill onto the background).
+	drawBladeSheenPass(ctx, opts){
+		if(!api.on('heroSheen')) return 0;
+		if(!ctx || !opts || !(opts.w > 0) || !(opts.h > 0)) return 0;
+		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+		const fresh = (t) => t > 0 && (now - t) < HERO_GRAB_TTL_MS;
+		const src = (fresh(heroSceneAt) && heroSceneCanvas && heroSceneCanvas.width > 0)
+			? heroSceneCanvas
+			: ((fresh(heroMirrorAt) && heroMirrorCanvas && heroMirrorCanvas.width > 0) ? heroMirrorCanvas : null);
+		if(!src) return 0;
+		const x = opts.x, y = opts.y, w = opts.w, h = opts.h;
+		ctx.save();
+		ctx.beginPath();
+		ctx.rect(x, y, w, h);
+		ctx.clip();
+		ctx.imageSmoothingEnabled = true;
+		ctx.globalAlpha = Number.isFinite(opts.alpha) ? opts.alpha : 0.55;
+		ctx.drawImage(src, 0, 0, src.width, src.height, x, y, w, h);
+		ctx.globalAlpha = 1;
+		ctx.globalCompositeOperation = 'lighter';
+		const spine = ctx.createLinearGradient(x, 0, x + w, 0);
+		spine.addColorStop(0, 'rgba(255,255,255,0)');
+		spine.addColorStop(0.42, 'rgba(255,255,255,0.34)');
+		spine.addColorStop(0.62, 'rgba(255,255,255,0.10)');
+		spine.addColorStop(1, 'rgba(255,255,255,0)');
+		ctx.fillStyle = spine;
+		ctx.fillRect(x, y, w, h);
+		ctx.restore();
+		metrics.bladeSheens++;
 		return 1;
 	},
 	// Bloom frame driver. Runs in WORLD space (main.js calls it under the world
