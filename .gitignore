@@ -44,7 +44,13 @@ coverage/
 *.swo
 ~$*
 *.tmp
+# QA screenshots. The drivers write to the CWD, which is the repo ROOT when they
+# are run the documented way (node tools/<driver>.mjs), so a tools/-only pattern
+# left them lying around untracked and `npm run clean` could not touch them —
+# it only ever removes paths git ALREADY ignores, by design.
 tools/*-qa*.png
+*-qa-*.png
+mob-gallery/
 
 # Credentials / Local overrides
 .git-credentials
