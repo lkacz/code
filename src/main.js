@@ -7,7 +7,7 @@ import { worldGen as WORLDGEN } from './engine/worldgen.js';
 import world from './engine/world.js';
 import { trees as TREES } from './engine/trees.js';
 import { fallingSolids as FALLING } from './engine/falling.js';
-import { isAirOrGasTile, isBuildAnchorTile, isDoorTile, isGasTile, isHeroPassableTile, isLooseItemMaterial, isMeteorPickDenseRockMaterial, isMeteorPickSparkMaterial, isPlayerBuiltMaterial, isReplaceableNaturalOpenTile, isSafeLandingFloorTile, isSolidCollisionTile as isSolid, isStableMachineSupportTile, isTrapdoorTile } from './engine/material_physics.js';
+import { isAirOrGasTile, isBuildAnchorTile, isDoorTile, isGasTile, isHeroPassableTile, isLooseItemMaterial, isMeteorPickDenseRockMaterial, isMeteorPickSparkMaterial, isPlayerBuiltMaterial, isReplaceableNaturalOpenTile, isSafeLandingFloorTile, isSolidCollisionTile as isSolid, isStableMachineSupportTile, isSunTransparentTile, isTrapdoorTile } from './engine/material_physics.js';
 import { water as WATER } from './engine/water.js';
 import { gases as GASES } from './engine/gases.js';
 import { smoke as SMOKE } from './engine/smoke.js';
@@ -248,6 +248,10 @@ function gfxUltraOn(name){ return !!(POST_FX && POST_FX.on && POST_FX.on(name));
 // Frozen surfaces never take the wet-rain sheen (snow soaks invisibly; ice is
 // already glazed — and gets its own reflection pass instead).
 function gfxWetSkipTile(t){ return t===T.SNOW || t===T.GRASS_SNOW || t===T.TOXIC_SNOW || t===T.ICE || t===T.MOTHER_ICE || t===T.THIN_ICE || isFrozenEarth(t); }
+// What counts as a WALL for the lamp-shaft openings. Deliberately the repo's own
+// "light gets through this" predicate rather than a collision test: it is the
+// difference between a pane of GLASS being a window and being a brick.
+function gfxLightBlocks(t){ return !isSunTransparentTile(t); }
 // Biome ID to name mapping used for the HUD pill + debug overlay (UI language: Polish)
 const BIOME_NAMES = [
 	'Las',
@@ -10209,6 +10213,7 @@ function ensurePausePanel(){
 		['🪞 Powłoka bohatera i broni','heroSheen'],
 		['🌗 Dynamiczne cienie','shadows'],
 		['☀️ Promienie słoneczne','godRays'],
+		['🪟 Snopy światła z okien','lampShafts'],
 		['🔥 Temperatura światła','lightTint'],
 		['🌫️ Drganie powietrza','heatShimmer'],
 		['🌧️ Mokra nawierzchnia','wetGround'],
@@ -15372,6 +15377,13 @@ function draw(){ // Background first
  // uses, painted over the darkness overlay so torch rooms warm up and
  // glowshroom chambers go teal — then bloom adds the tight bright cores.
  if(gfxUltraOn('lightTint') && POST_FX.drawLightTintPass) POST_FX.drawLightTintPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs});
+ // Ultra lamp shafts: the god ray effect with its apex indoors — light thrown
+ // out of a lit window, a crack or a hole in a roof. Same place in the frame as
+ // the tint above and for the same reason: it is light ADDED to a dark scene,
+ // and under the darkness overlay it would be dimmed away. isSolid is the wall
+ // test the light field itself uses; lightAt supplies the contrast that decides
+ // whether there is any dark out there for a shaft to show against.
+ if(gfxUltraOn('lampShafts') && POST_FX.drawLampShaftsPass) POST_FX.drawLampShaftsPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,blocks:gfxLightBlocks,lightAt:(LIGHTING && LIGHTING.lightAt)?LIGHTING.lightAt:null,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),frameMs:lastFrameMs});
  // THE glow pass: every light in the game in one draw — emissive TILES found by
  // the cadence-cached attribute scan, plus every entity part that registered its
  // own `glow` during the passes above (creatures, held weapons, projectiles,

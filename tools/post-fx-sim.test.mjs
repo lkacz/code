@@ -39,6 +39,8 @@ const {
 	bloomSourceFor, collectBloomEmitters, BLOOM_MIN_LEVEL, BLOOM_MAX_EMITTERS,
 	heroSheenEnvSample, heroMirrorCurve, shadowParams,
 	wetGroundStep, collectCanopyGaps, collectIceRuns,
+	collectLightSlits, slitClearPath, slitFalloff,
+	SLIT_MAX_SPAN, SLIT_RADIUS, SLIT_MAX, SLIT_MIN_LEVEL, SLIT_MIN_DARK, SLIT_ALIGN_MIN, LAMP_SPREADS,
 	godRayWeight, godRayJitter, godRayProfile, godRayCross,
 	GAP_COVER_MIN, GAP_COVER_SPAN, GAP_MAX_WIDTH, GAP_CANOPY_PROBE, GAP_ROOF_MIN,
 	GODRAY_SPREADS, GODRAY_TINTS, GODRAY_MAX_BEAMS, GODRAY_SUN_TILES, GODRAY_LEAN,
@@ -55,8 +57,8 @@ const { NEW_GAME_PREFERENCE_KEYS } = await import('../src/engine/new_game.js');
 
 // --- config model ------------------------------------------------------------
 assert.equal(GFX_ULTRA_KEY, 'mm_gfx_ultra_v1', 'graphics config persists under a versioned key');
-assert.deepEqual([...GFX_COMPONENTS], ['bloom', 'ao', 'specular', 'reflections', 'heroSheen', 'shadows', 'godRays', 'lightTint', 'heatShimmer', 'wetGround', 'dustMotes', 'iceReflections'], 'exactly twelve ultra components exist');
-assert.deepEqual(normalizeGfxConfig(null), { bloom: false, ao: false, specular: false, reflections: false, heroSheen: false, shadows: false, godRays: false, lightTint: false, heatShimmer: false, wetGround: false, dustMotes: false, iceReflections: false }, 'defaults are all-off (standard mode)');
+assert.deepEqual([...GFX_COMPONENTS], ['bloom', 'ao', 'specular', 'reflections', 'heroSheen', 'shadows', 'godRays', 'lightTint', 'heatShimmer', 'wetGround', 'dustMotes', 'iceReflections', 'lampShafts'], 'exactly thirteen ultra components exist');
+assert.deepEqual(normalizeGfxConfig(null), { bloom: false, ao: false, specular: false, reflections: false, heroSheen: false, shadows: false, godRays: false, lightTint: false, heatShimmer: false, wetGround: false, dustMotes: false, iceReflections: false, lampShafts: false }, 'defaults are all-off (standard mode)');
 assert.deepEqual(parseGfxConfig('not json'), normalizeGfxConfig(null), 'corrupt JSON falls back to standard mode');
 assert.equal(parseGfxConfig('{"bloom":1,"ao":"yes"}').bloom, false, 'truthy-but-not-true values do not enable a component');
 assert.equal(parseGfxConfig('{"reflections":true}').reflections, true, 'a persisted true enables its component');
@@ -405,6 +407,75 @@ assert.equal(bucketFor(spreadFor(400)), 2.7, 'an absurdly long shaft still bakes
 // the arithmetic the live QA measured off the framebuffer and rejected once.
 assert.ok(godRayProfile(0.8) > godRayProfile(0.2) * 0.45, 'the tail stays bright enough for the widening to read');
 
+// --- lamp shafts: openings near a light source -------------------------------------
+// The same effect as the sunbeams with the apex brought indoors, so the same
+// question decides it: is there an aperture, and is it darker on the far side?
+// Fake cabin: a stone slitWall down column 10 with a one-tile window at row 5, and
+// a slitLamp two tiles inside it.
+const cabin = new Map();
+for(let y = 1; y <= 9; y++) if(y !== 5) cabin.set('10,' + y, T.STONE);
+const cabinTile = (x, y) => cabin.get(x + ',' + y) ?? T.AIR;
+const slitWall = t => t === T.STONE;
+const slitLamp = { x: 8, y: 5, t: T.TORCH, level: 13, color: '255,176,84' };
+const pitchDark = () => 0;
+const slitsOf = (o) => collectLightSlits({ emitters: [slitLamp], getTile: cabinTile, blocks: slitWall, lightAt: pitchDark, ...o });
+const slits = slitsOf({});
+assert.equal(slits.length, 1, 'a lit room with one window throws one shaft');
+assert.equal(slits[0].span, 1, 'the opening is one tile tall');
+assert.ok(Math.abs(slits[0].cx - 10.5) < 1e-9, 'the shaft leaves from the middle of the opening');
+assert.ok(Math.abs(slits[0].cy - 5.5) < 1e-9, 'and from the middle of its run');
+assert.ok(slits[0].dirX > 0.999 && Math.abs(slits[0].dirY) < 1e-9, 'it travels away from the lamp, straight out through the slitWall');
+assert.ok(Math.abs(slits[0].dist - 2) < 1e-9, 'the apex is the LAMP, two tiles back — that is what makes the wedge open hard');
+assert.equal(slits[0].color, '255,176,84', 'a shaft is the colour of the light that threw it');
+assert.ok(slits[0].len >= 2, 'the beam reaches into the open air outside');
+assert.ok(slits[0].weight > 0.5, 'a bright lamp close behind a window, opening onto full pitchDark, is a strong shaft');
+// Every gate, one at a time. Each of these is a way the effect looked wrong
+// before it existed anywhere: a shaft with no light behind it, a shaft through
+// a solid slitWall, a shaft into broad daylight.
+assert.equal(collectLightSlits({ emitters: [{ ...slitLamp, level: 4 }], getTile: cabinTile, blocks: slitWall, lightAt: pitchDark }).length, 0, 'a dim ember throws no shaft');
+assert.equal(slitsOf({ lightAt: () => 1 }).length, 0, 'no shaft into a brightly lit outside — contrast IS the effect');
+assert.equal(slitsOf({ lightAt: () => 1 - SLIT_MIN_DARK + 0.01 }).length, 0, 'just under the darkness threshold is still nothing');
+const sealed = new Map();
+for(let y = 1; y <= 9; y++) sealed.set('10,' + y, T.STONE);
+assert.equal(collectLightSlits({ emitters: [slitLamp], getTile: (x, y) => sealed.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark }).length, 0, 'a slitWall with no hole in it throws nothing');
+const doorway = new Map();
+for(let y = 1; y <= 9; y++) if(y < 3 || y > 7) doorway.set('10,' + y, T.STONE);
+assert.equal(collectLightSlits({ emitters: [slitLamp], getTile: (x, y) => doorway.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark }).length, 0, 'a five-tile opening is a doorway, not a slit');
+// A lamp on the WRONG side of a second slitWall can see no window: without this the
+// shaft would leak out of a room the light never reached.
+const twoRooms = new Map(cabin);
+for(let y = 1; y <= 9; y++) twoRooms.set('9,' + y, T.STONE);
+assert.equal(collectLightSlits({ emitters: [{ ...slitLamp, x: 7 }], getTile: (x, y) => twoRooms.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark }).length, 0, 'a lamp behind a second slitWall lights no window');
+// Alignment: a lamp directly above a window sees its opening and shines PAST it.
+assert.equal(collectLightSlits({ emitters: [{ ...slitLamp, x: 10, y: 1 }], getTile: cabinTile, blocks: slitWall, lightAt: pitchDark }).length, 0, 'a lamp grazing the opening throws nothing through it');
+// The other orientation: a hole in a ROOF throws light straight up (or a hole in
+// a slitCave floor, straight down). Same finder, axis swapped.
+const slitCave = new Map();
+for(let x = 5; x <= 15; x++) if(x !== 10) slitCave.set(x + ',3', T.STONE);
+const roofSlits = collectLightSlits({ emitters: [{ x: 10, y: 5, t: T.TORCH, level: 13, color: '255,176,84' }], getTile: (x, y) => slitCave.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark });
+assert.equal(roofSlits.length, 1, 'a hole in a roof is an opening too');
+assert.equal(roofSlits[0].axis, 1, 'its run lies along x, so the light goes along y');
+assert.ok(roofSlits[0].dirY < -0.999, 'and it goes UP, away from the lamp below');
+assert.equal(SLIT_MAX_SPAN, 3, 'an opening is at most three tiles across');
+assert.ok(SLIT_RADIUS > 0 && SLIT_MAX > 0 && SLIT_MIN_LEVEL > 0, 'the scan is bounded by fixed caps, never by frame time');
+assert.ok(SLIT_ALIGN_MIN > 0.5 && SLIT_ALIGN_MIN < 1, 'the light must flow along the opening, not graze it');
+assert.deepEqual([...LAMP_SPREADS], [1.6, 2.1, 2.8, 3.6, 4.6], 'lamp wedges open far harder than sun wedges — the apex is metres away, not astronomical');
+assert.ok(LAMP_SPREADS[0] > 1.25, 'even the narrowest lamp wedge opens wider than the widest practical sunbeam wedge');
+// Inverse square, because a local source obeys it and the sun does not.
+assert.equal(slitFalloff(0), 1, 'right behind the opening is full strength');
+assert.equal(slitFalloff(5), 0.5, 'half strength at the falloff scale');
+assert.ok(slitFalloff(10) < slitFalloff(5) && slitFalloff(5) < slitFalloff(2), 'strength falls with distance from the lamp');
+// One hole, one shaft. A wall two tiles thick presents the same opening twice —
+// inner face and outer face — and drawing both stacks two beams on the same air
+// at double brightness. Caught in a live screenshot, not by arithmetic.
+const thickWall = new Map();
+for(let y = 1; y <= 9; y++) if(y !== 5){ thickWall.set('10,' + y, T.STONE); thickWall.set('11,' + y, T.STONE); }
+const thickSlits = collectLightSlits({ emitters: [slitLamp], getTile: (x, y) => thickWall.get(x + ',' + y) ?? T.AIR, blocks: slitWall, lightAt: pitchDark });
+assert.equal(thickSlits.length, 1, 'a two-tile-thick wall still throws ONE shaft, not one per face');
+assert.ok(thickSlits[0].cx > 11, 'and it leaves by the OUTER face — the mouth the light actually exits');
+assert.ok(slitClearPath((x, y) => cabinTile(x, y), slitWall, 8.5, 5.5, 10.5, 5.5), 'the path from lamp to window is clear');
+assert.ok(!slitClearPath((x, y) => cabinTile(x, y), slitWall, 8.5, 2.5, 12.5, 2.5), 'a path through the slitWall is not');
+
 // --- ice-run finder ---------------------------------------------------------------
 // Natural frozen lake: the ICE crust sits at the WATER LINE, rows ABOVE the
 // worldgen bed row — the scan must find the crust, not probe the bed.
@@ -466,6 +537,11 @@ for(let wx = -20; wx <= 40; wx++) if(!matrixWorld.has(gk(wx, 21))) matrixWorld.s
 // world drives every pass at once.
 for(const cx of [5, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20, 21, 22, 23, 24]) matrixWorld.set(gk(cx, 16), T.LEAF);
 for(let ty = 17; ty <= 20; ty++) matrixWorld.set(gk(20, ty), T.WOOD);          // a trunk for tree shadows
+// A lit cabin for the lamp shafts: a stone wall down column 30 with a window at
+// row 17, and a torch two tiles inside it. Far enough right that it cannot
+// disturb the canopy, the lava or the ice the other passes are driven by.
+for(let wy = 14; wy <= 20; wy++) if(wy !== 17) matrixWorld.set(gk(30, wy), T.STONE);
+matrixWorld.set(gk(28, 17), T.TORCH);
 const mTile = (x, y) => matrixWorld.get(gk(x, y)) ?? T.AIR;
 const mSurf = () => 21;
 const mBase = { TILE: 20, sx: -8, sy: 5, viewX: 40, viewY: 25, getTile: mTile, surfaceHeight: mSurf, frameMs: 16 };
@@ -478,6 +554,7 @@ const PASS_MATRIX = [
 	['heatShimmer', ctx => postFx.drawHeatShimmerPass(ctx, { ...mBase, pools: null })],
 	['wetGround', ctx => { window.__mmForceWet = true; const r = postFx.drawWetGroundPass(ctx, { ...mBase, rainingAt: () => false, skipWetTile: () => false, daylight: 1 }); delete window.__mmForceWet; return r; }],
 	['dustMotes', ctx => postFx.drawDustMotesPass(ctx, { ...mBase, daylight: 1 })],
+	['lampShafts', ctx => postFx.drawLampShaftsPass(ctx, { ...mBase, blocks: t => t === T.STONE || t === T.WOOD, lightAt: () => 0 })],
 	['iceReflections', ctx => postFx.drawIceReflectionsPass(ctx, { ...mBase })]
 ];
 for(const key of GFX_COMPONENTS) postFx.set(key, false);
@@ -948,6 +1025,30 @@ assert.match(rayBody, /ctx\.globalAlpha = alpha \* b\.weight \* \(0\.80 \+ 0\.40
 assert.match(rayBody, /const pad = GAP_COVER_SPAN \+ 2;/, 'the scan is padded past the view so a beam does not brighten as it scrolls in');
 assert.match(rayBody, /maxBeams: GODRAY_MAX_BEAMS/, 'the beam count is a fixed cap');
 assert.ok(!/frameMs|stressed|critical/.test(rayBody), 'god rays never degrade themselves on a frame-time threshold');
+// --- lamp shafts: the same wedge, the same discipline ------------------------------
+const iLampFn = postFxSrc.indexOf('drawLampShaftsPass(ctx, opts){');
+const lampBody = postFxSrc.slice(iLampFn, postFxSrc.indexOf('\n\t},', iLampFn));
+assert.ok(iLampFn > 0 && lampBody.length > 400, 'the lamp shaft pass body was located');
+assert.ok(!/createLinearGradient|addColorStop|rgba\(/.test(lampBody), 'the shaft profile is baked — the pass builds no gradient per frame');
+assert.ok(!/moveTo|lineTo|closePath|\bfill\(\)/.test(lampBody), 'no polygon here either');
+assert.match(lampBody, /ctx\.drawImage\(spr, -footW \* 0\.5, 0, footW, len\);/, 'one blit per shaft, sized by its far end');
+assert.match(lampBody, /const spread = \(s\.dist \+ s\.len\) \/ s\.dist;/, 'the apex is the LAMP, so the spread is a real ratio of distances — no invented perspective distance');
+assert.match(lampBody, /const ang = Math\.atan2\(s\.dirY, s\.dirX\) - Math\.PI \/ 2;/, 'a lamp shaft points any way at all, unlike a sunbeam');
+assert.ok(!/frameMs|stressed|critical/.test(lampBody), 'lamp shafts never degrade themselves on a frame-time threshold');
+assert.match(lampBody, /max: SLIT_MAX, minLevel: SLIT_MIN_LEVEL/, 'the shaft count is a fixed cap');
+// Both effects bake through ONE function. That is the reuse the feature is built
+// on, and a second bake would quietly double the sprite memory.
+assert.equal((postFxSrc.match(/function beamSpriteFor\(/g) || []).length, 1, 'one bake serves both the sun and the lamps');
+assert.match(postFxSrc, /const spr = beamSpriteFor\(GODRAY_SPREADS\[si\], GODRAY_TINTS\[tintIdx\]\);/, 'sunbeams bake from the sun tables');
+assert.match(postFxSrc, /const spr = beamSpriteFor\(LAMP_SPREADS\[si\], s\.color\);/, 'lamp shafts bake from the lamp tables and the EMITTER colour');
+const iSlitFn = postFxSrc.indexOf('export function collectLightSlits(');
+const slitBody = postFxSrc.slice(iSlitFn, postFxSrc.indexOf('\n}', iSlitFn));
+assert.ok(iSlitFn > 0 && slitBody.length > 400, 'the slit scan body was located');
+assert.match(slitBody, /const key = axis \+ ':' \+ \(axis === 0 \? Math\.round\(cy \* 2\) : Math\.round\(cx \* 2\)\);/, 'openings are deduped ACROSS the light, so a thick wall throws one shaft, not one per face');
+assert.match(slitBody, /if\(prev && prev\.dist >= dist\) break;/, 'and the OUTER face wins — that is the mouth the light leaves by');
+assert.match(slitBody, /const sideA = lightAt \? lightAt\(Math\.floor\(ox - vy \* SLIT_PROBE_SIDE\)/, 'the background is sampled to the SIDE of the beam, never along it');
+assert.ok(!/lightAt\(Math\.floor\(cx \+ vx \* 2\.5\)/.test(slitBody), 'the on-axis probe is gone — it read the shaft itself and talked the effect out of existing');
+
 const iGapFn = postFxSrc.indexOf('export function collectCanopyGaps(');
 const gapBody = postFxSrc.slice(iGapFn, postFxSrc.indexOf('\n}', iGapFn));
 assert.ok(iGapFn > 0 && gapBody.length > 400, 'the canopy scan body was located');
@@ -1045,6 +1146,22 @@ assert.match(mainSrc, /if\(gfxUltraOn\('godRays'\) && POST_FX\.drawGodRaysPass\)
 assert.match(mainSrc, /isCanopy:isLeaf,/, 'god rays read the shared foliage predicate, and only that');
 assert.ok(!/isCanopy:\(t\)=>isLeaf\(t\)\|\|isWood\(t\)/.test(mainSrc), 'trunks are no longer mistaken for roof');
 assert.match(mainSrc, /if\(gfxUltraOn\('lightTint'\) && POST_FX\.drawLightTintPass\)/, 'light tint pass is gated');
+assert.match(mainSrc, /if\(gfxUltraOn\('lampShafts'\) && POST_FX\.drawLampShaftsPass\)/, 'lamp shafts pass is gated');
+assert.match(mainSrc, /\['🪟 Snopy światła z okien','lampShafts'\]/, 'lamp shafts row maps to its component');
+// The WALL test is the repo's own "light gets through this" predicate, not a
+// collision test — that is the difference between a pane of glass being a window
+// and being a brick.
+assert.match(mainSrc, /function gfxLightBlocks\(t\)\{ return !isSunTransparentTile\(t\); \}/, 'openings are decided by sun transparency');
+assert.match(mainSrc, /blocks:gfxLightBlocks,lightAt:\(LIGHTING && LIGHTING\.lightAt\)\?LIGHTING\.lightAt:null/, 'the pass gets the wall test and the light field that supplies its contrast');
+// Lamp shafts are light ADDED to a dark scene, so they belong ABOVE the darkness
+// overlay with the light tint — underneath it the overlay would dim away the one
+// thing the effect exists to show. God rays are the opposite: daylight, below it.
+const iLamp = mainSrc.indexOf("gfxUltraOn('lampShafts')");
+const iDarkOverlay = mainSrc.indexOf('drawLightingOverlay(sx,sy,viewX,viewY,{camX:camRenderX');
+const iRaysCall = mainSrc.indexOf("gfxUltraOn('godRays')");
+assert.ok(iRaysCall > 0 && iDarkOverlay > iRaysCall, 'god rays draw BELOW the darkness overlay (they are daylight)');
+assert.ok(iLamp > iDarkOverlay, 'lamp shafts draw ABOVE it (they are light in the dark)');
+assert.ok(mainSrc.indexOf('drawFogOverlay(sx,sy,viewX,viewY,{camX:camRenderX') > iLamp, 'and still below fog — undiscovered black wins');
 assert.match(mainSrc, /if\(gfxUltraOn\('heatShimmer'\) && POST_FX\.drawHeatShimmerPass\)/, 'heat shimmer pass is gated');
 assert.match(mainSrc, /pools:\(GEOTHERMAL && GEOTHERMAL\.poolsNear\)/, 'heat shimmer covers geothermal pools via the existing registry');
 assert.match(mainSrc, /burning:\(FIRE && FIRE\.burningNear\)/, 'burning blocks feed the shimmer as live heat sources, off the fire registry');

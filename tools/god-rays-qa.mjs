@@ -220,6 +220,105 @@ const SURVEY = `(async()=>{
 	});
 })()`;
 
+// LAMP SHAFTS — the same effect with the apex indoors. Staged underground on
+// purpose: a chamber carved below the surface with a torch on its floor and one
+// hole punched through the ceiling to the sky. Carving cannot be shed by the
+// falling system the way a canopy built in mid-air is, so this scene survives
+// long enough to be looked at as well as measured.
+//
+// At NIGHT the air above the hole is dark, so the shaft shows. In daylight it
+// must not: the same contrast rule that governs the sunbeams, running the other
+// way round. Both are checked.
+const LAMP = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	const P=await import('/src/engine/post_fx.js');
+	const F=P.postFx;
+	const W=MM.world, WG=MM.worldGen;
+	const site=${'${SITE}'};
+	const TILE=20, surf=WG.surfaceHeight(site);
+	// A SEALED chamber, floor and walls included. The first version only carved
+	// air and relied on whatever worldgen had put underneath — which on this seed
+	// was a cavern, so the torch fell down it and the scene measured an empty
+	// room. Flat SURFACE says nothing about what is under it.
+	for(let x=site-5;x<=site+5;x++) for(let y=surf+1;y<=surf+7;y++) W.setTile(x,y,3);   // solid block
+	for(let x=site-4;x<=site+4;x++) for(let y=surf+2;y<=surf+6;y++) W.setTile(x,y,0);   // hollowed out
+	W.setTile(site, surf, 0); W.setTile(site, surf+1, 0);                                // the hole to the sky
+	W.setTile(site, surf+6, 16);                                                         // the lamp on its floor
+	const built={hole:W.getTile(site,surf), roofL:W.getTile(site-1,surf+1), floor:W.getTile(site,surf+7), lamp:W.getTile(site,surf+6)};
+	if(built.hole!==0 || built.roofL===0 || built.floor===0 || built.lamp!==16) return 'FAIL chamber-not-staged '+JSON.stringify(built);
+	const x0t=site-10, x1t=site+10, y0t=surf-16, y1t=surf+8;
+	const w=(x1t-x0t)*TILE, h=(y1t-y0t)*TILE;
+	const shoot=()=>{
+		const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+		const c2=cv.getContext('2d',{willReadFrequently:true});
+		c2.fillStyle='#000'; c2.fillRect(0,0,w,h);
+		c2.setTransform(1,0,0,1, -x0t*TILE, -y0t*TILE);
+		const n=F.drawLampShaftsPass(c2,{TILE, sx:x0t, sy:y0t, viewX:(x1t-x0t), viewY:(y1t-y0t),
+			getTile:W.getTile, blocks:(t)=>!(t===0||t===22||t===16||t===6||t===39||t===8),
+			lightAt:(MM.lighting&&MM.lighting.lightAt)?MM.lighting.lightAt:null});
+		c2.setTransform(1,0,0,1,0,0);
+		return {n, d:c2.getImageData(0,0,w,h).data};
+	};
+	for(const k of F.COMPONENTS) F.set(k,false);
+	F.set('lampShafts',true);
+	// DAY control first: the same chamber, the same torch, a lit sky above.
+	MM.background.importState({cycleT:0.28});
+	await sleep(700);
+	const byDay=shoot().n;
+	// then night, when there is dark up there for the shaft to show against
+	MM.background.importState({cycleT:0.78});
+	await sleep(900);
+	// The lamp must still BE there. A vanished torch is a staging failure and has
+	// to be reported as one — the first version blamed the renderer for it.
+	if(W.getTile(site, surf+6)!==16) return 'FAIL lamp-did-not-survive t='+W.getTile(site, surf+6);
+	const shot=shoot();
+	if(!(shot.n>0)){
+		const LA=(MM.lighting&&MM.lighting.lightAt)?MM.lighting.lightAt:(()=>-1);
+		const bl=(t)=>!(t===0||t===22||t===16||t===6||t===39||t===8);
+		const em=P.collectBloomEmitters({x0:site-12,x1:site+12,y0:surf-10,y1:surf+12,getTile:W.getTile,max:160});
+		const sl=P.collectLightSlits({emitters:em,getTile:W.getTile,blocks:bl,lightAt:LA});
+		const slNoLight=P.collectLightSlits({emitters:em,getTile:W.getTile,blocks:bl,lightAt:()=>0});
+		return 'FAIL no-shaft-at-night '+JSON.stringify({dayN:byDay,
+			lampTile:W.getTile(site,surf+6), holeTile:W.getTile(site,surf), roofTile:W.getTile(site-1,surf),
+			emitters:em.length, lamps:em.filter(e=>e.level>=P.SLIT_MIN_LEVEL).length,
+			slits:sl.length, slitsIfDark:slNoLight.length,
+			onAxis:+LA(site,surf-3).toFixed(3), sideL:+LA(site-4,surf-3).toFixed(3), sideR:+LA(site+4,surf-3).toFixed(3),
+			sky:+LA(site,surf-8).toFixed(3), room:+LA(site,surf+4).toFixed(3),
+			daylight:(MM.background&&MM.background.timeInfo)?+(MM.background.timeInfo().daylight||0).toFixed(3):null});
+	}
+	const lum=new Float64Array(w*h); let peak=0;
+	for(let i=0,p=0;i<w*h;i++,p+=4){
+		const v=0.299*shot.d[p]+0.587*shot.d[p+1]+0.114*shot.d[p+2];
+		lum[i]=v; if(v>peak) peak=v;
+	}
+	const cut=peak*0.30;
+	const rowPeak=new Float64Array(h), rowHalf=new Int32Array(h);
+	for(let y=0;y<h;y++){
+		let mx=0; for(let x=0;x<w;x++){ const v=lum[y*w+x]; if(v>mx) mx=v; }
+		rowPeak[y]=mx;
+		if(mx>cut){ let k=0; const half=mx*0.5; for(let x=0;x<w;x++) if(lum[y*w+x]>half) k++; rowHalf[y]=k; }
+	}
+	const lit=[]; for(let y=0;y<h;y++) if(rowHalf[y]>0) lit.push(y);
+	if(lit.length<12) return 'FAIL shaft-too-short lit='+lit.length;
+	// The beam travels UP, so the MOUTH is the bottom of the lit range and the
+	// far end is the top — the reverse of a sunbeam, which is the whole point.
+	const far=lit[0], mouth=lit[lit.length-1], span=mouth-far;
+	const at=f=>Math.round(mouth-span*f);
+	const avg=(arr,a,b)=>{ let s=0,n=0; const lo=Math.min(a,b), hi=Math.max(a,b); for(let y=lo;y<=hi;y++){ s+=arr[y]; n++; } return n?s/n:0; };
+	const roofPx=(surf-y0t)*TILE;
+	let insideLit=0;
+	for(let y=roofPx+2*TILE;y<h;y++) for(let x=0;x<w;x++) if(lum[y*w+x]>cut) insideLit++;
+	return 'OK '+JSON.stringify({
+		shafts:shot.n, byDay, peak:+peak.toFixed(1), far, mouth, span,
+		halfMouth:+avg(rowHalf, at(0.05), at(0.20)).toFixed(1),
+		halfFar:+avg(rowHalf, at(0.80), at(0.95)).toFixed(1),
+		peakMouth:+avg(rowPeak, at(0.05), at(0.20)).toFixed(1),
+		peakFar:+avg(rowPeak, at(0.80), at(0.95)).toFixed(1),
+		mouthRow:+rowPeak[mouth].toFixed(1), farRow:+rowPeak[far].toFixed(1),
+		roofPx, insideLit, surf
+	});
+})()`;
+
 // Eyeball shot: the densest NATURAL stand within reach, at the same morning sun.
 const SHOT = `(async()=>{
 	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -318,6 +417,40 @@ async function main(){
 			measured = await run('measure', MEASURE.replace('${SITE}', String(site)));
 		}
 		const survey = await run('survey', SURVEY);
+		const lamp = stage.startsWith('OK ')
+			? await run('lamp', LAMP.replace('${SITE}', String(JSON.parse(stage.slice(3)).site)))
+			: 'SKIPPED';
+		if (lamp.startsWith('OK ')){
+			// The chamber is carved, not built, so it is still there — stand next to
+			// it with every component live and look at the thing.
+			const site = JSON.parse(stage.slice(3)).site;
+			await run('lampShot', `(async()=>{
+				window.__mmForceGfxUltra=true;
+				const ui=document.getElementById('ui'); if(ui) ui.style.display='none';
+				window.__mmDebugHero(${site}+6, MM.worldGen.surfaceHeight(${site}+6)-2);
+				await new Promise(r=>setTimeout(r,1800));
+				if(window.player) player.hp=player.maxHp;
+				const M=MM.postFx.metrics; const a=M.lampShafts|0;
+				await new Promise(r=>setTimeout(r,900));
+				const P=await import('/src/engine/post_fx.js');
+				const MP=await import('/src/engine/material_physics.js');
+				const W=MM.world, surf=MM.worldGen.surfaceHeight(${site});
+				const blocks=(t)=>!MP.isSunTransparentTile(t);
+				const around={};
+				for(const [k,dx,dy] of [['hole',0,0],['left',-1,0],['right',1,0],['below',0,1],['lamp',0,6]]){
+					const t=W.getTile(${site}+dx, surf+dy); around[k]=t+(blocks(t)?'#':'.');
+				}
+				const em=P.collectBloomEmitters({x0:${site}-12,x1:${site}+12,y0:surf-10,y1:surf+12,getTile:W.getTile,max:160});
+				const slits=P.collectLightSlits({emitters:em,getTile:W.getTile,blocks,lightAt:MM.lighting.lightAt});
+				return 'OK '+JSON.stringify({liveDraws:(M.lampShafts|0)-a, around,
+					emitters:em.length, lamps:em.filter(e=>e.level>=P.SLIT_MIN_LEVEL).length, slits:slits.length,
+					sideL:+MM.lighting.lightAt(${site}-4,surf-3).toFixed(3), sideR:+MM.lighting.lightAt(${site}+4,surf-3).toFixed(3),
+					on:MM.postFx.on('lampShafts')});
+			})()`);
+			const ls = await send(ws, 'Page.captureScreenshot', { format: 'png' });
+			await writeFile(out + '-lamp.png', Buffer.from(ls.data, 'base64'));
+			console.log('wrote', out + '-lamp.png');
+		}
 		// A look at the finished frame, in a NATURAL stand. Real trees are marked
 		// tree tiles, so nothing sheds them and the shot shows the effect on the
 		// terrain a player actually walks through rather than on a test rig.
@@ -327,11 +460,12 @@ async function main(){
 		console.log('wrote', out + '-rays.png');
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 4).join('\n---\n'));
 
-		if (!stage.startsWith('OK ') || !measured.startsWith('OK ')){
+		if (!stage.startsWith('OK ') || !measured.startsWith('OK ') || !lamp.startsWith('OK ')){
 			failed = true;
 			console.error('god-rays-qa: a stage failed');
 		} else {
 			const m = JSON.parse(measured.slice(3));
+			const L = JSON.parse(lamp.slice(3));
 			const checks = [
 				['the roof cast at least one shaft', m.beams > 0],
 				// The headline fix, measured twice. The old parallelogram scores
@@ -351,7 +485,16 @@ async function main(){
 				['open ground with no roof over it gets no beams', m.bareBeams === 0],
 				// The rig proves the geometry; this proves the geometry survives
 				// contact with terrain nobody staged.
-				['a natural forest stand casts shafts too', shotStatus.startsWith('OK ') && JSON.parse(shotStatus.slice(3)).beamDraws > 0]
+				['a natural forest stand casts shafts too', shotStatus.startsWith('OK ') && JSON.parse(shotStatus.slice(3)).beamDraws > 0],
+				// --- lamp shafts: the same effect, apex indoors ---
+				['a lit chamber throws a shaft out of its hole at night', L.shafts > 0],
+				['and NOTHING in daylight — contrast is the effect, both ways round', L.byDay === 0],
+				// The apex is metres away, not astronomical, so this wedge must open
+				// far harder than a sunbeam's. A sunbeam managed ~1.47 on its rig.
+				['the lamp wedge opens hard — much wider at the far end than at the hole', L.halfFar > L.halfMouth * 1.6],
+				['brightest where it leaves the opening', L.peakMouth > L.peakFar * 1.15],
+				['both ends dissolve — no cut line at the hole, none at the far end', L.mouthRow < L.peak * 0.5 && L.farRow < L.peak * 0.5],
+				['no light painted back down inside the chamber', L.insideLit === 0]
 			];
 			for (const [name, ok] of checks){ console.log((ok ? 'PASS  ' : 'FAIL  ') + name); if (!ok) failed = true; }
 			console.log('shape:', JSON.stringify(m));

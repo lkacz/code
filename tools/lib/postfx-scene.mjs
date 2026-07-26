@@ -67,6 +67,13 @@ export const STAGE = `(async()=>{
 	// by-7 and not higher: a floating leaf 14 rows up is claimed as an
 	// unsupported player build and sheds within the frame, measured.
 	for(let dx=-9;dx<=7;dx++){ if(dx>=-1 && dx<=1) continue; W.setTile(bx+dx, by-7, 6); }
+	// a sealed chamber with a lamp and ONE hole to the sky: lamp shafts. Right of
+	// the lava so nothing drains into it, and SEALED — a carved room over a
+	// natural cavern loses its torch down the hole (measured, in god-rays-qa).
+	for(let x=bx+16;x<=bx+20;x++) for(let y=by+1;y<=by+7;y++) W.setTile(x,y,3);
+	for(let x=bx+17;x<=bx+19;x++) for(let y=by+2;y<=by+6;y++) W.setTile(x,y,0);
+	W.setTile(bx+18,by,0); W.setTile(bx+18,by+1,0);
+	W.setTile(bx+18,by+6,16);
 	await sleep(900);
 	if(window.player) player.hp=player.maxHp;
 	return 'OK '+JSON.stringify({bx,by,lava:W.getTile(bx+10,by),pond:W.getTile(bx-6,by),ice:W.getTile(bx-12,by),trunk:W.getTile(bx-2,by-3),leaf:W.getTile(bx-3,by-7),hole:W.getTile(bx,by-7)});
@@ -86,6 +93,7 @@ export const CASES_SRC = `
 		getTile:W.getTile, surfaceHeight:WG.surfaceHeight,
 		visibleAt:()=>true, poweredAt:()=>true, frameMs:16,
 		isTrunk:(t)=>t===5||t===139||t===140||t===141, isCanopy:(t)=>t===6||t===39,
+		blocks:(t)=>!(t===0||t===22||t===16||t===6||t===39||t===8),   // walls, as isSunTransparentTile sees them
 		time:(MM.background&&MM.background.timeInfo)?MM.background.timeInfo():null,
 		daylight:1, rainingAt:()=>true, skipWetTile:()=>false, tileColor:()=>'#808080',
 		pools:null, burning:null};
@@ -101,6 +109,10 @@ export const CASES_SRC = `
 		['heatShimmer',          ['heatShimmer'],    ()=>F.drawHeatShimmerPass(ctx,{...base,now:performance.now()})],
 		['iceReflections',       ['iceReflections'], ()=>F.drawIceReflectionsPass(ctx,{...base})],
 		['godRays',              ['godRays'],        ()=>F.drawGodRaysPass(ctx,{...base})],
+		// lightAt is stubbed dark on purpose: the darkness gate is a CONTENT
+		// decision and this harness measures COST, so it must not depend on what
+		// the day/night clock happens to be doing while the browser boots.
+		['lampShafts',           ['lampShafts'],     ()=>F.drawLampShaftsPass(ctx,{...base,lightAt:()=>0})],
 		['treeShadows',          ['shadows'],        ()=>F.drawTreeShadowsPass(ctx,{...base})],
 		['wetGround',            ['wetGround'],      ()=>{ window.__mmForceWet=true; return F.drawWetGroundPass(ctx,{...base}); }],
 		['dustMotes',            ['dustMotes'],      ()=>F.drawDustMotesPass(ctx,{...base})],

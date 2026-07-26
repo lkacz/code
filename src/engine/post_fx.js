@@ -20,13 +20,13 @@ const HAS_WINDOW = typeof window !== 'undefined';
 if(HAS_WINDOW) window.MM = window.MM || {};
 
 export const GFX_ULTRA_KEY = 'mm_gfx_ultra_v1';
-export const GFX_COMPONENTS = Object.freeze(['bloom', 'ao', 'specular', 'reflections', 'heroSheen', 'shadows', 'godRays', 'lightTint', 'heatShimmer', 'wetGround', 'dustMotes', 'iceReflections']);
+export const GFX_COMPONENTS = Object.freeze(['bloom', 'ao', 'specular', 'reflections', 'heroSheen', 'shadows', 'godRays', 'lightTint', 'heatShimmer', 'wetGround', 'dustMotes', 'iceReflections', 'lampShafts']);
 
 // Persisted shape is a plain {bloom,ao,specular,reflections} boolean object;
 // anything else (corrupt JSON, wrong types, missing fields) falls back to
 // all-off — standard mode is the failure mode by design.
 export function normalizeGfxConfig(raw){
-	const out = { bloom:false, ao:false, specular:false, reflections:false, heroSheen:false, shadows:false, godRays:false, lightTint:false, heatShimmer:false, wetGround:false, dustMotes:false, iceReflections:false };
+	const out = { bloom:false, ao:false, specular:false, reflections:false, heroSheen:false, shadows:false, godRays:false, lightTint:false, heatShimmer:false, wetGround:false, dustMotes:false, iceReflections:false, lampShafts:false };
 	if(raw && typeof raw === 'object'){
 		for(const key of GFX_COMPONENTS) out[key] = raw[key] === true;
 	}
@@ -874,18 +874,23 @@ export function godRayCross(u){
 	return s * s * Math.sqrt(s);
 }
 
-const godRaySprites = new Map(); // spreadIdx*8+tintIdx -> baked beam
-function godRaySpriteFor(spreadIdx, tintIdx){
+// One cache, one bake, two effects. A sunbeam and a lamp shaft are the same
+// object — light through an aperture — and differ only in where the apex sits:
+// at the sun (far, so the wedge barely opens) or at a torch three tiles behind
+// the hole (near, so it opens hard). Keyed on the VALUES rather than on indices
+// into one table, because the two effects draw their spreads and their colours
+// from different tables and a lamp takes its tint from the emitter itself.
+const BEAM_CACHE_MAX = 48;
+const beamSprites = new Map(); // spread + '|' + rgb -> baked wedge
+function beamSpriteFor(spread, rgb){
 	if(typeof document === 'undefined') return null;
-	const key = spreadIdx * 8 + tintIdx;
-	let spr = godRaySprites.get(key);
+	const key = spread + '|' + rgb;
+	let spr = beamSprites.get(key);
 	if(spr) return spr;
 	const c = document.createElement('canvas');
 	c.width = GODRAY_SPRITE_W; c.height = GODRAY_SPRITE_H;
 	const g = c.getContext('2d');
 	if(!g) return null;
-	const spread = GODRAY_SPREADS[spreadIdx] || GODRAY_SPREADS[0];
-	const rgb = GODRAY_TINTS[tintIdx] || GODRAY_TINTS[0];
 	const cx = GODRAY_SPRITE_W / 2;
 	// Row by row, because the wedge means every row has its own width. The foot
 	// spans the full sprite, so drawing the sprite into a rect of width W puts
@@ -900,8 +905,159 @@ function godRaySpriteFor(spreadIdx, tintIdx){
 		g.fillStyle = grad;
 		g.fillRect(cx - half, iy, half * 2, 1);
 	}
-	godRaySprites.set(key, spr = c);
-	return spr;
+	// A lamp takes its tint from the emitter, so the key space is only as bounded
+	// as the tile set. Cap it: past the ceiling the newest colour still draws
+	// (from an uncached bake it does not keep), it just stops growing the cache.
+	if(beamSprites.size < BEAM_CACHE_MAX) beamSprites.set(key, c);
+	return spr = c;
+}
+
+// --- lamp shafts: the same effect with the apex brought indoors ---------------
+// A sunbeam and the light out of a lit window are one phenomenon: a beam of lit
+// air, bounded by an aperture, seen against something darker. The only thing
+// that changes is where the apex of the wedge sits. The sun is far away, so its
+// shaft barely opens; a torch three tiles behind a hole is NEAR, so the wedge
+// opens hard — which is exactly why light out of a window fans the way it does.
+// Everything else — the baked wedge, the soft cross-section, the eased ends —
+// is shared.
+export const SLIT_MAX_SPAN = 3;        // a wider opening is a doorway, not a slit
+export const SLIT_RADIUS = 8;          // how far from a lamp an opening can be
+export const SLIT_MAX = 10;            // fixed cap on shafts, never a frame-time reaction
+export const SLIT_SOURCES = 6;         // brightest emitters considered per scan
+export const SLIT_MIN_LEVEL = 8;       // a dim ember throws no shaft
+export const SLIT_MIN_DARK = 0.35;     // outside must be this much darker to show one
+export const SLIT_MAX_LEN = 14;        // tiles of beam beyond the opening
+export const SLIT_ALIGN_MIN = 0.6;     // light must actually flow ALONG the open axis
+export const SLIT_FALLOFF_TILES = 5;   // inverse-square scale for source distance
+export const SLIT_PROBE_OUT = 3;       // how far out the background is sampled
+export const SLIT_PROBE_SIDE = 4;      // and how far to EACH SIDE of the beam
+export const LAMP_SPREADS = Object.freeze([1.6, 2.1, 2.8, 3.6, 4.6]);
+export const LAMP_SCAN_MS = 400;       // openings move only when the world does
+// Peak, before darkness and distance take their cut — and they take most of it:
+// a torch five tiles behind its hole keeps ~0.39 of this. Calibrated against the
+// peak luminance god-rays-qa reads off the framebuffer, after the duplicate-face
+// bug was fixed; the pleasing brightness had been TWO shafts drawn on each other.
+export const LAMP_ALPHA = 0.6;
+
+// Source distance -> strength. Light from a local source falls off with the
+// square of the distance; the shaft from a lamp right behind the hole is the
+// bright one, and the same hole eight tiles away barely registers.
+export function slitFalloff(distTiles){
+	const d = Number.isFinite(distTiles) ? Math.max(0, distTiles) : 0;
+	const k = d / SLIT_FALLOFF_TILES;
+	return 1 / (1 + k * k);
+}
+
+// Openings near a light source: runs of at most SLIT_MAX_SPAN light-passing
+// cells closed on BOTH ends along one axis (that is the wall) and open on both
+// sides along the other (that is the hole through it). Vertical runs throw
+// light sideways — a window; horizontal runs throw it up or down — a hole in a
+// roof or a cave floor. Pure and injected with predicates so the suite can
+// drive it with a fake building.
+export function collectLightSlits(opts){
+	const out = [];
+	if(!opts || typeof opts.getTile !== 'function' || typeof opts.blocks !== 'function' || !Array.isArray(opts.emitters)) return out;
+	const getTile = opts.getTile, blocks = opts.blocks;
+	const lightAt = typeof opts.lightAt === 'function' ? opts.lightAt : null;
+	const R = Number.isFinite(opts.radius) ? opts.radius : SLIT_RADIUS;
+	const max = Number.isFinite(opts.max) ? opts.max : SLIT_MAX;
+	const minLevel = Number.isFinite(opts.minLevel) ? opts.minLevel : SLIT_MIN_LEVEL;
+	const solid = (x, y) => blocks(getTile(x, y));
+	// Brightest first and capped, so a torch-lined hall spends its budget on the
+	// lamps whose shafts would actually read.
+	const srcs = [];
+	for(const e of opts.emitters){ if(e && e.level >= minLevel) srcs.push(e); }
+	srcs.sort((a, b) => (b.level - a.level) || (a.x - b.x) || (a.y - b.y));
+	if(srcs.length > SLIT_SOURCES) srcs.length = SLIT_SOURCES;
+	// One hole, one shaft. A wall two tiles thick presents the SAME opening twice
+	// — once at its inner face, once at its outer — and drawing both stacks two
+	// beams on the same air and doubles its brightness. Keyed on the opening's
+	// position ACROSS the light instead of on the cell, so the two faces collide
+	// and the outer one (the mouth the light actually leaves by) wins.
+	const best = new Map();
+	for(const e of srcs){
+		const ex = e.x + 0.5, ey = e.y + 0.5;
+		for(let dy = -R; dy <= R && out.length < max; dy++){
+			for(let dx = -R; dx <= R && out.length < max; dx++){
+				const x = e.x + dx, y = e.y + dy;
+				const d2 = dx * dx + dy * dy;
+				if(d2 < 4 || d2 > R * R) continue;          // touching the lamp, or out of reach
+				if(solid(x, y)) continue;
+				// Two orientations, tested in the order that makes a window win over
+				// a coincidental floor gap: a run CLOSED above and below is a hole in
+				// a vertical wall and throws light sideways.
+				for(let axis = 0; axis < 2; axis++){
+					const ux = axis === 0 ? 0 : 1, uy = axis === 0 ? 1 : 0;   // run direction
+					const nx = axis === 0 ? 1 : 0, ny = axis === 0 ? 0 : 1;   // light direction
+					if(!solid(x - ux, y - uy)) continue;    // not the start of a run
+					let span = 0;
+					while(span <= SLIT_MAX_SPAN && !solid(x + ux * span, y + uy * span)) span++;
+					if(span === 0 || span > SLIT_MAX_SPAN) continue;   // open-ended: a doorway, not a slit
+					const mx = x + ux * ((span - 1) >> 1), my = y + uy * ((span - 1) >> 1);
+					if(solid(mx - nx, my - ny) || solid(mx + nx, my + ny)) continue;  // must pierce the wall
+					const cx = x + ux * span * 0.5 + nx * 0.5, cy = y + uy * span * 0.5 + ny * 0.5;
+					let vx = cx - ex, vy = cy - ey;
+					const dist = Math.sqrt(vx * vx + vy * vy);
+					if(!(dist > 0.5)) continue;
+					vx /= dist; vy /= dist;
+					// The light has to flow ALONG the opening, not graze it: a lamp
+					// directly above a window sees its slit but shines past it.
+					if(Math.abs(vx * nx + vy * ny) < SLIT_ALIGN_MIN) continue;
+					if(!slitClearPath(getTile, blocks, ex, ey, cx, cy)) continue;
+					// Contrast is the whole effect: lit air is invisible against lit
+					// air. But the probe has to sample the BACKGROUND, and the
+					// background is not what lies straight out of the hole — the
+					// light field already carries this lamp's own leak out through
+					// this same opening, so an on-axis probe reads the shaft itself
+					// and talks the effect out of existing. Measured: it dimmed a
+					// night shaft to a sixth of its strength. Sample to the SIDES of
+					// the beam instead, which is the comparison an eye actually makes.
+					const ox = cx + vx * SLIT_PROBE_OUT, oy = cy + vy * SLIT_PROBE_OUT;
+					const sideA = lightAt ? lightAt(Math.floor(ox - vy * SLIT_PROBE_SIDE), Math.floor(oy + vx * SLIT_PROBE_SIDE)) : 0;
+					const sideB = lightAt ? lightAt(Math.floor(ox + vy * SLIT_PROBE_SIDE), Math.floor(oy - vx * SLIT_PROBE_SIDE)) : 0;
+					const ambient = Math.max(0, Math.min(1, ((sideA || 0) + (sideB || 0)) * 0.5));
+					const dark = 1 - ambient;
+					if(dark < SLIT_MIN_DARK) continue;
+					let len = 0;
+					while(len < SLIT_MAX_LEN && !solid(Math.floor(cx + vx * (len + 1)), Math.floor(cy + vy * (len + 1)))) len++;
+					if(len < 2) continue;
+					// Across the light, not along it: the two faces of one hole share
+					// this coordinate and collide here, and the OUTER face — the one
+					// farther from the lamp — is the mouth the beam leaves by.
+					const key = axis + ':' + (axis === 0 ? Math.round(cy * 2) : Math.round(cx * 2));
+					const prev = best.get(key);
+					if(prev && prev.dist >= dist) break;
+					best.set(key, {
+						cx, cy, span, axis, dist, len,
+						dirX: vx, dirY: vy,
+						level: e.level, color: e.color,
+						weight: dark * Math.min(1, e.level / 12) * slitFalloff(dist)
+					});
+					break;   // one shaft per cell; the winning orientation is enough
+				}
+			}
+		}
+	}
+	// Strongest first, then the cap: a hall full of openings should spend its
+	// budget on the shafts that would actually read, not on scan order.
+	for(const v of best.values()) out.push(v);
+	out.sort((a, b) => (b.weight - a.weight) || (a.cx - b.cx) || (a.cy - b.cy));
+	if(out.length > max) out.length = max;
+	return out;
+}
+
+// Straight line from the lamp to the opening, in the world's own terms: a lamp
+// on the far side of a wall must not light a window it cannot see. Stepped at
+// half a tile, which cannot skip a one-tile wall.
+export function slitClearPath(getTile, blocks, x0, y0, x1, y1){
+	const dx = x1 - x0, dy = y1 - y0;
+	const steps = Math.ceil(Math.sqrt(dx * dx + dy * dy) * 2);
+	if(steps <= 1) return true;
+	for(let i = 1; i < steps; i++){
+		const t = i / steps;
+		if(blocks(getTile(Math.floor(x0 + dx * t), Math.floor(y0 + dy * t)))) return false;
+	}
+	return true;
 }
 
 // Ice-run finder: frozen water lives at the WATER LINE, which sits ABOVE the
@@ -930,7 +1086,7 @@ export function collectIceRuns(opts){
 }
 
 const config = normalizeGfxConfig(null);
-const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, shimmerBands: 0, emissiveSources: 0, emissiveHalos: 0, emissiveStreaks: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, bladeSheens: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0 };
+const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, shimmerBands: 0, emissiveSources: 0, emissiveHalos: 0, emissiveStreaks: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, bladeSheens: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0, lampShafts: 0 };
 let bloomEmitters = [];
 let bloomScanAt = 0;
 let bloomScanKey = '';
@@ -956,6 +1112,9 @@ const NO_TILES = Object.freeze([]);
 let godRayBeams = [];
 let godRayKey = '';
 let godRayScanAt = 0;
+let lampSlits = [];
+let lampSlitGen = -1;
+let lampSlitAt = 0;
 let iceRuns = [];
 const ICE_STRIDE = 7;
 const iceCols = [];   // flat geometry scratch, stride ICE_STRIDE: no per-frame alloc
@@ -1860,7 +2019,7 @@ const api = {
 			for(let k = 1; k < GODRAY_SPREADS.length; k++){
 				if(Math.abs(GODRAY_SPREADS[k] - spread) < Math.abs(GODRAY_SPREADS[si] - spread)) si = k;
 			}
-			const spr = godRaySpriteFor(si, tintIdx);
+			const spr = beamSpriteFor(GODRAY_SPREADS[si], GODRAY_TINTS[tintIdx]);
 			if(!spr) continue;   // a bucket that failed to bake must not drop the others
 			// The mouth is deliberately narrower than the gap that made it: what
 			// the eye reads as the shaft is the bright core, not the full width
@@ -1878,6 +2037,69 @@ const api = {
 		}
 		ctx.restore();
 		metrics.godRayBeams += drawn;
+		return drawn;
+	},
+	// Lamp shafts: light thrown out of a window, a crack or a hole in a roof.
+	// Physically the god ray pass with the apex brought indoors — same baked
+	// wedge, same eased ends, same "it only exists against something darker".
+	// Two things differ and both are consequences of the source being CLOSE:
+	// the wedge opens much harder, and the beam takes its colour and its
+	// strength from the emitter rather than from the sky.
+	//
+	// Drawn AFTER the darkness overlay (like the light-tint pass), because this
+	// is light being added to a dark scene; underneath it the overlay would dim
+	// the one thing the effect exists to show.
+	drawLampShaftsPass(ctx, opts){
+		if(!api.on('lampShafts')){ lampSlits.length = 0; lampSlitGen = -1; return 0; }
+		if(!ctx || !opts || typeof opts.getTile !== 'function' || typeof opts.blocks !== 'function') return 0;
+		const TILE = Number.isFinite(opts.TILE) ? opts.TILE : 20;
+		const emitters = ensureEmitterScan(opts);
+		if(!emitters.length){ lampSlits.length = 0; return 0; }
+		const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+		// Re-scan when the emitter scan itself rolled over, or on its own floor.
+		// Riding that generation is the point: the openings can only have moved
+		// if the world did, and the emitter walk already pays for noticing.
+		if(lampSlitGen !== bloomScanGen || now - lampSlitAt > LAMP_SCAN_MS){
+			lampSlits = collectLightSlits({
+				emitters, getTile: opts.getTile, blocks: opts.blocks,
+				lightAt: opts.lightAt, radius: SLIT_RADIUS, max: SLIT_MAX, minLevel: SLIT_MIN_LEVEL
+			});
+			lampSlitGen = bloomScanGen; lampSlitAt = now;
+		}
+		if(!lampSlits.length) return 0;
+		const visibleAt = typeof opts.visibleAt === 'function' ? opts.visibleAt : null;
+		const gain = Math.max(0, Math.min(1, Number.isFinite(opts.gain) ? opts.gain : 1));
+		if(gain <= 0.01) return 0;
+		let drawn = 0;
+		ctx.save();
+		ctx.globalCompositeOperation = 'lighter';
+		for(let i = 0; i < lampSlits.length; i++){
+			const s = lampSlits[i];
+			if(visibleAt && !visibleAt(Math.floor(s.cx), Math.floor(s.cy))) continue;
+			const len = s.len * TILE;
+			// The apex is the LAMP, so the spread is the real ratio of distances —
+			// no invented perspective distance is needed here, unlike the sun.
+			const spread = (s.dist + s.len) / s.dist;
+			let si = 0;
+			for(let k = 1; k < LAMP_SPREADS.length; k++){
+				if(Math.abs(LAMP_SPREADS[k] - spread) < Math.abs(LAMP_SPREADS[si] - spread)) si = k;
+			}
+			const spr = beamSpriteFor(LAMP_SPREADS[si], s.color);
+			if(!spr) continue;
+			const mouthW = Math.max(TILE * 0.5, s.span * TILE * 0.7);
+			const footW = mouthW * LAMP_SPREADS[si];
+			// The sprite grows along +Y, so rotate its axis onto the light's.
+			const ang = Math.atan2(s.dirY, s.dirX) - Math.PI / 2;
+			ctx.globalAlpha = Math.min(0.85, LAMP_ALPHA * gain * s.weight);
+			ctx.translate(s.cx * TILE, s.cy * TILE);
+			ctx.rotate(ang);
+			ctx.drawImage(spr, -footW * 0.5, 0, footW, len);
+			ctx.rotate(-ang);
+			ctx.translate(-s.cx * TILE, -s.cy * TILE);
+			drawn++;
+		}
+		ctx.restore();
+		metrics.lampShafts += drawn;
 		return drawn;
 	},
 	// Heat shimmer: the air over hot things refracts what is behind it. Built the
