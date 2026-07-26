@@ -2,6 +2,19 @@
 // owner-scoped storm rain plus a 3x gale pulls toward the center until they die.
 import assert from 'node:assert/strict';
 
+// wind.js rolls unseeded Math.random() for SQUALLS — random gusts up to ~4
+// tiles/s in a random direction. Over the 9 s ritual window one occasionally
+// spawned AGAINST the gale and dipped the sampled speed just under the 2.5x
+// bar (a deploy bounced at 17.186 vs 18.0 while the same suite ran green
+// locally and in the parallel CI job on the same commit). A seeded LCG
+// installed BEFORE the module imports makes the suite mean what it says —
+// the same fix underground-boss-sim needed, for the same reason.
+let rngState = 0x9e3779b9;
+Math.random = () => {
+	rngState = (rngState * 1664525 + 1013904223) >>> 0;
+	return rngState / 4294967296;
+};
+
 globalThis.window = globalThis;
 globalThis.MM = {};
 globalThis.CustomEvent = globalThis.CustomEvent || class { constructor(type,opts){ this.type=type; this.detail=opts&&opts.detail; } };
