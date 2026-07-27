@@ -52,7 +52,8 @@ const {
 	HEAT_WAVE_PX, HEAT_RISE, HEAT_RISE_2, HEAT_ROW_PX, HEAT_ROW_BUDGET, HEAT_BAND_CAP, HEAT_MERGE_GAP, HEAT_PLUME_TILES, HEAT_AMP_PX,
 	reliefLightVector, reliefFaceShade, reliefKeyDir, reliefAlphaBucket, reliefLitTerm,
 	RELIEF_TANGENT_GAIN, RELIEF_KEY_MIX, RELIEF_ALPHA_STEPS, RELIEF_MIN_MAG, RELIEF_FACE_NX, RELIEF_FACE_NY,
-	RELIEF_MAG_REF, RELIEF_AMBIENT_FLOOR, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_EMBOSS_MIN_BUCKET
+	RELIEF_MAG_REF, RELIEF_AMBIENT_FLOOR, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_EMBOSS_MIN_BUCKET,
+	reliefParallaxPx, reliefShadowScale, RELIEF_EYE_TILES, RELIEF_PARALLAX_PX, RELIEF_PARALLAX_MAX, RELIEF_FORESHORTEN
 } = await import('../src/engine/post_fx.js');
 const { T, INFO, TILE_GLOW, TILE_HEAT } = await import('../src/constants.js');
 await import('../src/engine/furnishings.js'); // stamps INFO[t].requiresHomePower like the live game
@@ -1268,8 +1269,10 @@ assert.match(reliefPass, /if\(litMax<0\.06\) continue;/, 'a pitch-dark tile draw
 assert.match(reliefPass, /RFL\[i\+1\]=lit\?lit\(ax\+tx,ay\+ty\):1;/, 'each face samples ALONG itself (+) — that lean is what tells a wall the torch is above it');
 assert.match(reliefPass, /RFL\[i\+2\]=lit\?lit\(ax-tx,ay-ty\):1;/, 'and along itself (-) — the pair is the direction; the straight-out term alone is identical for every tile of a wall');
 assert.match(reliefPass, /const ax=wx\+nx, ay=y\+ny;/, 'samples are taken in the AIR CELL in front of the face, never in the solid tile (which the BFS never lights)');
-assert.match(reliefPass, /let ox=Math\.round\(-v\.x\*1\.5\), oy=Math\.round\(-v\.y\*1\.5\);/, 'the emboss shadow sits opposite the LIVE light vector — the offset that used to be a hard-coded +1,+1');
-assert.match(reliefPass, /if\(f===0 && capT\) continue;/, 'a turf cap owns its own top face');
+assert.match(reliefPass, /let ox=Math\.round\(-v\.x\*shLen\), oy=Math\.round\(-v\.y\*shLen\);/, 'the emboss shadow sits opposite the LIVE light vector at a length the VIEWER position decides');
+assert.match(reliefPass, /const offX=\(wx\+0\.5\)-eyeTx, offY=\(y\+0\.5\)-eyeTy;/, 'the view angle is the tile offset from the virtual eye at the screen centre');
+assert.match(reliefPass, /const parX=reliefParallaxPx\(offX\), parY=reliefParallaxPx\(offY\);/, 'and it displaces the raised feature — the same block shows a different part of itself as it crosses the screen');
+assert.match(reliefPass, /const eyeTx=sx\+viewX\*0\.5, eyeTy=sy\+viewY\*0\.5;/, 'the eye is recomputed per frame from the view, so the lens follows the camera');assert.match(reliefPass, /if\(f===0 && capT\) continue;/, 'a turf cap owns its own top face');
 assert.match(reliefPass, /srcW=RELIEF_SRC_WEIGHT\/\(1\+d2\/18\);/, 'the moving analytic source is float-continuous — the light field only recomputes on a tile crossing, so walking would otherwise step');
 assert.match(reliefPass, /const eb=strips<2 \? reliefAlphaBucket\(v\.m\*litT\*0\.85\) : -1;/, 'the emboss goes to flat single-face expanses; a block already showing two contrasting faces needs no help');
 assert.match(reliefPass, /const litT=reliefLitTerm\(litMax\);/, 'brightness enters through the lit term ONCE — the vector carries direction, not light level');
@@ -1366,6 +1369,30 @@ assert.ok(RELIEF_AMBIENT_FLOOR > 0 && RELIEF_AMBIENT_FLOOR < 1, 'the floor is a 
 assert.ok(RELIEF_BUDGET >= 1200, 'the tile budget clears the densest measured scene (1620 exposed faces in a mine warren)');
 assert.ok(RELIEF_SCAN >= RELIEF_BUDGET * 10, 'the walk cap is far above the draw cap — it bounds rejections, which are nearly free');
 assert.ok(RELIEF_EMBOSS_MIN_BUCKET >= 1, 'an emboss below the visible threshold is two draw calls spent on nothing');
+
+// --- the VIEW half: does the same block change with WHERE IT IS on screen? --
+// Light direction is only half of relief. A bump seen from the left shows a
+// different part of itself, and hides a different amount of its own shadow,
+// than the same bump seen from the right. None of that exists in an
+// orthographic projection — these functions ARE the virtual lens.
+assert.equal(Math.abs(reliefParallaxPx(0)), 0, 'a tile at the screen centre is seen straight on and leans not at all');
+assert.ok(reliefParallaxPx(-20) > 0, 'a tile LEFT of centre leans its raised features right, toward the eye');
+assert.ok(reliefParallaxPx(20) < 0, 'and one right of centre leans them left — the same block, a different face of it');
+assert.equal(reliefParallaxPx(-20), -reliefParallaxPx(20), 'the lens is symmetric about the centre');
+assert.ok(Math.abs(reliefParallaxPx(4000)) <= RELIEF_PARALLAX_MAX, 'the lean is capped: basic parallax breaks at grazing angles, and a feature that slid out of its tile would read as dirt on the neighbour');
+assert.ok(Math.abs(reliefParallaxPx(-40)) > 1, 'and at the screen edge it is worth more than a pixel, or the whole lens is invisible');
+assert.ok(RELIEF_EYE_TILES > 0 && RELIEF_PARALLAX_PX > 0, 'the eye stands in front of the screen, not behind it');
+// Shadow foreshortening. Shadow pointing RIGHT (+x): standing to its right
+// (tile left of centre, so the eye is to the tile's right) shows all of it;
+// standing to its left puts the bump's body in the way.
+const shSameSide = reliefShadowScale(1, 0, -20, 0);
+const shOppSide = reliefShadowScale(1, 0, 20, 0);
+assert.ok(shSameSide > 1, 'viewed from the side the shadow falls toward, a bump shows its shadow in full');
+assert.ok(shOppSide < 1, 'viewed from the other side, the bump hides part of its own shadow');
+assert.ok(Math.abs((shSameSide + shOppSide) / 2 - 1) < 1e-9, 'and the two are symmetric about no foreshortening at all');
+assert.equal(reliefShadowScale(1, 0, 0, 0), 1, 'a tile at the screen centre has no view angle and no foreshortening');
+assert.equal(reliefShadowScale(1, 0, 0, -20), 1, 'nor does one directly above it — the shadow runs across the line of sight, not along it');
+assert.ok(RELIEF_FORESHORTEN > 0 && RELIEF_FORESHORTEN < 1, 'foreshortening shortens and lengthens a shadow, it never inverts one');
 assert.match(mainSrc, /\['💠 Refleksy materiałów','specular'\]/, 'specular row maps to its component');
 assert.match(mainSrc, /\['🌊 Odbicia w wodzie','reflections'\]/, 'reflections row maps to its component');
 assert.match(mainSrc, /\['🪞 Powłoka bohatera i broni','heroSheen'\]/, 'hero coating row maps to its component (it covers the blade sheen too)');

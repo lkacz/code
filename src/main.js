@@ -130,7 +130,8 @@ import { createRenderHealth, blitProbe as renderBlitProbe, HINTS as RENDER_HINTS
 import { postFx as POST_FX } from './engine/post_fx.js';
 import { shadowParams, reliefLightVector, reliefFaceShade, reliefKeyDir, reliefAlphaBucket,
 	RELIEF_FACE_NX, RELIEF_FACE_NY, RELIEF_HI_ALPHA, RELIEF_SH_ALPHA, RELIEF_MIN_MAG,
-	RELIEF_ALPHA_STEPS, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_SRC_RANGE, RELIEF_SRC_WEIGHT, RELIEF_EMBOSS_MIN_BUCKET, reliefLitTerm } from './engine/post_fx.js';
+	RELIEF_ALPHA_STEPS, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_SRC_RANGE, RELIEF_SRC_WEIGHT, RELIEF_EMBOSS_MIN_BUCKET, reliefLitTerm,
+	reliefParallaxPx, reliefShadowScale } from './engine/post_fx.js';
 import './engine/ui.js';
 import './inventory_ui.js';
 // boot_watchdog marks non-local framed production loads before this module runs.
@@ -10444,6 +10445,11 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 			// surfaceHeight memo: bake emits records in column-major order, so a
 			// single-slot memo hits for every tile of a column
 			let memoCol=Number.NaN, memoSurf=0;
+			// The virtual eye sits at the middle of the view. Nothing in an
+			// orthographic projection provides this — it is a lens, added on
+			// purpose, because light direction alone cannot say where the VIEWER is
+			// and half of what makes a surface read as raised is the viewer.
+			const eyeTx=sx+viewX*0.5, eyeTy=sy+viewY*0.5;
 			ctx.save();
 			for(let cx4=minChunk; cx4<=maxChunk && rBudget>0 && rScan>0; cx4++){
 				if((cx4+1)*CHUNK_W<sx-1 || cx4*CHUNK_W>sx+viewX+2) continue;
@@ -10532,12 +10538,26 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 						const eb=strips<2 ? reliefAlphaBucket(v.m*litT*0.85) : -1;
 						if(eb>=RELIEF_EMBOSS_MIN_BUCKET){
 							const hh=hash32(wx,y);
-							let ox=Math.round(-v.x*1.5), oy=Math.round(-v.y*1.5);
+							// How far this tile sits off the screen centre IS its view angle
+							// under the virtual lens. Both effects below fall out of it, and
+							// both are pure arithmetic — not one extra draw call.
+							const offX=(wx+0.5)-eyeTx, offY=(y+0.5)-eyeTy;
+							// A bump seen from the side leans toward the eye, so the same
+							// block shows a different part of itself as it crosses the screen.
+							const parX=reliefParallaxPx(offX), parY=reliefParallaxPx(offY);
+							// And it hides a different amount of its own shadow: stand on the
+							// side the shadow falls toward and you see its full length; stand
+							// opposite and the bump's own body cuts it short.
+							const shLen=1.5*reliefShadowScale(-v.x,-v.y,offX,offY);
+							let ox=Math.round(-v.x*shLen), oy=Math.round(-v.y*shLen);
 							if(ox===0 && oy===0) oy=1;
 							const wood=fam===EDGE_WOOD;
 							const bw=wood?1:(fam===EDGE_SAND?6:3), bh=wood?7:2;
-							const bx=px+2+((hh>>>3)%Math.max(1,TILE-4-bw));
-							const by=py+2+((hh>>>9)%Math.max(1,TILE-4-bh));
+							// clamped inside the tile: a feature that slid past its own edge
+							// would read as dirt on the neighbour, which is the standard
+							// grazing-angle artefact of basic parallax
+							const bx=px+Math.max(1,Math.min(TILE-1-bw, 2+((hh>>>3)%Math.max(1,TILE-4-bw))+parX));
+							const by=py+Math.max(1,Math.min(TILE-1-bh, 2+((hh>>>9)%Math.max(1,TILE-4-bh))+parY));
 							ctx.fillStyle=hiArr[eb];
 							ctx.fillRect(bx,by,bw,bh);
 							ctx.fillStyle=ST.sh[eb];

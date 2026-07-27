@@ -1334,6 +1334,60 @@ export function reliefLitTerm(litMax){
 // Under this vector magnitude the light is too even to have a direction, and
 // any emboss drawn from it would be noise pretending to be form.
 export const RELIEF_MIN_MAG = 0.06;
+// --- the VIEW half of relief (parallaks: gdzie stoi patrzący) ---------------
+// Light direction is only half of what makes a surface read as raised. The
+// other half is the viewer: a bump seen from the left shows a different part
+// of itself, and hides a different part of its own shadow, than the same bump
+// seen from the right. That is parallax mapping, and its basic form is one
+// line — texCoords -= viewDir.xy/viewDir.z * height * scale. What makes
+// parallax expensive in 3D is the ACCURATE variants (steep parallax, occlusion
+// mapping) which ray-march the height field 8-32 samples per pixel. This pass
+// never samples a texture at all: it PLACES its features, so the offset is
+// added to a position it was already about to compute. Zero extra draw calls.
+//
+// The honest caveat, which decides the design: this game's camera is
+// ORTHOGRAPHIC, and an orthographic view has no parallax whatsoever — every
+// tile is seen along the same direction, so the effect below does not exist in
+// the projection and cannot be derived from it. It is a deliberate fake: a
+// virtual eye placed in front of the screen centre, which is exactly how 2D
+// games buy this look. Calling it physics would be a lie; it is a lens.
+
+// Virtual eye distance in tiles. Smaller = wider angle = stronger effect. At
+// 26 a tile at the screen edge (about 40 tiles out) leans by ~1.5 eye-widths,
+// which is a pronounced but not fisheye lens.
+export const RELIEF_EYE_TILES = 26;
+// How far a raised feature slides at that reference lean, in pixels, and the
+// hard ceiling. The ceiling matters: basic parallax breaks down at grazing
+// angles (the standard artefact), and a bump that slid out of its own tile
+// would read as dirt on the neighbour.
+export const RELIEF_PARALLAX_PX = 2.6;
+export const RELIEF_PARALLAX_MAX = 4;
+// How much of its own shadow a bump hides from you. Look at a bump from the
+// side its shadow falls on and you see the shadow's full length; look from the
+// other side and the bump's own body cuts it short.
+export const RELIEF_FORESHORTEN = 0.5;
+
+// Pixel displacement of a raised feature for one axis, from how many tiles the
+// tile sits off the screen centre on that axis. Sign: the feature leans TOWARD
+// the eye, the way the top of a pole appears shifted toward you relative to
+// its base.
+export function reliefParallaxPx(offTiles){
+	const p = -offTiles / RELIEF_EYE_TILES * RELIEF_PARALLAX_PX;
+	return Math.max(-RELIEF_PARALLAX_MAX, Math.min(RELIEF_PARALLAX_MAX, p));
+}
+
+// How long the bump's shadow reads from where you are standing. dirX/dirY is
+// the shadow's own direction (unit); offX/offY is the tile's offset from the
+// screen centre in tiles, from which the direction TOWARD the eye is the
+// negation. Standing on the shadow's side shows all of it; standing opposite
+// puts the bump between you and it.
+export function reliefShadowScale(dirX, dirY, offX, offY){
+	const len = Math.sqrt(offX * offX + offY * offY);
+	if(!(len > 1e-6)) return 1;
+	const dot = (-offX / len) * dirX + (-offY / len) * dirY;
+	return 1 + RELIEF_FORESHORTEN * dot;
+}
+
 // A moving analytic source, added on top of the field because the field is
 // STEPPED: lighting.js keys its cache on floor(hero.x),floor(hero.y), so a
 // field-only model relights once per tile crossed and the relief visibly jumps

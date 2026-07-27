@@ -36,6 +36,8 @@ const opt = (name, dflt) => {
 	return hit ? hit.slice(name.length + 3) : dflt;
 };
 const url = opt('url', 'http://127.0.0.1:8123/index.html');
+// mirrors RELIEF_BUDGET in post_fx.js — the driver asserts the pass respects it
+const RELIEF_TILE_CAP = 1200;
 const seed = opt('seed', '777');
 
 const EDGE_CANDIDATES = [
@@ -287,11 +289,20 @@ async function main(){
 		const rectS = await run('rects', RECTS(g));
 		if (!rectS.startsWith('OK ')) throw new Error('rects failed');
 		const rects = JSON.parse(rectS.slice(3));
-		const rx0 = Math.min(...rects.map(r => r.x)) - 8, ry0 = Math.min(...rects.map(r => r.y)) - 8;
-		const rx1 = Math.max(...rects.map(r => r.x + r.w)) + 8, ry1 = Math.max(...rects.map(r => r.y + r.h)) + 8;
-		const clip = { x: Math.max(0, rx0), y: Math.max(0, ry0), width: Math.min(1600, rx1) - Math.max(0, rx0), height: Math.min(900, ry1) - Math.max(0, ry0), scale: 1 };
+		// The clip is DERIVED from the wall's own screen rects, so when the camera
+		// moves the crop moves with it and the block pixels land on the same texels
+		// of the capture. That is what lets the view test compare two shots taken
+		// from different camera positions at all.
+		const clipFrom = (rs) => {
+			const ax0 = Math.min(...rs.map(r => r.x)) - 8, ay0 = Math.min(...rs.map(r => r.y)) - 8;
+			const ax1 = Math.max(...rs.map(r => r.x + r.w)) + 8, ay1 = Math.max(...rs.map(r => r.y + r.h)) + 8;
+			return { x: Math.max(0, ax0), y: Math.max(0, ay0), width: Math.min(1600, ax1) - Math.max(0, ax0), height: Math.min(900, ay1) - Math.max(0, ay0), scale: 1 };
+		};
 		// block rects relative to the clip, for the in-page diff mask
-		const local = rects.map(r => ({ x: r.x - clip.x, y: r.y - clip.y, w: r.w, h: r.h }));
+		const localFrom = (rs, c) => rs.map(r => ({ x: r.x - c.x, y: r.y - c.y, w: r.w, h: r.h }));
+		const clip = clipFrom(rects);
+		const local = localFrom(rects, clip);
+		const localRef = JSON.stringify(local);
 
 		// The camera must hold still across ALL shots or the rects stop lying
 		// over the blocks and the diff measures parallax. Recompute the wall's
@@ -309,6 +320,23 @@ async function main(){
 		// driver needs no image library — and it counts ONLY pixels inside the
 		// material blocks, never the animated sky between them.
 		const shoot = async () => (await send(ws, 'Page.captureScreenshot', { format: 'png', clip })).data;
+		// A capture taken WHEREVER the camera currently is. The hero is teleported
+		// a whole number of tiles, so the camera shift should be an exact pixel
+		// count and the wall should sit at identical offsets inside the new crop.
+		// That is asserted, not assumed: a sub-pixel slip would shift every block
+		// by a pixel and hand back an enormous score for no reason at all.
+		const shootHere = async () => {
+			const rr = await run('rects', RECTS(g));
+			if (!rr.startsWith('OK ')) throw new Error('rects failed');
+			const rs = JSON.parse(rr.slice(3));
+			const c = clipFrom(rs);
+			if (JSON.stringify(localFrom(rs, c)) !== localRef){
+				throw new Error('the camera did not land on a whole pixel — staging error, not a relief result'
+					+ '  got=' + JSON.stringify(localFrom(rs, c)[0]) + ' want=' + JSON.stringify(local[0])
+					+ '  rect0=' + JSON.stringify(rs[0]) + ' clip=' + JSON.stringify(c));
+			}
+			return (await send(ws, 'Page.captureScreenshot', { format: 'png', clip: c })).data;
+		};
 		const diffInPage = async (a, b) => {
 			const r = await send(ws, 'Runtime.evaluate', { awaitPromise: true, returnByValue: true, expression: `(async()=>{
 				const load=(d)=>new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src='data:image/png;base64,'+d; });
@@ -452,6 +480,77 @@ async function main(){
 		await run('fullOff', TOGGLE(false));
 		console.log('wrote', out + '-full.png');
 
+			// --- the VIEW test ---------------------------------------------------
+			// Light direction is only half of relief; the other half is where the
+			// viewer stands. This moves the CAMERA and nothing else, so the same wall
+			// under the same sun is seen once from the left and once from the right.
+			//
+			// Two things make it measurable. The hero is teleported a WHOLE number of
+			// tiles, so the camera shift is an exact pixel count and the two crops
+			// land on identical texels — a sub-pixel slip would show up as a huge
+			// score for no reason. And the wall is kept beyond RELIEF_SRC_RANGE (15
+			// tiles) in both positions, so the hero's own moving light contributes
+			// nothing and the only thing that differs is the view angle.
+			// 18 tiles, not more: the wall is 34 wide and the view 80, so a bigger
+			// step pushes its far end off the screen edge and the crop clamps at 0.
+			// (Measured the hard way — the first attempt used 26 and the guard
+			// reported the wall's first block sitting at screen x=-52.)
+			const VIEWSTEP = 18;
+			const viewShot = async (side) => {
+				await run('viewMove', `(async()=>{
+					const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+					// Silence the hero's own light for this test. At 18 tiles he is
+					// inside RELIEF_SRC_RANGE, and his moving source would re-shade the
+					// wall all by itself — which is a REAL effect, already proven by the
+					// torch run, but it is not the one being measured here. With it off,
+					// the light on this wall is identical in both shots and the only
+					// thing that differs between them is where the camera stands.
+					if(MM.lighting && MM.lighting.config){
+						if(window.__mmHeroGlowSave===undefined) window.__mmHeroGlowSave=MM.lighting.config.heroGlow;
+						MM.lighting.config.heroGlow=0;
+						if(MM.lighting.reset) MM.lighting.reset();
+					}
+					const sleep2=sleep;
+					window.__simulationTimeScale=1;
+					window.__mmDebugHero(${g.wallX0}+16+(${side})*${VIEWSTEP}, ${g.surf}-2);
+					await sleep2(2200);
+					window.__simulationTimeScale=0.1;
+					await sleep2(400);
+					return 'OK '+JSON.stringify({x:Math.round(player.x), heroGlow:MM.lighting?MM.lighting.config.heroGlow:-1});
+				})()`);
+				await run('reliefOff', TOGGLE(false));
+				await run('pin', PIN(g, 0.30, -1));
+				await sleep(1600);
+				const off = await shootHere();
+				await run('reliefOn', TOGGLE(true));
+				await sleep(1600);
+				const on = await shootHere();
+				return [off, on];
+			};
+			const [vlOff, vlOn] = await viewShot(-1);   // hero left  => wall on the RIGHT of screen
+			const [vrOff, vrOn] = await viewShot(1);    // hero right => wall on the LEFT of screen
+			const viewSwap = await reliefLayerSwap(vlOff, vlOn, vrOff, vrOn);
+			console.log('view swap (same wall, same sun, camera moved ' + (2 * VIEWSTEP) + ' tiles):', JSON.stringify(viewSwap));
+			await writeFile(out + '-viewL.png', Buffer.from(vlOn, 'base64'));
+			await writeFile(out + '-viewR.png', Buffer.from(vrOn, 'base64'));
+			// Put the hero back where he started: every test after this one guards
+			// the camera against the ORIGINAL rects and would otherwise report a
+			// drift that this test caused on purpose.
+			await run('viewHome', `(async()=>{
+				const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+				if(MM.lighting && MM.lighting.config && window.__mmHeroGlowSave!==undefined){
+					MM.lighting.config.heroGlow=window.__mmHeroGlowSave;
+					if(MM.lighting.reset) MM.lighting.reset();
+				}
+				window.__simulationTimeScale=1;
+				window.__mmDebugHero(${g.wallX0}-4, ${g.surf}-2);
+				await sleep(2200);
+				window.__simulationTimeScale=0.1;
+				await sleep(400);
+				return 'OK '+JSON.stringify({x:Math.round(player.x)});
+			})()`);
+			await guardCamera();
+
 			// --- the swap runs ---------------------------------------------------
 			const sunS = await run('findsun', FINDSUN);
 			if (!sunS.startsWith('OK ')) throw new Error('sun phase probe failed');
@@ -578,7 +677,12 @@ async function main(){
 			// and a block 30 tiles from both torches is dark in both shots — asking
 			// it to swap would be asking darkness to have a direction
 			['the blocks nearest each torch swap hardest (>50%)', Math.max(torchSwap.perBlock[0].ratio, torchSwap.perBlock[6].ratio) > 0.50],
-			['the pass stays inside its tile budget', cost.perFrame >= 0 && cost.perFrame <= 620],
+			// The VIEW half. Light direction alone cannot say where the viewer is,
+			// and half of what makes a surface read as raised is the viewer: the
+			// same wall, the same sun, seen from the other side of the screen.
+			// This scores zero for any relief that only knows about light.
+			['the same wall under the same sun re-shades from a different viewpoint', viewSwap.ratio > 0.15],
+			['the pass stays inside its tile budget', cost.perFrame >= 0 && cost.perFrame <= RELIEF_TILE_CAP],
 			['and it actually shades tiles (a silent zero is not a pass)', cost.perFrame > 20],
 			// A lit chamber is the densest exposed-face scene the game has. If this
 			// sits at the cap the effect is being silently truncated somewhere in
