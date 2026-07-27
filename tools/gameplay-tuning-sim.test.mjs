@@ -222,7 +222,7 @@ const src = (p) => readFileSync(join(here, '..', p), 'utf8');
   // slot icons: generic intent, not one weapon; slot 4 follows the selection
   assert.ok(html.includes('data-wkey="2"><span class="key">2</span><span class="wcyc"></span><span class="wicon">👊</span>'), 'slot 2 reads as DIRECT attack');
   assert.ok(html.includes('data-wkey="3"><span class="key">3</span><span class="wcyc"></span><span class="wicon">🎯</span>'), 'slot 3 reads as AIMED attack');
-  assert.match(mainSrc, /const STREAM_SLOT_ICONS=\{flame:'🔥',hose:'💧',gas:'☠️',electric:'⚡',bouncy:'🔴',bouncyTar:'🟤'\};/, 'slot 4 icon table is pinned');
+  assert.match(mainSrc, /const STREAM_SLOT_ICONS=\{flame:'🔥',hose:'💧',gas:'☠️',electric:'⚡',bouncy:'🔴',bouncyTar:'🟤',gravity:'🌀'\};/, 'slot 4 icon table is pinned');
   assert.match(mainSrc, /slot\.icon\.textContent=STREAM_SLOT_ICONS\[streamSlotIconKey\(preview\)\]\|\|'🔥';/, 'slot 4 icon follows the selected stream weapon');
   // the two bouncy pistols share a weaponType, so the icon must key off the AMMO
   assert.match(mainSrc, /if\(wt==='bouncy' && it\.bouncyKind==='tar'\) return 'bouncyTar';/, 'the incendiary pistol gets its own slot-4 icon');

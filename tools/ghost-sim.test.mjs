@@ -214,10 +214,12 @@ assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NE
 assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
 // hero-mode contract: the guest player state is guest-local truth; the world is
 // protected here — actions, rates and envelopes
-assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'antenna', 'gfx', 'drop'],
-	'the twelve hero world-intents');
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'antenna', 'gfx', 'drop', 'gvx', 'gvt'],
+	'the fifteen hero world-intents');
 assert.equal(NET.HERO_RULES.ANTENNA_MS, 1500, 'antenna intent rate floor pinned (per-active cooldown lives host-side)');
 assert.equal(NET.HERO_RULES.GFX_MS, 700, 'soot-graffiti intent rate floor pinned (glyph whitelist lives host-side)');
+assert.equal(NET.HERO_RULES.GRAV_EXTRACT_MS, 250, 'gravity extract floor pinned (the carried tile id is HOST truth)');
+assert.equal(NET.HERO_RULES.GRAV_THROW_MS, 300, 'gravity throw floor pinned (the guest names only a direction)');
 assert.ok(NET.HERO_RULES.PICKUP_MS === 150 && NET.HERO_RULES.USE_MS === 400 && NET.HERO_RULES.SHOOT_MS === 220
 	&& NET.HERO_RULES.ROW_MS === 250 && NET.HERO_RULES.BOARD_MS === 400, 'pickup/use/shoot/row/board rate floors pinned');
 assert.ok(NET.validHeroAction('mine') && !NET.validHeroAction('craft') && !NET.validHeroAction('__proto__'), 'hero action whitelist holds');
@@ -1286,7 +1288,8 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 {
 	const FLOOR_OF = { mine: 'MINE_MS', place: 'PLACE_MS', dmg: 'DMG_MS', pickup: 'PICKUP_MS',
 		use: 'USE_MS', shoot: 'SHOOT_MS', row: 'ROW_MS', board: 'BOARD_MS', unboard: 'BOARD_MS', tp: 'TP_MS',
-		antenna: 'ANTENNA_MS', gfx: 'GFX_MS', drop: 'DROP_MS' };
+		antenna: 'ANTENNA_MS', gfx: 'GFX_MS', drop: 'DROP_MS',
+		gvx: 'GRAV_EXTRACT_MS', gvt: 'GRAV_THROW_MS' };
 	for(const a of NET.HERO_ACTIONS){
 		assert.ok(new RegExp("pl\\.a === '" + a + "'").test(hostSrc),
 			"hero action '" + a + "' has a handleHeroAct branch on the host");

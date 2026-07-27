@@ -374,6 +374,17 @@ const ghostClient = (function(){
 			if(state === 'live' && conn) conn.send({ t: 'hact', a: 'mine', x: tx, y: ty });
 			return true; // the break "lands" when the host's tile diff arrives
 		},
+		// gravity gun: extraction is a world write (host removes the tile and
+		// CARRIES the id on our body — never banked); the throw names ONLY a
+		// direction, the host reads everything else from its own body state
+		gravExtract(tx, ty){
+			if(state === 'live' && conn) conn.send({ t: 'hact', a: 'gvx', x: tx, y: ty });
+			return true; // the held block arrives on the ack, never speculatively
+		},
+		gravThrow(ax, ay){
+			if(state === 'live' && conn) conn.send({ t: 'hact', a: 'gvt', ax: +Number(ax).toFixed(3), ay: +Number(ay).toFixed(3) });
+			return true;
+		},
 		place(tx, ty, tid, layer){
 			if(state !== 'live' || !conn) return false;
 			conn.send({ t: 'hact', a: 'place', x: tx, y: ty, tid: Number(tid) | 0, l: layer });
@@ -999,6 +1010,15 @@ const ghostClient = (function(){
 			// a refused placement refunds the locally spent block
 			if(hero.on){
 				if(pl.a === 'mine' && pl.ok && pl.tid){ try{ if(bridge.ghostHeroAward) bridge.ghostHeroAward(pl.tid); }catch(e){ /* fine */ } }
+				else if(pl.a === 'gvx'){
+					// the held block is guest DISPLAY truth confirmed by the host's ack
+					try{ if(bridge.ghostHeroGravHeld) bridge.ghostHeroGravHeld(pl.ok ? (pl.tid | 0) : 0); }catch(e){ /* fine */ }
+					if(!pl.ok && pl.reason && pl.reason !== 'void' && pl.reason !== 'tile') bridge.msg('🌀 Gospodarz odrzucił chwyt (' + pl.reason + ')');
+				}
+				else if(pl.a === 'gvt' && !pl.ok){
+					// a refused throw empties the display hand (the host's is the truth)
+					try{ if(bridge.ghostHeroGravHeld) bridge.ghostHeroGravHeld(0); }catch(e){ /* fine */ }
+				}
 				else if(pl.a === 'place' && !pl.ok && pl.tid){
 					try{ if(bridge.ghostHeroRefund) bridge.ghostHeroRefund(pl.tid); }catch(e){ /* fine */ }
 					bridge.msg('🧱 Gospodarz odrzucił postawienie (' + (pl.reason || '?') + ') — surowiec wraca');
@@ -2897,6 +2917,8 @@ const ghostClient = (function(){
 		_heroTp: (dir) => heroIntents.tp(dir),
 		_heroAntenna: (k, tier, unique) => heroIntents.antenna(k, tier, unique),
 		_heroGfx: (x, y, glyph, dir) => heroIntents.gfx(x, y, glyph, dir),
+		_heroGravExtract: (tx, ty) => heroIntents.gravExtract(tx, ty),
+		_heroGravThrow: (ax, ay) => heroIntents.gravThrow(ax, ay),
 		_heroDmg: (x, y, n) => { if(state === 'live' && conn){ conn.send({ t: 'hact', a: 'dmg', x: +x, y: +y, n: Math.max(1, Math.min(45, n | 0)) }); return true; } return false; },
 		_heroSave: () => { saveHeroState(true); },
 		// QA: deterministically halt the embodied hero (clears held keys + velocity).

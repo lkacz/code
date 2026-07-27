@@ -55,7 +55,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     // Slot 4 = hand-held devices with a trigger. Streams emit, 'bouncy' fires a
     // discrete ricocheting projectile — it sits here rather than in the ranged
     // slot because it is a GUN, not a drawn/thrown shot (no charge, no arc aiming).
-    {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas','electric','bouncy']}
+    {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas','electric','bouncy','gravity']}
   ];
 
   // --- Player-facing stat presentation (single source for ALL item stat display) ---
@@ -111,6 +111,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
       chips.push({icon:'🛡️', label:'Redukcja obrażeń', text:'+'+Math.round(item.damageReductionBonus*100)+'%', good:item.damageReductionBonus>0});
     if(typeof item.energyCost==='number' && item.energyCost>0)
       chips.push({icon:'⚡', label:'Zużycie energii', text:item.energyCost+'/s', good:false});
+    if(item.weaponType==='gravity')
+      chips.push({icon:'🌀', label:'Tryb', text:'Wyrywa i ciska bloki', good:true});
     if(typeof item.energyCapacityBonus==='number' && item.energyCapacityBonus)
       chips.push({icon:'⚡', label:'Pojemność energii', text:(item.energyCapacityBonus>0?'+':'')+item.energyCapacityBonus+'E', good:item.energyCapacityBonus>0});
     if(typeof item.lootMagnetLevel==='number' && item.lootMagnetLevel>0){
@@ -453,6 +455,10 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     // same 0.28 s default and the tar pistol's declared 0.30 s never existed.
     // `fireRange` is deliberately absent: a ricochet has a bounce budget, not a reach.
     bouncy:['attackDamage','fireCooldown'],
+    // Gravity gun: reach (extraction range in tiles) + channel drain (energy/s).
+    // Damage is NOT on the item — it belongs to the thrown MATERIAL (gravity_gun.js
+    // table); attackDamage is a small flat bonus added onto every block.
+    gravity:['attackDamage','fireRange','energyCost'],
     flame:['fireDps','fireRange'],
     hose:['fireDps','fireRange'],
     gas:['fireDps','fireRange'],

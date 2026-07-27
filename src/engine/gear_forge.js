@@ -14,7 +14,8 @@
 //
 // Why literals exist at all — each verified by running the real sanitizer:
 //   * genItem's forced-weaponType whitelist is ['melee','bow','flame','hose',
-//     'gas','electric'], so 'harpoon' and 'bouncy' are unreachable by rolling;
+//     'gas','electric'], so 'harpoon', 'bouncy' and 'gravity' are unreachable
+//     by rolling;
 //   * genItem never writes meleeEffect or mergePerk at any tier;
 //   * a perk-LESS pickaxe cannot be forced (above common the perk pool holds no
 //     null, and opts.profile only accepts the three perk names).
@@ -95,6 +96,10 @@ export const LITERAL_ROWS=[
   {id:'lit_bouncy_tar', kind:'weapon', label:'Pistolet smołowy (zapalny rykoszet)',
     def:{weaponType:'bouncy', bouncyKind:'tar', name:'Pistolet smołowy', attackDamage:3, fireCooldown:0.30,
       desc:'Klawisz 4: kulki smołowe. Przeleć kulkę przez ogień — zapalona roznosi pożar rykoszetem'}},
+  // Gravity gun — weaponType 'gravity' is outside genItem's roll whitelist.
+  {id:'lit_gravity_gun', kind:'weapon', label:'Działko grawitacyjne (wyrywa bloki)',
+    def:{weaponType:'gravity', name:'Działko grawitacyjne', attackDamage:2, fireRange:6, energyCost:14,
+      desc:'LPM wyrywa blok ze świata (im twardszy, tym dłużej i drożej), PPM go ciska. Materiał decyduje o obrażeniach i skutkach'}},
   // Melee material effects — genItem writes no meleeEffect at any tier.
   {id:'lit_melee_bleed', kind:'weapon', label:'Broń biała — krwawienie',
     def:{weaponType:'melee', meleeEffect:'bleed', name:'Ostrze stalowe', attackDamage:7, desc:'Metalowa krawędź otwiera krwawiące rany'}},

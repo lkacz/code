@@ -123,6 +123,31 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     tar:  {key:'rubberBallTar', label:'Kulki smołowe',    color:'#4a3a30',    head:'#a08258', flammable:true}
   };
   const BOUNCY_AMMO_KEY=BOUNCY_KINDS.plain.key;
+  // --- Gravity gun (weaponType 'gravity') ------------------------------------
+  // LMB channels a block OUT of the world (time ~ hardness, energy all the way),
+  // RMB hurls it. The MATERIAL LAW — what lifts, how it flies, what it does on
+  // a body, how it lands — lives in engine/gravity_gun.js; every world write
+  // goes through the MM.gravityWorld seam (main.js). This file owns the weapon
+  // FEEL only: channel state, energy drain, the projectile entry, the visuals.
+  // All timers are wall-clock or fireHeld-dt: WEAPONS.update never runs on a
+  // hero guest, so a per-frame cooldown decrement would jam there forever.
+  const GRAV_REACH_DEFAULT=6;          // extraction reach in tiles (item fireRange overrides)
+  const GRAV_CHANNEL_COST_DEFAULT=14;  // energy/s while ripping (item energyCost overrides)
+  const GRAV_HOLD_DRAIN_PER_MASS=2.5;  // energy/s per unit mass while a block floats at the muzzle
+  const GRAV_THROW_COST_BASE=4, GRAV_THROW_COST_PER_MASS=6;
+  const GRAV_DAMAGE_CAP=45;            // ghost_net HERO_RULES.DMG_MAX — the shared projectile ceiling
+  const grav={channel:null, heldTid:0, throwAtMs:0};
+  // Refusal feedback: the material law names a reason, the gun voices it. The
+  // silent ones (void/gas/hazard/tile/bounds) would only spam while sweeping aim.
+  const GRAV_REFUSE_MSG={
+    bedrock:'Skała macierzysta nie da się ruszyć',
+    hull:'Kadłub obcych nie puszcza — rozbieraj go ładunkiem',
+    rigid:'Urządzeń nie podniesiesz — rozbierz je',
+    fluid:'Cieczy nie da się chwycić',
+    utility:'To nie blok — to instalacja albo mebel',
+    fixture:'To nie blok — to instalacja albo mebel',
+    story:'Ten kamień ma swoją historię'
+  };
   // Hand-thrown projectiles (weaponType 'thrown', rotated in the ranged slot with
   // bows). Slower and lobbier than arrows; each kind carries its own splat:
   //   snow  — white puff + a brief chill (slow) on creatures caught in it
@@ -876,7 +901,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     return {
       ult:ultCharge,
       bowActive:!!bowCharge.active, bowRatio:bowChargeRatio(), bowFull:!!bowCharge.full,
-      spearActive:!!spearCharge.active, spearRatio:spearChargeRatio(), spearFull:!!spearCharge.full
+      spearActive:!!spearCharge.active, spearRatio:spearChargeRatio(), spearFull:!!spearCharge.full,
+      gravActive:!!grav.channel, gravRatio:gravChannelRatio(), gravHeld:grav.heldTid|0
     };
   }
   function hasArrowAmmo(){ return !!pickArrowTier(); }
@@ -1268,6 +1294,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(type==='harpoon') return fireHarpoon(player, aimX, aimY, w);
     if(type==='thrown') return fireThrown(player, aimX, aimY, w);
     if(type==='bouncy') return fireBouncy(player, aimX, aimY, w);
+    if(type==='gravity') return gravityChannel(player, aimX, aimY, w, dt||0.016);
     if(type==='electric') return fireElectric(player, aimX, aimY, w, 1);
     if(STREAMS[type]) return fireStream(player, aimX, aimY, w, dt||0.016, type);
     return fireMelee(player, aimX, aimY);
@@ -1311,6 +1338,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const w=equippedWeapon();
     if(!w) return false;
     const type=weaponType(w);
+    // Gravity gun: RMB IS the throw — it neither charges nor consumes the ult.
+    // An empty hand returns false so tryWeaponUltOrDefend still falls through
+    // to hero defense (the -25% block) exactly like every other weapon.
+    if(type==='gravity'){ return gravThrow(player, aimX, aimY, w); }
     if(type==='electric'){
       if(ultCharge<0.35){
         try{ if(window.msg) window.msg('Ult ładuje się: '+Math.round(ultCharge*100)+'%'); }catch(e){}
@@ -1678,7 +1709,245 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
     return true;
   }
+  // --- Gravity gun ------------------------------------------------------------
+  function gravityModule(){ return (typeof MM!=='undefined' && MM.gravityGun) ? MM.gravityGun : null; }
+  function gravityWorld(){ return (typeof MM!=='undefined' && MM.gravityWorld) ? MM.gravityWorld : null; }
+  function gravChannelRatio(){ return grav.channel ? Math.max(0,Math.min(1,grav.channel.t/grav.channel.need)) : 0; }
+  function spendContinuousEnergy(player, amount){
+    const n=Math.max(0,Number(amount)||0);
+    if(n<=0) return 0;
+    try{ if(MM.heroEnergy && typeof MM.heroEnergy.spendContinuous==='function') return MM.heroEnergy.spendContinuous(n); }catch(e){}
+    if(player && typeof player.energy==='number'){
+      const spent=Math.min(Math.max(0,player.energy||0),n);
+      player.energy=Math.max(0,(player.energy||0)-spent);
+      return spent;
+    }
+    return 0;
+  }
+  // LMB held: aim at a block within reach and RIP. Channel time comes from the
+  // material's hardness, energy drains all the way, and a starved channel SLOWS
+  // instead of failing — the rip is paid for in joules, not frames. The commit
+  // is idempotent by construction: completing nulls the channel, and the very
+  // next call re-targets a now-AIR cell, which the material law refuses.
+  function gravityChannel(player, aimX, aimY, w, dt){
+    const GG=gravityModule();
+    if(!GG || !player) return false;
+    if(grav.heldTid){ sayLimited('grav_full','Trzymasz już blok — PPM nim ciska',1400); return false; }
+    const reach=Math.max(2,Math.min(10,Number(w && w.fireRange)||GRAV_REACH_DEFAULT));
+    const tx=Math.floor(aimX), ty=Math.floor(aimY);
+    if(Math.hypot(tx+0.5-player.x, ty+0.5-player.y)>reach+0.5){ grav.channel=null; return false; }
+    let tid=T.AIR;
+    try{ tid=lastGetTile ? lastGetTile(tx,ty) : T.AIR; }catch(e){ tid=T.AIR; }
+    const v=GG.canCarryTile(tid);
+    if(!v.ok){
+      if(GRAV_REFUSE_MSG[v.reason]) sayLimited('grav_'+v.reason,GRAV_REFUSE_MSG[v.reason],1600);
+      if(v.reason==='bedrock'){
+        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('grav_bedrock','Nawet działko grawitacyjne nie ruszy skały macierzystej'); }catch(e){}
+      }
+      grav.channel=null;
+      return false;
+    }
+    const key=tx+','+ty+':'+tid;
+    if(!grav.channel || grav.channel.key!==key){
+      grav.channel={key, tx, ty, tid, need:GG.channelSeconds(tid), t:0};
+      try{ if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+    }
+    const want=Math.max(1,Number(w && w.energyCost)||GRAV_CHANNEL_COST_DEFAULT)*dt;
+    const paid=spendContinuousEnergy(player,want);
+    if(paid<want*0.5){
+      grav.channel=null;
+      sayLimited('grav_energy','Za mało energii na chwyt',1400);
+      return false;
+    }
+    player.facing=(tx+0.5)>=player.x?1:-1;
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('beam',{x:player.x,y:player.y}); }catch(e){}
+    grav.channel.t+=dt*(paid/want);
+    if(grav.channel.t<grav.channel.need) return true;
+    const ctx={tx:grav.channel.tx, ty:grav.channel.ty};
+    grav.channel=null;
+    // hero-mode guest: extraction is a WORLD WRITE — an intent the host
+    // validates; the held block arrives on the ack (setGravHeld), never here.
+    if(typeof MM!=='undefined' && MM.ghostHeroIntents && MM.ghostHeroIntents.gravExtract){
+      MM.ghostHeroIntents.gravExtract(ctx.tx,ctx.ty);
+      return true;
+    }
+    const W=gravityWorld();
+    const res=W && W.extractAt ? W.extractAt(ctx.tx,ctx.ty) : null;
+    if(!res || !res.ok){
+      if(res && GRAV_REFUSE_MSG[res.reason]) sayLimited('grav_'+res.reason,GRAV_REFUSE_MSG[res.reason],1600);
+      return false;
+    }
+    grav.heldTid=res.tid|0;
+    triggerHeldActionFx('gravity',1.2,240,false);
+    return true;
+  }
+  // RMB: hurl the held block. The guest names only a DIRECTION — the host reads
+  // the tile id from its own body state and flies the real projectile.
+  function gravThrow(player, aimX, aimY, w){
+    const GG=gravityModule();
+    if(!GG || !player) return false;
+    if(!grav.heldTid) return false; // empty hand -> hero defense fallback
+    const t=nowMs();
+    if(t<grav.throwAtMs) return true;
+    const tid=grav.heldTid;
+    const mass=GG.gravMass(tid);
+    const cost=Math.round(GRAV_THROW_COST_BASE+GRAV_THROW_COST_PER_MASS*mass);
+    if(!spendHeroEnergy(player,cost)){
+      sayLimited('grav_energy','Za mało energii');
+      grav.throwAtMs=t+180;
+      return true;
+    }
+    const v=aimVector(player,aimX,aimY);
+    player.facing=v.dx>=0?1:-1;
+    grav.heldTid=0;
+    grav.throwAtMs=t+280;
+    if(typeof MM!=='undefined' && MM.ghostHeroIntents && MM.ghostHeroIntents.gravThrow){
+      MM.ghostHeroIntents.gravThrow(v.dx,v.dy);
+      return true;
+    }
+    spawnGravityProjectile(player, tid, v, {bonus:Number(w && w.attackDamage)||0});
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('thud',{x:player.x,y:player.y}); }catch(e){}
+    return true;
+  }
+  // The single projectile mint — the host bridge calls this for guest throws,
+  // so it re-validates the MATERIAL at the source (defense in depth) and caps
+  // damage at the shared projectile ceiling.
+  function spawnGravityProjectile(body, tid, dir, opts){
+    const GG=gravityModule();
+    if(!GG || !body || !dir) return false;
+    tid=tid|0;
+    if(!GG.canCarryTile(tid).ok) return false;
+    opts=opts||{};
+    const sp=GG.muzzleSpeed(tid);
+    const dmg=Math.min(GRAV_DAMAGE_CAP, GG.gravDamage(tid)+Math.max(0,Math.round(Number(opts.bonus)||0)));
+    const info=INFO[tid]||{};
+    const a={
+      x:body.x+dir.dx*0.8, y:body.y-0.15+dir.dy*0.8,
+      vx:dir.dx*sp, vy:dir.dy*sp,
+      dmg, life:ARROW_LIFE, stuck:false, stuckT:ARROW_STUCK,
+      tier:'gravity', grav:true, gravTid:tid, gravMass:GG.gravMass(tid),
+      gravityMult:GG.gravMult(tid),
+      bounces: tid===T.RUBBER_WOOD ? GG.RUBBER_BOUNCES : 0,
+      color:info.color||'#9aa0a8', headColor:info.color||'#9aa0a8',
+      recoverable:false, windCap:sp*0.6, windResponse:0.08,
+      ang:Math.atan2(dir.dy,dir.dx)
+    };
+    if(opts.coopOwner){ a.coopOwner=true; a.ownerGid=opts.ownerGid||null; a.duelGid=opts.duelGid||null; }
+    return !!pushArrow(a);
+  }
+  // Creature impact: material damage already landed through the shared chain —
+  // here the material's identity speaks (statuses are creature-facing, so a
+  // coop block applies them too, tagged 'coop'), then the block breaks up.
+  // World payouts (drops) stay host-only: a guest projectile is world-inert.
+  function resolveGravityImpactOnCreature(a,tx,ty,getTile,setTile){
+    const GG=gravityModule();
+    const fx=GG && GG.GRAV_EFFECTS[a.gravTid];
+    applyGravityStatusBurst(a,fx);
+    if(!a.coopOwner){
+      const W=gravityWorld();
+      if(W && W.shatterAt) W.shatterAt(a.x,a.y,a.gravTid);
+      if(W && W.noiseAt) W.noiseAt(a.x,a.y,a.gravTid,a.gravMass);
+      gravityGoldenNote(a);
+    }
+    spawnGravityBreakFx(a);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('hit',{x:a.x,y:a.y}); }catch(e){}
+  }
+  function applyGravityStatusBurst(a,fx){
+    if(!fx || !MM.mobs) return;
+    const src=a.coopOwner?'coop':'hero';
+    const apply=(status,dur,dps)=>{
+      const opts={dur, source:src, cause:fx.cause};
+      if(dps) opts.dps=dps;
+      try{
+        if(fx.radius>0 && MM.mobs.statusRadius) MM.mobs.statusRadius(a.x,a.y,fx.radius,status,opts);
+        else if(MM.mobs.statusAt) MM.mobs.statusAt(Math.floor(a.x),Math.floor(a.y),status,opts);
+      }catch(e){}
+      try{
+        if(fx.radius>0 && MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,fx.radius,status,opts);
+      }catch(e){}
+    };
+    apply(fx.status,fx.dur,fx.dps);
+    if(fx.also) apply(fx.also.status,fx.also.dur,fx.also.dps);
+  }
+  function gravityGoldenNote(a){
+    if(a.gravTid!==T.GOLDEN_WOOD || a.coopOwner) return;
+    try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('grav_golden','Złoty pień rozbity w locie płaci dziesięciokrotnie!'); }catch(e){}
+  }
+  function spawnGravityBreakFx(a){
+    try{
+      if(MM.particles && MM.particles.spawnBurst){
+        const TILE=MM.TILE||20;
+        MM.particles.spawnBurst(a.x*TILE,a.y*TILE,0,{color:a.color||'#9aa0a8'});
+      }
+    }catch(e){}
+  }
+  // Terrain impact. Returns 'continue' when the block keeps flying (rubber
+  // ricochet), otherwise the block is spent. Landing writes are host-only.
+  function resolveGravityImpactOnTile(a,tx,ty,dx,dy,getTile,setTile){
+    const GG=gravityModule();
+    if(!GG) return 'done';
+    if(a.gravTid===T.RUBBER_WOOD && (a.bounces|0)>0 && bounceBallOffTile(a,tx,ty,dx,dy,getTile)) return 'continue';
+    const speed=Math.hypot(a.vx||0,a.vy||0);
+    const fx=GG.GRAV_EFFECTS[a.gravTid];
+    if(fx && fx.radius>0) applyGravityStatusBurst(a,fx); // splashy matter splashes on the ground too
+    const mode=GG.landingMode(a.gravTid,speed);
+    // back out of the wall to the last OPEN cell the block actually crossed —
+    // a fixed nudge can leave a fast block's center inside the face it struck,
+    // and a falling solid spawned inside rock never re-enters the world
+    if(speed>0.01){
+      const ux=(a.vx||0)/speed, uy=(a.vy||0)/speed;
+      for(let k=0;k<5;k++){
+        let solid=false;
+        try{ solid=isSolid(getTile(Math.floor(a.x),Math.floor(a.y))); }catch(e){ solid=false; }
+        if(!solid) break;
+        a.x-=ux*0.5; a.y-=uy*0.5;
+      }
+    }
+    if(!a.coopOwner){
+      const W=gravityWorld();
+      if(W){
+        if(mode==='drift'){ W.driftAt(a.x,a.y,a.gravTid); }
+        else if(mode==='shatter'){ W.shatterAt(a.x,a.y,a.gravTid); gravityGoldenNote(a); }
+        else { W.landAt(a.x,a.y,a.gravTid); } // 'settle' + a rubber ball out of budget
+        W.noiseAt(a.x,a.y,a.gravTid,a.gravMass);
+        if(a.gravTid===T.MEAT || a.gravTid===T.ROTTEN_MEAT || a.gravTid===T.BAKED_MEAT){
+          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('grav_bait','Rzucone mięso ściąga drapieżniki do miejsca upadku!'); }catch(e){}
+        }
+      }
+    }
+    spawnGravityBreakFx(a);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play(mode==='shatter'?'break':'place',{x:a.x,y:a.y}); }catch(e){}
+    return 'done';
+  }
+  // Holding a block is WORK: mass drains energy every frame, and an empty tank
+  // opens the hand — the block re-enters the world at the muzzle instead of
+  // silently evaporating. Solo/host only (update never runs on a hero guest;
+  // a guest's carried block is host body state and costs the guest nothing).
+  function gravityHoldTick(dt){
+    if(!grav.heldTid) return;
+    if(typeof MM!=='undefined' && MM.ghostHeroIntents) return;
+    const GG=gravityModule();
+    const p=(typeof window!=='undefined' && window.player)||null;
+    if(!GG || !p) return;
+    const want=GRAV_HOLD_DRAIN_PER_MASS*GG.gravMass(grav.heldTid)*dt;
+    const paid=spendContinuousEnergy(p,want);
+    if(paid>=want*0.5) return;
+    const W=gravityWorld();
+    if(W && W.landAt) W.landAt(p.x+(p.facing<0?-1.2:1.2), p.y-0.4, grav.heldTid);
+    grav.heldTid=0;
+    sayLimited('grav_drop','Energia wyczerpana — blok upadł',1600);
+  }
+  function gravityInfo(){
+    return {held:grav.heldTid|0, active:!!grav.channel, ratio:gravChannelRatio(),
+      channelTx:grav.channel?grav.channel.tx:0, channelTy:grav.channel?grav.channel.ty:0};
+  }
+  // Guest ack seam: the host confirmed (or refused) an extraction — the held
+  // block is display truth confirmed by the wire, never speculation.
+  function setGravHeld(tid){ grav.heldTid=Math.max(0,tid|0); }
   function releaseHeld(player, aimX, aimY){
+    // Gravity: lifting LMB mid-rip abandons the channel (the tile stays whole);
+    // a block already held keeps floating — only RMB or empty energy lets it go.
+    if(grav.channel){ grav.channel=null; return false; }
     const w=equippedWeapon();
     if(spearCharge.active){
       const p=player||spearCharge.player;
@@ -1699,9 +1968,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     return fireBowShot(p, ax, ay, w, ratio);
   }
   function cancelHeld(){
-    const was=bowCharge.active||spearCharge.active;
+    const was=bowCharge.active||spearCharge.active||!!grav.channel;
     resetBowCharge();
     resetSpearCharge();
+    grav.channel=null;
     return was;
   }
   function firePowerBow(player, aimX, aimY, w, charge){
@@ -2642,6 +2912,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     // range band on top would make every bounced hit the 1-damage floor at once
     // and erase the falloff curve the weapon is built around.
     if(a && a.bouncy) return Math.max(1,Math.round(base));
+    // A thrown BLOCK is mass, not a shaft losing spin: its damage is its
+    // momentum, and the steep arc already prices distance. Optional flavour:
+    // a block arriving FASTER than it left (dropped from a ledge) hits harder.
+    if(a && a.grav){
+      const GG=gravityModule();
+      const v0=GG?GG.muzzleSpeed(a.gravTid):14;
+      const boost=Math.min(1.25,Math.max(1,Math.hypot(a.vx||0,a.vy||0)/Math.max(1,v0)));
+      return Math.max(1,Math.round(base*boost));
+    }
     const mult=ARROW_DAMAGE_FALLOFF[arrowRangeBand(a)] || ARROW_DAMAGE_FALLOFF.long;
     return Math.max(1,Math.round(base*mult));
   }
@@ -2985,6 +3264,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(typeof getTile==='function') lastGetTile=getTile;
     if(typeof setTile==='function') lastSetTile=setTile;
     if(!(dt>0) || !isFinite(dt)) return;
+    gravityHoldTick(dt);
     ultCharge=Math.min(1, ultCharge + dt/ULT_CHARGE_TIME);
     if(bowCd>0) bowCd-=dt;
     if(harpoonCd>0) harpoonCd-=dt;
@@ -3050,6 +3330,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         // A spent rubber ball is not a broken shaft: it settles, and often stays
         // as a pickup (retireBouncyBall owns that roll for every exit path).
         if(a.bouncy){ retireBouncyBall(a); arrows.splice(i,1); continue; }
+        // A gravity block never evaporates mid-air — matter is conserved: an
+        // expired flight resolves exactly like a terrain landing where it is.
+        if(a.grav){ resolveGravityImpactOnTile(a,Math.floor(a.x),Math.floor(a.y),0,0,getTile,setTile); arrows.splice(i,1); continue; }
         if(!beginArrowExpiryFall(a)) arrows.splice(i,1);
         continue;
       }
@@ -3192,6 +3475,13 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           if(a.stagger && MM.mobs && MM.mobs.chillAt) MM.mobs.chillAt(tx,ty,{dur:a.stagger,source:a.coopOwner?'coop':'hero',cause:'stagger'}); // stone arrows stop the target in its tracks
           if(a.splat) splatProjectile(a,getTile,setTile);
           if(!a.coopOwner) addUltCharge(0.08); // only the hero's own shots feed the hero's ult
+          // gravity block: the material speaks (status burst) and the block
+          // breaks up on the body — its damage already landed via the chain
+          if(a.grav){
+            resolveGravityImpactOnCreature(a,tx,ty,getTile,setTile);
+            arrows.splice(i,1);
+            break;
+          }
           // Rubber ball: rebound off the body it just hit and go looking for the
           // next one. This is the whole weapon — one shot, several victims, each
           // taking less than the last (bounceBallOffBody owns both curves).
@@ -3254,6 +3544,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         // also what keeps the ball out of the shaft-fragment exit path.
         if(!a.bouncy && !a.noDamage && !a.spent && !a.coopOwner && t===T.GLASS && shatterGlassAt(tx,ty,setTile,getTile)){
           noteWeaponCombatHit(a.x,a.y,0,{source:'hero',kind:a.harpoon?'harpoon':'arrow'},projectileCombatVisualMeta(a,{target:'terrain',targetMaterial:'glass',power:0.9}));
+          // a thrown block PUNCHES THROUGH a pane: the glass pays, the mass
+          // barely notices — the shot keeps flying with a little bite shaved off
+          if(a.grav){ a.dmg=Math.max(1,(Number(a.dmg)||1)*0.9); continue; }
           if(arrowResourceKey(a)){
             if(breakArrowOnImpact(a,'glass')){ arrows.splice(i,1); break; }
             continue;
@@ -3265,6 +3558,14 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           if(!a.spent && tryIridiumPierceBlock(a,tx,ty,t,getTile,setTile)){
             if(a.fire && FIRE) FIRE.ignite(tx,ty,getTile,setTile);
             continue;
+          }
+          // gravity block: rubber ricochets, soft matter drifts, fragile or fast
+          // matter shatters into its mining yield, the rest settles back into
+          // the world as a falling solid (resolveGravityImpactOnTile owns it all)
+          if(a.grav){
+            if(resolveGravityImpactOnTile(a,tx,ty,dx,dy,getTile,setTile)==='continue') continue;
+            arrows.splice(i,1);
+            break;
           }
           // rubber balls ricochet off the wall and keep hunting; when the bounce
           // budget or the speed runs out they settle (and half of them stay).
@@ -3609,6 +3910,29 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           ctx.restore();
           continue;
         }
+        if(a.grav){
+          // A flying BLOCK: a tumbling tile-colored square. The spin rate rides
+          // speed, so a heavy lob turns lazily and a flat shot whirls — the
+          // rotation is the readout of the momentum the impact will spend.
+          const px=a.x*TILE, py=a.y*TILE;
+          const speed=Math.hypot(a.vx||0,a.vy||0);
+          a.ang=(a.ang||0)+speed*0.011;
+          const s=TILE*0.62;
+          ctx.save();
+          ctx.translate(px,py);
+          ctx.rotate(a.ang);
+          ctx.fillStyle='rgba(0,0,0,0.28)';
+          ctx.fillRect(-s/2+1.5,-s/2+1.5,s,s);
+          ctx.fillStyle=a.color||'#9aa0a8';
+          ctx.fillRect(-s/2,-s/2,s,s);
+          ctx.strokeStyle='rgba(255,255,255,0.35)';
+          ctx.lineWidth=1;
+          ctx.strokeRect(-s/2,-s/2,s,s);
+          ctx.fillStyle='rgba(255,255,255,0.18)';
+          ctx.fillRect(-s/2,-s/2,s,s*0.28);
+          ctx.restore();
+          continue;
+        }
         if(a.bouncy){
           // Rubber ball: a squash-and-stretch sphere. It elongates ALONG its own
           // velocity, so a fast shot reads as a streak and a spent one as a bead —
@@ -3890,6 +4214,30 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         }
       }
       ctx.restore();
+    }
+    // gravity channel: a violet tether from the hero to the gripped tile and a
+    // rising fill on the tile itself — the extraction progress, readable in
+    // the world exactly where the player is looking
+    if(grav.channel){
+      const p=(typeof window!=='undefined' && window.player)||null;
+      if(p){
+        const c=grav.channel, ratio=gravChannelRatio();
+        const gx=(c.tx+0.5)*TILE, gy=(c.ty+0.5)*TILE;
+        const wob=Math.sin(nowMs()*0.02)*1.2;
+        ctx.save();
+        ctx.strokeStyle='rgba(180,140,255,0.55)';
+        ctx.lineWidth=1.6;
+        ctx.beginPath();
+        ctx.moveTo(p.x*TILE,(p.y-0.1)*TILE);
+        ctx.quadraticCurveTo((p.x*TILE+gx)/2,(p.y*TILE+gy)/2+wob,gx,gy);
+        ctx.stroke();
+        ctx.fillStyle='rgba(180,140,255,0.22)';
+        ctx.fillRect(c.tx*TILE, c.ty*TILE+(1-ratio)*TILE, TILE, ratio*TILE);
+        ctx.strokeStyle='rgba(220,200,255,0.8)';
+        ctx.lineWidth=1;
+        ctx.strokeRect(c.tx*TILE+0.5, c.ty*TILE+0.5, TILE-1, TILE-1);
+        ctx.restore();
+      }
     }
   }
   function drawHeldAquaticFx(ctx,TILE,it,facing,player){
@@ -4288,6 +4636,29 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         ctx.beginPath(); ctx.arc(facing===1?-2.4:2.4,-1.2,1.5,0,Math.PI*2); ctx.fill();
         ctx.fillStyle=bspec.head;
         ctx.beginPath(); ctx.arc(facing===1?-2.8:2.0,-1.7,0.55,0,Math.PI*2); ctx.fill();
+      }else if(type==='gravity'){
+        // gravity emitter: a coil ring around the barrel and a violet field arc;
+        // the held BLOCK floats ahead of the muzzle, slowly turning — the whole
+        // weapon readout is "what am I about to throw"
+        ctx.strokeStyle='#b48cff'; ctx.lineWidth=1.2;
+        ctx.beginPath(); ctx.arc(facing===1?2.6:-2.6,-2.6,2.1,0,Math.PI*2); ctx.stroke();
+        ctx.strokeStyle='rgba(180,140,255,0.45)';
+        ctx.beginPath(); ctx.arc(facing===1?2.6:-2.6,-2.6,3.1,-0.7,0.7); ctx.stroke();
+        if(grav.heldTid){
+          const info=INFO[grav.heldTid]||{};
+          const s=TILE*0.5;
+          const hover=Math.sin(nowMs()*0.004)*1.4;
+          ctx.save();
+          ctx.translate(facing===1?(s+9):-(s+9), -3+hover);
+          ctx.rotate(nowMs()*0.0011*facing);
+          ctx.fillStyle='rgba(180,140,255,0.22)';
+          ctx.beginPath(); ctx.arc(0,0,s*0.95,0,Math.PI*2); ctx.fill();
+          ctx.fillStyle=info.color||'#9aa0a8';
+          ctx.fillRect(-s/2,-s/2,s,s);
+          ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=1;
+          ctx.strokeRect(-s/2,-s/2,s,s);
+          ctx.restore();
+        }
       }
       if(prestige>=3){
         ctx.fillStyle=prestige===4?'#ffffff':(col||tint);
@@ -4362,7 +4733,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       dir:spearCharge.dir<0?-1:1
     };
   }
-  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bouncyCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; swing.form='sword'; swing.charge=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; resetBowCharge(); resetSpearCharge(); }
+  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bouncyCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; swing.form='sword'; swing.charge=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; grav.channel=null; grav.heldTid=0; grav.throwAtMs=0; resetBowCharge(); resetSpearCharge(); }
 
   // --- ghost mirror: the hero's weapons, seen from the cheap seats ------------
   // A watcher runs the full renderer but no simulation, so its weapons module
@@ -4372,7 +4743,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   // read-only), and the watcher integrates it locally between packets so arrows
   // keep flying smoothly instead of teleporting once per network tick.
   const GHOST_FX_CAP={arrows:24, puffs:80, beams:8, blasts:8};
-  const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8, FX_SAND=16, FX_SPIT=32, FX_TOXIC_SPIT=64, FX_HARPOON=128, FX_AQUATIC=256, FX_BOUNCY=512;
+  const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8, FX_SAND=16, FX_SPIT=32, FX_TOXIC_SPIT=64, FX_HARPOON=128, FX_AQUATIC=256, FX_BOUNCY=512, FX_GRAV=1024;
   // --- co-op guest combat: body-attributed swings and arrows -----------------------
   // Embodied multiplayer guests fight through the SAME damage chains and the SAME
   // projectile array as the hero, but attributed 'coop': no host ult charge, no
@@ -4476,7 +4847,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(arrows.length) st.ar=arrows.slice(-GHOST_FX_CAP.arrows).map(a=>[
       +a.x.toFixed(2), +a.y.toFixed(2), +(a.vx||0).toFixed(2), +(a.vy||0).toFixed(2),
       (a.stuck?FX_STUCK:0)|(a.power?FX_POWER:0)|(a.rock?FX_ROCK:0)|(a.snowball?FX_SNOW:0)|
-      (a.sandSpray?FX_SAND:0)|(a.spitDroplet?FX_SPIT:0)|(a.toxicSpit?FX_TOXIC_SPIT:0)|(a.harpoon?FX_HARPOON:0)|(a.aquatic?FX_AQUATIC:0)|(a.bouncy?FX_BOUNCY:0),
+      (a.sandSpray?FX_SAND:0)|(a.spitDroplet?FX_SPIT:0)|(a.toxicSpit?FX_TOXIC_SPIT:0)|(a.harpoon?FX_HARPOON:0)|(a.aquatic?FX_AQUATIC:0)|(a.bouncy?FX_BOUNCY:0)|(a.grav?FX_GRAV:0),
       +(a.ang||0).toFixed(3), a.color||'', a.headColor||'', (Number(a.sandSeed)>>>0)||0,
       Math.max(0,Math.min(4,Number(a.weaponPrestige)||0)), a.weaponGlow||'', a.weaponMaterial||''
     ]);
@@ -4537,6 +4908,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         weaponPrestige:Math.max(0,Math.min(4,num(a[9]))), weaponGlow:typeof a[10]==='string'?a[10].slice(0,24):'',
         weaponMaterial:typeof a[11]==='string'?a[11].slice(0,16):'', aquatic:!!(f&FX_AQUATIC),
         bouncy:!!(f&FX_BOUNCY), bounces:(f&FX_BOUNCY)?BOUNCY_MAX_BOUNCES:0,
+        grav:!!(f&FX_GRAV), // replica renders the tinted block; all physics stays host-side
         gravityMult:(f&FX_HARPOON)?0.12:((f&FX_BOUNCY)?BOUNCY_GRAVITY_MULT:1),
         life:9, stuckT:9, travel:0, maxTravel:1e9, ghost:true});
     }
@@ -4593,6 +4965,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     coopMeleeAt,spawnCoopArrow,spawnHeroProjectile,
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,stoneInfo,bouncyInfo,hudStatus,addUltCharge,
+    gravityInfo,setGravHeld,spawnGravityProjectile,
     metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),bouncyAmmo:bouncyAmmoCount(),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
     _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowResourceKey,dropSurvivingArrow,spawnDroppedArrowPickup,splatProjectile,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,projectileImpactOpts,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern,
       spawnBouncyBall,bounceBallOffTile,bounceBallOffBody,retireBouncyBall,bouncyAmmoCount,

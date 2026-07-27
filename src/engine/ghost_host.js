@@ -1639,6 +1639,7 @@ const ghostHost = (function(){
 		if(b.hp <= 0){
 			b.dead = true;
 			if(entry.bodyLike) entry.bodyLike.dead = true;
+			b.gravTid = 0; // a dead hand opens: the carried block is transient host state (never serialized)
 			entry.rope = null; // a dead body drops its rope (respawn teleports it away)
 			b.respawnAt = t + NET.PLAY_RULES.RESPAWN_MS;
 			if(b.duelWith && session) endDuel(session, entry); // death settles a duel
@@ -2052,6 +2053,23 @@ const ghostHost = (function(){
 			try{ if(bridge.ghostHeroShoot) bridge.ghostHeroShoot({ x: b.x, y: b.y }, spec); }catch(e){ /* fine */ }
 			return;
 		}
+		if(pl.a === 'gvt'){
+			// gravity throw: the guest may only AIM. The carried tile id, mass,
+			// muzzle speed and damage all come from HOST body state and the
+			// material table — never from the wire, or a modified client would
+			// throw bedrock. An empty hand refuses: the block must have been
+			// EXTRACTED through gvx first (host truth end to end).
+			if(t - (b.lastHeroGravThrowAt || 0) < NET.HERO_RULES.GRAV_THROW_MS) return;
+			b.lastHeroGravThrowAt = t;
+			if(!b.gravTid){ entry.peer.send({ t: 'hact', a: 'gvt', ok: false, reason: 'empty' }); return; }
+			const dir = NET.playAimDir(b.x, b.y, Number(pl.ax), Number(pl.ay));
+			if(!dir){ entry.peer.send({ t: 'hact', a: 'gvt', ok: false, reason: 'aim' }); return; }
+			let ok = false;
+			try{ ok = bridge.ghostHeroGravThrow ? !!bridge.ghostHeroGravThrow({ x: b.x, y: b.y }, b.gravTid, dir, entry.gid, b.duelWith || null) : false; }catch(e){ ok = false; }
+			if(ok){ b.gravTid = 0; s.stats.gravThrows = (s.stats.gravThrows || 0) + 1; }
+			entry.peer.send({ t: 'hact', a: 'gvt', ok });
+			return;
+		}
 		if(pl.a === 'drop'){
 			// Setting an item down is the INVERSE of pickup and takes pickup's trust
 			// level: the guest names a resource and an amount, the HOST owns the world
@@ -2100,8 +2118,22 @@ const ghostHost = (function(){
 		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
 		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return;
 		if(!NET.playReachOk(b.x, b.y, tx, ty, NET.HERO_RULES.REACH)){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'reach', x: tx, y: ty }); return; }
-		if((pl.a === 'use' || pl.a === 'mine' || pl.a === 'place') && !guestTargetClear(b, tx, ty)){
+		if((pl.a === 'use' || pl.a === 'mine' || pl.a === 'place' || pl.a === 'gvx') && !guestTargetClear(b, tx, ty)){
 			entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'blocked', x: tx, y: ty });
+			return;
+		}
+		if(pl.a === 'gvx'){
+			// gravity extraction: reach + LOS already passed above; the bridge
+			// re-validates the MATERIAL with the same predicate solo uses. The
+			// tile id is CARRIED (host body state), never banked — no pouchAdd,
+			// so extraction cannot be a resource pump.
+			if(t - (b.lastHeroGravExtractAt || 0) < NET.HERO_RULES.GRAV_EXTRACT_MS) return;
+			b.lastHeroGravExtractAt = t;
+			if(b.gravTid){ entry.peer.send({ t: 'hact', a: 'gvx', ok: false, reason: 'full', x: tx, y: ty, tid: 0 }); return; }
+			let res = null;
+			try{ res = bridge.ghostHeroGravExtract ? bridge.ghostHeroGravExtract(tx, ty) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
+			if(res && res.ok){ b.gravTid = res.tid | 0; s.stats.gravExtracts = (s.stats.gravExtracts || 0) + 1; }
+			entry.peer.send({ t: 'hact', a: 'gvx', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid: (res && res.ok && res.tid) || 0 });
 			return;
 		}
 		if(pl.a === 'use'){

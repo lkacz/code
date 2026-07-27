@@ -37,6 +37,7 @@ import { necklace as NECKLACE } from './engine/necklace.js';
 import { antennas as ANTENNAS } from './engine/antennas.js';
 import { chests as CHESTS } from './engine/chests.js';
 import { gearForge as GEAR_FORGE } from './engine/gear_forge.js';
+import { gravityGun as GRAVITY_GUN } from './engine/gravity_gun.js';
 import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engine/crafting.js';
 import { furnishings as FURNISHINGS } from './engine/furnishings.js';
 import { createHotPickerModel, createHotPicker, foldText } from './engine/hot_picker.js';
@@ -2069,6 +2070,12 @@ const RESOURCE_KEY_SET=new Set(RESOURCE_KEYS);
 const TILE_TO_RES={}; RESOURCE_DEFS.forEach(r=>{ if(r.tile && T[r.tile]!=null) TILE_TO_RES[T[r.tile]]=r.key; });
 const RES_LABEL={}; RESOURCE_DEFS.forEach(r=>{ RES_LABEL[r.key]=r.label.toLowerCase(); });
 const RES_COLOR={}; RESOURCE_DEFS.forEach(r=>{ RES_COLOR[r.key]=r.color || '#9ca3af'; });
+// Human name for a tile the gravity gun carries: the resource label where one
+// exists (most carryables drop themselves), else the drop's label, else a hash.
+function gravityTileLabel(tid){
+	const key=TILE_TO_RES[tid] || (INFO[tid] && INFO[tid].drop) || null;
+	return (key && RES_LABEL[key]) ? RES_LABEL[key] : ('blok #'+(tid|0));
+}
 const TILE_LABELS={};
 RESOURCE_DEFS.forEach(r=>{ if(r.tile && T[r.tile]!=null) TILE_LABELS[T[r.tile]]=r.label; });
 Object.assign(TILE_LABELS,{
@@ -5647,6 +5654,7 @@ const RECIPES=[
 	// rykoszetem i podpala kazdego trafionego. Zaplon skraca budzet odbic.
 	{id:'rubber_balls_tar', name:'Kulki smolowe x12', cost:{rubber:2, coal:2}, make(){ inv.rubberBallTar+=12; msg('Kulki smolowe +12 - same nie plona, ale ogien je zapala: wtedy podpalaja teren i wrogow przy kazdym odbiciu'); }},
 	{id:'bouncer_pistol_tar', name:'Pistolet smolowy', cost:{rubber:8, steel:2, coal:4}, make(){ grantCraftedItem({kind:'weapon',weaponType:'bouncy',bouncyKind:'tar',name:'Pistolet smolowy',attackDamage:3,fireCooldown:0.30,tier:'rare',desc:'Klawisz 4: kulki smolowe. Przelec kulke przez ogien, lawe albo plonacego wroga — zapalona roznosi pozar rykoszetem i podpala trafionych. PPM odpala je od razu'}); }},
+	{id:'gravity_gun', name:'Działko grawitacyjne', cost:{iridium:6, graphene:2, silverWire:4, transistor:3, steel:6}, make(){ grantCraftedItem({kind:'weapon',weaponType:'gravity',name:'Działko grawitacyjne',attackDamage:2,fireRange:6,energyCost:14,tier:'epic',desc:'Klawisz 4: LPM wyrywa blok ze świata (im twardszy, tym dłużej i drożej), PPM nim ciska. Materiał decyduje o obrażeniach i skutkach — kamień ogłusza, szkło tnie, liście oślepiają. Żre energię'}); }},
 	{id:'obsidian_sword', name:'Miecz obsydianowy', cost:{obsidian:4, wood:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz obsydianowy',attackDamage:6,tier:'rare',desc:'Wykuty z hartowanej lawy'}); }},
 	// Bron wodna ma osobna fizyke w weapons.js: pod woda jest szybsza i mocniejsza,
 	// a na powierzchni pozostaje uzyteczna, lecz wyraznie przegrywa ze zwykla bronia.
@@ -5801,6 +5809,7 @@ const CRAFT_RECIPE_META={
 	molotovs:{group:'weapons',icon:'🔥',out:'molotov',amount:3,desc:'Ognisty rozprysk: podpala trafione cele i latwopalny teren.'},
 	sticky_bombs:{group:'weapons',icon:'🧨',out:'stickyBomb',amount:2,desc:'Klei sie do scian i mobow; krotki lont, maly krater.'},
 	rubber_balls:{group:'weapons',icon:'🔴',out:'rubberBall',amount:12,tint:'#e0533f',desc:'Ubity kauczuk: kulka odbija sie od scian i wrogow, tracac sile z kazdym odbiciem. Czesc lezy potem na ziemi do podniesienia.'},
+	gravity_gun:{group:'weapons',icon:'🌀',tint:'#b48cff',desc:'Bron z materii swiata: LPM wyrywa blok (czas i energia rosna z twardoscia), PPM nim ciska. Kamien ogłusza, szklo tnie do krwi, liscie oslepiaja, kauczuk sie odbija, zloty pien placi dziesieciokrotnie. Bardzo zarloczne na energie.'},
 	bouncer_pistol:{group:'weapons',icon:'🔫',tint:'#e0533f',desc:'Slaby pojedynczy strzal, ale rykoszet siega tam, gdzie luk nie dosiegnie: za rog, w glab korytarza, przez cala grupe wrogow.'},
 	rubber_balls_tar:{group:'weapons',icon:'🟤',out:'rubberBallTar',amount:12,tint:'#4a3a30',desc:'Kauczuk nasycony smola. Sama nie plonie — ale kazdy kontakt z ogniem ja zapala, a plonaca kulka podpala teren i wrogow przy kazdym odbiciu. Spalona nie wraca.'},
 	bouncer_pistol_tar:{group:'weapons',icon:'🔥',tint:'#ff7a3a',desc:'Ten sam rykoszet, tylko zapalny: przeprowadz kulke przez ogien albo plonacego wroga, a poniesie pozar dalej. Klawisz 4 przelacza miedzy pistoletami.'},
@@ -11783,7 +11792,7 @@ document.querySelectorAll('#weaponBar .wepSlot').forEach(el=>{
 // follows the selected device. The two bouncy pistols share a weaponType, so the
 // tar one is keyed by its AMMO ('bouncyTar'); without that the player could not
 // tell which pistol slot 4 is holding.
-const STREAM_SLOT_ICONS={flame:'🔥',hose:'💧',gas:'☠️',electric:'⚡',bouncy:'🔴',bouncyTar:'🟤'};
+const STREAM_SLOT_ICONS={flame:'🔥',hose:'💧',gas:'☠️',electric:'⚡',bouncy:'🔴',bouncyTar:'🟤',gravity:'🌀'};
 function streamSlotIconKey(it){
 	const wt=it && it.weaponType;
 	if(wt==='bouncy' && it.bouncyKind==='tar') return 'bouncyTar';
@@ -11913,6 +11922,21 @@ function updateWeaponBar(){
 						setWepSub(slot,[{dot:ball.color},String(ball.count)]);
 						out= ball.count<=0; low= !out && ball.count<AMMO_LOW;
 					}else setWepSub(slot,[]);
+				}else if(kind==='gravity'){
+					// the gun's "ammo" is the world itself: show the CARRIED block when
+					// there is one, hero energy (the true fuel) when the hand is empty
+					const g=(WEAPONS && WEAPONS.gravityInfo)? WEAPONS.gravityInfo():null;
+					const heldInfo=(g && g.held && INFO[g.held])? INFO[g.held] : null;
+					if(heldInfo){
+						setWepSub(slot,[{dot:heldInfo.color||'#9aa0a8'},gravityTileLabel(g.held)]);
+					}else{
+						const en=(MM.heroEnergy && MM.heroEnergy.info)? MM.heroEnergy.info():null;
+						const cost=Math.max(1,Number(preview.energyCost)||14);
+						if(en){
+							setWepSub(slot,[{dot:'#b48cff'},Math.floor(Math.max(0,en.energy||0))+'/'+Math.round(en.max)]);
+							out= en.energy<cost*0.3; low= !out && en.energy<cost*1.5;
+						}else setWepSub(slot,[]);
+					}
 				}else{
 					const fuel=(WEAPONS && WEAPONS.fuelInfo)? WEAPONS.fuelInfo(kind):null;
 					if(fuel){
@@ -11944,11 +11968,28 @@ function updateWeaponGauges(){
 		const rounded=Math.floor(Math.max(0,MM.heroEnergy.info().energy||0));
 		if(s4.lastEnergy!==rounded){ s4.lastEnergy=rounded; updateWeaponBar(); }
 	}
+	// gravity: the sub-line flips between energy and the carried block — rebuild
+	// the bar only when the HELD tile actually changes (change-detected like energy)
+	if(s4 && s4.el && s4.el.dataset.streamKind==='gravity'){
+		const held=st.gravHeld|0;
+		if(s4.lastGravHeld!==held){ s4.lastGravHeld=held; updateWeaponBar(); }
+		else if(!held && MM.heroEnergy && MM.heroEnergy.info){
+			const rounded=Math.floor(Math.max(0,MM.heroEnergy.info().energy||0));
+			if(s4.lastEnergy!==rounded){ s4.lastEnergy=rounded; updateWeaponBar(); }
+		}
+	}
 	['2','3','4'].forEach(k=>{
 		const slot=wepBarSlotCache[k]; if(!slot || !slot.gauge) return;
 		let mode='', frac=0, ready=false;
     if(k==='2' && st.spearActive){ mode='draw'; frac=st.spearRatio; ready=st.spearFull; }
     else if(k==='3' && st.bowActive){ mode='draw'; frac=st.bowRatio; ready=st.bowFull; }
+		// gravity channel repurposes the slot-4 gauge as RIP progress: with RMB
+		// bound to the throw, an ult meter here would gate nothing and lie —
+		// so a gravity slot NEVER falls through to the ult arm, even idle
+		else if(k==='4' && slot.el && slot.el.dataset.streamKind==='gravity'){
+			if(st.gravActive){ mode='draw'; frac=st.gravRatio; ready=st.gravRatio>=1; }
+			else if(st.gravHeld){ mode='draw'; frac=1; ready=true; }
+		}
 		else if(k===activeKey){ mode='ult'; frac=st.ult; ready=st.ult>=1; }
 		const sig=mode+((frac*50)|0)+(ready?'R':'');
 		if(slot.gaugeSig===sig) return;
@@ -12056,6 +12097,15 @@ function buildWeaponTip(k){
 		if(kind==='electric'){
 			const en=(MM.heroEnergy && MM.heroEnergy.info)? MM.heroEnergy.info():null;
 			if(en) frag.appendChild(hudTipRow('#ffd24a','Energia bohatera',Math.floor(Math.max(0,en.energy||0))+'/'+Math.round(en.max)));
+		}else if(kind==='gravity'){
+			const g=(WEAPONS && WEAPONS.gravityInfo)? WEAPONS.gravityInfo():null;
+			const en=(MM.heroEnergy && MM.heroEnergy.info)? MM.heroEnergy.info():null;
+			if(g && g.held && INFO[g.held]) frag.appendChild(hudTipRow(INFO[g.held].color||'#9aa0a8','Trzymany blok',gravityTileLabel(g.held)));
+			else frag.appendChild(hudTipNode('tipHint','Pusta dłoń — LPM na bloku w zasięgu zaczyna wyrywanie'));
+			if(en) frag.appendChild(hudTipRow('#b48cff','Energia bohatera',Math.floor(Math.max(0,en.energy||0))+'/'+Math.round(en.max)));
+			frag.appendChild(hudTipRow(null,'Pobór przy wyrywaniu',Math.max(1,Number(preview.energyCost)||14)+'/s'));
+			frag.appendChild(hudTipRow(null,'Zasięg chwytu',String(Math.max(2,Math.min(10,Number(preview.fireRange)||6))+' pól')));
+			if(en && en.energy<10) frag.appendChild(hudTipNode('tipWarn','Prawie bez energii — działko nie uniesie nic ciężkiego'));
 		}else if(WEAPONS && WEAPONS.fuelInfo){
 			const fuel=WEAPONS.fuelInfo(kind);
 			if(fuel){
@@ -12074,7 +12124,10 @@ function buildWeaponTip(k){
 			frag.appendChild(hudTipRow(tierColors[w.tier]||null, w.name||w.id, null, {mark:(it && it.id===w.id)?'➤':TIP_MARK_NONE, dim:!(it && it.id===w.id)}));
 		});
 	}
-	frag.appendChild(hudTipNode('tipHint','LPM atak · PPM ult, a gdy niedostepny: obrona -25%'));
+	// gravity rebinds RMB to the throw — the generic ult/defense footer would lie
+	frag.appendChild(hudTipNode('tipHint', (c.id==='stream' && preview.weaponType==='gravity')
+		? 'LPM (przytrzymaj) wyrywa blok · PPM nim ciska · pusta dłoń: PPM = obrona -25%'
+		: 'LPM atak · PPM ult, a gdy niedostepny: obrona -25%'));
 	return frag;
 }
 function buildHotbarTip(i){
@@ -14427,7 +14480,7 @@ function syncTouchActionMode(){
 			quick.title='Postaw blok w wybranym polu';
 		}else{
 			const it=activeWeaponItem(), type=(it&&it.weaponType)||'melee';
-			if(actionIcon) actionIcon.textContent=type==='harpoon'?'🔱':(it&&it.aquaticStyle==='trident')?'🔱':type==='bow'?'🏹':type==='flame'?'🔥':type==='hose'?'💧':type==='gas'?'☠️':type==='electric'?'⚡':'⚔️';
+			if(actionIcon) actionIcon.textContent=type==='harpoon'?'🔱':(it&&it.aquaticStyle==='trident')?'🔱':type==='bow'?'🏹':type==='flame'?'🔥':type==='hose'?'💧':type==='gas'?'☠️':type==='electric'?'⚡':type==='gravity'?'🌀':'⚔️';
 			if(actionLabel) actionLabel.textContent='ATAK';
 			quick.title=it?'Atak w wybranym kierunku — '+(it.name||it.id):'Atak — wybierz broń na pasku';
 		}
@@ -14840,6 +14893,86 @@ function maybeChainVeinBreak(tId){
 		break;
 	}
 }
+// --- Gravity gun world seams -------------------------------------------------
+// The gun's ONLY world access (weapons.js never writes a tile). Extraction
+// strips a foreground tile through the SAME lifecycle mining uses — falling,
+// water, tree-fall, temple and invasion notifications all fire — but awards
+// NOTHING: the block rides in the gun. Matter is conserved end to end:
+// extraction pays no yield, a settled block re-enters the world as debris, and
+// only a shatter pays the tile's normal mining drop, exactly once.
+function stripForegroundForCarry(tx,ty,tId){
+	const templeKind=templeDisturbanceKindForTile(tId);
+	if(!setForegroundConfirmed(tx,ty,T.AIR)) return false;
+	if(tId===T.VENDING_MACHINE && VENDING && VENDING.onTileRemoved) VENDING.onTileRemoved(tx,ty);
+	if(tId===T.SPRING_PLATFORM && SPRING_PLATFORMS && SPRING_PLATFORMS.onTileChanged) SPRING_PLATFORMS.onTileChanged(tx,ty,tId,T.AIR,getTile);
+	applyMaterialBreakPersonality(tId,tx,ty);
+	if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(tx,ty,getTile,{radius:22});
+	if(isWood(tId) && isWood(getTile(tx,ty-1))) startTreeFall(tx,ty-1);
+	if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
+	if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
+	notifyTempleDisturbance(templeKind,tx,ty,tId,T.AIR);
+	notifyInvasionMining(tId,tx,ty);
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+	return true;
+}
+MM.gravityWorld={
+	// Solo/host extraction. Reach and channel time are weapons.js's job; this
+	// seam owns world legality: bounds, fog/LOS, the material law, and the
+	// single-layer rule (a carried overlay/background has no falling-solid form).
+	extractAt:(tx,ty)=>{
+		if(MM.ghostMode) return {ok:false, reason:'ghost'};
+		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
+		if(!canPhysicallyTargetTile(tx,ty)) return {ok:false, reason:'los'};
+		if(getInfrastructureTile(tx,ty)!==T.AIR) return {ok:false, reason:'overlay'};
+		const tId=getTile(tx,ty);
+		const v=GRAVITY_GUN.canCarryTile(tId);
+		if(!v.ok) return {ok:false, reason:v.reason};
+		if(!stripForegroundForCarry(tx,ty,tId)) return {ok:false, reason:'write'};
+		noteSaveActivity();
+		return {ok:true, tid:tId};
+	},
+	// A block that ran out of flight re-enters the world as a falling solid: the
+	// falling sim owns the descent, body-blocking (restOnBody) and the final
+	// settle — a thrown block is DEBRIS, not construction.
+	landAt:(x,y,tid)=>{
+		if(MM.ghostMode) return false;
+		if(!GRAVITY_GUN.canCarryTile(tid).ok) return false;
+		if(!FALLING || !FALLING.spawnLoose) return false;
+		const ok=!!FALLING.spawnLoose(Math.floor(x),Math.floor(y),tid|0);
+		if(ok) noteSaveActivity();
+		return ok;
+	},
+	// Soft matter never mints a tile back — it joins the soft-drift layer where
+	// wind, thaw and footprints already know how to treat it.
+	driftAt:(x,y,tid)=>{
+		if(MM.ghostMode) return 0;
+		const mat=GRAVITY_GUN.driftMaterialFor(tid|0);
+		if(!mat || !SOFT_DRIFTS || !SOFT_DRIFTS.seedAround) return 0;
+		const n=SOFT_DRIFTS.seedAround(Math.floor(x), 1, mat, 6, getTile, setTile);
+		if(n) noteSaveActivity();
+		return n;
+	},
+	// Shatter pays the tile's normal mining yield as PHYSICAL drops (drops.js),
+	// each key re-checked against the resource registry.
+	shatterAt:(x,y,tid)=>{
+		if(MM.ghostMode) return 0;
+		if(!DROPS || !DROPS.spawnResource) return 0;
+		let paid=0;
+		for(const p of GRAVITY_GUN.shatterPayout(tid|0)){
+			if(!RESOURCE_KEY_SET.has(p.key)) continue;
+			if(DROPS.spawnResource(x, y-0.2, p.key, p.n, {source:'gravity_gun', vx:(Math.random()*2-1)*1.6, vy:-(1.0+Math.random()*1.4)})) paid+=p.n;
+		}
+		return paid;
+	},
+	// Impact sound in the world's ears: a landing block is a real noise event —
+	// meat is a DECOY (predators come to investigate the landing spot).
+	noiseAt:(x,y,tid,mass)=>{
+		if(!NOISE || !NOISE.emit) return 0;
+		const meat=tid===T.MEAT || tid===T.ROTTEN_MEAT || tid===T.BAKED_MEAT;
+		if(meat) return NOISE.emit(x,y,'decoy',1);
+		return NOISE.emit(x,y,'land',Math.max(0.3,Math.min(1.5,Number(mass)||1)));
+	}
+};
 function instantBreak(){
 	const bossPoint=resolveBossMinePoint();
 	const t=bossPoint ? bossPoint.tile : mineTileIdAt(mineTx,mineTy);
@@ -20579,6 +20712,12 @@ MM.ghostBridge={
 		try{ awardTileDrops(info); updateInventory(); updateHotbarCounts(); }catch(e){ return false; }
 		return true;
 	},
+	// GUEST-side gravity ack: the host confirmed (or refused) an extraction —
+	// hand the display truth to the weapon module (0 empties the hand)
+	ghostHeroGravHeld:(tid)=>{
+		try{ if(WEAPONS && WEAPONS.setGravHeld) WEAPONS.setGravHeld(tid|0); }catch(e){ return false; }
+		return true;
+	},
 	// HOST-side hero pickup: resources AND gear. Fog-gated with the shared map,
 	// reach measured against the HOST-tracked body, removed atomically. Gear
 	// travels as the item object — the guest banks it through grantItem, which
@@ -20729,20 +20868,30 @@ MM.ghostBridge={
 		if(info.unmineable) return {ok:false, reason:'hard'};
 		if(info.chestTier || info.cache) return {ok:false, reason:'chest'};
 		if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT) return {ok:false, reason:'machine'};
-		const templeKind=templeDisturbanceKindForTile(tId);
-		if(!setForegroundConfirmed(tx,ty,T.AIR)) return {ok:false, reason:'write'};
-		if(tId===T.VENDING_MACHINE && VENDING && VENDING.onTileRemoved) VENDING.onTileRemoved(tx,ty);
-		if(tId===T.SPRING_PLATFORM && SPRING_PLATFORMS && SPRING_PLATFORMS.onTileChanged) SPRING_PLATFORMS.onTileChanged(tx,ty,tId,T.AIR,getTile);
-		applyMaterialBreakPersonality(tId,tx,ty);
-		if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(tx,ty,getTile,{radius:22});
-		if(isWood(tId) && isWood(getTile(tx,ty-1))) startTreeFall(tx,ty-1);
-		if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
-		if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
-		notifyTempleDisturbance(templeKind,tx,ty,tId,T.AIR);
-		notifyInvasionMining(tId,tx,ty);
-		try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+		if(!stripForegroundForCarry(tx,ty,tId)) return {ok:false, reason:'write'};
 		noteSaveActivity();
 		return {ok:true, tid:tId, layer:'fg'};
+	},
+	// hero-mode gravity extraction: reach/LOS/rate already passed host-side; this
+	// seam re-validates the MATERIAL with the same predicate solo uses, then runs
+	// the same removal lifecycle — and awards nothing (the guest CARRIES it).
+	ghostHeroGravExtract:(tx,ty)=>{
+		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
+		if(getInfrastructureTile(tx,ty)!==T.AIR) return {ok:false, reason:'overlay'};
+		const tId=getTile(tx,ty);
+		const v=GRAVITY_GUN.canCarryTile(tId);
+		if(!v.ok) return {ok:false, reason:v.reason};
+		if(!stripForegroundForCarry(tx,ty,tId)) return {ok:false, reason:'write'};
+		noteSaveActivity();
+		return {ok:true, tid:tId};
+	},
+	// hero-mode gravity throw: the tile id comes from HOST body state, the
+	// speed/mass/damage from the material table — the guest supplied only a
+	// direction. The spawned block is coop-owned: it wounds creatures but its
+	// landing writes nothing (world-inert by the projectile contract).
+	ghostHeroGravThrow:(body,tid,dir,gid,duelGid)=>{
+		if(!WEAPONS || !WEAPONS.spawnGravityProjectile) return false;
+		return !!WEAPONS.spawnGravityProjectile(body, tid|0, dir, {coopOwner:true, ownerGid:gid, duelGid:duelGid||null});
 	},
 	// Hero-mode placement: ghost_host already debited its host-authoritative
 	// resource escrow; this seam validates world legality on the requested layer.
