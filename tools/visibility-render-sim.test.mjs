@@ -421,7 +421,7 @@ assert.match(mainSource, /function markChunkRenderDirty\(cx,y,pad,baseVersion,ne
 assert.match(mainSource, /const partial=!!\(entry\.version>=0 && dirty && !dirty\.full && dirty\.baseVersion===entry\.version && dirty\.version===currentVersion/, 'chunk cache only uses partial redraws when every version since the cache was tracked');
 assert.match(mainSource, /cctx\.clearRect\(0,redrawY0\*TILE,cctx\.canvas\.width,\(redrawY1-redrawY0\+1\)\*TILE\)/, 'partial chunk redraw clears only the dirty vertical strip');
 assert.match(mainSource, /function beginChunkCacheFrame\(\)[\s\S]*chunkCacheRebuildBudget = ms>28 \? 1 : \(ms>20 \? 2 : 3\)/, 'dirty chunk-cache rebuilds are budgeted aggressively enough to avoid post-impact and post-tree-cut frame drops');
-assert.match(mainSource, /entry=\{canvas:c,ctx:cctx,version:-1,sy,chests:\[\],doorways:\[\],spec:\[\]\}/, 'section chunk cache tracks door, trapdoor and specular cells for metadata reuse');
+assert.match(mainSource, /entry=\{canvas:c,ctx:cctx,version:-1,sy,chests:\[\],doorways:\[\],spec:\[\],relief:\[\]\}/, 'section chunk cache tracks door, trapdoor, specular and relief-face cells for metadata reuse');
 assert.match(mainSource, /function visibleDoorwayCellsFor\(sx,sy,viewX,viewY\)[\s\S]*collectDoorwayCellsInRange\(x0,x1,y0,y1,cells\)/, 'door overlay animation scans only the bounded visible section range');
 assert.match(mainSource, /window\.__mmPerf=\{[\s\S]*simMs[\s\S]*drawMs[\s\S]*chunks:\{rebuilt:chunkCacheRebuiltThisFrame,partial:chunkCachePartialRebuiltThisFrame,deferred:chunkCacheDeferredThisFrame/, 'frame profiler exposes sim/draw timing and full/partial chunk rebuild pressure');
 assert.match(mainSource, /const PERF_PUBLISH_INTERVAL_MS=125;[\s\S]*if\(publishAt-lastPerfPublishAt<PERF_PUBLISH_INTERVAL_MS && window\.__mmPerf\) return;/, 'public frame diagnostics are sampled instead of allocating every frame');
@@ -474,7 +474,7 @@ const edgeFx = mainSource.slice(edgeFxStart, edgeFxEnd);
 assert.match(edgeFx, /const oU=tileOpenForEdge\(fam,nU\), oD=tileOpenForEdge\(fam,nD\);/, 'edge pass derives exposure from material-family neighbor openness');
 assert.match(edgeFx, /if\(oU\)\{[\s\S]*?t===T\.SNOW[\s\S]*?rgba\(255,255,255/, 'snow top highlight only draws on exposed snow edges');
 assert.match(edgeFx, /if\(oD\)\{[\s\S]*?t===T\.SNOW/, 'snow bottom shade only draws on exposed snow edges');
-assert.match(mainSource, /drawTerrainEdgeFX\(cctx,t,arr,cx,lx,y,originY,sectionH,wx,lx\*TILE,y\*TILE,h,surf\);/, 'chunk bake runs the edge lighting pass for every terrain tile');
+assert.match(mainSource, /drawTerrainEdgeFX\(cctx,t,arr,cx,lx,y,originY,sectionH,wx,lx\*TILE,y\*TILE,h,surf,entry\);/, 'chunk bake runs the edge lighting pass for every terrain tile, handing it the entry so exposed faces are recorded for the live relief pass');
 const snowSparkleStart = mainSource.indexOf('// Snow sparkle');
 assert.ok(snowSparkleStart > 0, 'snow sparkle styling branch is present');
 const snowBranch = mainSource.slice(snowSparkleStart, mainSource.indexOf('// Ice reads glossy', snowSparkleStart));

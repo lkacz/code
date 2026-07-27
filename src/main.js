@@ -128,6 +128,9 @@ import { ghostClient as GHOST_CLIENT } from './engine/ghost_client.js';
 import './engine/party_hud.js'; // co-op roster + off-screen teammate arrows (MM.partyHud)
 import { createRenderHealth, blitProbe as renderBlitProbe, HINTS as RENDER_HINTS } from './engine/render_health.js';
 import { postFx as POST_FX } from './engine/post_fx.js';
+import { shadowParams, reliefLightVector, reliefFaceShade, reliefKeyDir, reliefAlphaBucket,
+	RELIEF_FACE_NX, RELIEF_FACE_NY, RELIEF_HI_ALPHA, RELIEF_SH_ALPHA, RELIEF_MIN_MAG,
+	RELIEF_ALPHA_STEPS, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_SRC_RANGE, RELIEF_SRC_WEIGHT, RELIEF_EMBOSS_MIN_BUCKET, reliefLitTerm } from './engine/post_fx.js';
 import './engine/ui.js';
 import './inventory_ui.js';
 // boot_watchdog marks non-local framed production loads before this module runs.
@@ -7385,69 +7388,49 @@ const RELIEF_HI={
 	[EDGE_FROST]:'255,255,255', [EDGE_WOOD]:'255,214,130', [EDGE_BUILT]:'255,255,255',
 	[EDGE_METEOR]:'202,222,255'
 };
-function drawTerrainRelief(g,t,fam,oU,oD,oL,oR,px,py,h,sun,notchL){
-	const hi=RELIEF_HI[fam];
-	if(!hi) return;
-	if(fam===EDGE_BUILT){
-		g.fillStyle='rgba('+hi+','+(0.11*sun).toFixed(3)+')';
-		g.fillRect(px,py,TILE,1); g.fillRect(px,py+1,1,TILE-1);
-		g.fillStyle='rgba(8,10,18,0.14)';
-		g.fillRect(px,py+TILE-1,TILE,1); g.fillRect(px+TILE-1,py,1,TILE-1);
-		return;
-	}
-	// micro-bumps: an emboss pair per bump — highlight row, then the same row
-	// shifted one px down-right in shadow. Sand ripples are wider and softer;
-	// frost is sparse with a hard sparkle; wood raises grain along its length.
-	const capT=(t===T.GRASS||t===T.UNSTABLE_GRASS||t===T.GRASS_SNOW);
-	const top=py+(oU?6:2), bot=py+TILE-3;
-	if(fam===EDGE_WOOD){
-		for(let i=0;i<2;i++){
-			const r=hash32(h+i*71,i*131);
-			const bx=px+3+((r>>>3)%(TILE-7));
-			const by=py+2+((r>>>8)%5);
-			// clamped so the SHADOW row (one px below the ridge) still ends inside
-			// this tile — unclamped it spilled up to 2 px into the neighbour's
-			// pixels of the chunk canvas, which float in mid-air under overhangs
-			const bh=Math.min(TILE-2-(by-py), 6+((r>>>12)%(TILE-10)));
-			g.fillStyle='rgba('+hi+','+(0.09*sun).toFixed(3)+')';
-			g.fillRect(bx,by,1,bh);
-			g.fillStyle='rgba(8,10,18,'+(0.11*sun).toFixed(3)+')';
-			g.fillRect(bx+1,by+1,1,bh);
-		}
-	}else{
-		const sand=fam===EDGE_SAND, frost=fam===EDGE_FROST;
-		const n=frost?2:3;
-		// BOTH halves of the emboss scale with sun. A bump is an illusion made of
-		// a PAIR; with only the highlight fading at depth the survivors were the
-		// shadows, and every bump underground read as a pit.
-		const hiA=(frost?0.16:0.10)*sun, shA=(sand?0.09:0.13)*sun;
-		for(let i=0;i<n;i++){
-			const r=hash32(h+i*71,i*131);
-			const bw=sand?5+((r>>>13)%4):2+((r>>>13)%3);
-			const bx=px+1+((r>>>3)%Math.max(1,TILE-2-bw));
-			const by=top+((r>>>8)%Math.max(1,bot-top));
-			g.fillStyle='rgba('+hi+','+hiA.toFixed(3)+')';
-			g.fillRect(bx,by,bw,1);
-			g.fillStyle='rgba(8,10,18,'+shA.toFixed(3)+')';
-			g.fillRect(bx+1,by+1,bw,1);
-		}
-	}
-	// face bevel: a graded ramp inside each exposed face — light catches the
-	// left and top, falls off toward the right and bottom. AO (the concave
-	// half of form) darkens crevices; this is the convex half.
-	if(oL){ g.fillStyle='rgba('+hi+','+(0.07*sun).toFixed(3)+')'; g.fillRect(px+1,py+2,2,TILE-4); }
-	if(oR){ g.fillStyle='rgba(8,10,18,0.08)'; g.fillRect(px+TILE-3,py+2,2,TILE-4); }
-	if(oD){ g.fillStyle='rgba(8,10,18,0.08)'; g.fillRect(px+1,py+TILE-4,TILE-2,2); }
-	if(oU && !capT){ g.fillStyle='rgba('+hi+','+(0.06*sun).toFixed(3)+')'; g.fillRect(px+1,py+2,TILE-2,2); }
-	// the lit shoulder: where the top face meets the lit side, the chamfer
-	// catches the key light hardest — the single strongest convexity cue.
-	// notchL guard: soft materials CUT their top-left silhouette corner to
-	// round it against the sky, and the shoulder must not paint pixels back
-	// into the hole the notch just cleared.
-	if(oU && oL && !capT && !notchL){ g.fillStyle='rgba('+hi+','+(0.11*sun).toFixed(3)+')'; g.fillRect(px,py,4,2); g.fillRect(px,py+2,2,2); }
+// Record packing. A section can expose thousands of faces, and every cached
+// section keeps its list alive, so objects like entry.spec uses would run to
+// megabytes across the chunk cache. One Smi per tile costs 8 bytes:
+//   bits 0..10  y + RELIEF_Y_BIAS   11..16  local x   17..20  open mask
+//   bit  21     cap tile            22..25  edge family
+// The bias keeps sky sections (negative y) positive without a per-world
+// constant, which the partial-rebake filter would otherwise have to track.
+const RELIEF_Y_BIAS=1024;
+function reliefPack(lx,y,mask,cap,fam){
+	return ((fam&15)<<22)|((cap?1:0)<<21)|((mask&15)<<17)|((lx&63)<<11)|((y+RELIEF_Y_BIAS)&2047);
 }
+function reliefY(rec){ return (rec&2047)-RELIEF_Y_BIAS; }
+// The bake no longer paints relief at all — it only records WHERE the exposed
+// faces are, because the direction of the light is not knowable at bake time
+// and baking a guess is exactly the bug this replaced. drawReliefPass reads
+// these records and lights them live.
+function collectTerrainRelief(entry,t,fam,oU,oD,oL,oR,lx,y){
+	if(!RELIEF_HI[fam] || !(oU||oD||oL||oR)) return;
+	const cap=(t===T.GRASS||t===T.UNSTABLE_GRASS||t===T.GRASS_SNOW);
+	const mask=(oU?1:0)|(oR?2:0)|(oD?4:0)|(oL?8:0);
+	entry.relief.push(reliefPack(lx,y,mask,cap,fam));
+}
+// Prebuilt fill styles. A live pass this size is not paid for in rectangles
+// (0.28 us each, measured) — it is paid for in the strings that describe them,
+// so alpha is quantized and every style exists before the frame starts.
+let reliefStyleCache=null;
+function reliefStyles(){
+	if(reliefStyleCache) return reliefStyleCache;
+	const hi={}, sh=new Array(RELIEF_ALPHA_STEPS+1);
+	for(const famKey of Object.keys(RELIEF_HI)){
+		const arr=new Array(RELIEF_ALPHA_STEPS+1);
+		for(let b=1;b<=RELIEF_ALPHA_STEPS;b++) arr[b]='rgba('+RELIEF_HI[famKey]+','+(RELIEF_HI_ALPHA*b/RELIEF_ALPHA_STEPS).toFixed(3)+')';
+		hi[famKey]=arr;
+	}
+	for(let b=1;b<=RELIEF_ALPHA_STEPS;b++) sh[b]='rgba(8,10,18,'+(RELIEF_SH_ALPHA*b/RELIEF_ALPHA_STEPS).toFixed(3)+')';
+	reliefStyleCache={hi,sh};
+	return reliefStyleCache;
+}
+// Reused per-face sample buffer: [l, lAlong+, lAlong-] x 4 faces. Allocating
+// this per tile would put ~600 arrays a frame on the young generation.
+const RFL=new Float64Array(12);
 // The main edge pass: called last for every bakeable terrain tile.
-function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
+function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf,reliefEntry){
 	if(window.__mmNoEdgeFX) return;
 	const fam=tileEdgeFamily(t);
 	if(!fam || t===T.GLASS) return;
@@ -7607,11 +7590,11 @@ function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
 			g.fillRect(px+4+((h>>>7)%11),py+TILE-3,1,2);
 		}
 	}
-	// Ultra relief: baked convexity — gated so standard bakes stay
-	// byte-identical, and skipping the two families that are not slabs
-	// (foliage is a cloud of leaves, lava is a liquid).
-	if(gfxUltraOn('relief') && fam!==EDGE_LEAF && fam!==EDGE_LAVA){
-		drawTerrainRelief(g,t,fam,oU,oD,oL,oR,px,py,h,sun,notchL);
+	// Ultra relief: record the exposed faces for the live lighting pass — gated
+	// so standard bakes carry no list at all, and skipping the two families
+	// that are not slabs (foliage is a cloud of leaves, lava is a liquid).
+	if(reliefEntry && gfxUltraOn('relief') && fam!==EDGE_LEAF && fam!==EDGE_LAVA){
+		collectTerrainRelief(reliefEntry,t,fam,oU,oD,oL,oR,lx,y);
 	}
 }
 // ---- Tile art v2: richer inner material art ---------------------------------
@@ -9592,7 +9575,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 		// each cached chunk holds a full-height canvas (megabytes of pixels) — evict the
 		// chunks farthest from the current view so a long trek can't accumulate them forever
 		trimChunkCanvasCache(Number.isFinite(centerCx)?centerCx:cx, CHUNK_CANVAS_MAX_KEEP-1, sy);
-		const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=sectionH*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1,sy,chests:[],doorways:[],spec:[]}; chunkCanvases.set(key,entry); }
+		const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=sectionH*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1,sy,chests:[],doorways:[],spec:[],relief:[]}; chunkCanvases.set(key,entry); }
 	const currentVersion=WORLD.chunkVersion(cx,sy); if(entry.version===currentVersion && !entry.edgeStale){ chunkRenderDirty.delete(key); return; }
 	// Version-only sync: the shared base-section version moved but no pixels in
 	// THIS section changed (empty dirty band) — adopt the version, skip repainting
@@ -9615,11 +9598,16 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 		entry.chests=(entry.chests||[]).filter(o=>o.y<redrawWorldY0 || o.y>redrawWorldY1);
 		entry.doorways=(entry.doorways||[]).filter(o=>o.y<redrawWorldY0 || o.y>redrawWorldY1);
 		entry.spec=(entry.spec||[]).filter(o=>o.y<redrawWorldY0 || o.y>redrawWorldY1);
+		// relief records are packed ints, so the row filter has to decode y —
+		// the alternative (a parallel y array) would double the memory the
+		// packing exists to save
+		entry.relief=(entry.relief||[]).filter(r=>{ const ry=reliefY(r); return ry<redrawWorldY0 || ry>redrawWorldY1; });
 	}else{
 		cctx.clearRect(0,0,cctx.canvas.width,cctx.canvas.height);
 		entry.chests=[];
 		entry.doorways=[];
 		entry.spec=[];
+		entry.relief=[];
 	}
 	cctx.save();
 	cctx.translate(0,-originY*TILE);
@@ -10090,7 +10078,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				}
 				// Final neighbor-aware pass: sunlit rims, AO shadows, silhouette
 				// notching and material caps on every exposed face
-				drawTerrainEdgeFX(cctx,t,arr,cx,lx,y,originY,sectionH,wx,lx*TILE,y*TILE,h,surf);
+				drawTerrainEdgeFX(cctx,t,arr,cx,lx,y,originY,sectionH,wx,lx*TILE,y*TILE,h,surf,entry);
 			}
 		}
 	cctx.restore();
@@ -10429,6 +10417,149 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 					POST_FX.glow(cxp,cyp,CHEST_TIER_GLOW[t]||CHEST_TIER_GLOW.def,null,TILE);
 					if(chestDebug){ ctx.strokeStyle='#fff'; ctx.lineWidth=1; ctx.strokeRect((localLayer?(wx-camDrawX):wx)*TILE+1,(localLayer?(y-camDrawY):y)*TILE+1,TILE-2,TILE-2); }
 				}
+			}
+		}
+		// Ultra relief: the LIVE half of the convexity model. The bake recorded
+		// WHERE the exposed faces are (packed ints, zero tile reads here); this
+		// pass decides where the light is coming FROM and shades them every
+		// frame. Carry a torch past a wall and the highlight crosses to the
+		// other side of every block on it — that swap is the whole effect, and
+		// it is the thing the original baked relief could never do.
+		if(gfxUltraOn('relief')){
+			const shadow=shadowParams(frameTimeInfo);
+			const keyDir=reliefKeyDir(frameTimeInfo,shadow);
+			// Lighting disabled is not "dark" — it is "no light model". Faces then
+			// read as evenly lit and the celestial key alone shapes the tile,
+			// which is still a live direction, just a slower one.
+			const lit=(LIGHTING && LIGHTING.lightAt && LIGHTING.config && LIGHTING.config.enabled)?LIGHTING.lightAt:null;
+			const ST=reliefStyles();
+			// The hero is the only light that moves continuously, and it is the one
+			// the player judges the effect by — they walk, and the walls answer.
+			const srcOn=!!(player && (LIGHTING && LIGHTING.config ? LIGHTING.config.heroGlow>0 : true));
+			const srcPx=player?player.x+HERO_BODY_W*0.5:0, srcPy=player?player.y+HERO_BODY_H*0.5:0;
+			// FIXED caps (owner's rule: never a frame-time reaction). rScan bounds
+			// the WALK because a cave-riddled section holds thousands of exposed
+			// faces and even rejecting one costs a visibility lookup.
+			let rBudget=RELIEF_BUDGET, rScan=RELIEF_SCAN, rTiles=0, rRects=0;
+			// surfaceHeight memo: bake emits records in column-major order, so a
+			// single-slot memo hits for every tile of a column
+			let memoCol=Number.NaN, memoSurf=0;
+			ctx.save();
+			for(let cx4=minChunk; cx4<=maxChunk && rBudget>0 && rScan>0; cx4++){
+				if((cx4+1)*CHUNK_W<sx-1 || cx4*CHUNK_W>sx+viewX+2) continue;
+				for(let section=minSection; section<=maxSection && rBudget>0 && rScan>0; section++){
+					const entry=chunkCanvases.get(worldRenderSectionKey(cx4,section));
+					const recs=(entry && Array.isArray(entry.relief)) ? entry.relief : [];
+					for(let i=0;i<recs.length;i++){
+						if(rBudget<=0 || --rScan<=0) break;
+						const rec=recs[i];
+						const y=reliefY(rec);
+						if(y<y0 || y>=y1) continue;
+						const wx=cx4*CHUNK_W+((rec>>>11)&63);
+						if(wx<sx-1 || wx>sx+viewX+1) continue;
+						if(!worldFxVisible(wx,y)) continue;
+						const mask=(rec>>>17)&15;
+						// Per open face: the light standing in the air cell touching it,
+						// plus that cell's two neighbours ALONG the face. The pair is
+						// what carries direction — the straight-out term alone is the
+						// same for every tile of a wall no matter where the torch is.
+						let litMax=0;
+						for(let f=0;f<4;f++){
+							const i=f*3;
+							if(!(mask&(1<<f))){ RFL[i]=RFL[i+1]=RFL[i+2]=0; continue; }
+							const nx=RELIEF_FACE_NX[f], ny=RELIEF_FACE_NY[f];
+							const ax=wx+nx, ay=y+ny;      // the air cell in front of the face
+							const tx=-ny, ty=nx;          // along it
+							const l=lit?lit(ax,ay):1;
+							RFL[i]=l;
+							RFL[i+1]=lit?lit(ax+tx,ay+ty):1;
+							RFL[i+2]=lit?lit(ax-tx,ay-ty):1;
+							if(l>litMax) litMax=l;
+						}
+						if(litMax<0.06) continue; // pitch dark: the darkness overlay owns this tile
+						if(wx!==memoCol){ memoCol=wx; memoSurf=WORLDGEN.surfaceHeight(wx); }
+						// the sun's azimuth only shapes what the sun can reach; a few
+						// tiles down the key fades out and lamps take over entirely
+						const sky=Math.max(0,Math.min(1,1-(y-memoSurf)/8));
+						// the moving source: continuous in float, so walking sweeps the
+						// relief smoothly instead of stepping with the light field cache
+						let srcX=0,srcY=0,srcW=0;
+						if(srcOn){
+							const ddx=srcPx-(wx+0.5), ddy=srcPy-(y+0.5);
+							const d2=ddx*ddx+ddy*ddy;
+							if(d2<RELIEF_SRC_RANGE*RELIEF_SRC_RANGE){
+								const d=Math.sqrt(d2)||1;
+								srcX=ddx/d; srcY=ddy/d;
+								srcW=RELIEF_SRC_WEIGHT/(1+d2/18);
+							}
+						}
+						const v=reliefLightVector(RFL,mask,keyDir.x,keyDir.y,keyDir.w*sky,srcX,srcY,srcW);
+						if(v.m<RELIEF_MIN_MAG) continue;
+						const litT=reliefLitTerm(litMax);
+						const fam=(rec>>>22)&15;
+						const hiArr=ST.hi[fam]; if(!hiArr) continue;
+						const px=(localLayer?(wx-camDrawX):wx)*TILE;
+						const py=(localLayer?(y-camDrawY):y)*TILE;
+						let drew=false, nRects=0, strips=0;
+						const capT=((rec>>>21)&1)!==0;
+						for(let f=0;f<4;f++){
+							if(!(mask&(1<<f))) continue;
+							if(f===0 && capT) continue; // the turf cap owns that face already
+							const s=reliefFaceShade(f,v.x,v.y,v.m,litT);
+							const b=reliefAlphaBucket(Math.abs(s));
+							if(b<0) continue;
+							ctx.fillStyle=(s>0?hiArr:ST.sh)[b];
+							if(f===0) ctx.fillRect(px+2,py+1,TILE-4,2);
+							else if(f===1) ctx.fillRect(px+TILE-3,py+2,2,TILE-4);
+							else if(f===2) ctx.fillRect(px+2,py+TILE-3,TILE-4,2);
+							else ctx.fillRect(px+1,py+2,2,TILE-4);
+							drew=true; nRects++; strips++;
+						}
+						// The micro emboss: a highlight and its shadow, the shadow always
+						// on the side AWAY from the light. This pair is the part that
+						// used to be baked with a fixed down-right offset, i.e. the part
+						// that never moved. Now the offset is the light vector.
+						//
+						// It is spent where it is NEEDED: a block already showing two
+						// contrasting faces reads as convex on those alone, while a flat
+						// single-face expanse — a cave floor, a cliff top, the inside of a
+						// mined corridor — has nothing but this to say which way the light
+						// falls. Honest note on the saving: none, in the densest scene.
+						// A warren's walls are two tiles thick, so every tile has exactly
+						// ONE open face and the rule never fires there — measured 3.0
+						// rects per tile with and without it. It earns its keep on thick
+						// exposed masses, not on corridors.
+						const eb=strips<2 ? reliefAlphaBucket(v.m*litT*0.85) : -1;
+						if(eb>=RELIEF_EMBOSS_MIN_BUCKET){
+							const hh=hash32(wx,y);
+							let ox=Math.round(-v.x*1.5), oy=Math.round(-v.y*1.5);
+							if(ox===0 && oy===0) oy=1;
+							const wood=fam===EDGE_WOOD;
+							const bw=wood?1:(fam===EDGE_SAND?6:3), bh=wood?7:2;
+							const bx=px+2+((hh>>>3)%Math.max(1,TILE-4-bw));
+							const by=py+2+((hh>>>9)%Math.max(1,TILE-4-bh));
+							ctx.fillStyle=hiArr[eb];
+							ctx.fillRect(bx,by,bw,bh);
+							ctx.fillStyle=ST.sh[eb];
+							ctx.fillRect(bx+ox,by+oy,bw,bh);
+							drew=true; nRects+=2;
+						}
+						if(drew){ rBudget--; rTiles++; }
+						rRects+=nRects;
+					}
+				}
+			}
+			ctx.restore();
+			if(POST_FX && POST_FX.metrics){
+				POST_FX.metrics.reliefTiles+=rTiles;
+				POST_FX.metrics.reliefRects+=rRects;
+				// Which cap ended the pass, if either. A budget cap means the scene
+				// had more form than the frame pays for (a design choice); a SCAN cap
+				// means the walk gave up before it reached visible records, which is
+				// silent truncation and reads as relief that stops halfway across the
+				// screen. They are different failures and must not share a counter.
+				if(rScan<=0) POST_FX.metrics.reliefScanCap++;
+				if(rBudget<=0) POST_FX.metrics.reliefBudgetCap++;
 			}
 		}
 		// Ultra specular: budgeted twinkle glints over the bake-collected points.

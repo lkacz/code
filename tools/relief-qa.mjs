@@ -1,20 +1,26 @@
 #!/usr/bin/env node
-// Live QA for Ultra relief (baked micro-bumps + face bevels, the 14th
-// component). The whole feature is a BAKE change, so metrics prove nothing —
-// what matters is pixels, driven through the REAL toggle path:
+// Live QA for Ultra relief (the 14th component): per-tile convexity whose
+// LIGHT DIRECTION is decided every frame, not baked.
 //
-//   1. stage one wall of each relief family beside the hero, in daylight;
-//   2. screenshot the wall with relief OFF;
-//   3. CLICK the actual pause-panel checkbox (the same handler a player uses —
-//      it must both set the component and drop the chunk caches);
-//   4. screenshot again: the wall must visibly change;
-//   5. click it OFF again: the wall must return to the original pixels —
-//      which proves the gate (standard bakes byte-identical), the cache
-//      invalidation (a stale cache would keep the relief) and bake
-//      determinism (a Math.random in the bake would never re-converge).
+// Part one — does it draw at all? Stage one wall of each relief family beside
+// the hero, screenshot with the component off, CLICK the actual pause-panel
+// checkbox, screenshot again, click it off. That proves the gate, the cache
+// invalidation and determinism, per material.
 //
-// The time of day is re-pinned before every shot so the global daylight tint
-// cannot masquerade as a relief diff.
+// Part two — and this is the part that matters — does it MOVE? The first
+// relief shipped with its key light baked into the chunk canvas: a block lit
+// from the top-left stayed lit from the top-left through midnight and past
+// every torch, which is a texture, not a bump map. So the swap tests isolate
+// the relief LAYER by subtraction — (component on) minus (component off) at
+// one light position, which cancels the sky tint, the darkness overlay and
+// the torch's own halo — and then compare that layer against the same layer
+// with the light somewhere else. A baked relief scores exactly zero: its
+// layer is byte-identical whatever the light does. Two light moves are
+// measured, the sun crossing the sky and a torch crossing the wall.
+//
+// Everything with its own clock (sun, clouds, wind, sky moods, mobs) is
+// re-pinned before every shot, and the camera is re-checked before every
+// capture — a camera that drifted would hand back a huge score for nothing.
 //
 // Usage: npm start (server on 8123), then:
 //   node tools/relief-qa.mjs [out.png] [--url=http://127.0.0.1:8123/index.html] [--seed=777]
@@ -140,8 +146,29 @@ const RECTS = (g) => `(()=>{
 // Everything that moves on its own clock gets PINNED before a shot: the sun
 // (importState), the clouds (snapshot/restore), the wind (override). Without
 // this the A/B measures weather, not the bake.
-const PIN = (g) => `(()=>{
-	MM.background.importState({cycleT:0.30});
+// Which cycleT values put the sun low in the east and low in the west. The
+// swap test needs the KEY LIGHT to cross the sky, and cycleT is not tDay — the
+// mapping runs through the season calendar, so it is probed, never assumed.
+const FINDSUN = `(()=>{
+	let dawn=null, dusk=null, night=null;
+	for(let i=0;i<=200;i++){
+		const c=i/200;
+		MM.background.importState({cycleT:c});
+		const ti=MM.background.timeInfo();
+		if(!ti || !Number.isFinite(ti.tDay)) continue;
+		if(ti.isDay){
+			if(!dawn || Math.abs(ti.tDay-0.10)<Math.abs(dawn.tDay-0.10)) dawn={c,tDay:+ti.tDay.toFixed(3)};
+			if(!dusk || Math.abs(ti.tDay-0.90)<Math.abs(dusk.tDay-0.90)) dusk={c,tDay:+ti.tDay.toFixed(3)};
+		}else if(!night || Math.abs(ti.tDay-0.5)<Math.abs(night.tDay-0.5)) night={c,tDay:+ti.tDay.toFixed(3)};
+	}
+	if(!dawn||!dusk||!night) return 'FAIL no-phases';
+	return 'OK '+JSON.stringify({dawn,dusk,night});
+})()`;
+
+// cycleT and torch position are parameters because the swap tests move exactly
+// one of them and hold everything else still. torchX<0 means no torch.
+const PIN = (g, cycleT = 0.30, torchX = -1) => `(()=>{
+	MM.background.importState({cycleT:${cycleT}});
 	// An EMPTY deterministic sky, not a pinned one: restoring a cloud snapshot
 	// re-places the clouds but not the phase of their precipitation particles,
 	// and a snowflake drifting in front of a block is a ~250-luma diff. No
@@ -171,6 +198,13 @@ const PIN = (g) => `(()=>{
 		}
 		for(let dy=1;dy<=7;dy++) W.setTile(x0+4, ${g.surf}-dy, 0);   // the gap air
 	}
+	// The swap torch. A torch is passable and belongs to no edge family, so
+	// tileOpenForEdge reports it exactly like AIR — placing one beside the wall
+	// cannot change a single open-face mask, which is what makes it safe to
+	// move between shots without re-baking anything the diff can see.
+	W.setTile(${g.wallX0}-2, ${g.surf}-2, 0);
+	W.setTile(${g.wallX1}+2, ${g.surf}-2, 0);
+	if(${torchX}>=0) W.setTile(${torchX}, ${g.surf}-2, 16);
 	// NOTE deliberately ABSENT: no hero re-teleport here. An earlier version
 	// re-pinned him every shot, which LIFTED him off the ground each time;
 	// physics dropped him back, the camera eased after him, and the whole wall
@@ -327,9 +361,53 @@ async function main(){
 			return JSON.parse(r.result.value);
 		};
 
-		await run('pin', PIN(g));
-		await sleep(500);
-		await run('pin', PIN(g));
+			// THE SWAP TEST. Everything above proves relief draws something; this
+			// proves it draws something DIFFERENT when the light moves, which is the
+			// only property that distinguishes a bump map from a texture.
+			//
+			// It isolates the relief LAYER by subtraction — (relief on) minus
+			// (relief off) at one light position — so the sky tint, the darkness
+			// overlay and the torch's own halo all cancel inside each pair. Then it
+			// compares the two isolated layers. A baked relief would produce two
+			// byte-identical layers and score exactly 0 no matter how bright the
+			// scene is; only a live one can score above it.
+			const reliefLayerSwap = async (aOff, aOn, bOff, bOn) => {
+				const r = await send(ws, 'Runtime.evaluate', { awaitPromise: true, returnByValue: true, expression: `(async()=>{
+					const load=(d)=>new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src='data:image/png;base64,'+d; });
+					const shots=await Promise.all([${JSON.stringify(aOff)},${JSON.stringify(aOn)},${JSON.stringify(bOff)},${JSON.stringify(bOn)}].map(load));
+					const w=Math.min(...shots.map(s=>s.width)), h=Math.min(...shots.map(s=>s.height));
+					const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+					const c2=cv.getContext('2d',{willReadFrequently:true});
+					const px=shots.map(s=>{ c2.clearRect(0,0,w,h); c2.drawImage(s,0,0); return c2.getImageData(0,0,w,h).data; });
+					const rects=${JSON.stringify(local)};
+					const perBlock=[];
+					let magA=0, magB=0, swap=0, n=0;
+					for(const rc of rects){
+						let bA=0,bB=0,bS=0,bn=0;
+						for(let y=Math.max(0,rc.y); y<Math.min(h,rc.y+rc.h); y++) for(let x=Math.max(0,rc.x); x<Math.min(w,rc.x+rc.w); x++){
+							const i=(y*w+x)*4;
+							for(let c=0;c<3;c++){
+								const la=px[1][i+c]-px[0][i+c];   // relief layer, light position A
+								const lb=px[3][i+c]-px[2][i+c];   // relief layer, light position B
+								bA+=Math.abs(la); bB+=Math.abs(lb); bS+=Math.abs(la-lb);
+							}
+							bn++;
+						}
+						bn=Math.max(1,bn);
+						const mag=Math.max(bA,bB)/bn;
+						perBlock.push({mag:+(mag).toFixed(2), swap:+(bS/bn).toFixed(2), ratio:+(bS/Math.max(1e-6,Math.max(bA,bB))).toFixed(3)});
+						magA+=bA; magB+=bB; swap+=bS; n+=bn;
+					}
+					n=Math.max(1,n);
+					return JSON.stringify({magA:+(magA/n).toFixed(2), magB:+(magB/n).toFixed(2), swap:+(swap/n).toFixed(2),
+						ratio:+(swap/Math.max(1e-6,Math.max(magA,magB))).toFixed(3), perBlock});
+				})()` });
+				return JSON.parse(r.result.value);
+			};
+
+			await run('pin', PIN(g));
+			await sleep(500);
+			await run('pin', PIN(g));
 		await sleep(300);
 		await guardCamera();
 		const shotOff = await shoot();
@@ -374,7 +452,104 @@ async function main(){
 		await run('fullOff', TOGGLE(false));
 		console.log('wrote', out + '-full.png');
 
-		const dOn = await diffInPage(shotOff, shotOn);
+			// --- the swap runs ---------------------------------------------------
+			const sunS = await run('findsun', FINDSUN);
+			if (!sunS.startsWith('OK ')) throw new Error('sun phase probe failed');
+			const sun = JSON.parse(sunS.slice(3));
+			// One light position = four settled shots (off, on) so the layer can be
+			// isolated. The camera is guarded before every one of them: this test
+			// deliberately changes the WORLD's light and nothing else, and a camera
+			// that drifted would hand back a huge score for no reason at all.
+			const layerAt = async (cycleT, torchX) => {
+				await run('reliefOff', TOGGLE(false));
+				await run('pin', PIN(g, cycleT, torchX));
+				await sleep(1600);
+				await run('pin', PIN(g, cycleT, torchX));
+				await sleep(400);
+				await guardCamera();
+				const off = await shoot();
+				await run('reliefOn', TOGGLE(true));
+				await sleep(1600);
+				await run('pin', PIN(g, cycleT, torchX));
+				await sleep(400);
+				await guardCamera();
+				const on = await shoot();
+				return [off, on];
+			};
+			const [dawnOff, dawnOn] = await layerAt(sun.dawn.c, -1);
+			const [duskOff, duskOn] = await layerAt(sun.dusk.c, -1);
+			const sunSwap = await reliefLayerSwap(dawnOff, dawnOn, duskOff, duskOn);
+			console.log('sun swap (dawn tDay=' + sun.dawn.tDay + ' vs dusk tDay=' + sun.dusk.tDay + '):', JSON.stringify(sunSwap));
+			await writeFile(out + '-dawn.png', Buffer.from(dawnOn, 'base64'));
+			await writeFile(out + '-dusk.png', Buffer.from(duskOn, 'base64'));
+
+			// The torch pair: night, one torch, moved from the wall's left end to
+			// its right end. Torch level is 13/15 so the near blocks are strongly
+			// lit and the far ones barely — which is why this is scored on the
+			// blocks nearest each torch, not on the wall average.
+			const [tlOff, tlOn] = await layerAt(sun.night.c, g.wallX0 - 2);
+			const [trOff, trOn] = await layerAt(sun.night.c, g.wallX1 + 2);
+			const torchSwap = await reliefLayerSwap(tlOff, tlOn, trOff, trOn);
+			console.log('torch swap (night, left end vs right end):', JSON.stringify(torchSwap));
+			await writeFile(out + '-torchL.png', Buffer.from(tlOn, 'base64'));
+			await writeFile(out + '-torchR.png', Buffer.from(trOn, 'base64'));
+
+			// Cost, on the same scene that just proved the effect: tiles shaded per
+			// frame, so the budget constant can be set from a number instead of a
+			// guess. Measured with the component ON and the wall in view.
+			await run('reliefOn', TOGGLE(true));
+			await sleep(1200);
+			const costS = await run('cost', `(async()=>{
+				const m=MM.postFx.metrics;
+				// Count REAL rAF callbacks. An earlier revision divided wall clock by
+				// 16.7, i.e. assumed 60fps — and headless software rendering in a dense
+				// scene runs at 16. That one assumption understated the per-frame cost
+				// 3.6x, and very nearly shipped a budget cap the densest scene was
+				// already sitting against.
+				const a=m.reliefTiles, sc=m.reliefScanCap, t0=performance.now();
+				let frames=0;
+				await new Promise(done=>{ const tick=()=>{ frames++; if(performance.now()-t0<1000) requestAnimationFrame(tick); else done(); }; requestAnimationFrame(tick); });
+				return 'OK '+JSON.stringify({perFrame:Math.round((m.reliefTiles-a)/Math.max(1,frames)), frames,
+					fps:Math.round(frames*1000/(performance.now()-t0)), scanCapped:m.reliefScanCap-sc});
+			})()`);
+			const cost = costS.startsWith('OK ') ? JSON.parse(costS.slice(3)) : { perFrame: -1 };
+
+			// WORST CASE, measured rather than assumed. A surface wall is the easy
+			// scene: a flat horizon exposes one face per column. The population the
+			// budget actually has to cover is a cave, where every tile of every
+			// wall, ceiling and floor in view is an exposed face. Hollow a chamber
+			// the size of the viewport, light it, and count. Runs last, after every
+			// screenshot, so it disturbs nothing above it.
+			const caveS = await run('caveCost', `(async()=>{
+				const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+				const W=MM.world, m=MM.postFx.metrics;
+				const cx=Math.round(player.x)+140, cy=${g.surf}+46;
+				// A MINE WARREN, not a hall. The first version hollowed one big room
+				// and measured 133 exposed faces — a big room only ever exposes its
+				// FLOOR, so it was the sparsest underground case dressed up as the
+				// densest. 4x4 chambers on a 6-tile pitch fill the view with lit wall,
+				// which is the real ceiling on this pass's work.
+				for(let x=cx-60;x<=cx+60;x++) for(let y=cy-30;y<=cy+30;y++) W.setTile(x,y,3);
+				for(let rx=cx-56;rx<=cx+56;rx+=6) for(let ry=cy-26;ry<=cy+26;ry+=6){
+					for(let dx=0;dx<4;dx++) for(let dy=0;dy<4;dy++) W.setTile(rx+dx,ry+dy,0);
+					W.setTile(rx+1,ry+1,16);
+				}
+				window.__mmDebugHero(cx,cy);
+				window.__simulationTimeScale=1;
+				await sleep(2600);
+				window.__simulationTimeScale=0.1;
+				await sleep(600);
+				const a=m.reliefTiles, sc=m.reliefScanCap, bc=m.reliefBudgetCap, t0=performance.now();
+				let frames=0;
+				await new Promise(done=>{ const tick=()=>{ frames++; if(performance.now()-t0<1000) requestAnimationFrame(tick); else done(); }; requestAnimationFrame(tick); });
+				return 'OK '+JSON.stringify({perFrame:Math.round((m.reliefTiles-a)/Math.max(1,frames)), frames,
+					fps:Math.round(frames*1000/(performance.now()-t0)),
+					scanCapped:m.reliefScanCap-sc, budgetCapped:m.reliefBudgetCap-bc});
+			})()`);
+			const cave = caveS.startsWith('OK ') ? JSON.parse(caveS.slice(3)) : { perFrame: -1 };
+			console.log('cave cost: ' + cave.perFrame + ' tiles/frame at ' + cave.fps + 'fps (the population the budget must cover)');
+
+			const dOn = await diffInPage(shotOff, shotOn);
 		const dRevert = await diffInPage(shotOff, shotOff2);
 		const dRebake = await diffInPage(shotOn, shotOn2);
 		console.log('diff on:', JSON.stringify(dOn), ' revert:', JSON.stringify(dRevert), ' rebake:', JSON.stringify(dRebake));
@@ -391,8 +566,33 @@ async function main(){
 			// and the relief bake itself must be deterministic: two full cache
 			// drops apart, the SAME relief pixels (the revert pair above only
 			// ever compared two standard bakes)
-			['re-baking relief reproduces it exactly (<0.2% residue)', dRebake.changed < dOn.total * 0.002]
+			['re-baking relief reproduces it exactly (<0.2% residue)', dRebake.changed < dOn.total * 0.002],
+			// THE point of the rewrite. A baked relief scores exactly 0 on both of
+			// these — its layer is byte-identical whatever the light does — so a
+			// regression back to a static emboss cannot pass them.
+			['the relief layer is substantial at dawn AND dusk (both > 1.0 mean)', sunSwap.magA > 1 && sunSwap.magB > 1],
+			['moving the SUN across the sky moves the relief (>40% of its own magnitude)', sunSwap.ratio > 0.40],
+			['every material swaps with the sun, not just one (>25% each)', sunSwap.perBlock.every(b => b.ratio > 0.25)],
+			['a TORCH at the other end of the wall re-shades it (>40%)', torchSwap.ratio > 0.40],
+			// scored where the torches actually reach: level 13/15 spans ~13 tiles,
+			// and a block 30 tiles from both torches is dark in both shots — asking
+			// it to swap would be asking darkness to have a direction
+			['the blocks nearest each torch swap hardest (>50%)', Math.max(torchSwap.perBlock[0].ratio, torchSwap.perBlock[6].ratio) > 0.50],
+			['the pass stays inside its tile budget', cost.perFrame >= 0 && cost.perFrame <= 620],
+			['and it actually shades tiles (a silent zero is not a pass)', cost.perFrame > 20],
+			// A lit chamber is the densest exposed-face scene the game has. If this
+			// sits at the cap the effect is being silently truncated somewhere in
+			// the view, which reads as relief that stops halfway across the screen.
+			// The warren is the arithmetic ceiling (1620 exposed faces on screen), not
+			// a scene play produces — so it is allowed to reach the cap. What must
+			// hold is that the cap is high enough to carry a very dense view.
+			['a lit mine warren shades over a thousand tiles', cave.perFrame > 1000],
+			// A scan cap is the dangerous one: the walk gave up before reaching
+			// records that were on screen, so the relief stops partway across the
+			// view and nothing says so. It must never fire.
+			['the walk never gives up early (scan cap unhit)', cave.scanCapped === 0 && cost.scanCapped === 0]
 		];
+		console.log('cost: ' + cost.perFrame + ' tiles/frame shaded at ' + cost.fps + 'fps');
 		for (const [name, ok] of checks){ console.log((ok ? 'PASS  ' : 'FAIL  ') + name); if (!ok) failed = true; }
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 3).join('\n---\n'));
 	} catch (e){

@@ -49,7 +49,10 @@ const {
 	heatSourceFor, heatPlumeTiles, heatAmpPx, heatEnvelope, heatOffsetPx, buildHeatBands,
 	heatRowHeight, heatRowCount,
 	glowProfile, glowBakedProfile, glowBakeStops, glowCoreRatio, GLOW_BAKE_GAIN, GLOW_AMP_A, GLOW_A_MAX,
-	HEAT_WAVE_PX, HEAT_RISE, HEAT_RISE_2, HEAT_ROW_PX, HEAT_ROW_BUDGET, HEAT_BAND_CAP, HEAT_MERGE_GAP, HEAT_PLUME_TILES, HEAT_AMP_PX
+	HEAT_WAVE_PX, HEAT_RISE, HEAT_RISE_2, HEAT_ROW_PX, HEAT_ROW_BUDGET, HEAT_BAND_CAP, HEAT_MERGE_GAP, HEAT_PLUME_TILES, HEAT_AMP_PX,
+	reliefLightVector, reliefFaceShade, reliefKeyDir, reliefAlphaBucket, reliefLitTerm,
+	RELIEF_TANGENT_GAIN, RELIEF_KEY_MIX, RELIEF_ALPHA_STEPS, RELIEF_MIN_MAG, RELIEF_FACE_NX, RELIEF_FACE_NY,
+	RELIEF_MAG_REF, RELIEF_AMBIENT_FLOOR, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_EMBOSS_MIN_BUCKET
 } = await import('../src/engine/post_fx.js');
 const { T, INFO, TILE_GLOW, TILE_HEAT } = await import('../src/constants.js');
 await import('../src/engine/furnishings.js'); // stamps INFO[t].requiresHomePower like the live game
@@ -1235,32 +1238,134 @@ assert.match(mainSrc, /'✨ Grafika Ultra \(wszystko\)'/, 'master ultra row exis
 // row makes them all stronger (it used to own tile emitters alone).
 assert.match(mainSrc, /\['💡 Bloom \(mocniejsza poświata\)','bloom'\]/, 'the bloom row is labelled as an amplifier');
 assert.match(mainSrc, /\['🌑 Okluzja otoczenia \(AO\)','ao'\]/, 'AO row maps to its component');
-// --- relief: the third bake-side component (AO darkens the concave, relief
-// lights the convex). No draw pass exists — everything lands in the chunk bake.
+// --- relief: geometry bakes, LIGHT NEVER DOES ------------------------------
+// The first relief baked its key light into the chunk canvas, so a block lit
+// from the top-left stayed lit from the top-left through midnight and past
+// every torch. These pins exist to keep the split that fixed it: the bake may
+// record WHERE the exposed faces are and nothing else, and every directional
+// decision happens live, in the pass, from the light field.
 assert.match(mainSrc, /\['🧱 Wypukłe bloki \(relief\)','relief'\]/, 'relief row maps to its component');
-assert.match(mainSrc, /if\(gfxName==='ao' \|\| gfxName==='specular' \|\| gfxName==='relief'\) invalidateAllChunkRenderCaches\(\);/, 'flipping relief drops the chunk caches for an immediate re-bake, like AO and specular');
-assert.match(mainSrc, /if\(gfxUltraOn\('relief'\) && fam!==EDGE_LEAF && fam!==EDGE_LAVA\)\{\n\t\tdrawTerrainRelief\(g,t,fam,oU,oD,oL,oR,px,py,h,sun,notchL\);\n\t\}/, 'the relief bake is gated — standard bakes stay byte-identical — and skips foliage and liquids');
-assert.equal((mainSrc.match(/drawTerrainRelief\(/g) || []).length, 2, 'relief draws from exactly one call site (the gated one) plus its definition');
-const iReliefFn = mainSrc.indexOf('function drawTerrainRelief(');
+assert.match(mainSrc, /if\(gfxName==='ao' \|\| gfxName==='specular' \|\| gfxName==='relief'\) invalidateAllChunkRenderCaches\(\);/, 'flipping relief drops the chunk caches so the face records get collected, like AO and specular');
+assert.match(mainSrc, /if\(reliefEntry && gfxUltraOn\('relief'\) && fam!==EDGE_LEAF && fam!==EDGE_LAVA\)\{\n\t\tcollectTerrainRelief\(reliefEntry,t,fam,oU,oD,oL,oR,lx,y\);\n\t\}/, 'the relief collection is gated — standard bakes carry no face list — and skips foliage and liquids');
+assert.ok(!/drawTerrainRelief/.test(mainSrc), 'the baked relief painter is GONE — any pixel it drew asserted a light direction the bake cannot know');
+const iReliefFn = mainSrc.indexOf('function collectTerrainRelief(');
 const reliefBody = mainSrc.slice(iReliefFn, mainSrc.indexOf('\n}', iReliefFn));
-assert.ok(iReliefFn > 0 && reliefBody.length > 300, 'the relief painter was located');
-assert.ok(!/Math\.random/.test(reliefBody), 'relief is hash-anchored — a bake must be deterministic or every re-bake shimmers');
-assert.ok(!/frameMs|stressed|critical/.test(reliefBody), 'relief never reads the frame clock');
-assert.match(reliefBody, /if\(fam===EDGE_BUILT\)\{/, 'constructed blocks get the per-tile bevel frame (mortar joints)');
-assert.match(reliefBody, /g\.fillRect\(bx\+1,by\+1,bw,1\);/, 'every bump is an emboss PAIR — the shadow sits one px down-right of the highlight, consistent with the top-left key light');
-// The wood branch has its own shadow shape (a column, not a row) — the pin
-// above does not reach it, and deleting the wood shadow line would ship a
-// bare highlight with no key-light consistency while the suite stayed green
-// (adversarial review, verified by execution).
-assert.match(reliefBody, /g\.fillRect\(bx\+1,by\+1,1,bh\);/, 'wood grain is an emboss pair too — its shadow column rides one px down-right of the ridge');
-// The three defects the diff review flagged and arithmetic confirmed, pinned:
-// the wood grain must clamp so its shadow row ends inside the tile (unclamped
-// it floated 2 px below overhangs), both emboss halves scale with sun (shadow
-// alone at depth turned every bump into a pit), and the lit shoulder respects
-// the silhouette notch (it painted pixels back into the cleared corner).
-assert.match(reliefBody, /const bh=Math\.min\(TILE-2-\(by-py\), 6\+\(\(r>>>12\)%\(TILE-10\)\)\);/, 'wood grain is clamped inside the tile, shadow row included');
-assert.match(reliefBody, /const hiA=\(frost\?0\.16:0\.10\)\*sun, shA=\(sand\?0\.09:0\.13\)\*sun;/, 'both halves of the emboss pair fade together with depth');
-assert.match(reliefBody, /if\(oU && oL && !capT && !notchL\)/, 'the lit shoulder never repaints a cut silhouette notch');
+assert.ok(iReliefFn > 0 && reliefBody.length > 120, 'the relief collector was located');
+assert.ok(!/fillRect|fillStyle|\bg\./.test(reliefBody), 'the collector draws NOTHING — it records geometry, and geometry is all a bake can honestly hold');
+assert.ok(!/Math\.random/.test(reliefBody), 'relief records are hash-free and deterministic — a re-bake must reproduce the same list');
+// The live pass is where every direction is decided. Locate it by its gate.
+const iReliefPass = mainSrc.indexOf("if(gfxUltraOn('relief')){");
+const reliefPass = mainSrc.slice(iReliefPass, mainSrc.indexOf('\n\t\t// Ultra specular', iReliefPass));
+assert.ok(iReliefPass > 0 && reliefPass.length > 800, 'the live relief pass was located');
+assert.ok(!/frameMs|lastFrameMs|stressed|critical/.test(reliefPass), 'relief never reads the frame clock — a slow machine sees the same picture (owner rule)');
+assert.match(reliefPass, /let rBudget=RELIEF_BUDGET, rScan=RELIEF_SCAN/, 'both caps are named constants, never a frame-time reaction');
+assert.match(reliefPass, /if\(litMax<0\.06\) continue;/, 'a pitch-dark tile draws no rim — a rim brighter than the surface under it is a glow, not a bevel');
+// The tangent samples are THE defect fix: lighting.js lets a solid cell receive
+// light but never propagate it, so the field across an exposed face is a cliff.
+// Sample only the face's own cell and every block reports "lit from whichever
+// side of me is open" — ambient occlusion that never swaps, which is exactly
+// the bug this rewrite exists to kill.
+assert.match(reliefPass, /RFL\[i\+1\]=lit\?lit\(ax\+tx,ay\+ty\):1;/, 'each face samples ALONG itself (+) — that lean is what tells a wall the torch is above it');
+assert.match(reliefPass, /RFL\[i\+2\]=lit\?lit\(ax-tx,ay-ty\):1;/, 'and along itself (-) — the pair is the direction; the straight-out term alone is identical for every tile of a wall');
+assert.match(reliefPass, /const ax=wx\+nx, ay=y\+ny;/, 'samples are taken in the AIR CELL in front of the face, never in the solid tile (which the BFS never lights)');
+assert.match(reliefPass, /let ox=Math\.round\(-v\.x\*1\.5\), oy=Math\.round\(-v\.y\*1\.5\);/, 'the emboss shadow sits opposite the LIVE light vector — the offset that used to be a hard-coded +1,+1');
+assert.match(reliefPass, /if\(f===0 && capT\) continue;/, 'a turf cap owns its own top face');
+assert.match(reliefPass, /srcW=RELIEF_SRC_WEIGHT\/\(1\+d2\/18\);/, 'the moving analytic source is float-continuous — the light field only recomputes on a tile crossing, so walking would otherwise step');
+assert.match(reliefPass, /const eb=strips<2 \? reliefAlphaBucket\(v\.m\*litT\*0\.85\) : -1;/, 'the emboss goes to flat single-face expanses; a block already showing two contrasting faces needs no help');
+assert.match(reliefPass, /const litT=reliefLitTerm\(litMax\);/, 'brightness enters through the lit term ONCE — the vector carries direction, not light level');
+assert.match(reliefPass, /const s=reliefFaceShade\(f,v\.x,v\.y,v\.m,litT\);/, 'and the face shading reads that term, not the raw light level');
+assert.match(reliefPass, /if\(rScan<=0\) POST_FX\.metrics\.reliefScanCap\+\+;/, 'a scan cap is reported separately from a budget cap — one is a design choice, the other is silent truncation');
+// Packing: a section can expose thousands of faces and every cached section
+// keeps its list, so objects would run to megabytes across the chunk cache.
+assert.match(mainSrc, /const RELIEF_Y_BIAS=1024;/, 'the y bias keeps sky sections positive without a per-world constant');
+assert.match(mainSrc, /entry\.relief=\(entry\.relief\|\|\[\]\)\.filter\(r=>\{ const ry=reliefY\(r\); return ry<redrawWorldY0 \|\| ry>redrawWorldY1; \}\);/, 'a PARTIAL rebake drops the redrawn band from the face list — miss this and a mined wall keeps stale faces against art that no longer has them');
+assert.match(mainSrc, /entry=\{canvas:c,ctx:cctx,version:-1,sy,chests:\[\],doorways:\[\],spec:\[\],relief:\[\]\}/, 'every chunk entry is born with a face list');
+
+// --- relief math: does the light actually SWAP? -----------------------------
+// Source pins prove the shape of the code; these prove the behaviour the owner
+// asked for. Everything below is a wall tile with ONE open face (mask 8, left)
+// — the hardest case, because a single face has no opposite face to trade with
+// and the naive model (sample the face cell only) is provably stuck pointing
+// straight out of it no matter where the light is.
+const faceL = (l, above, below) => { const a = new Float64Array(12); a[9] = l; a[10] = above; a[11] = below; return a; };
+const torchAbove = reliefLightVector(faceL(0.5, 0.62, 0.38), 8, 0, 0, 0, 0, 0, 0);
+const torchBelow = reliefLightVector(faceL(0.5, 0.38, 0.62), 8, 0, 0, 0, 0, 0, 0);
+assert.ok(torchAbove.y < -0.4, 'a torch further up the corridor tips the wall vector UP');
+assert.ok(torchBelow.y > 0.4, 'the same wall, torch moved below, tips DOWN — the swap');
+assert.ok(torchAbove.x < 0 && torchBelow.x < 0, 'both still lean out of the open face — the wall knows which side is air');
+assert.ok(Math.abs(torchAbove.y + torchBelow.y) < 1e-9, 'the swap is symmetric: mirroring the light mirrors the vector exactly');
+// The emboss offset is round(-v * 1.5), so a y flip past 1/3 flips the shadow
+// row to the other side of the ridge. That is the pixel the player actually
+// sees move, so pin that the vector clears the rounding threshold.
+assert.ok(Math.round(-torchAbove.y * 1.5) !== Math.round(-torchBelow.y * 1.5), 'the vectors are far enough apart to move the emboss shadow, not just the arithmetic');
+// Without the tangent term the two cases would be IDENTICAL. This is the
+// regression guard for the defect the audit caught: lighting.js never
+// propagates into solid cells, so the face cell alone is a cliff with no
+// direction in it at all.
+const flatA = reliefLightVector(faceL(0.5, 0.5, 0.5), 8, 0, 0, 0, 0, 0, 0);
+assert.ok(Math.abs(flatA.y) < 1e-9, 'even light along the face leaves no vertical lean (the cliff case)');
+assert.ok(RELIEF_TANGENT_GAIN > 1, 'the along-face difference is small next to the straight-out term and must be amplified to matter');
+// The moving source works with no light field at all — this is what keeps the
+// relief sweeping smoothly while the field itself only recomputes on a tile
+// crossing.
+const fromRight = reliefLightVector(new Float64Array(12), 0, 0, 0, 0, 1, 0, 0.8);
+assert.ok(fromRight.x > 0.99 && fromRight.m > 0.5, 'the analytic source alone gives a full direction');
+// Celestial key: the sun RISES on the screen left (background.js
+// celestialPosition), so dawn light arrives FROM the left and the key points
+// there; the same arc at dusk points right; noon points straight up.
+const kDawn = reliefKeyDir({ tDay: 0.05, isDay: true }, shadowParams({ tDay: 0.05, isDay: true }));
+const kNoon = reliefKeyDir({ tDay: 0.5, isDay: true }, shadowParams({ tDay: 0.5, isDay: true }));
+const kDusk = reliefKeyDir({ tDay: 0.95, isDay: true }, shadowParams({ tDay: 0.95, isDay: true }));
+assert.ok(kDawn.x < -0.5, 'at dawn the key light is on the LEFT, agreeing with the shadows and god rays');
+assert.ok(kDusk.x > 0.5, 'at dusk it has crossed to the right');
+assert.ok(kNoon.y < -0.9 && Math.abs(kNoon.x) < 0.1, 'at noon it is overhead');
+assert.equal(reliefKeyDir({ tDay: 0.5, isDay: false, moonlight: 0 }, shadowParams({ tDay: 0.5, isDay: false, moonlight: 0 })).w, 0, 'a moonless night contributes no key — lamps alone shape the world');
+assert.ok(kNoon.w > 0 && kNoon.w <= RELIEF_KEY_MIX, 'the key never outweighs its share');
+// Face shading: squared dot, sign preserved. The square is what removes the
+// hard cutoff a linear dot needs, so a rotating light rolls faces off instead
+// of popping a whole wall of strips into existence in one frame.
+assert.ok(reliefFaceShade(3, -1, 0, 1, 1) > 0.99, 'a face pointing straight at the light is a full highlight');
+assert.ok(reliefFaceShade(1, -1, 0, 1, 1) < -0.99, 'the face pointing away is a full shadow');
+const half = reliefFaceShade(3, -0.5, -0.866, 1, 1);
+assert.ok(half > 0.24 && half < 0.26, 'a face 60deg off the light keeps only cos^2 of it — 0.25, not 0.5');
+assert.ok(Math.abs(reliefFaceShade(0, -1, 0, 1, 1)) < 1e-9, 'a perpendicular face rolls to exactly zero on its own — no cutoff, no pop');
+assert.equal(reliefFaceShade(3, -1, 0, 1, 0), 0, 'no light, no rim: an unlit cave wall gets nothing');
+assert.deepEqual([...RELIEF_FACE_NX], [0, 1, 0, -1], 'face normals are up, right, down, left in bit order');
+assert.deepEqual([...RELIEF_FACE_NY], [-1, 0, 1, 0], 'and their y components match');
+assert.equal(reliefAlphaBucket(0), -1, 'a zero alpha is SKIPPED, not drawn transparent — a transparent rect still costs a full draw call');
+assert.equal(reliefAlphaBucket(-0.2), -1, 'negative magnitudes never reach the style table');
+assert.equal(reliefAlphaBucket(1), RELIEF_ALPHA_STEPS, 'a full shade lands in the top bucket');
+assert.equal(reliefAlphaBucket(2), RELIEF_ALPHA_STEPS, 'and an over-range one is clamped there, never off the end of the table');
+assert.ok(RELIEF_MIN_MAG > 0, 'even light has no direction, and a tile with no direction draws nothing');
+// Brightness must be applied ONCE. It used to arrive twice — through the vector
+// magnitude and again through the lit term — so a dawn scene was multiplied by
+// a small number squared and the relief all but vanished exactly when the sun
+// was most sideways. The live QA measured the dawn layer at 0.32 against a 1.0
+// target before the split; 1.15 after.
+assert.ok(RELIEF_MAG_REF > 0 && RELIEF_MAG_REF < 1, 'the magnitude reference turns |v| into COHERENCE instead of a second brightness term');
+const litOk = reliefLightVector(faceL(0.7, 0.7, 0.7), 8, 0, 0, 0, 0, 0, 0);
+const litLots = reliefLightVector(faceL(1, 1, 1), 8, 0, 0, 0, 0, 0, 0);
+assert.equal(litOk.m, 1, 'any decently one-sided light SATURATES the coherence term');
+assert.equal(litLots.m, 1, 'and more light does not make it more directional — that would be brightness counted twice');
+// Coherence still does its own job: a tile between two lights that cancel is
+// genuinely ambiguous and should flatten, which is a real cue and not a bug.
+const twoSided = new Float64Array(12);
+twoSided[3] = 0.70;   // right face, lit
+twoSided[9] = 0.65;   // left face, lit almost as hard
+const between = reliefLightVector(twoSided, 2 | 8, 0, 0, 0, 0, 0, 0);
+assert.ok(between.m < 0.2, 'a tile lit from BOTH sides at once flattens — the vectors cancel, and a surface with no one light direction has no form to show');
+assert.ok(reliefLightVector(twoSided, 8, 0, 0, 0, 0, 0, 0).m > between.m, 'wall off one of the two lights and the same tile hardens toward the survivor');
+assert.ok(reliefLitTerm(0) >= RELIEF_AMBIENT_FLOOR, 'a dark scene keeps a floor of the effect: the eye adapts, and a moonlit cliff still shows its form');
+assert.equal(reliefLitTerm(1), 1, 'full light, full effect');
+assert.ok(reliefLitTerm(0.5) > reliefLitTerm(0.2), 'and it still rises with the light in between');
+assert.ok(RELIEF_AMBIENT_FLOOR > 0 && RELIEF_AMBIENT_FLOOR < 1, 'the floor is a floor, not a constant');
+// Caps are measured numbers, and the relationship between them matters: the
+// scan bounds a WALK over every record a section holds (visible or not), so it
+// has to clear the tile budget by a wide margin or the walk gives up before it
+// reaches what is on screen.
+assert.ok(RELIEF_BUDGET >= 1200, 'the tile budget clears the densest measured scene (1620 exposed faces in a mine warren)');
+assert.ok(RELIEF_SCAN >= RELIEF_BUDGET * 10, 'the walk cap is far above the draw cap — it bounds rejections, which are nearly free');
+assert.ok(RELIEF_EMBOSS_MIN_BUCKET >= 1, 'an emboss below the visible threshold is two draw calls spent on nothing');
 assert.match(mainSrc, /\['💠 Refleksy materiałów','specular'\]/, 'specular row maps to its component');
 assert.match(mainSrc, /\['🌊 Odbicia w wodzie','reflections'\]/, 'reflections row maps to its component');
 assert.match(mainSrc, /\['🪞 Powłoka bohatera i broni','heroSheen'\]/, 'hero coating row maps to its component (it covers the blade sheen too)');

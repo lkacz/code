@@ -1181,7 +1181,7 @@ export function collectIceRuns(opts){
 }
 
 const config = normalizeGfxConfig(null);
-const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, shimmerBands: 0, emissiveSources: 0, emissiveHalos: 0, emissiveStreaks: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, bladeSheens: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0, lampShafts: 0 };
+const metrics = { bloomScans: 0, bloomEmitters: 0, bloomDraws: 0, shimmerBands: 0, emissiveSources: 0, emissiveHalos: 0, emissiveStreaks: 0, reflectionColumns: 0, specGlints: 0, heroSheenDraws: 0, bladeSheens: 0, shadowDraws: 0, godRayBeams: 0, tintDraws: 0, shimmerSlices: 0, wetSheenColumns: 0, dustMotes: 0, iceColumns: 0, lampShafts: 0, reliefTiles: 0, reliefRects: 0, reliefScanCap: 0, reliefBudgetCap: 0 };
 let bloomEmitters = [];
 let bloomScanAt = 0;
 let bloomScanKey = '';
@@ -1283,6 +1283,188 @@ let coatMaskKey = -1;
 let bladeSpineGrad = null;
 let bladeSpineKey = -1;
 const SHEEN_ZONES = ['top', 'mid', 'bot'];
+// --- relief: dynamic per-tile lighting (wypukłość bloków) --------------------
+// The first relief shipped its light direction BAKED into the chunk canvas, so
+// a block lit from the top-left stayed lit from the top-left through midnight,
+// past a torch, everywhere. That is not bump mapping — it is a texture that
+// happens to look embossed. The whole point of the effect is that the pattern
+// MOVES when the light does, and a baked one never can.
+//
+// This is the live model. It costs nothing to be right about where the light
+// is, because the lighting BFS already knows: for a solid block, the light
+// falling on a face is the light in the AIR CELL touching that face. Four
+// O(1) reads of the existing field give the tile its own light vector — no
+// new light model, no ray casts, no per-pixel work.
+//
+// The celestial key is added on top because the sky term of the field is
+// purely vertical (the BFS marches columns straight down), so a low morning
+// sun would otherwise read exactly like noon. shadowParams supplies the same
+// azimuth the ground shadows and god rays already use, which is what keeps
+// the three of them agreeing about where the sun is.
+
+// How hard the celestial key pulls against the local field gradient. At 0 a
+// torch always wins; at 1 the sun flattens every interior. 0.55 leaves cave
+// lamps in charge underground (no sky term there at all) while still swinging
+// surface blocks through the day.
+export const RELIEF_KEY_MIX = 0.55;
+// Alpha ceilings for the two halves of an emboss. The shadow runs slightly
+// hotter than the highlight: dark reads as depth more reliably than light
+// reads as height, especially over the pale materials (sand, frost).
+// These are deliberately well above the old baked pass's 0.09-0.16: at 20 px a
+// tile, a 1 px mark at that alpha sits below the threshold where a human reads
+// DIRECTION at all, which is why the static version registered as "extra light
+// and dark dots" rather than as form. Fewer, bigger, stronger marks.
+export const RELIEF_HI_ALPHA = 0.30;
+export const RELIEF_SH_ALPHA = 0.34;
+// Vector length that counts as "fully directional". Without this reference the
+// magnitude doubles as a brightness term — and brightness is already applied
+// separately below — so a dawn scene got multiplied by a small number twice
+// and the relief all but vanished exactly when the sun was most sideways, i.e.
+// when it had the most to say. Measured: the live QA scored the dawn/dusk
+// layer at 0.32 mean against a 1.0 target before this split.
+export const RELIEF_MAG_REF = 0.6;
+// How much of the effect survives in a dim scene. Scaling straight off the
+// light level is physically tidy and visually wrong: the eye adapts, and a
+// moonlit cliff still shows its form. The floor keeps relief legible in the
+// dark while the darkness overlay (which owns actual brightness) does its job.
+export const RELIEF_AMBIENT_FLOOR = 0.4;
+export function reliefLitTerm(litMax){
+	return RELIEF_AMBIENT_FLOOR + (1 - RELIEF_AMBIENT_FLOOR) * Math.max(0, Math.min(1, litMax));
+}
+// Under this vector magnitude the light is too even to have a direction, and
+// any emboss drawn from it would be noise pretending to be form.
+export const RELIEF_MIN_MAG = 0.06;
+// A moving analytic source, added on top of the field because the field is
+// STEPPED: lighting.js keys its cache on floor(hero.x),floor(hero.y), so a
+// field-only model relights once per tile crossed and the relief visibly jumps
+// as you walk. This term is full float and follows the player continuously.
+export const RELIEF_SRC_RANGE = 15;    // tiles; beyond this the field alone rules
+export const RELIEF_SRC_WEIGHT = 0.9;
+// Alphas are quantized into this many buckets so the fill styles come from a
+// prebuilt table. Per-rect string building was the real cost of a live pass
+// this size — the rects themselves are 0.28 us, the garbage is not.
+export const RELIEF_ALPHA_STEPS = 12;
+// Fixed caps (owner's rule: never a frame-time reaction). The walk cap bounds
+// the worst case — a cave-riddled section can hold thousands of exposed tiles
+// and even skipping them costs a visibility lookup each.
+//
+// The tile figure is measured, not chosen. A synthetic mine warren — 4x4
+// chambers on a 6-tile pitch, filling the viewport at zoom 1 — puts 1620
+// exposed faces on screen, every one of them lit. That is the arithmetic
+// ceiling, and it is not a scene a player produces by accident; a big hollow
+// chamber measures 133, because a room only exposes its floor. 1200 clears
+// every realistic scene and truncates only that deliberate lattice, which
+// matters because truncation here is SPATIAL — the walk runs section by
+// section, so hitting the cap makes relief stop at a chunk boundary rather
+// than fade out evenly.
+export const RELIEF_BUDGET = 1200;
+// The scan cap must clear the same scene by a wide margin. It bounds a WALK,
+// not draws: an integer decrement per record, against sections that hold every
+// exposed face in 64x70 tiles whether it is on screen or not.
+export const RELIEF_SCAN = 24000;
+// Below this bucket the emboss pair is a pixel nobody sees, and two rects is
+// the most expensive thing this pass does per tile. Faces still draw — they
+// carry the form — but the micro-detail is spent only where it registers.
+// Measured whole-pass cost at the cap: 1200 tiles -> 3600 rects -> ~1.0 ms,
+// and that is the deliberate-lattice scene. Ordinary surface play measures
+// 144 tiles -> ~430 rects -> ~0.12 ms.
+export const RELIEF_EMBOSS_MIN_BUCKET = 2;
+
+// Face normals in screen space, indexed by bit position in the open mask:
+// 0 = up (0,-1), 1 = right (1,0), 2 = down (0,1), 3 = left (-1,0).
+export const RELIEF_FACE_NX = Object.freeze([0, 1, 0, -1]);
+export const RELIEF_FACE_NY = Object.freeze([-1, 0, 1, 0]);
+
+// How hard the ALONG-face lean counts against the straight-out-of-the-face
+// term. This constant is why the effect swaps at all, so it is worth being
+// explicit about the trap it exists to avoid: lighting.js's BFS lets a solid
+// cell RECEIVE light but never propagate it (the solid[] guard in its bucket
+// queue), so the field across any exposed face is a cliff — bright on the air
+// side, zero one tile into the rock. Read only that, and every block reports
+// "lit from whichever side of me is open", which is ambient occlusion wearing
+// a light's name and never swaps no matter where the torch is. The direction
+// the light actually comes from lives in how the brightness varies ALONG the
+// open face, two cells apart, which is a much smaller number — hence a gain.
+export const RELIEF_TANGENT_GAIN = 2.8;
+
+// The tile's light vector: where the light is coming FROM, in screen space.
+//
+// fl is a flat [l, lAhead, lBehind] triple per face (face order U,R,D,L), all
+// sampled in the AIR CELL touching that face and its two neighbours along it;
+// buried faces contribute nothing. Each open face pushes the vector out along
+// its own normal by the light standing in front of it, then leans it along the
+// face by the brightness difference — that lean is the part that tells a wall
+// whether the torch is above it or below it.
+//
+// keyX/keyY is the celestial azimuth (the sky term of the field marches
+// straight down columns, so without this a low morning sun reads as noon), and
+// srcX/srcY is a moving analytic source: the field only recomputes when the
+// hero crosses a tile boundary, so a field-only model would relight in visible
+// one-tile steps as the player walks.
+//
+// Returns a unit direction plus a magnitude saying how much the light actually
+// varies — even light gives m ~ 0, and even light has no form to show.
+export function reliefLightVector(fl, mask, keyX, keyY, keyW, srcX, srcY, srcW){
+	let vx = keyX * keyW + srcX * srcW;
+	let vy = keyY * keyW + srcY * srcW;
+	for(let f = 0; f < 4; f++){
+		if(!(mask & (1 << f))) continue;
+		const nx = RELIEF_FACE_NX[f], ny = RELIEF_FACE_NY[f];
+		const i = f * 3;
+		const lean = (fl[i + 1] - fl[i + 2]) * RELIEF_TANGENT_GAIN;
+		// tangent = normal rotated a quarter turn: (-ny, nx)
+		vx += nx * fl[i] + (-ny) * lean;
+		vy += ny * fl[i] + nx * lean;
+	}
+	const m = Math.sqrt(vx * vx + vy * vy);
+	if(!(m > 1e-5)) return { x: 0, y: -1, m: 0 };
+	// m is COHERENCE, not brightness: any decently one-sided light saturates it,
+	// and only a genuinely ambiguous tile — one standing between two lights that
+	// cancel — comes back flat. That flattening is a real cue and worth keeping.
+	return { x: vx / m, y: vy / m, m: Math.min(1, m / RELIEF_MAG_REF) };
+}
+
+// The celestial key as a direction TOWARD the light. shadowParams gives skew
+// (+1 at sunrise means the source is on the screen LEFT, so the key x is its
+// negation) and the arc gives altitude. Night keeps the same arc with the
+// moon's own strength, and a moonless night returns zero weight — no key, and
+// the local field is then the only thing shaping anything.
+export function reliefKeyDir(time, shadow){
+	const t = time && Number.isFinite(time.tDay) ? Math.max(0, Math.min(1, time.tDay)) : 0.5;
+	const arc = Math.sin(t * Math.PI);
+	const skew = shadow && Number.isFinite(shadow.skew) ? shadow.skew : 0;
+	const w = shadow && Number.isFinite(shadow.alpha) ? Math.max(0, Math.min(1, shadow.alpha / 0.32)) : 0;
+	const kx = -Math.max(-1.15, Math.min(1.15, skew));
+	const ky = -Math.max(0.12, arc);
+	const m = Math.sqrt(kx * kx + ky * ky) || 1;
+	return { x: kx / m, y: ky / m, w: w * RELIEF_KEY_MIX };
+}
+
+// Signed shade for one face: positive turns toward the light (highlight),
+// negative away (shadow). Scaled by how directional the light is (m) and how
+// much light there is to begin with (lit) — an unlit cave wall gets no rim,
+// because a rim brighter than the surface it sits on is a glow, not a bevel.
+//
+// The dot product is SQUARED (keeping its sign), the way directional lightmaps
+// evaluate — Valve's radiosity normal map reconstructs with dot(N,basis)^2.
+// A linear dot needs a cutoff to stop near-perpendicular faces from outlining
+// the tile grid, and a cutoff is a cliff: rotate the light past it and a whole
+// wall of strips appears in one frame. Squaring rolls the same faces off to
+// nothing on its own, so the cutoff is emergent instead of a pop.
+export function reliefFaceShade(face, dx, dy, m, lit){
+	const d = RELIEF_FACE_NX[face] * dx + RELIEF_FACE_NY[face] * dy;
+	return d * Math.abs(d) * m * lit;
+}
+
+// Quantize to a style-table index. Returns -1 when the alpha rounds to nothing,
+// which is the caller's signal to skip the draw entirely rather than emit a
+// fully transparent rect (a transparent rect still costs a full draw call).
+export function reliefAlphaBucket(a){
+	if(!(a > 0)) return -1;
+	const b = Math.round(Math.min(1, a) * RELIEF_ALPHA_STEPS);
+	return b > 0 ? Math.min(RELIEF_ALPHA_STEPS, b) : -1;
+}
+
 // A grab older than this is stale (pause, teleport, a frame that drew no hero)
 // and the coat falls back to the sampled tint rather than showing a ghost.
 const HERO_GRAB_TTL_MS = 250;
