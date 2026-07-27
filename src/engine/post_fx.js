@@ -20,13 +20,13 @@ const HAS_WINDOW = typeof window !== 'undefined';
 if(HAS_WINDOW) window.MM = window.MM || {};
 
 export const GFX_ULTRA_KEY = 'mm_gfx_ultra_v1';
-export const GFX_COMPONENTS = Object.freeze(['bloom', 'ao', 'specular', 'reflections', 'heroSheen', 'shadows', 'godRays', 'lightTint', 'heatShimmer', 'wetGround', 'dustMotes', 'iceReflections', 'lampShafts']);
+export const GFX_COMPONENTS = Object.freeze(['bloom', 'ao', 'specular', 'reflections', 'heroSheen', 'shadows', 'godRays', 'lightTint', 'heatShimmer', 'wetGround', 'dustMotes', 'iceReflections', 'lampShafts', 'relief']);
 
 // Persisted shape is a plain {bloom,ao,specular,reflections} boolean object;
 // anything else (corrupt JSON, wrong types, missing fields) falls back to
 // all-off — standard mode is the failure mode by design.
 export function normalizeGfxConfig(raw){
-	const out = { bloom:false, ao:false, specular:false, reflections:false, heroSheen:false, shadows:false, godRays:false, lightTint:false, heatShimmer:false, wetGround:false, dustMotes:false, iceReflections:false, lampShafts:false };
+	const out = { bloom:false, ao:false, specular:false, reflections:false, heroSheen:false, shadows:false, godRays:false, lightTint:false, heatShimmer:false, wetGround:false, dustMotes:false, iceReflections:false, lampShafts:false, relief:false };
 	if(raw && typeof raw === 'object'){
 		for(const key of GFX_COMPONENTS) out[key] = raw[key] === true;
 	}

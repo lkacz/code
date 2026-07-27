@@ -57,8 +57,8 @@ const { NEW_GAME_PREFERENCE_KEYS } = await import('../src/engine/new_game.js');
 
 // --- config model ------------------------------------------------------------
 assert.equal(GFX_ULTRA_KEY, 'mm_gfx_ultra_v1', 'graphics config persists under a versioned key');
-assert.deepEqual([...GFX_COMPONENTS], ['bloom', 'ao', 'specular', 'reflections', 'heroSheen', 'shadows', 'godRays', 'lightTint', 'heatShimmer', 'wetGround', 'dustMotes', 'iceReflections', 'lampShafts'], 'exactly thirteen ultra components exist');
-assert.deepEqual(normalizeGfxConfig(null), { bloom: false, ao: false, specular: false, reflections: false, heroSheen: false, shadows: false, godRays: false, lightTint: false, heatShimmer: false, wetGround: false, dustMotes: false, iceReflections: false, lampShafts: false }, 'defaults are all-off (standard mode)');
+assert.deepEqual([...GFX_COMPONENTS], ['bloom', 'ao', 'specular', 'reflections', 'heroSheen', 'shadows', 'godRays', 'lightTint', 'heatShimmer', 'wetGround', 'dustMotes', 'iceReflections', 'lampShafts', 'relief'], 'exactly fourteen ultra components exist');
+assert.deepEqual(normalizeGfxConfig(null), { bloom: false, ao: false, specular: false, reflections: false, heroSheen: false, shadows: false, godRays: false, lightTint: false, heatShimmer: false, wetGround: false, dustMotes: false, iceReflections: false, lampShafts: false, relief: false }, 'defaults are all-off (standard mode)');
 assert.deepEqual(parseGfxConfig('not json'), normalizeGfxConfig(null), 'corrupt JSON falls back to standard mode');
 assert.equal(parseGfxConfig('{"bloom":1,"ao":"yes"}').bloom, false, 'truthy-but-not-true values do not enable a component');
 assert.equal(parseGfxConfig('{"reflections":true}').reflections, true, 'a persisted true enables its component');
@@ -1235,6 +1235,27 @@ assert.match(mainSrc, /'✨ Grafika Ultra \(wszystko\)'/, 'master ultra row exis
 // row makes them all stronger (it used to own tile emitters alone).
 assert.match(mainSrc, /\['💡 Bloom \(mocniejsza poświata\)','bloom'\]/, 'the bloom row is labelled as an amplifier');
 assert.match(mainSrc, /\['🌑 Okluzja otoczenia \(AO\)','ao'\]/, 'AO row maps to its component');
+// --- relief: the third bake-side component (AO darkens the concave, relief
+// lights the convex). No draw pass exists — everything lands in the chunk bake.
+assert.match(mainSrc, /\['🧱 Wypukłe bloki \(relief\)','relief'\]/, 'relief row maps to its component');
+assert.match(mainSrc, /if\(gfxName==='ao' \|\| gfxName==='specular' \|\| gfxName==='relief'\) invalidateAllChunkRenderCaches\(\);/, 'flipping relief drops the chunk caches for an immediate re-bake, like AO and specular');
+assert.match(mainSrc, /if\(gfxUltraOn\('relief'\) && fam!==EDGE_LEAF && fam!==EDGE_LAVA\)\{\n\t\tdrawTerrainRelief\(g,t,fam,oU,oD,oL,oR,px,py,h,sun,notchL\);\n\t\}/, 'the relief bake is gated — standard bakes stay byte-identical — and skips foliage and liquids');
+assert.equal((mainSrc.match(/drawTerrainRelief\(/g) || []).length, 2, 'relief draws from exactly one call site (the gated one) plus its definition');
+const iReliefFn = mainSrc.indexOf('function drawTerrainRelief(');
+const reliefBody = mainSrc.slice(iReliefFn, mainSrc.indexOf('\n}', iReliefFn));
+assert.ok(iReliefFn > 0 && reliefBody.length > 300, 'the relief painter was located');
+assert.ok(!/Math\.random/.test(reliefBody), 'relief is hash-anchored — a bake must be deterministic or every re-bake shimmers');
+assert.ok(!/frameMs|stressed|critical/.test(reliefBody), 'relief never reads the frame clock');
+assert.match(reliefBody, /if\(fam===EDGE_BUILT\)\{/, 'constructed blocks get the per-tile bevel frame (mortar joints)');
+assert.match(reliefBody, /g\.fillRect\(bx\+1,by\+1,bw,1\);/, 'every bump is an emboss PAIR — the shadow sits one px down-right of the highlight, consistent with the top-left key light');
+// The three defects the diff review flagged and arithmetic confirmed, pinned:
+// the wood grain must clamp so its shadow row ends inside the tile (unclamped
+// it floated 2 px below overhangs), both emboss halves scale with sun (shadow
+// alone at depth turned every bump into a pit), and the lit shoulder respects
+// the silhouette notch (it painted pixels back into the cleared corner).
+assert.match(reliefBody, /const bh=Math\.min\(TILE-2-\(by-py\), 6\+\(\(r>>>12\)%\(TILE-10\)\)\);/, 'wood grain is clamped inside the tile, shadow row included');
+assert.match(reliefBody, /const hiA=\(frost\?0\.16:0\.10\)\*sun, shA=\(sand\?0\.09:0\.13\)\*sun;/, 'both halves of the emboss pair fade together with depth');
+assert.match(reliefBody, /if\(oU && oL && !capT && !notchL\)/, 'the lit shoulder never repaints a cut silhouette notch');
 assert.match(mainSrc, /\['💠 Refleksy materiałów','specular'\]/, 'specular row maps to its component');
 assert.match(mainSrc, /\['🌊 Odbicia w wodzie','reflections'\]/, 'reflections row maps to its component');
 assert.match(mainSrc, /\['🪞 Powłoka bohatera i broni','heroSheen'\]/, 'hero coating row maps to its component (it covers the blade sheen too)');
@@ -1392,7 +1413,7 @@ const iCoatFn = postFxSrc.indexOf('function buildHeroCoat(');
 const iCoatEnd = postFxSrc.indexOf('\n}', iCoatFn);
 assert.ok(iCoatFn > 0 && postFxSrc.slice(iCoatFn, iCoatEnd).includes("destination-in"), 'the destination-in mask lives inside the off-screen coat builder');
 assert.match(mainSrc, /submerged:waterLevelUnitsAt\(sheenPx,Math\.floor\(player\.y\)\)>0/, 'hero coating reads submersion from the water ledger');
-assert.match(mainSrc, /if\(gfxName==='ao' \|\| gfxName==='specular'\) invalidateAllChunkRenderCaches\(\);/, 'baked components force a re-bake when toggled');
+assert.match(mainSrc, /if\(gfxName==='ao' \|\| gfxName==='specular' \|\| gfxName==='relief'\) invalidateAllChunkRenderCaches\(\);/, 'baked components force a re-bake when toggled');
 assert.match(mainSrc, /panel\.querySelectorAll\('\[data-gfx-toggle\]'\)\.forEach\(chk=>\{ chk\.checked=!!\(POST_FX && POST_FX\.config && POST_FX\.config\[chk\.dataset\.gfxToggle\]\); \}\);/, 'panel reopen resyncs component checkboxes');
 for(const name of GFX_COMPONENTS) assert.ok(mainSrc.includes("'" + name + "'"), 'component ' + name + ' has a UI mapping in main.js');
 

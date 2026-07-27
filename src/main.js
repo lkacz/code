@@ -5459,6 +5459,13 @@ window.__mmDebugHero = function(x,y){
 	player.vx=0; player.vy=0;
 	return {x:player.x, y:player.y};
 };
+// Read-only QA seam: where does a WORLD point land on the CSS screen? The live
+// ctx transform is useless outside the draw loop (it holds whatever was set
+// last, usually the UI matrix), so pixel-region drivers need the camera's own
+// arithmetic — the same formula the input layer inverts.
+window.__mmWorldToScreen = function(wx,wy){
+	return { x:(wx-camX)*zoom*TILE, y:(wy-camY)*zoom*TILE, scale:zoom*TILE };
+};
 function flushPendingSave(){
 	if(_startingNewGame){
 		// Other modules may have their own earlier pagehide handlers; purge once more
@@ -7063,9 +7070,9 @@ function trimChunkCanvasCache(centerCx, keep, centerSy){
 		chunkRenderDirty.delete(key); // record is only meaningful while its canvas lives
 	}
 }
-// Ultra AO and specular are baked INTO the chunk canvases, so flipping those
-// toggles must drop every cached section for an immediate full re-bake (the
-// same one-time cost as a world regen; version<0 entries bypass the budget).
+// Ultra AO, specular and relief are baked INTO the chunk canvases, so flipping
+// those toggles must drop every cached section for an immediate full re-bake
+// (the same one-time cost as a world regen; version<0 entries bypass the budget).
 function invalidateAllChunkRenderCaches(){ chunkCanvases.clear(); chunkRenderDirty.clear(); }
 // Ultra specular: reflective materials whose bake collects per-chunk glint
 // points (the entry.chests pattern) for the budgeted live twinkle pass.
@@ -7358,6 +7365,87 @@ function drawSnowyTurfCap(g,px,py,h,x0,x1,openL,openR,sun){
 		g.fillRect(px+TILE-1,py,1,5);
 	}
 }
+// ---- Ultra relief: baked micro-bumps + face bevels ("bump mapping") ---------
+// Real bump mapping is per-pixel normal lighting in a shader; its visible
+// PRODUCT at tile scale is emboss pairs — a highlight on the lit side of every
+// bump and a shadow on the far side, consistent with ONE key light. That
+// product bakes: hash-anchored pairs under the repo's established top-left
+// light (the same convention the edge rims already use), plus a graded bevel
+// on exposed faces so surface blocks read as chamfered slabs. Two design rules
+// carried over from the edge system:
+//  * natural materials stay a CONTINUOUS mass — bumps are hash-placed, never
+//    grid-aligned, and no per-tile frame is drawn (a frame would resurrect the
+//    tile-grid look the edge pass exists to remove);
+//  * CONSTRUCTED blocks are grid objects, so they get exactly that frame —
+//    a bevel per brick reads as mortar joints and each block turns convex.
+// Bake-time only: zero cost per frame; the toggle drops the chunk caches the
+// same way AO and specular do.
+const RELIEF_HI={
+	[EDGE_ROCK]:'228,236,246', [EDGE_EARTH]:'236,204,150', [EDGE_SAND]:'255,247,202',
+	[EDGE_FROST]:'255,255,255', [EDGE_WOOD]:'255,214,130', [EDGE_BUILT]:'255,255,255',
+	[EDGE_METEOR]:'202,222,255'
+};
+function drawTerrainRelief(g,t,fam,oU,oD,oL,oR,px,py,h,sun,notchL){
+	const hi=RELIEF_HI[fam];
+	if(!hi) return;
+	if(fam===EDGE_BUILT){
+		g.fillStyle='rgba('+hi+','+(0.11*sun).toFixed(3)+')';
+		g.fillRect(px,py,TILE,1); g.fillRect(px,py+1,1,TILE-1);
+		g.fillStyle='rgba(8,10,18,0.14)';
+		g.fillRect(px,py+TILE-1,TILE,1); g.fillRect(px+TILE-1,py,1,TILE-1);
+		return;
+	}
+	// micro-bumps: an emboss pair per bump — highlight row, then the same row
+	// shifted one px down-right in shadow. Sand ripples are wider and softer;
+	// frost is sparse with a hard sparkle; wood raises grain along its length.
+	const capT=(t===T.GRASS||t===T.UNSTABLE_GRASS||t===T.GRASS_SNOW);
+	const top=py+(oU?6:2), bot=py+TILE-3;
+	if(fam===EDGE_WOOD){
+		for(let i=0;i<2;i++){
+			const r=hash32(h+i*71,i*131);
+			const bx=px+3+((r>>>3)%(TILE-7));
+			const by=py+2+((r>>>8)%5);
+			// clamped so the SHADOW row (one px below the ridge) still ends inside
+			// this tile — unclamped it spilled up to 2 px into the neighbour's
+			// pixels of the chunk canvas, which float in mid-air under overhangs
+			const bh=Math.min(TILE-2-(by-py), 6+((r>>>12)%(TILE-10)));
+			g.fillStyle='rgba('+hi+','+(0.09*sun).toFixed(3)+')';
+			g.fillRect(bx,by,1,bh);
+			g.fillStyle='rgba(8,10,18,'+(0.11*sun).toFixed(3)+')';
+			g.fillRect(bx+1,by+1,1,bh);
+		}
+	}else{
+		const sand=fam===EDGE_SAND, frost=fam===EDGE_FROST;
+		const n=frost?2:3;
+		// BOTH halves of the emboss scale with sun. A bump is an illusion made of
+		// a PAIR; with only the highlight fading at depth the survivors were the
+		// shadows, and every bump underground read as a pit.
+		const hiA=(frost?0.16:0.10)*sun, shA=(sand?0.09:0.13)*sun;
+		for(let i=0;i<n;i++){
+			const r=hash32(h+i*71,i*131);
+			const bw=sand?5+((r>>>13)%4):2+((r>>>13)%3);
+			const bx=px+1+((r>>>3)%Math.max(1,TILE-2-bw));
+			const by=top+((r>>>8)%Math.max(1,bot-top));
+			g.fillStyle='rgba('+hi+','+hiA.toFixed(3)+')';
+			g.fillRect(bx,by,bw,1);
+			g.fillStyle='rgba(8,10,18,'+shA.toFixed(3)+')';
+			g.fillRect(bx+1,by+1,bw,1);
+		}
+	}
+	// face bevel: a graded ramp inside each exposed face — light catches the
+	// left and top, falls off toward the right and bottom. AO (the concave
+	// half of form) darkens crevices; this is the convex half.
+	if(oL){ g.fillStyle='rgba('+hi+','+(0.07*sun).toFixed(3)+')'; g.fillRect(px+1,py+2,2,TILE-4); }
+	if(oR){ g.fillStyle='rgba(8,10,18,0.08)'; g.fillRect(px+TILE-3,py+2,2,TILE-4); }
+	if(oD){ g.fillStyle='rgba(8,10,18,0.08)'; g.fillRect(px+1,py+TILE-4,TILE-2,2); }
+	if(oU && !capT){ g.fillStyle='rgba('+hi+','+(0.06*sun).toFixed(3)+')'; g.fillRect(px+1,py+2,TILE-2,2); }
+	// the lit shoulder: where the top face meets the lit side, the chamfer
+	// catches the key light hardest — the single strongest convexity cue.
+	// notchL guard: soft materials CUT their top-left silhouette corner to
+	// round it against the sky, and the shoulder must not paint pixels back
+	// into the hole the notch just cleared.
+	if(oU && oL && !capT && !notchL){ g.fillStyle='rgba('+hi+','+(0.11*sun).toFixed(3)+')'; g.fillRect(px,py,4,2); g.fillRect(px,py+2,2,2); }
+}
 // The main edge pass: called last for every bakeable terrain tile.
 function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
 	if(window.__mmNoEdgeFX) return;
@@ -7518,6 +7606,12 @@ function drawTerrainEdgeFX(g,t,arr,cx,lx,y,originY,sectionH,wx,px,py,h,surf){
 			g.fillRect(px+4+((h>>>7)%11),py+TILE-1,2,1);
 			g.fillRect(px+4+((h>>>7)%11),py+TILE-3,1,2);
 		}
+	}
+	// Ultra relief: baked convexity — gated so standard bakes stay
+	// byte-identical, and skipping the two families that are not slabs
+	// (foliage is a cloud of leaves, lava is a liquid).
+	if(gfxUltraOn('relief') && fam!==EDGE_LEAF && fam!==EDGE_LAVA){
+		drawTerrainRelief(g,t,fam,oU,oD,oL,oR,px,py,h,sun,notchL);
 	}
 }
 // ---- Tile art v2: richer inner material art ---------------------------------
@@ -10794,6 +10888,7 @@ function ensurePausePanel(){
 	const gfxComponentRows=[
 		['💡 Bloom (mocniejsza poświata)','bloom'],
 		['🌑 Okluzja otoczenia (AO)','ao'],
+		['🧱 Wypukłe bloki (relief)','relief'],
 		['💠 Refleksy materiałów','specular'],
 		['🌊 Odbicia w wodzie','reflections'],
 		['🪞 Powłoka bohatera i broni','heroSheen'],
@@ -10823,7 +10918,7 @@ function ensurePausePanel(){
 		chk.checked=!!(POST_FX && POST_FX.config && POST_FX.config[gfxName]);
 		chk.addEventListener('change',()=>{
 			if(POST_FX && POST_FX.set) POST_FX.set(gfxName,chk.checked);
-			if(gfxName==='ao' || gfxName==='specular') invalidateAllChunkRenderCaches();
+			if(gfxName==='ao' || gfxName==='specular' || gfxName==='relief') invalidateAllChunkRenderCaches();
 			if(!chk.checked && POST_FX && POST_FX.releaseScratch) POST_FX.releaseScratch();
 			syncGfxMaster();
 		});
