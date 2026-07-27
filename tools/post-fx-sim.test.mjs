@@ -52,10 +52,10 @@ const {
 	HEAT_WAVE_PX, HEAT_RISE, HEAT_RISE_2, HEAT_ROW_PX, HEAT_ROW_BUDGET, HEAT_BAND_CAP, HEAT_MERGE_GAP, HEAT_PLUME_TILES, HEAT_AMP_PX,
 	reliefLightVector, reliefFaceShade, reliefKeyDir, reliefAlphaBucket, reliefLitTerm,
 	RELIEF_TANGENT_GAIN, RELIEF_KEY_MIX, RELIEF_ALPHA_STEPS, RELIEF_MIN_MAG, RELIEF_FACE_NX, RELIEF_FACE_NY,
-	RELIEF_MAG_REF, RELIEF_AMBIENT_FLOOR, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_EMBOSS_MIN_BUCKET,
+	RELIEF_MAG_REF, RELIEF_AMBIENT_FLOOR, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_EMBOSS_MIN_BUCKET, RELIEF_MIN_LIT,
 	reliefParallaxPx, reliefShadowScale, RELIEF_EYE_TILES, RELIEF_PARALLAX_PX, RELIEF_PARALLAX_MAX, RELIEF_FORESHORTEN
 } = await import('../src/engine/post_fx.js');
-const { T, INFO, TILE_GLOW, TILE_HEAT } = await import('../src/constants.js');
+const { T, INFO, TILE_GLOW, TILE_HEAT, WORLD_MIN_Y, WORLD_MAX_Y } = await import('../src/constants.js');
 await import('../src/engine/furnishings.js'); // stamps INFO[t].requiresHomePower like the live game
 const { NEW_GAME_PREFERENCE_KEYS } = await import('../src/engine/new_game.js');
 
@@ -1260,27 +1260,67 @@ const reliefPass = mainSrc.slice(iReliefPass, mainSrc.indexOf('\n\t\t// Ultra sp
 assert.ok(iReliefPass > 0 && reliefPass.length > 800, 'the live relief pass was located');
 assert.ok(!/frameMs|lastFrameMs|stressed|critical/.test(reliefPass), 'relief never reads the frame clock — a slow machine sees the same picture (owner rule)');
 assert.match(reliefPass, /let rBudget=RELIEF_BUDGET, rScan=RELIEF_SCAN/, 'both caps are named constants, never a frame-time reaction');
-assert.match(reliefPass, /if\(litMax<0\.06\) continue;/, 'a pitch-dark tile draws no rim — a rim brighter than the surface under it is a glow, not a bevel');
+assert.match(reliefPass, /if\(litMax<RELIEF_MIN_LIT\) continue;/, 'a pitch-dark tile draws no rim — a rim brighter than the surface under it is a glow, not a bevel');
+assert.ok(RELIEF_MIN_LIT > 0 && RELIEF_MIN_LIT < 0.2, 'the darkness gate is a named constant with the other tuning, not a number buried in the walk');
 // The tangent samples are THE defect fix: lighting.js lets a solid cell receive
 // light but never propagate it, so the field across an exposed face is a cliff.
 // Sample only the face's own cell and every block reports "lit from whichever
 // side of me is open" — ambient occlusion that never swaps, which is exactly
 // the bug this rewrite exists to kill.
-assert.match(reliefPass, /RFL\[i\+1\]=lit\?lit\(ax\+tx,ay\+ty\):1;/, 'each face samples ALONG itself (+) — that lean is what tells a wall the torch is above it');
-assert.match(reliefPass, /RFL\[i\+2\]=lit\?lit\(ax-tx,ay-ty\):1;/, 'and along itself (-) — the pair is the direction; the straight-out term alone is identical for every tile of a wall');
+assert.match(reliefPass, /RFL\[fi\+1\]=lit\?lit\(ax\+tx,ay\+ty\):1;/, 'each face samples ALONG itself (+) — that lean is what tells a wall the torch is above it');
+assert.match(reliefPass, /RFL\[fi\+2\]=lit\?lit\(ax-tx,ay-ty\):1;/, 'and along itself (-) — the pair is the direction; the straight-out term alone is identical for every tile of a wall');
 assert.match(reliefPass, /const ax=wx\+nx, ay=y\+ny;/, 'samples are taken in the AIR CELL in front of the face, never in the solid tile (which the BFS never lights)');
 assert.match(reliefPass, /let ox=Math\.round\(-v\.x\*shLen\), oy=Math\.round\(-v\.y\*shLen\);/, 'the emboss shadow sits opposite the LIVE light vector at a length the VIEWER position decides');
 assert.match(reliefPass, /const offX=\(wx\+0\.5\)-eyeTx, offY=\(y\+0\.5\)-eyeTy;/, 'the view angle is the tile offset from the virtual eye at the screen centre');
 assert.match(reliefPass, /const parX=reliefParallaxPx\(offX\), parY=reliefParallaxPx\(offY\);/, 'and it displaces the raised feature — the same block shows a different part of itself as it crosses the screen');
-assert.match(reliefPass, /const eyeTx=sx\+viewX\*0\.5, eyeTy=sy\+viewY\*0\.5;/, 'the eye is recomputed per frame from the view, so the lens follows the camera');assert.match(reliefPass, /if\(f===0 && capT\) continue;/, 'a turf cap owns its own top face');
+assert.match(reliefPass, /const eyeTx=sx\+viewX\*0\.5, eyeTy=sy\+viewY\*0\.5;/, 'the eye is recomputed per frame from the view, so the lens follows the camera');
+assert.match(reliefPass, /if\(f===0 && capT\) continue;/, 'a turf cap owns its own top face');
 assert.match(reliefPass, /srcW=RELIEF_SRC_WEIGHT\/\(1\+d2\/18\);/, 'the moving analytic source is float-continuous — the light field only recomputes on a tile crossing, so walking would otherwise step');
 assert.match(reliefPass, /const eb=strips<2 \? reliefAlphaBucket\(v\.m\*litT\*0\.85\) : -1;/, 'the emboss goes to flat single-face expanses; a block already showing two contrasting faces needs no help');
 assert.match(reliefPass, /const litT=reliefLitTerm\(litMax\);/, 'brightness enters through the lit term ONCE — the vector carries direction, not light level');
 assert.match(reliefPass, /const s=reliefFaceShade\(f,v\.x,v\.y,v\.m,litT\);/, 'and the face shading reads that term, not the raw light level');
 assert.match(reliefPass, /if\(rScan<=0\) POST_FX\.metrics\.reliefScanCap\+\+;/, 'a scan cap is reported separately from a budget cap — one is a design choice, the other is silent truncation');
+// The emboss is a PAIR, and both halves must live inside the tile. Clamping
+// only the ridge and letting its shadow ride up to 2px off it puts the shadow
+// on the NEIGHBOUR — verified by execution: a wood ridge clamped to the right
+// edge threw its shadow to x 20..21 of a 0..19 tile, which under an overhang
+// is a dark mark floating in mid-air. The baked relief was audited for this
+// exact defect once already; its clamp died with the old code and the live
+// shadow never got one. Both are pinned so it cannot return a third time.
+assert.match(reliefPass, /const bx=px\+Math\.max\(1,Math\.min\(TILE-1-bw, /, 'the emboss ridge is clamped inside its tile');
+assert.match(reliefPass, /const shx=Math\.max\(px\+1,Math\.min\(px\+TILE-1-bw, bx\+ox\)\);/, 'and its SHADOW is clamped independently — the offset between them is exactly what pushes it out');
+assert.match(reliefPass, /const shy=Math\.max\(py\+1,Math\.min\(py\+TILE-1-bh, by\+oy\)\);/, 'on both axes');
+assert.match(reliefPass, /ctx\.fillRect\(shx,shy,bw,bh\);/, 'and the clamped position is the one actually DRAWN — computing a clamp and then not using it is a bug this repo has shipped before');
+// Arithmetic proof over the whole parameter space the pass can produce.
+// Mirrors the clamps pinned above; change them and those pins fail first.
+{
+	const TILE_PX = 20;
+	let worstOut = -1e9;
+	for(const [bw, bh] of [[1, 7], [6, 2], [3, 2]]){          // wood, sand, the rest
+		for(let hx = 0; hx < TILE_PX; hx++) for(let hy = 0; hy < TILE_PX; hy++){
+			for(const par of [-4, 0, 4]) for(const off of [-2, -1, 1, 2]){
+				const bx = Math.max(1, Math.min(TILE_PX - 1 - bw, 2 + (hx % Math.max(1, TILE_PX - 4 - bw)) + par));
+				const by = Math.max(1, Math.min(TILE_PX - 1 - bh, 2 + (hy % Math.max(1, TILE_PX - 4 - bh)) + par));
+				const shx = Math.max(1, Math.min(TILE_PX - 1 - bw, bx + off));
+				const shy = Math.max(1, Math.min(TILE_PX - 1 - bh, by + off));
+				worstOut = Math.max(worstOut, bx + bw - TILE_PX, shx + bw - TILE_PX, by + bh - TILE_PX, shy + bh - TILE_PX, -bx, -shx, -by, -shy);
+			}
+		}
+	}
+	assert.ok(worstOut <= 0, 'neither half of the emboss can reach outside its own tile, for any material, hash, parallax lean or shadow offset');
+}
+assert.match(reliefPass, /ctx\.globalCompositeOperation='source-over';/, 'the pass sets its own blend rather than inheriting whatever ran before it — save() preserves state, it does not reset it');
+assert.match(reliefPass, /ctx\.globalAlpha=1;/, 'and its own alpha');
+assert.ok(!/const i=f\*3;/.test(reliefPass), 'the face loop does not shadow the record walk counter — one name, two meanings, in a 17k-line file');
 // Packing: a section can expose thousands of faces and every cached section
 // keeps its list, so objects would run to megabytes across the chunk cache.
 assert.match(mainSrc, /const RELIEF_Y_BIAS=1024;/, 'the y bias keeps sky sections positive without a per-world constant');
+// The packing gives y ELEVEN BITS, and out-of-range values wrap SILENTLY —
+// a record would come back on the wrong row and the relief would sit on
+// terrain that has no such face. Nothing in the packer can notice, so the
+// assumption is pinned against the world's actual bounds instead: widen the
+// section range past this and the suite says so before a player does.
+assert.ok(WORLD_MIN_Y >= -1024 && WORLD_MAX_Y <= 1023, 'the world fits the 11 bits the relief record gives its y (currently ' + WORLD_MIN_Y + '..' + WORLD_MAX_Y + ')');
 assert.match(mainSrc, /entry\.relief=\(entry\.relief\|\|\[\]\)\.filter\(r=>\{ const ry=reliefY\(r\); return ry<redrawWorldY0 \|\| ry>redrawWorldY1; \}\);/, 'a PARTIAL rebake drops the redrawn band from the face list — miss this and a mined wall keeps stale faces against art that no longer has them');
 assert.match(mainSrc, /entry=\{canvas:c,ctx:cctx,version:-1,sy,chests:\[\],doorways:\[\],spec:\[\],relief:\[\]\}/, 'every chunk entry is born with a face list');
 

@@ -130,7 +130,7 @@ import { createRenderHealth, blitProbe as renderBlitProbe, HINTS as RENDER_HINTS
 import { postFx as POST_FX } from './engine/post_fx.js';
 import { shadowParams, reliefLightVector, reliefFaceShade, reliefKeyDir, reliefAlphaBucket,
 	RELIEF_FACE_NX, RELIEF_FACE_NY, RELIEF_HI_ALPHA, RELIEF_SH_ALPHA, RELIEF_MIN_MAG,
-	RELIEF_ALPHA_STEPS, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_SRC_RANGE, RELIEF_SRC_WEIGHT, RELIEF_EMBOSS_MIN_BUCKET, reliefLitTerm,
+	RELIEF_ALPHA_STEPS, RELIEF_BUDGET, RELIEF_SCAN, RELIEF_SRC_RANGE, RELIEF_SRC_WEIGHT, RELIEF_EMBOSS_MIN_BUCKET, RELIEF_MIN_LIT, reliefLitTerm,
 	reliefParallaxPx, reliefShadowScale } from './engine/post_fx.js';
 import './engine/ui.js';
 import './inventory_ui.js';
@@ -10451,6 +10451,12 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 			// and half of what makes a surface read as raised is the viewer.
 			const eyeTx=sx+viewX*0.5, eyeTy=sy+viewY*0.5;
 			ctx.save();
+			// save() PRESERVES state, it does not reset it. Relief is the only ultra
+			// pass in this function that wants plain source-over at full alpha, so it
+			// says so rather than inheriting whatever the pass before it left behind —
+			// a silent coupling to draw order is not a thing to leave lying around.
+			ctx.globalCompositeOperation='source-over';
+			ctx.globalAlpha=1;
 			for(let cx4=minChunk; cx4<=maxChunk && rBudget>0 && rScan>0; cx4++){
 				if((cx4+1)*CHUNK_W<sx-1 || cx4*CHUNK_W>sx+viewX+2) continue;
 				for(let section=minSection; section<=maxSection && rBudget>0 && rScan>0; section++){
@@ -10471,18 +10477,18 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 						// same for every tile of a wall no matter where the torch is.
 						let litMax=0;
 						for(let f=0;f<4;f++){
-							const i=f*3;
-							if(!(mask&(1<<f))){ RFL[i]=RFL[i+1]=RFL[i+2]=0; continue; }
+							const fi=f*3;   // NOT i: the record walk outside owns that name
+							if(!(mask&(1<<f))){ RFL[fi]=RFL[fi+1]=RFL[fi+2]=0; continue; }
 							const nx=RELIEF_FACE_NX[f], ny=RELIEF_FACE_NY[f];
 							const ax=wx+nx, ay=y+ny;      // the air cell in front of the face
 							const tx=-ny, ty=nx;          // along it
 							const l=lit?lit(ax,ay):1;
-							RFL[i]=l;
-							RFL[i+1]=lit?lit(ax+tx,ay+ty):1;
-							RFL[i+2]=lit?lit(ax-tx,ay-ty):1;
+							RFL[fi]=l;
+							RFL[fi+1]=lit?lit(ax+tx,ay+ty):1;
+							RFL[fi+2]=lit?lit(ax-tx,ay-ty):1;
 							if(l>litMax) litMax=l;
 						}
-						if(litMax<0.06) continue; // pitch dark: the darkness overlay owns this tile
+						if(litMax<RELIEF_MIN_LIT) continue; // pitch dark: the darkness overlay owns this tile
 						if(wx!==memoCol){ memoCol=wx; memoSurf=WORLDGEN.surfaceHeight(wx); }
 						// the sun's azimuth only shapes what the sun can reach; a few
 						// tiles down the key fades out and lamps take over entirely
@@ -10558,10 +10564,19 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 							// grazing-angle artefact of basic parallax
 							const bx=px+Math.max(1,Math.min(TILE-1-bw, 2+((hh>>>3)%Math.max(1,TILE-4-bw))+parX));
 							const by=py+Math.max(1,Math.min(TILE-1-bh, 2+((hh>>>9)%Math.max(1,TILE-4-bh))+parY));
+							// BOTH halves are clamped, not just the highlight. Clamping only the
+							// ridge and then letting its shadow ride 2px off it puts the SHADOW
+							// outside the tile — verified by execution: a wood ridge clamped to
+							// the right edge threw its shadow to x 20..21 of a 0..19 tile, i.e.
+							// entirely onto the neighbour, which under an overhang is a dark mark
+							// floating in mid-air. The baked version was audited for exactly this;
+							// its clamp died with the old code and the shadow never got its own.
+							const shx=Math.max(px+1,Math.min(px+TILE-1-bw, bx+ox));
+							const shy=Math.max(py+1,Math.min(py+TILE-1-bh, by+oy));
 							ctx.fillStyle=hiArr[eb];
 							ctx.fillRect(bx,by,bw,bh);
 							ctx.fillStyle=ST.sh[eb];
-							ctx.fillRect(bx+ox,by+oy,bw,bh);
+							ctx.fillRect(shx,shy,bw,bh);
 							drew=true; nRects+=2;
 						}
 						if(drew){ rBudget--; rTiles++; }

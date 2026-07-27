@@ -1334,6 +1334,9 @@ export function reliefLitTerm(litMax){
 // Under this vector magnitude the light is too even to have a direction, and
 // any emboss drawn from it would be noise pretending to be form.
 export const RELIEF_MIN_MAG = 0.06;
+// And below this much light on any face the tile is simply dark: the darkness
+// overlay owns it, and a rim brighter than the surface under it is a glow.
+export const RELIEF_MIN_LIT = 0.06;
 // --- the VIEW half of relief (parallaks: gdzie stoi patrzący) ---------------
 // Light direction is only half of what makes a surface read as raised. The
 // other half is the viewer: a bump seen from the left shows a different part
