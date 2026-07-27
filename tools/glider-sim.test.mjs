@@ -167,7 +167,10 @@ function gravity(b){ b.vy += GRAV_STEP; if(b.vy > 40) b.vy = 40; }
   assert.match(mainSrc, /GLIDER\.step\(player, dt, getTile/, 'the hero frame steps the glider');
   assert.match(mainSrc, /id:'glider'/, 'the glider is craftable');
   assert.match(mainSrc, /inv\.tools\.glider/, 'it is a crafted tool flag, not a new gear KIND (gear purity)');
-  assert.match(mainSrc, /glider:!!inv\.tools\.glider/, 'the crafted glider survives a save');
+  // Surviving a save means being on the ONE list the writer, the reader and the
+  // save VALIDATOR all read. Shipping the flag without listing it is what made
+  // every save this build wrote unloadable (see save-schema-sim for the guard).
+  assert.match(mainSrc, /const SAVE_TOOL_FLAGS=Object\.freeze\(\[[^\]]*'glider'[^\]]*\]\)/, 'the crafted glider survives a save');
   // movement only: no world write, no window.player
   const code = modSrc.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
   assert.ok(!/setTile/.test(code), 'the glider never writes the world (no chokepoint or plane needed)');

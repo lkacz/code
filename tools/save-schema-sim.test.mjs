@@ -13,6 +13,16 @@ const chestsSrc = await readFile(new URL('../src/engine/chests.js', import.meta.
 const weaponsSrc = await readFile(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
 const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');
 
+// The persisted tool-flag list is read out of main.js rather than copied here:
+// a second copy of it in the tests is the same drift that broke saving.
+const SAVE_TOOL_FLAG_KEYS = (() => {
+  const hit = /const SAVE_TOOL_FLAGS=Object\.freeze\((\[[^\]]*\])\)/.exec(src);
+  assert.ok(hit, 'main.js declares SAVE_TOOL_FLAGS as a frozen literal list');
+  const keys = JSON.parse(hit[1].replace(/'/g, '"'));
+  assert.ok(Array.isArray(keys) && keys.length > 0, 'SAVE_TOOL_FLAGS is a non-empty list');
+  return keys;
+})();
+
 // Exercise the real codec declarations without booting the DOM-bound game.
 // Randomized alternating bytes hit the worst-case RLE expansion, while the
 // malformed samples pin strict length/run validation used by imported saves.
@@ -129,6 +139,15 @@ assert.match(src, /localStorage\.setItem\(SAVE_KEY,json\);\s*rememberCommittedSa
 assert.match(src, /function finishIncrementalAutoSave\(\)[\s\S]{0,420}!incrementalAutoSaveJobIsCurrent\(job\)/, 'incremental saves refuse to publish a stale multi-batch snapshot');
 assert.match(src, /function runAutoSaveWork\(\)[\s\S]{0,700}!incrementalAutoSaveJobRevisionMatches\(job\)/, 'incremental batches use the constant-time revision guard');
 assert.match(src, /setInterval\(\(\)=>\{ requestAutoSaveHeartbeat\(\); \},60000\)/, 'autosave heartbeat does not manufacture a new revision for dirty work');
+// The incremental path is the one a playing session actually gets, so it must be
+// reachable by a test without waiting out the 90s + hero-idle gate. The seam
+// bypasses that gate and NOTHING else — the write lock and ghost mode still hold.
+assert.match(src, /if\(_forceIdleAutoSave\) return true;/, 'the QA seam bypasses only the human-idleness gate');
+assert.match(src, /window\.__mmRunAutoSaveNow = function\(\)\{\s*if\(_saveWritesBlocked \|\| MM\.ghostMode\) return false;/, 'the incremental QA seam stays fail-closed on a blocked or ghost session');
+assert.match(src, /window\.__mmRunAutoSaveNow = function\(\)[\s\S]{0,900}runAutoSaveWork\(\);[\s\S]{0,200}_forceIdleAutoSave=prev;/, 'the QA seam drives the real batch worker and always restores the gate');
+// In store mode there is no idleness gate to bypass — the seam hands back the
+// delta transaction's own promise so a driver awaits the published write.
+assert.match(src, /window\.__mmRunAutoSaveNow = function\(\)[\s\S]{0,400}if\(storeActive\(\)\) return persistStoreSave\('qa'\);/, 'the QA seam drives the real store save when the store is active');
 assert.match(src, /validateSaveChunkPayloads[\s\S]*validateSavedChunkEncoding\(ch\.data,!!ch\.rle,size\)[\s\S]*validateSavedChunkEncoding\(encoded,saved\.rle!==false,size\)/, 'save preflight validates chunk encodings without materializing restore arrays');
 assert.match(src, /job\.versions\.set\(ref\.key,worldChunkVersion\(ref\)\)/, 'incremental jobs remember the exact version of every encoded chunk');
 assert.match(src, /function finishIncrementalAutoSave\(\)[\s\S]*cleanupAutosaveChunks\(referencedAutosaveKeys\(\),job\.oldRefs\)/, 'incremental cleanup preserves blobs still reachable from named or fork slots');
@@ -190,7 +209,8 @@ assert.match(src, /SMOKE\.restore\(data\.smoke,getTile\)/, 'load path restores p
 assert.match(src, /function smokeDynamicOpenAt\(x,y,t\)\{[\s\S]*isDoorTile\(t\)[\s\S]*isTrapdoorTile\(t\)/, 'smoke has a shared resolver for actor-opened doors and trapdoors');
 assert.match(src, /SMOKE\.update\(dt, getTile, smokeDynamicOpenAt\)/, 'main simulation lets smoke pass currently open doorway tiles');
 assert.match(worldSrc, /MM\.smoke && MM\.smoke\.onTileChanged[^\n]*onTileChanged\(x,y,old,v,getTile\)/, 'world changes synchronously displace black smoke from newly blocked cells');
-assert.match(src, /const restoredBaseChunks=baseChunkIdsForAudits\(restoredChunks\)/, 'load path narrows mixed vertical-section refs to legacy base chunks for old auditors');
+assert.match(src, /const restoredBaseChunks=parkedRestore \? \[\] : baseChunkIdsForAudits\(restoredChunks\)/, 'load path narrows mixed vertical-section refs to legacy base chunks for old auditors — and hands the parked store restore none of them, since those audits read tiles and would rehydrate the whole world to check it');
+assert.match(src, /const parkedRestore=!!\(data\.world && data\.world\.store===true && opts\.parkChunks===true\)/, 'the deferred-audit decision is tied to the parked store restore alone');
 assert.match(src, /GASES\.auditChunks\(restoredBaseChunks,getTile\)/, 'load path re-audits saved gas tiles from base chunks');
 assert.match(src, /FIRE\.restore\(data\.fire,getTile\)/, 'load path restores active burning fire after terrain');
 assert.match(src, /WIND\.restore\(data\.wind\)/, 'load path restores weather wind state');
@@ -277,7 +297,8 @@ assert.match(src, /if\(!\(arr instanceof Uint8Array\) \|\| arr\.length!==expecte
 assert.match(src, /assertSaveChunkCapacity\(list,'inline restore'\);\s*for\(const ch of list\)/, 'inline chunk restore rejects over-cap data instead of truncating it');
 assert.match(src, /assertSaveChunkCapacity\(refs,'referenced restore'\);\s*for\(const saved of refs\)/, 'referenced chunk restore rejects over-cap data instead of truncating it');
 assert.match(src, /f\.size>IMPORT_SAVE_BYTE_CAP/, 'save-file import rejects oversized payloads before FileReader allocation');
-assert.match(src, /SAVE_SUPPORTED_VERSIONS=Object\.freeze\(\[6,7\]\)/, 'runtime load has an explicit supported-version set');
+assert.match(src, /SAVE_SUPPORTED_VERSIONS=Object\.freeze\(\[6,7,8\]\)/, 'runtime load has an explicit supported-version set');
+assert.match(src, /const SAVE_SCHEMA_VERSION=8/, 'v8 is the store-backed envelope');
 assert.match(src, /!Number\.isInteger\(version\) \|\| !SAVE_SUPPORTED_VERSIONS\.includes\(version\)/, 'runtime preflight rejects non-integral and unsupported save versions');
 assert.match(src, /typeof input\.seed!=='number' \|\| normalizeWorldSeed\(input\.seed\)===null/, 'runtime preflight requires a canonical numeric world seed');
 assert.match(src, /stripTransientTerrainTiles\(arr\);\s*migrateLegacyInfrastructureTerrain\(cx,arr,ref\.base\?null:ref\.sy\);/, 'terrain restore strips transient tiles before migrating legacy base infrastructure overlays');
@@ -313,10 +334,27 @@ assert.match(src, /function canMineTileWithCurrentTool\(t,tx,ty\)\{ return !isUn
 assert.match(src, /if\(!canMineTileWithCurrentTool\(t,tx,ty\)\)\{ if\(!quiet\) msg\(unmineableReason\(t,tx,ty\)\); return false; \}/, 'cursor mining rejects unmineable tiles before timers start');
 assert.match(src, /if\(t===T\.AIR \|\| !canMineTileWithCurrentTool\(t,mineTx,mineTy\)\)/, 'instant break cannot bypass unmineable tiles');
 assert.match(src, /if\(info\.unmineable && !canMineBedrockWithCurrentTool\(tId,mineTx,mineTy\)\) return false;/, 'breakMinedTile refuses unmineable terrain except the coordinate-aware bedrock pickaxe path');
-assert.match(src, /tools:\{stone:!!inv\.tools\.stone,\s*meteor:!!inv\.tools\.meteor,\s*diamond:!!inv\.tools\.diamond,\s*bedrock:!!inv\.tools\.bedrock,\s*glider:!!inv\.tools\.glider,\s*bedrockDurability:bedrockPickDurability\(\)\}/, 'inventory snapshot persists the meteoric and bedrock pickaxes plus the crafted glider');
-assert.match(src, /inv\.tools\.stone=false;\s*inv\.tools\.meteor=false;\s*inv\.tools\.diamond=false;\s*inv\.tools\.bedrock=false;\s*inv\.tools\.glider=false;\s*inv\.bedrockPickDurability=0/, 'inventory restore clears the bedrock pickaxe and glider before loading');
-assert.match(src, /inv\.tools\.meteor=!!src\.tools\.meteor/, 'inventory restore loads the meteoric pickaxe flag');
-assert.match(src, /inv\.tools\.bedrock=!!src\.tools\.bedrock/, 'inventory restore loads the bedrock pickaxe flag');
+// Tool flags: ONE list, five consumers. The Lotnia was added to the live object
+// and to the snapshot while the validator's allowlist stayed at four keys — so
+// every save this build wrote was refused by its own preflight on the next boot
+// (recovery mode, autosave locked, world unreachable). These pins keep the
+// writer, the reader, the reset and the validator on the same list.
+assert.match(src, /const SAVE_TOOL_FLAGS=Object\.freeze\(\['stone','meteor','diamond','bedrock','glider'\]\)/, 'one frozen list owns every persisted tool flag');
+assert.match(src, /const inv=\{tools:\{\}\};\s*SAVE_TOOL_FLAGS\.forEach\(k=>\{ inv\.tools\[k\]=false; \}\)/, 'the live inventory seeds its tool flags from that list');
+assert.match(src, /function clearToolFlags\(\)\{ SAVE_TOOL_FLAGS\.forEach\(k=>\{ inv\.tools\[k\]=false; \}\); inv\.bedrockPickDurability=0; \}/, 'every reset clears the listed flags through one helper');
+assert.match(src, /function snapshotInventory\(\)\{[\s\S]{0,240}SAVE_TOOL_FLAGS\.forEach\(k=>\{ tools\[k\]=!!inv\.tools\[k\]; \}\)/, 'inventory snapshot persists every listed tool flag');
+assert.match(src, /function restoreInventory\(src\)\{[\s\S]{0,420}SAVE_TOOL_FLAGS\.forEach\(k=>\{ inv\.tools\[k\]=!!src\.tools\[k\]; \}\)/, 'inventory restore loads every listed tool flag');
+assert.match(src, /const allowed=new Set\(SAVE_TOOL_FLAGS\.concat\('bedrockDurability'\)\)/, 'the save validator accepts exactly the flags the save writes');
+// The exhaustive half of the guard: no code may write a tool flag that is not on
+// the list. This is the check that would have caught the glider at its source.
+{
+  const written = new Set([...src.matchAll(/inv\.tools\.([A-Za-z_$][\w$]*)/g)].map(m => m[1]));
+  const listed = new Set(SAVE_TOOL_FLAG_KEYS);
+  for (const flag of written){
+    if (flag === 'bedrockDurability') continue; // the durability counter, not an ownership flag
+    assert.ok(listed.has(flag), 'inv.tools.' + flag + ' is written by main.js but missing from SAVE_TOOL_FLAGS — a save carrying it would fail its own preflight');
+  }
+}
 assert.match(src, /PICK_ORDER=\['basic','stone','meteor','diamond','bedrock'\]/, 'pickaxe cycling includes the bedrock pickaxe after diamond');
 assert.match(inventoryUiSrc, /inv\.tools && inv\.tools\.bedrock && bedrockDur>0\?\['macierzysty '\+bedrockDur\+'\/10'\]:\[\]/, 'resource panel lists the bedrock pickaxe with durability when owned');
 assert.match(src, /id:'pick_meteoric_iron'/, 'crafting exposes a meteoric iron pickaxe recipe');
@@ -505,19 +543,43 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   const flushEnd=src.indexOf("window.addEventListener('pagehide'",flushStart);
   assert.ok(cancelStart>=0 && cancelEnd>cancelStart && flushStart>=0 && flushEnd>flushStart,'flush cleanup source blocks are discoverable');
   const blobs=new Set(['committed','orphan-a','orphan-b']);
-  const sandbox={
-    _saveStateT:1,_autoSaveWorkT:2,_autoSaveJob:{refs:[{key:'orphan-a'},{key:'orphan-b'}]},
+  const makeFlushSandbox=(over)=>Object.assign({
+    _saveStateT:1,_autoSaveWorkT:2,_storeSaveT:3,_autoSaveJob:{refs:[{key:'orphan-a'},{key:'orphan-b'}]},
     _startingNewGame:false,_saveWritesBlocked:false,_saveDirty:false,
     clearTimeout(){},
     cleanupAutosaveChunks(keep,refs){ for(const ref of refs||[]) if(!keep.has(ref.key)) blobs.delete(ref.key); },
     saveCriticalState(){ return true; },
     saveGame(){ return true; },
+    storeActive(){ return false; },
+    stashStoreWal(){ throw new Error('legacy flush must not journal'); },
+    persistStoreSave(){ throw new Error('legacy flush must not touch the store'); },
     clearActiveGameStorage(){ throw new Error('not a new-game flush'); },
     localStorage:{}
-  };
-  runInNewContext(src.slice(cancelStart,cancelEnd)+src.slice(flushStart,flushEnd)+';globalThis.flush=flushPendingSave;',sandbox);
+  },over||{});
+  const sandbox=makeFlushSandbox();
+  const build=(box)=>runInNewContext(src.slice(cancelStart,cancelEnd)+src.slice(flushStart,flushEnd)+';globalThis.flush=flushPendingSave;',box);
+  build(sandbox);
   sandbox.flush();
   assert.deepEqual([...blobs],['committed'],'flush deletes abandoned incremental blobs but preserves committed data');
+
+  // Store mode cannot await IndexedDB on the way out. The journal is synchronous
+  // and must be written BEFORE the async write is kicked, or a killed tab loses
+  // the very edits the journal exists to carry.
+  {
+    const order=[];
+    const storeBox=makeFlushSandbox({
+      _saveDirty:true,
+      storeActive(){ return true; },
+      stashStoreWal(){ order.push('wal'); return 3; },
+      persistStoreSave(){ order.push('store'); return Promise.resolve(true); },
+      saveGame(){ order.push('legacy'); return true; },
+      saveCriticalState(){ order.push('critical'); return true; }
+    });
+    build(storeBox);
+    storeBox.flush();
+    assert.deepEqual(order,['critical','wal','store'],'store flush signs the critical capsule, journals, then kicks the async write — and never falls back to the legacy full save');
+    assert.equal(storeBox._storeSaveT,null,'flush cancels the pending store debounce');
+  }
 }
 
 // Batches use an O(1) revision guard. Publication still requires the complete
@@ -562,13 +624,19 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   const start=src.indexOf('function saveState()');
   const end=src.indexOf('window.__mmMarkWorldChanged',start);
   assert.ok(start>=0 && end>start,'autosave heartbeat source block is discoverable');
-  const sandbox={
-    _startingNewGame:false,_saveWritesBlocked:false,_saveDirty:true,_autoSaveJob:{revision:7},_saveRevision:7,
-    MM:{ghostMode:false},scheduled:0,critical:0,
-    saveCriticalState(){ sandbox.critical++; },
-    scheduleDirtySave(){ sandbox.scheduled++; }
+  const makeBox=(storeOn)=>{
+    const box={
+      _startingNewGame:false,_saveWritesBlocked:false,_saveDirty:true,_autoSaveJob:{revision:7},_saveRevision:7,
+      MM:{ghostMode:false},scheduled:0,storeScheduled:0,critical:0,
+      saveCriticalState(){ box.critical++; },
+      scheduleDirtySave(){ box.scheduled++; },
+      scheduleStoreSave(){ box.storeScheduled++; },
+      storeActive(){ return storeOn; }
+    };
+    runInNewContext(src.slice(start,end)+';globalThis.autosaveApi={saveState,heartbeat:requestAutoSaveHeartbeat};',box);
+    return box;
   };
-  runInNewContext(src.slice(start,end)+';globalThis.autosaveApi={saveState,heartbeat:requestAutoSaveHeartbeat};',sandbox);
+  const sandbox=makeBox(false);
   sandbox.autosaveApi.heartbeat();
   assert.equal(sandbox._saveRevision,7,'dirty heartbeat preserves the in-flight revision');
   assert.equal(sandbox.scheduled,1,'dirty heartbeat only ensures work remains scheduled');
@@ -576,6 +644,15 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   sandbox.autosaveApi.heartbeat();
   assert.equal(sandbox._saveRevision,8,'clean heartbeat requests a fresh save revision');
   assert.equal(sandbox._saveDirty,true,'clean heartbeat marks the save dirty');
+
+  // Store mode routes the same dirty mark to the delta scheduler instead. The
+  // legacy path's 90-second gap and hero-idleness gate exist because a full
+  // localStorage save re-serialized the world synchronously; a delta does not.
+  const storeBox=makeBox(true);
+  storeBox._saveDirty=false; storeBox._autoSaveJob=null;
+  storeBox.autosaveApi.heartbeat();
+  assert.equal(storeBox.storeScheduled,1,'store mode schedules a delta save');
+  assert.equal(storeBox.scheduled,0,'store mode never schedules the legacy idle job');
 }
 
 // Autosave-blob cleanup skips ordinary inline slot payloads, but JSON Unicode
@@ -635,6 +712,9 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
     applyGameDataCore(data){ order.push('apply:'+data.id); runtime.id=data.id; if(data.fail) throw new Error('restore boom'); if(data.reject) return false; return true; },
     saveCriticalState(){ order.push('critical'); return true; },
     console:{warn(){},error(){}},
+    storeActive(){ return sandbox.storeOn===true; },
+    storeOn:false,
+    _storeNeedsFullRepublish:false,
     Date
   };
   runInNewContext(src.slice(start,end)+';globalThis.txApply=applyGameData;',sandbox);
@@ -656,6 +736,19 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   assert.equal(stored,'B','successful transaction commits candidate persistence');
   assert.deepEqual(order.slice(0,3),['snapshot:A','apply:B','commit'],'commit occurs after snapshot and runtime apply');
 
+  // A world that did NOT come out of the store leaves the delta baseline
+  // describing a world that no longer exists. Publishing a diff against it could
+  // leave one chunk of the previous world inside the new one, so the next store
+  // write must republish whole.
+  runtime.id='A'; stored='A'; order.length=0;
+  sandbox.storeOn=true; sandbox._storeNeedsFullRepublish=false;
+  assert.equal(sandbox.txApply({id:'C'},{preflightResult:preflight({id:'C'}),transactional:true,commit(){ stored='C'; }}),true,'an in-session load still commits');
+  assert.equal(sandbox._storeNeedsFullRepublish,true,'a non-store load invalidates the delta baseline');
+  sandbox._storeNeedsFullRepublish=false;
+  assert.equal(sandbox.txApply({id:'D'},{preflightResult:preflight({id:'D'}),transactional:true,fromStore:true,commit(){ stored='D'; }}),true,'a store load commits');
+  assert.equal(sandbox._storeNeedsFullRepublish,false,'a load FROM the store keeps its own baseline');
+  sandbox.storeOn=false;
+
   runtime.id='A'; stored='A'; order.length=0;
   assert.equal(sandbox.txApply({id:'B'},{preflightResult:preflight({id:'B'}),transactional:true,commit(){ order.push('commit'); throw new Error('quota'); }}),false,'failed commit reports failure');
   assert.equal(runtime.id,'A','failed commit rolls the candidate runtime back');
@@ -669,8 +762,9 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   const end=src.indexOf('function savePerfNow()',start);
   assert.ok(start>=0 && end>start,'save preflight source block is discoverable');
   const sandbox={
-    SAVE_SCHEMA_VERSION:7,
-    SAVE_SUPPORTED_VERSIONS:Object.freeze([6,7]),
+    SAVE_SCHEMA_VERSION:8,
+    SAVE_SUPPORTED_VERSIONS:Object.freeze([6,7,8]),
+    SAVE_STORE_CHUNK_CAP:65536,
     SAVE_CHUNK_RESTORE_CAP:4096,
     SAVE_INFRASTRUCTURE_RESTORE_CAP:20000,
     SAVE_CONSTRUCTION_BACKGROUND_RESTORE_CAP:40000,
@@ -693,24 +787,37 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
     serializeHashedSave(value){ const object=Object.assign({},value,{h:'12345678'}); return {object,hash:'12345678',json:JSON.stringify(object)}; },
     assertSaveChunkCapacity(records){ return records; },
     loadFailureSummary(preflight){ return preflight.errors[0]?.detail||'invalid'; },
-    localStorage:{getItem(){ return null; }}
+    localStorage:{getItem(){ return null; }},
+    SAVE_TOOL_FLAGS:Object.freeze(SAVE_TOOL_FLAG_KEYS.slice())
   };
   const portableStart=src.indexOf('function portableSaveJson(raw,storage)');
   const portableEnd=src.indexOf('function loadSaveCandidate(raw,opts)',portableStart);
   assert.ok(portableStart>=0 && portableEnd>portableStart,'portable export helper source block is discoverable');
   runInNewContext(src.slice(start,end)+src.slice(portableStart,portableEnd)+';globalThis.preflight=preflightSaveData;globalThis.portable=portableSaveJson;',sandbox);
   const make=(overrides={})=>Object.assign({
-    v:7,seed:42,h:'12345678',world:{modified:[]},player:{x:1,y:2},inv:{tools:{}}
+    v:8,seed:42,h:'12345678',world:{modified:[]},player:{x:1,y:2},inv:{tools:{}}
   },overrides);
-  assert.equal(sandbox.preflight(make(),{requireHash:true,storage:sandbox.localStorage}).ok,true,'canonical v7 envelope passes strict preflight');
-  assert.equal(sandbox.preflight(make({h:undefined}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'hashless v7 is rejected');
+  assert.equal(sandbox.preflight(make(),{requireHash:true,storage:sandbox.localStorage}).ok,true,'canonical v8 envelope passes strict preflight');
+  assert.equal(sandbox.preflight(make({h:undefined}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'hashless v8 is rejected');
   assert.equal(sandbox.preflight(make({h:'deadbeef'}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'hash mismatch is rejected');
+  // v7 is a live save on players' disks: it must still load, and its envelope is
+  // promoted rather than reshaped (v8 only ADDED a third chunk-storage mode).
+  const v7=sandbox.preflight(make({v:7}),{requireHash:true,storage:sandbox.localStorage});
+  assert.equal(v7.ok,true,'a v7 save still loads');
+  assert.equal(v7.migratedFrom,7,'a v7 save reports its migration source');
+  assert.equal(v7.data.v,8,'a v7 save is promoted to the current schema');
   const legacy=sandbox.preflight({v:6,seed:42,world:{modified:[]},player:{x:1,y:2,xp:4},savedAt:123,h:undefined},{requireHash:true,storage:sandbox.localStorage});
   assert.equal(legacy.ok,true,'hashless v6 remains an explicit migration input');
   assert.equal(legacy.migratedFrom,6,'legacy v6 reports its migration source');
-  assert.equal(legacy.data.v,7,'legacy v6 is promoted before the mutating core');
-  assert.equal(JSON.stringify(legacy.data.inv.tools),JSON.stringify({stone:false,meteor:false,diamond:false,bedrock:false,bedrockDurability:0}),'historical v6 without inventory receives a canonical empty v7 inventory');
-  assert.equal(sandbox.preflight(make({v:8}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'future unsupported save versions are rejected');
+  assert.equal(legacy.data.v,8,'legacy v6 is promoted before the mutating core');
+  const canonicalEmptyTools={bedrockDurability:0};
+  for(const flag of SAVE_TOOL_FLAG_KEYS) canonicalEmptyTools[flag]=false;
+  // Key-sorted JSON, not deepEqual: the migrated object comes out of a separate
+  // vm realm, so its Object prototype is not this realm's and strict deep
+  // equality fails on identical data.
+  const toolsFingerprint=o=>JSON.stringify(Object.keys(o).sort().map(k=>[k,o[k]]));
+  assert.equal(toolsFingerprint(legacy.data.inv.tools),toolsFingerprint(canonicalEmptyTools),'historical v6 without inventory receives a canonical empty v7 inventory covering every persisted flag');
+  assert.equal(sandbox.preflight(make({v:9}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'future unsupported save versions are rejected');
   assert.equal(sandbox.preflight(make({seed:0}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'non-canonical seeds are rejected');
   assert.equal(sandbox.preflight(make({player:{x:30000001,y:2}}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'out-of-world player positions are rejected');
   assert.equal(sandbox.preflight(make({inv:{tools:{bedrock:'yes',bedrockDurability:999}}}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'tool ownership and durability require canonical types and bounds');
@@ -718,6 +825,29 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   assert.equal(sandbox.preflight(make({water:{bad:true}}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'invalid bounded water state rejects the whole save');
   assert.equal(sandbox.preflight(make({infrastructure:{v:2,complete:false,list:[]}}),{requireHash:true,storage:sandbox.localStorage}).ok,false,'a truncated infrastructure snapshot rejects the whole save');
   assert.equal(sandbox.preflight(make({constructionBackground:{v:1,complete:true,list:[{x:1,y:2,t:201}]}}),{requireHash:true,storage:sandbox.localStorage}).ok,true,'a canonical complete construction-background snapshot passes');
+  // ---- store mode (v8): the records are the chunk list ----------------------
+  // The manifest carries only a count, so validation happens against the map the
+  // store handed back. Every test an external localStorage blob has always faced
+  // still applies: canonical coordinate, own FNV hash, decodable payload.
+  {
+    const storeChunks=new Map([['42|1',{cx:1,sy:null,data:'encoded',h:'feedbeef',ver:3}]]);
+    const storeSave=(over)=>make(Object.assign({world:{store:true,chunks:1}},over||{}));
+    assert.equal(sandbox.preflight(storeSave(),{requireHash:true,storage:sandbox.localStorage,storeChunks}).ok,true,'a store-backed world validates against its hydrated records');
+    assert.equal(sandbox.preflight(storeSave(),{requireHash:true,storage:sandbox.localStorage}).ok,false,'a store-backed world cannot be validated without its records');
+    assert.equal(sandbox.preflight(storeSave({world:{store:true,chunks:2}}),{requireHash:true,storage:sandbox.localStorage,storeChunks}).ok,false,'a manifest promising more chunks than the store holds is refused');
+    assert.equal(sandbox.preflight(storeSave({world:{store:true,chunks:1,modified:[]}}),{requireHash:true,storage:sandbox.localStorage,storeChunks}).ok,false,'store mode and inline mode together are an ambiguous world');
+    assert.equal(sandbox.preflight(storeSave({world:{store:true,chunks:65537}}),{requireHash:true,storage:sandbox.localStorage,storeChunks}).ok,false,'an over-cap store count fails rather than truncates');
+    assert.equal(sandbox.preflight(storeSave({world:{store:true}}),{requireHash:true,storage:sandbox.localStorage,storeChunks}).ok,false,'store mode must declare its chunk count');
+    const corrupt=new Map([['42|1',{cx:1,sy:null,data:'encoded',h:'deadbeef',ver:3}]]);
+    assert.equal(sandbox.preflight(storeSave(),{requireHash:true,storage:sandbox.localStorage,storeChunks:corrupt}).ok,false,'a store chunk that fails its own hash rejects the save');
+    const undecodable=new Map([['42|1',{cx:1,sy:null,data:'garbage',h:'12345678',ver:3}]]);
+    assert.equal(sandbox.preflight(storeSave(),{requireHash:true,storage:sandbox.localStorage,storeChunks:undecodable}).ok,false,'a store chunk that does not decode rejects the save');
+    // The journal legitimately adds a chunk the manifest had not published yet.
+    const extra=new Map(storeChunks);
+    extra.set('42|2',{cx:2,sy:null,data:'encoded',h:'feedbeef',ver:1});
+    assert.equal(sandbox.preflight(storeSave(),{requireHash:true,storage:sandbox.localStorage,storeChunks:extra}).ok,true,'a replayed journal entry beyond the published count is accepted');
+  }
+
   const externalKey='mm_save_v7_chunk_42_1_job';
   const external=make({savedAt:123,world:{external:true,chunkRefs:[{cx:1,key:externalKey,rle:true,h:'feedbeef'}]}});
   const sourceStorage={getItem(key){ return key===externalKey?'encoded':null; }};
@@ -726,6 +856,34 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   assert.equal(Array.isArray(portableData.world.modified),true,'fork export embeds referenced chunks inline');
   assert.equal(Object.hasOwn(portableData.world,'chunkRefs'),false,'fork export contains no localStorage-only references');
   assert.equal(sandbox.preflight(portableData,{requireHash:true,storage:{getItem(){ return null; }}}).ok,true,'portable fork export validates with empty destination storage');
+
+  // THE ROUND TRIP. Every check above feeds the validator a hand-written
+  // inventory, which is exactly why the glider slipped through: the shape the
+  // game actually WRITES was never handed to the validator that reads it. So run
+  // the real snapshotInventory and validate its real output.
+  {
+    const writerStart=src.indexOf('function snapshotInventory()');
+    const writerEnd=src.indexOf('function restoreInventory(src)',writerStart);
+    assert.ok(writerStart>=0 && writerEnd>writerStart,'inventory writer source block is discoverable');
+    const ownedTools={};
+    for(const flag of SAVE_TOOL_FLAG_KEYS) ownedTools[flag]=true;
+    const writer={
+      SAVE_TOOL_FLAGS:Object.freeze(SAVE_TOOL_FLAG_KEYS.slice()),
+      RESOURCE_KEYS:['wood','stone','diamond'],
+      inv:Object.assign({tools:ownedTools},{wood:12,stone:340,diamond:2}),
+      bedrockPickDurability(){ return 10; }
+    };
+    runInNewContext(src.slice(writerStart,writerEnd)+';globalThis.snapshotInv=snapshotInventory;',writer);
+    const authored=writer.snapshotInv();
+    for(const flag of SAVE_TOOL_FLAG_KEYS) assert.equal(authored.tools[flag],true,'the writer persists inv.tools.'+flag);
+    const roundTrip=sandbox.preflight(make({inv:authored}),{requireHash:true,storage:sandbox.localStorage});
+    assert.equal(roundTrip.ok,true,'the inventory this build WRITES passes the validator that reads it: '+JSON.stringify(roundTrip.errors));
+    // and the allowlist still bites: an unlisted flag is exactly what broke saving
+    const strayTools=Object.assign({},authored.tools,{jetpack:true});
+    const stray=sandbox.preflight(make({inv:Object.assign({},authored,{tools:strayTools})}),{requireHash:true,storage:sandbox.localStorage});
+    assert.equal(stray.ok,false,'an unlisted tool flag is still refused');
+    assert.equal(stray.errors[0].path,'inv.tools.jetpack','the refusal names the offending flag');
+  }
 }
 
 console.log('save-schema-sim: all assertions passed');

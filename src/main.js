@@ -116,6 +116,8 @@ import VISION_MODES, { VISION_MODES as VISION_MODE_IDS } from './engine/vision_m
 import TREASURE_COMPASS from './engine/treasure_compass.js';
 import { vitalsHud as VITALS_HUD } from './engine/vitals_hud.js';
 import { titleScreen as TITLE_SCREEN } from './engine/title_screen.js';
+// The world's home on disk: IndexedDB, one record per chunk, delta writes.
+import { saveStore as SAVE_STORE } from './engine/save_store.js';
 import { finale as FINALE } from './engine/finale.js';
 // Ghost spectator mode (link-join watchers): ghost_client flips MM.ghostMode at
 // import time when the URL carries ?watch=ROOM — everything below honors it.
@@ -2147,10 +2149,17 @@ function gasSkyExposedTile(x,y){
 	return true;
 }
 // Inventory counts for resources (+ tool unlock flags)
-const inv={tools:{stone:false,meteor:false,diamond:false}};
-inv.tools.bedrock=false;
-inv.tools.glider=false; // Lotnia (engine/glider.js) — a crafted verb, not a gear stat
+// ONE list owns every crafted tool flag: it seeds inv.tools, it is what a save
+// WRITES, what a load restores, what a reset clears and what the save validator
+// ACCEPTS. The Lotnia was added to the object and to the snapshot alone — the
+// validator's allowlist never learned the key, so every save this build wrote
+// failed its own preflight on the next boot: recovery mode, autosave locked,
+// world unreachable. A flag added here reaches all five places at once.
+const SAVE_TOOL_FLAGS=Object.freeze(['stone','meteor','diamond','bedrock','glider']); // glider = Lotnia (engine/glider.js): a crafted verb, not a gear stat
+const inv={tools:{}};
+SAVE_TOOL_FLAGS.forEach(k=>{ inv.tools[k]=false; });
 inv.bedrockPickDurability=0;
+function clearToolFlags(){ SAVE_TOOL_FLAGS.forEach(k=>{ inv.tools[k]=false; }); inv.bedrockPickDurability=0; }
 RESOURCE_KEYS.forEach(k=>{ inv[k]=0; });
 // Expose inventory for cross-module loot insertion
 window.inv = inv;
@@ -3272,9 +3281,17 @@ const AUTOSAVE_CHUNK_PREFIX='mm_save_v7_chunk_';
 const CRITICAL_SAVE_KEY='mm_save_critical_v1';
 const CRITICAL_SAVE_SCHEMA_VERSION=3;
 const CRITICAL_SAVE_INTERVAL_MS=2500;
-const SAVE_SCHEMA_VERSION=7;
-const SAVE_SUPPORTED_VERSIONS=Object.freeze([6,7]);
+const SAVE_SCHEMA_VERSION=8;
+const SAVE_SUPPORTED_VERSIONS=Object.freeze([6,7,8]);
+// The localStorage-era cap. A manifest that inlines its chunks, or references them
+// as separate localStorage blobs, still has to fit in a ~5 MB origin budget, so
+// this number stays exactly where it was for those two modes.
 const SAVE_CHUNK_RESTORE_CAP=4096;
+// The store mode has no 5 MB ceiling, so the cap becomes a memory statement
+// instead of a storage one: parked chunks cost roughly a kilobyte of RLE each, so
+// this is ~65 MB of cold world — two million columns of edited terrain. Past that
+// a save is refused rather than silently truncated, exactly as before.
+const SAVE_STORE_CHUNK_CAP=65536;
 const SAVE_INFRASTRUCTURE_RESTORE_CAP=20000;
 const SAVE_CONSTRUCTION_BACKGROUND_RESTORE_CAP=40000;
 const IMPORT_SAVE_BYTE_CAP=24*1024*1024;
@@ -3425,15 +3442,63 @@ function saveValidationIssue(list,code,path,detail){
 	list.push({code:String(code),path:String(path||''),detail:String(detail||code)});
 }
 function migrateSupportedSave(data,version){
+	if(version===SAVE_SCHEMA_VERSION) return data;
+	// v7 → v8 is an envelope bump only: v8 adds the store-backed world mode and
+	// keeps both older chunk modes verbatim, so a v7 save needs no reshaping. The
+	// hash covered the v7 envelope, so it is dropped and re-earned on first write.
+	if(version===7){
+		const promoted=Object.assign({},data,{v:SAVE_SCHEMA_VERSION});
+		delete promoted.h;
+		return promoted;
+	}
 	if(version!==6) return data;
 	// v6 used the same terrain model and inline chunk codec. Promote it in memory;
 	// absent post-v6 subsystem snapshots intentionally retain their reset defaults.
 	// The historical v6 envelope did not persist inventory at all, so seed an
 	// explicit empty canonical inventory before applying v7's required fields.
 	const migrated=Object.assign({},data,{v:SAVE_SCHEMA_VERSION});
-	if(!isSaveRecord(migrated.inv)) migrated.inv={tools:{stone:false,meteor:false,diamond:false,bedrock:false,bedrockDurability:0}};
+	if(!isSaveRecord(migrated.inv)){ const tools={bedrockDurability:0}; SAVE_TOOL_FLAGS.forEach(k=>{ tools[k]=false; }); migrated.inv={tools}; }
 	delete migrated.h; // the source hash was verified before migration
 	return migrated;
+}
+// Store-mode payload validation. The records were read out of the async store
+// before this ran, so validation works on the hydrated map rather than reaching
+// into storage per chunk — but every test is the same one an external localStorage
+// blob has always faced: canonical coordinate, declared codec, own FNV hash, and
+// an encoding that really decodes to a chunk of the right size.
+// Duck-typed rather than `instanceof Map`: the hydrated map crosses a module (and
+// in the tests a vm-realm) boundary, where a realm's Map is not this realm's Map
+// and instanceof silently answers false.
+function isChunkMap(v){ return !!v && typeof v.get==='function' && typeof v.values==='function' && typeof v.size==='number'; }
+function validateStoreChunkPayloads(world,hydrated,errors){
+	if(!isChunkMap(hydrated)){
+		saveValidationIssue(errors,'store-unavailable','world','store chunk payloads were not provided to validation');
+		return;
+	}
+	const expected=world.chunks|0;
+	// A short read means chunks vanished under a manifest that promised them:
+	// refuse rather than silently restore a world with holes in it.
+	if(hydrated.size<expected) saveValidationIssue(errors,'store-missing','world.chunks','store holds '+hydrated.size+' of '+expected+' chunks');
+	// Extra records are harmless leftovers (an abandoned world sharing the seed);
+	// they are reported so the caller can sweep them, not treated as corruption.
+	const seen=new Set();
+	let index=0;
+	for(const [key,rec] of hydrated){
+		if(errors.length>=32) return;
+		const path='store.'+key;
+		index++;
+		if(!isSaveRecord(rec)){ saveValidationIssue(errors,'store-shape',path,'store chunk must be an object'); continue; }
+		const ref=validSavedChunkRef(rec.cx,rec.sy);
+		if(!ref){ saveValidationIssue(errors,'store-coordinate',path,'invalid store chunk coordinate'); continue; }
+		if(seen.has(ref.key)){ saveValidationIssue(errors,'store-duplicate',path,'duplicate store chunk '+ref.key); continue; }
+		seen.add(ref.key);
+		if(typeof rec.h!=='string' || !/^[0-9a-f]{8}$/i.test(rec.h)){ saveValidationIssue(errors,'store-hash',path+'.h','store chunk requires an 8-digit hash'); continue; }
+		const size=CHUNK_W*(ref.base?WORLD_H:worldSectionHeight());
+		if(typeof rec.data!=='string' || rec.data.length>size*4+64){ saveValidationIssue(errors,'store-oversized',path+'.data','store chunk payload is missing or oversized'); continue; }
+		if(computeHash(rec.data)!==rec.h){ saveValidationIssue(errors,'store-corrupt',path+'.data','store chunk failed its integrity hash'); continue; }
+		if(!validateSavedChunkEncoding(rec.data,rec.rle!==false,size)) saveValidationIssue(errors,'store-data',path+'.data','invalid encoded store chunk payload');
+	}
+	if(index!==hydrated.size) saveValidationIssue(errors,'store-iteration','world','store chunk map changed during validation');
 }
 function validateSaveChunkPayloads(data,world,storage,errors){
 	const inline=Array.isArray(world.modified) ? world.modified : null;
@@ -3518,12 +3583,25 @@ function preflightSaveData(input,opts){
 	const world=candidate.world;
 	if(!isSaveRecord(world)) saveValidationIssue(errors,'world-shape','world','world snapshot is required');
 	else{
-		const hasInline=Array.isArray(world.modified), hasRefs=Array.isArray(world.chunkRefs);
+		const hasInline=Array.isArray(world.modified), hasRefs=Array.isArray(world.chunkRefs), hasStore=world.store===true;
 		if(world.modified!=null && !hasInline) saveValidationIssue(errors,'world-inline-shape','world.modified','modified chunks must be an array');
 		if(world.chunkRefs!=null && !hasRefs) saveValidationIssue(errors,'world-refs-shape','world.chunkRefs','chunk references must be an array');
-		if(hasInline===hasRefs) saveValidationIssue(errors,'world-mode','world','world must contain exactly one chunk storage mode');
+		if(world.store!=null && typeof world.store!=='boolean') saveValidationIssue(errors,'world-store-shape','world.store','store flag must be boolean');
+		// Exactly one chunk home: inline in this envelope, external localStorage
+		// blobs, or the async store. Two modes at once means an ambiguous world.
+		const modes=(hasInline?1:0)+(hasRefs?1:0)+(hasStore?1:0);
+		if(modes!==1) saveValidationIssue(errors,'world-mode','world','world must contain exactly one chunk storage mode');
 		if(hasRefs && world.external!==true) saveValidationIssue(errors,'world-external','world.external','external chunk saves must declare external=true');
 		if(hasInline && world.external===true) saveValidationIssue(errors,'world-external','world.external','inline chunk saves cannot declare external=true');
+		if(hasStore){
+			// The store's records ARE the chunk list, so the manifest carries only the
+			// count it published. It is the cross-check that a world arrived whole:
+			// the store publishes chunks and manifest in ONE transaction, so a
+			// mismatch is not a torn write, it is tampering or a foreign database.
+			if(!Number.isInteger(world.chunks) || world.chunks<0) saveValidationIssue(errors,'world-store-count','world.chunks','store saves must declare an integer chunk count');
+			else if(world.chunks>SAVE_STORE_CHUNK_CAP) saveValidationIssue(errors,'world-store-cap','world.chunks','store chunk count exceeds '+SAVE_STORE_CHUNK_CAP+'; refusing a lossy restore');
+			else validateStoreChunkPayloads(world,opts.storeChunks,errors);
+		}
 		const records=hasInline?world.modified:(hasRefs?world.chunkRefs:null);
 		if(records && records.length>SAVE_CHUNK_RESTORE_CAP) saveValidationIssue(errors,'chunk-cap','world','chunk count exceeds '+SAVE_CHUNK_RESTORE_CAP+'; refusing a lossy restore');
 		else if(records) validateSaveChunkPayloads(candidate,world,opts.storage||((typeof localStorage!=='undefined')?localStorage:null),errors);
@@ -3542,9 +3620,9 @@ function preflightSaveData(input,opts){
 			if(key==='tools'){
 				if(!isSaveRecord(value)) saveValidationIssue(errors,'inventory-tools','inv.tools','tool inventory must be an object');
 				else{
-					const allowed=new Set(['stone','meteor','diamond','bedrock','bedrockDurability']);
+					const allowed=new Set(SAVE_TOOL_FLAGS.concat('bedrockDurability'));
 					for(const toolKey of Object.keys(value)) if(!allowed.has(toolKey)) saveValidationIssue(errors,'inventory-tool-key','inv.tools.'+toolKey,'unknown tool inventory field');
-					for(const toolKey of ['stone','meteor','diamond','bedrock']){
+					for(const toolKey of SAVE_TOOL_FLAGS){
 						if(value[toolKey]!=null && typeof value[toolKey]!=='boolean') saveValidationIssue(errors,'inventory-tool-flag','inv.tools.'+toolKey,'tool ownership flags must be boolean');
 					}
 					if(value.bedrockDurability!=null && (typeof value.bedrockDurability!=='number' || !Number.isInteger(value.bedrockDurability) || value.bedrockDurability<0 || value.bedrockDurability>BEDROCK_PICK_MAX_DURABILITY)) saveValidationIssue(errors,'inventory-tool-durability','inv.tools.bedrockDurability','bedrock durability is outside its valid range');
@@ -3622,6 +3700,7 @@ function publishSavePerf(perf){
 let _saveStateT=null, _autoSaveWorkT=null, _autoSaveJob=null, _lastAutoSaveAt=Date.now(), _saveDirty=false, _lastSaveActivityAt=Date.now(), _saveRevision=0, _saveFailureCount=0, _nextAutoSaveRetryAt=0, _lastSaveError='', _lastFullSaveSizeKB=0;
 let _lastCriticalSaveAt=0, _lastCriticalSaveSignature='', _criticalSaveFailureCount=0, _committedSaveIdentity=null;
 let _startingNewGame=false, _saveWritesBlocked=false, _saveWriteBlockReason='';
+let _forceIdleAutoSave=false; // QA seam only (window.__mmRunAutoSaveNow)
 const AUTO_SAVE_IDLE_CHECK_MS=3000;
 const AUTO_SAVE_IDLE_REQUIRED_MS=12000;
 const AUTO_SAVE_MIN_GAP_MS=90000;
@@ -3645,6 +3724,7 @@ function renderSaveWriteBlockWarning(){
 function cancelPendingSaveWork(){
 	if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; }
 	if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; }
+	if(_storeSaveT){ clearTimeout(_storeSaveT); _storeSaveT=null; }
 	const refs=_autoSaveJob && Array.isArray(_autoSaveJob.refs) ? _autoSaveJob.refs.slice() : [];
 	_autoSaveJob=null;
 	if(refs.length) cleanupAutosaveChunks(new Set(),refs);
@@ -3837,27 +3917,61 @@ function restoreReferencedChunks(refs){
 	}
 	return restored;
 }
-function restoreWorldChunks(worldData){ if(!worldData || typeof worldData!=='object') return []; if(Array.isArray(worldData.modified)) return restoreModifiedChunks(worldData.modified); if(Array.isArray(worldData.chunkRefs)) return restoreReferencedChunks(worldData.chunkRefs); return []; }
+// Chunks read out of the async store. `park` is the boot path: the world goes
+// straight into the cold store instead of becoming thousands of live arrays, so
+// load time and memory stop tracking world size. An in-session load (a named slot,
+// a fork) keeps the eager path — it must replace a world the player is standing
+// in, and those are bounded by the localStorage-era cap anyway.
+function restoreStoreChunks(hydrated,park){
+	const restored=[];
+	if(!isChunkMap(hydrated)) return restored;
+	assertSaveChunkCapacity([...hydrated.keys()],'store restore',SAVE_STORE_CHUNK_CAP);
+	let decodeMs=0, placeMs=0;
+	for(const rec of hydrated.values()){
+		if(!rec || typeof rec.data!=='string') continue;
+		const ref=validSavedChunkRef(rec.cx,rec.sy);
+		if(!ref) continue;
+		const size=CHUNK_W*(ref.base?WORLD_H:worldSectionHeight());
+		if(rec.h && computeHash(rec.data)!==rec.h){ console.warn('Store chunk hash mismatch',rec.cx,rec.sy); continue; }
+		const decodeT=savePerfNow();
+		const arr=decodeSavedChunk(rec.data,rec.rle!==false,size);
+		decodeMs+=savePerfNow()-decodeT;
+		if(!arr) continue;
+		const placeT=savePerfNow();
+		if(park){
+			stripTransientTerrainTiles(arr);
+			migrateLegacyInfrastructureTerrain(ref.cx,arr,ref.base?null:ref.sy);
+			if(WORLD.restoreChunkParked(ref.key,arr)!==true){ placeMs+=savePerfNow()-placeT; continue; }
+			markWorldChunkModified(ref.cx,ref.base?undefined:ref.sy);
+			deferChunkRestoreAudit(ref);
+		}else{
+			if(ref.base) restoreTerrainChunk(ref.cx,arr); else restoreTerrainChunk(ref.cx,arr,ref.sy);
+		}
+		placeMs+=savePerfNow()-placeT;
+		restored.push(ref.base?ref.cx:{cx:ref.cx,sy:ref.sy});
+	}
+	try{ window.__lastStoreRestore={chunks:restored.length, decodeMs:+decodeMs.toFixed(0), placeMs:+placeMs.toFixed(0), park:!!park}; }catch(e){}
+	return restored;
+}
+function restoreWorldChunks(worldData,opts){ if(!worldData || typeof worldData!=='object') return []; if(Array.isArray(worldData.modified)) return restoreModifiedChunks(worldData.modified); if(Array.isArray(worldData.chunkRefs)) return restoreReferencedChunks(worldData.chunkRefs); if(worldData.store===true) return restoreStoreChunks(opts && opts.storeChunks, !!(opts && opts.parkChunks)); return []; }
 // (legacy v4 export*/import* save helpers removed — v5 persists only blocks + player position)
 function snapshotInventory(){
-	const out={tools:{stone:!!inv.tools.stone, meteor:!!inv.tools.meteor, diamond:!!inv.tools.diamond, bedrock:!!inv.tools.bedrock, glider:!!inv.tools.glider, bedrockDurability:bedrockPickDurability()}};
+	const tools={bedrockDurability:bedrockPickDurability()};
+	SAVE_TOOL_FLAGS.forEach(k=>{ tools[k]=!!inv.tools[k]; });
+	const out={tools};
 	RESOURCE_KEYS.forEach(k=>{ out[k]=Math.max(0, inv[k]|0); });
 	return out;
 }
 function restoreInventory(src){
 	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; });
-	inv.tools.stone=false; inv.tools.meteor=false; inv.tools.diamond=false; inv.tools.bedrock=false; inv.tools.glider=false; inv.bedrockPickDurability=0;
+	clearToolFlags();
 	if(!src || typeof src!=='object') return;
 	RESOURCE_KEYS.forEach(k=>{
 		const v=src[k];
 		inv[k]=Number.isFinite(v) ? Math.max(0, v|0) : 0;
 	});
 	if(src.tools && typeof src.tools==='object'){
-		inv.tools.stone=!!src.tools.stone;
-		inv.tools.meteor=!!src.tools.meteor;
-		inv.tools.diamond=!!src.tools.diamond;
-		inv.tools.bedrock=!!src.tools.bedrock;
-		inv.tools.glider=!!src.tools.glider;
+		SAVE_TOOL_FLAGS.forEach(k=>{ inv.tools[k]=!!src.tools[k]; });
 		inv.bedrockPickDurability=inv.tools.bedrock ? Math.max(0, Math.min(BEDROCK_PICK_MAX_DURABILITY, Number.isFinite(src.tools.bedrockDurability) ? (src.tools.bedrockDurability|0) : BEDROCK_PICK_MAX_DURABILITY)) : 0;
 		if(inv.bedrockPickDurability<=0) inv.tools.bedrock=false;
 	}
@@ -4054,10 +4168,11 @@ function restoreCriticalState(state){
 	}
 	return applied;
 }
-function assertSaveChunkCapacity(records,label){
+function assertSaveChunkCapacity(records,label,cap){
+	const limit=Number.isFinite(cap) ? cap : SAVE_CHUNK_RESTORE_CAP;
 	const count=Array.isArray(records)?records.length:0;
-	if(count>SAVE_CHUNK_RESTORE_CAP){
-		const e=new Error((label||'save')+' contains '+count+' chunks; limit is '+SAVE_CHUNK_RESTORE_CAP);
+	if(count>limit){
+		const e=new Error((label||'save')+' contains '+count+' chunks; limit is '+limit);
 		e.name='SaveCapacityError';
 		throw e;
 	}
@@ -4099,13 +4214,25 @@ function buildSaveObject(opts){
 	 timedSavePart('trees.settle',()=>{ try{ if(TREES && TREES.settleAll) TREES.settleAll(getTile,setTile); }catch(e){} },perf);
 	 saveChunkIds=timedSavePart('world.modified2',()=>modifiedChunkIds(),perf);
  }
- if(saveChunkIds==null) saveChunkIds = Array.isArray(opts.chunkRefs) ? [] : timedSavePart('world.modified',()=>modifiedChunkIds(),perf);
- assertSaveChunkCapacity(Array.isArray(opts.chunkRefs)?opts.chunkRefs:saveChunkIds,Array.isArray(opts.chunkRefs)?'external save':'world save');
+ // Store mode: the chunk payloads already live in their own records, written by
+ // the delta pass that called this. The manifest carries only the count, so it
+ // stays a small constant-size document no matter how large the world grows.
+ const storeMode=Number.isFinite(opts.storeChunkCount);
+ if(saveChunkIds==null) saveChunkIds = (storeMode || Array.isArray(opts.chunkRefs)) ? [] : timedSavePart('world.modified',()=>modifiedChunkIds(),perf);
+ if(storeMode){
+	if(!Number.isInteger(opts.storeChunkCount) || opts.storeChunkCount<0 || opts.storeChunkCount>SAVE_STORE_CHUNK_CAP){
+		const e=new Error('store save declares '+opts.storeChunkCount+' chunks; limit is '+SAVE_STORE_CHUNK_CAP);
+		e.name='SaveCapacityError';
+		throw e;
+	}
+ }
+ else assertSaveChunkCapacity(Array.isArray(opts.chunkRefs)?opts.chunkRefs:saveChunkIds,Array.isArray(opts.chunkRefs)?'external save':'world save');
  const saveAuditChunkIds=baseChunkIdsForAudits(saveChunkIds);
  timedSavePart('meat.audit',()=>{ try{ if(saveAuditChunkIds.length && MEAT && MEAT.auditChunks) MEAT.auditChunks(saveAuditChunkIds,getTile); }catch(e){} },perf);
  timedSavePart('gases.audit',()=>{ try{ if(saveAuditChunkIds.length && GASES && GASES.auditChunks) GASES.auditChunks(saveAuditChunkIds,getTile); }catch(e){} },perf);
- const worldData = timedSavePart(Array.isArray(opts.chunkRefs)?'world.refs':'world.chunks',()=>(
-	Array.isArray(opts.chunkRefs) ? {chunkRefs:opts.chunkRefs, external:true} : {modified: gatherModifiedChunks(saveChunkIds)}
+ const worldData = timedSavePart(storeMode?'world.store':(Array.isArray(opts.chunkRefs)?'world.refs':'world.chunks'),()=>(
+	storeMode ? {store:true, chunks:opts.storeChunkCount}
+		: (Array.isArray(opts.chunkRefs) ? {chunkRefs:opts.chunkRefs, external:true} : {modified: gatherModifiedChunks(saveChunkIds)})
  ),perf);
 	return {
 	v:SAVE_SCHEMA_VERSION,
@@ -4205,6 +4332,352 @@ function saveGameCore(manual){
 		recordSaveFailure(e,manual);
 		return false;
 	}
+}
+// ---------------------------------------------------------------------------
+// Store-backed persistence (engine/save_store.js → IndexedDB)
+//
+// The localStorage era had two costs the store removes. The ceiling was 4.94 MB
+// for the whole world, and the incremental autosave re-encoded and rewrote EVERY
+// modified chunk on every run — so saving got slower the more you had built. Here
+// each chunk is its own record and a save writes only the chunks whose version
+// moved, which makes the cost of a save proportional to what the player just did
+// rather than to the size of their world. Chunks and manifest publish in one
+// transaction, so there is no torn state to recover from.
+//
+// The manifest is deliberately NOT a chunk list: the records are the list. That
+// keeps the frequently rewritten document small and constant-size at any scale.
+// ---------------------------------------------------------------------------
+const STORE_OWNER_KEY='mm_store_owner_v1';
+const STORE_SAVE_DEBOUNCE_MS=4000;
+const STORE_SAVE_MAX_DEBOUNCE_MS=20000;
+let _storeBackend='';
+let _storeChunkVers=new Map();     // chunk key -> {ver,cx,sy} as last published
+let _storeBaselineSeed=null;       // which world that baseline describes
+let _storeNeedsFullRepublish=false; // an in-session load invalidated the baseline
+let _storeSaveT=null, _storeLastDelta=0, _storeSyncMs=0;
+let _storeSaveChain=Promise.resolve(false); // saves run one at a time, in order
+const _pendingRestoreAudits=new Set();
+function storeActive(){ return _storeBackend==='idb'; }
+async function openSaveStore(){
+	if(_storeBackend) return _storeBackend;
+	// QA seam (tools/save-load-qa.mjs): force the localStorage fallback so the old
+	// path stays exercised — it is what a browser refusing IndexedDB still gets,
+	// and it is the source a migration reads from.
+	try{ if(window.__mmNoSaveStore===true){ _storeBackend='disabled'; window.__mmSaveBackend='disabled'; return _storeBackend; } }catch(e){}
+	try{ _storeBackend=await SAVE_STORE.open(); }
+	catch(e){ _storeBackend=''; console.warn('Save store unavailable',e); }
+	try{ window.__mmSaveBackend=_storeBackend||'none'; }catch(e){}
+	return _storeBackend;
+}
+// A tiny synchronous marker saying "the real world lives in the store now". Its
+// only job is to stop a session whose IndexedDB went missing from silently
+// loading the stale localStorage world it was migrated from years of play ago.
+function storeOwnerRecord(){
+	try{
+		const raw=localStorage.getItem(STORE_OWNER_KEY);
+		if(!raw) return null;
+		const rec=JSON.parse(raw);
+		return (rec && Number.isFinite(rec.seed) && Number.isFinite(rec.savedAt)) ? rec : null;
+	}catch(e){ return null; }
+}
+function writeStoreOwner(seed){
+	try{ localStorage.setItem(STORE_OWNER_KEY,JSON.stringify({v:1,seed,savedAt:Date.now()})); }catch(e){}
+}
+function clearStoreOwner(){
+	try{ localStorage.removeItem(STORE_OWNER_KEY); }catch(e){}
+}
+// Registry audits after a store restore. The chunks were parked, not materialized,
+// and an audit reads tiles — auditing all of them at load would rehydrate the
+// entire world and undo the point of parking. So each chunk is audited when it
+// actually comes back to life, a couple per frame at most.
+function deferChunkRestoreAudit(ref){
+	if(!ref || !ref.base) return;
+	_pendingRestoreAudits.add(ref.key);
+	try{ if(WORLD && WORLD.watchRehydratedChunks) WORLD.watchRehydratedChunks(true); }catch(e){}
+}
+function drainRestoreAudits(budget){
+	if(!_pendingRestoreAudits.size) return 0;
+	let keys=[];
+	try{ keys=(WORLD && WORLD.takeRehydratedChunks) ? WORLD.takeRehydratedChunks(budget||2) : []; }catch(e){ keys=[]; }
+	let done=0;
+	for(const key of keys){
+		if(!_pendingRestoreAudits.has(key)) continue;
+		_pendingRestoreAudits.delete(key);
+		const ref=normalizeWorldChunkRef(key);
+		if(!ref || !ref.base) continue;
+		try{ if(TREES && TREES.auditChunks) TREES.auditChunks([ref.cx],getTile); }catch(e){}
+		try{ if(FALLING && FALLING.auditChunks) FALLING.auditChunks([ref.cx],{force:true}); }catch(e){}
+		try{ if(MEAT && MEAT.auditChunks) MEAT.auditChunks([ref.cx],getTile); }catch(e){}
+		try{ if(GASES && GASES.auditChunks) GASES.auditChunks([ref.cx],getTile); }catch(e){}
+		done++;
+	}
+	if(!_pendingRestoreAudits.size){
+		try{ if(WORLD && WORLD.watchRehydratedChunks) WORLD.watchRehydratedChunks(false); }catch(e){}
+	}
+	return done;
+}
+// Encode the chunks whose version moved since the last published write. Shared by
+// the async store save and the synchronous unload journal, so both agree on what
+// "unwritten" means.
+function collectStoreChunkDelta(limit,forceAll,perf){
+	const upserts=[], live=new Map();
+	let encodeMs=0, readMs=0;
+	for(const raw of modifiedChunkIds()){
+		const ref=normalizeWorldChunkRef(raw);
+		if(!ref) throw new Error('Modified chunk list contains an invalid reference');
+		const ver=worldChunkVersion(ref);
+		live.set(ref.key,{ver,cx:ref.cx,sy:ref.base?null:ref.sy});
+		const known=forceAll ? null : _storeChunkVers.get(ref.key);
+		if(known && known.ver===ver) continue;
+		if(Number.isFinite(limit) && upserts.length>=limit) continue;
+		// NO settle audits here. The old incremental job ran FALLING/MEAT/GASES per
+		// chunk before encoding it, and measured on a 500-chunk world that was 1238 ms
+		// of the 1289 ms this function blocked for — against 9.5 ms of actual encoding.
+		// It bought nothing either: those audits reconcile a registry with the terrain,
+		// and the LOAD side already re-runs exactly that per chunk (drainRestoreAudits)
+		// precisely because a snapshot can be stale against the tiles. The old path
+		// could afford it only by spreading the work over frames in 5 ms slices.
+		const readT=savePerfNow();
+		const arr=worldChunkArrayFor(ref,false);
+		readMs+=savePerfNow()-readT;
+		if(!arr || ver===0) throw new Error('Modified chunk '+ref.key+' is unavailable for save');
+		const encodeT=savePerfNow();
+		const data=encodeRLE(chunkForTerrainSave(arr));
+		const hash=computeHash(data);
+		encodeMs+=savePerfNow()-encodeT;
+		upserts.push({cx:ref.cx, sy:ref.base?null:ref.sy, ver, data, h:hash});
+	}
+	addSavePerfPart(perf,'delta.read',readMs);
+	addSavePerfPart(perf,'delta.encode',encodeMs);
+	return {upserts,live};
+}
+// Saves are serialized through one chain rather than refused while another is in
+// flight: a caller that asked for a save gets a promise for ITS save, not a
+// silent false because the debounce happened to fire first.
+function persistStoreSave(reason){
+	const run=()=>persistStoreSaveNow(reason);
+	_storeSaveChain=_storeSaveChain.then(run,run);
+	return _storeSaveChain;
+}
+async function persistStoreSaveNow(reason){
+	if(_saveWritesBlocked || MM.ghostMode || _startingNewGame || !storeActive()) return false;
+	const manual=reason==='manual';
+	const snapshotRevision=_saveRevision;
+	try{
+		const t0=savePerfNow();
+		const perf={parts:[]};
+		const seed=WORLDGEN.worldSeed;
+		// The store holds exactly ONE active world; other worlds live in named slots.
+		// Two things invalidate the delta baseline outright: a seed change under a
+		// live session (debug regen, an adopted fork) and any in-session load, whose
+		// chunk versions have no relationship to what the store already holds.
+		// Republishing whole is the only safe answer — a version that coincidentally
+		// matched would otherwise leave one chunk of the OLD world in the new one.
+		const replaceWorld=_storeNeedsFullRepublish || (_storeBaselineSeed!==null && _storeBaselineSeed!==seed);
+		const scanT=savePerfNow();
+		const {upserts,live}=collectStoreChunkDelta(null,replaceWorld,perf);
+		addSavePerfPart(perf,'store.delta',savePerfNow()-scanT);
+		if(live.size>SAVE_STORE_CHUNK_CAP){
+			const e=new Error('world holds '+live.size+' modified chunks; store limit is '+SAVE_STORE_CHUNK_CAP);
+			e.name='SaveCapacityError';
+			throw e;
+		}
+		// A replacement clears the chunk store inside the write transaction, so no
+		// per-key deletes are needed (and none would be correct: they describe a
+		// baseline this write is discarding).
+		const deletes=[];
+		if(!replaceWorld) for(const [key,rec] of _storeChunkVers) if(!live.has(key)) deletes.push(SAVE_STORE.chunkKey(seed,rec.cx,rec.sy));
+		const manifest=buildSaveObject({lightweight:true, storeChunkCount:live.size, auditChunkIds:[], perf});
+		const serialized=timedSavePart('hash',()=>serializeHashedSave(manifest),perf);
+		// Everything up to here ran on the main thread. In a large world the manifest
+		// (registry snapshots, not chunks) dominates that cost, so the debounce below
+		// stretches to keep the hitch a small fraction of the time between saves.
+		const syncMs=savePerfNow()-t0;
+		_storeSyncMs=syncMs;
+		const writeT=savePerfNow();
+		await SAVE_STORE.writeDelta({seed, manifest:serialized.object, chunkCount:live.size, upserts, deletes, replaceWorld});
+		addSavePerfPart(perf,'store.write',savePerfNow()-writeT);
+		// Only after the transaction commits does the published state become truth.
+		_storeChunkVers=live;
+		_storeBaselineSeed=seed;
+		_storeNeedsFullRepublish=false;
+		_storeLastDelta=upserts.length;
+		SAVE_STORE.walClear();
+		writeStoreOwner(seed);
+		rememberCommittedSave(serialized.object,snapshotRevision);
+		recordSaveSuccess();
+		publishSavePerf(perf);
+		saveCriticalState('store',true);
+		_lastAutoSaveAt=Date.now();
+		_saveDirty=_saveRevision!==snapshotRevision;
+		const kb=Math.round(serialized.json.length/1024);
+		_lastFullSaveSizeKB=kb;
+		try{
+			window.__lastSaveMs=savePerfNow()-t0; window.__lastSaveSizeKb=kb; window.__lastSaveChunks=live.size;
+			window.__lastSaveMode='store'; window.__lastStoreDelta=upserts.length; window.__lastStoreDeletes=deletes.length;
+			window.__lastSaveSyncMs=+syncMs.toFixed(1); window.__nextStoreSaveInMs=storeSaveDebounceMs();
+		}catch(e){}
+		if(manual) msg('Zapisano ('+kb+' KB manifest, chunki:'+live.size+', zmian:'+upserts.length+')');
+		if(_saveDirty) scheduleStoreSave(STORE_SAVE_DEBOUNCE_MS);
+		return true;
+	}catch(e){
+		console.warn('Store save failed',e);
+		recordSaveFailure(e,manual);
+		return false;
+	}
+}
+// A delta write is cheap, but the manifest it publishes with is not free to build:
+// serializing the subsystem registries is synchronous main-thread work that grows
+// with the world. Rather than hitch every four seconds in a huge world, the gap
+// stretches so that blocking work stays ~2% of wall clock — still an order of
+// magnitude fresher than the 90 seconds the localStorage path needed.
+function storeSaveDebounceMs(){
+	const sync=Number(_storeSyncMs)||0;
+	return Math.min(STORE_SAVE_MAX_DEBOUNCE_MS, Math.max(STORE_SAVE_DEBOUNCE_MS, Math.round(sync*50)));
+}
+function scheduleStoreSave(delay){
+	if(_saveWritesBlocked || _startingNewGame || MM.ghostMode || !storeActive()) return;
+	if(_storeSaveT) return;
+	_storeSaveT=setTimeout(()=>{
+		_storeSaveT=null;
+		if(!_saveDirty) return;
+		persistStoreSave('auto');
+	}, Math.max(0, delay==null?storeSaveDebounceMs():delay));
+}
+// Unload cannot await IndexedDB. Write the unpublished chunk deltas into the
+// synchronous journal instead; the next boot replays it over the store, so the
+// player's last seconds of digging survive a closed tab.
+function stashStoreWal(){
+	if(!storeActive() || _saveWritesBlocked || _startingNewGame) return 0;
+	try{
+		const {upserts}=collectStoreChunkDelta(SAVE_STORE.config.WAL_MAX_CHUNKS,false,null);
+		if(!upserts.length) return 0;
+		const stashed=SAVE_STORE.walStash(WORLDGEN.worldSeed,upserts);
+		try{ window.__lastWalRows=stashed; }catch(e){}
+		return stashed;
+	}catch(e){ return 0; }
+}
+// Read the world back: manifest, every chunk record for its seed, then the journal
+// replayed on top. Returns null when the store simply holds no world yet.
+async function loadGameFromStore(opts){
+	if(!storeActive()) return null;
+	let active=null;
+	const storeReadT=savePerfNow();
+	try{ active=await SAVE_STORE.readActive(); }
+	catch(e){
+		console.warn('Store read failed',e);
+		publishLoadReport({ok:false,stage:'store-read',errors:[{code:'store-read',path:'store',detail:saveErrorText(e)}],summary:'store read failed'});
+		blockSaveWrites('store read failed: '+saveErrorText(e));
+		return false;
+	}
+	if(!active || !isSaveRecord(active.manifest)) return null;
+	const readMs=savePerfNow()-storeReadT;
+	const seed=Number(active.seed);
+	let walRows=0;
+	const wal=SAVE_STORE.walRead(seed);
+	let walDropped=0;
+	if(wal){
+		for(const row of wal.rows){
+			// The journal is best effort by construction. A row that fails its own hash
+			// is DROPPED, never merged: letting it through would fail preflight and cost
+			// the player the entire world the journal existed to protect.
+			if(computeHash(row.data)!==row.h){ walDropped++; continue; }
+			active.chunks.set(SAVE_STORE.chunkKey(seed,row.cx,row.sy),{cx:row.cx,sy:row.sy,ver:row.ver,data:row.data,h:row.h,rle:true});
+			walRows++;
+		}
+		if(walDropped) console.warn('Dropped '+walDropped+' corrupt journal rows');
+	}
+	const preflight=parseStoreManifest(active.manifest,active.chunks);
+	if(!preflight.ok){
+		const summary=loadFailureSummary(preflight);
+		publishLoadReport({ok:false,stage:'store-preflight',errors:preflight.errors||[],warnings:preflight.warnings||[],summary,walRows});
+		console.warn('Store load preflight failed',preflight.errors);
+		blockSaveWrites(summary);
+		return false;
+	}
+	const applyT=savePerfNow();
+	const applied=applyGameData(preflight.data,Object.assign({},opts,{
+		preflightResult:preflight, transactional:true, rememberCommitted:true, fromStore:true,
+		storeChunks:active.chunks, parkChunks:opts && opts.parkChunks===true
+	}));
+	const applyMs=savePerfNow()-applyT;
+	if(applied){
+		clearSaveWriteBlock();
+		// Seed the delta baseline from the LIVE versions the restore produced, so the
+		// first save after a load writes the chunks the player actually touches — not
+		// the whole world again.
+		_storeChunkVers=new Map();
+		for(const raw of modifiedChunkIds()){
+			const ref=normalizeWorldChunkRef(raw);
+			if(!ref) continue;
+			_storeChunkVers.set(ref.key,{ver:worldChunkVersion(ref),cx:ref.cx,sy:ref.base?null:ref.sy});
+		}
+		_storeBaselineSeed=WORLDGEN.worldSeed;
+		SAVE_STORE.walClear();
+		saveCriticalState('load',true);
+		try{ window.__lastStoreLoad={chunks:active.chunks.size,walRows,walDropped,parked:opts&&opts.parkChunks===true,readMs:+readMs.toFixed(0),applyMs:+applyMs.toFixed(0)}; }catch(e){}
+	}
+	else blockSaveWrites('store world restore failed');
+	return applied;
+}
+function parseStoreManifest(manifest,hydrated){
+	return preflightSaveData(manifest,{storage:localStorage,requireHash:true,storeChunks:hydrated});
+}
+// One-time adoption of a localStorage world. The legacy save has already been
+// loaded into the live session at this point, so "migration" is just the first
+// store write: every chunk counts as changed because nothing is published yet.
+// The old keys are left untouched as a parachute — they no longer cost the world
+// anything, since localStorage and IndexedDB have separate budgets.
+async function migrateLegacySaveToStore(){
+	if(!storeActive()) return false;
+	const ok=await persistStoreSave('migrate');
+	try{ window.__mmStoreMigrated=ok; }catch(e){}
+	if(ok) console.info('World migrated from localStorage into the save store');
+	return ok;
+}
+// How fresh is the localStorage save, without parsing megabytes of it? buildSaveObject
+// writes savedAt last, so the tail of the document is enough. A miss reads as
+// "ancient", which makes the store win — the safe default.
+function legacySaveStamp(){
+	try{
+		const raw=localStorage.getItem(SAVE_KEY);
+		if(!raw) return null;
+		const at=raw.lastIndexOf('"savedAt":');
+		if(at<0) return {savedAt:0};
+		const stamp=Number(/^"savedAt":(\d+)/.exec(raw.slice(at))?.[1]);
+		return {savedAt:Number.isFinite(stamp)?stamp:0};
+	}catch(e){ return null; }
+}
+// Boot: the store first, a legacy localStorage world second, and a fail-closed
+// refusal if the store is gone but its owner marker says the real world is there.
+async function bootLoadGame(){
+	await openSaveStore();
+	if(storeActive()){
+		let meta=null;
+		try{ meta=await SAVE_STORE.readActiveMeta(); }catch(e){ meta=null; }
+		const legacy=legacySaveStamp();
+		// A world FORK writes a fresh localStorage save from a guest session, which
+		// never touches the store — so the newer document wins. After a migration the
+		// legacy save is frozen forever while the store's stamp keeps advancing, which
+		// makes this comparison monotonically safe rather than a race.
+		const preferLegacy=!!legacy && (!meta || legacy.savedAt>(Number(meta.savedAt)||0));
+		if(!preferLegacy && meta){
+			const fromStore=await loadGameFromStore({parkChunks:true});
+			if(fromStore!==null) return fromStore;
+		}
+		const adopted=loadGame();
+		if(adopted===true) await migrateLegacySaveToStore();
+		return adopted;
+	}
+	const owner=storeOwnerRecord();
+	if(owner){
+		// The world lives in a store this session cannot open. Loading the legacy
+		// save would silently roll the player back to whenever they migrated.
+		publishLoadReport({ok:false,stage:'store-unavailable',errors:[{code:'store-unavailable',path:'store',detail:'save store could not be opened'}],summary:'save store unavailable'});
+		blockSaveWrites('save store unavailable (world lives in IndexedDB)');
+		return false;
+	}
+	return loadGame();
 }
 // Lightweight autosave indicator (created lazily)
 function showAutoSaveHint(sizeKB){ try{ let el=document.getElementById('autoSaveHint'); if(!el){ el=document.createElement('div'); el.id='autoSaveHint'; el.style.cssText='position:fixed; left:8px; bottom:8px; background:rgba(0,0,0,0.55); color:#fff; font:11px system-ui; padding:4px 8px; border-radius:6px; pointer-events:none; opacity:0; transition:opacity .4s; z-index:5000;'; document.body.appendChild(el); }
@@ -4333,6 +4806,10 @@ function applyGameData(data,opts){
 		const coreOpts=Object.assign({},opts,{deferCriticalSave:transactional});
 		delete coreOpts.preflightResult; delete coreOpts.transactional; delete coreOpts.commit; delete coreOpts.preserveGuestRuntime; delete coreOpts.rememberCommitted;
 		if(applyGameDataCore(preflight.data,coreOpts)!==true) throw new Error('Save restore did not complete');
+		// A world that did not come out of the store leaves the delta baseline
+		// describing a world that no longer exists: the next store write must
+		// republish whole rather than diff against it.
+		if(storeActive() && opts.fromStore!==true) _storeNeedsFullRepublish=true;
 		if(opts.preserveGuestRuntime===true && rollbackRuntime && restoreWorldTransitionRuntimeSnapshot(rollbackRuntime)!==true) throw new Error('Guest runtime could not be preserved');
 		if(typeof opts.commit==='function') opts.commit();
 		if(opts.rememberCommitted===true) rememberCommittedSave(preflight.data,_saveRevision);
@@ -4490,8 +4967,13 @@ function applyGameDataCore(data,opts){
 
 	// Restore modified blocks and player position. v6 saves are self-contained;
 	// v7 autosaves may reference separately stored chunk blobs.
-	const expectedChunks=Array.isArray(data.world && data.world.modified) ? data.world.modified.length : (Array.isArray(data.world && data.world.chunkRefs) ? data.world.chunkRefs.length : 0);
-	const restoredChunks=restoreRequired('world',true,()=>restoreWorldChunks(data.world)) || [];
+	// Store mode counts the hydrated records rather than a list in the manifest:
+	// the records ARE the list, and the journal replay may legitimately have added
+	// a chunk the manifest had not published yet.
+	const expectedChunks=(data.world && data.world.store===true)
+		? (isChunkMap(opts.storeChunks) ? opts.storeChunks.size : 0)
+		: (Array.isArray(data.world && data.world.modified) ? data.world.modified.length : (Array.isArray(data.world && data.world.chunkRefs) ? data.world.chunkRefs.length : 0));
+	const restoredChunks=restoreRequired('world',true,()=>restoreWorldChunks(data.world,opts)) || [];
 	if(restoredChunks.length!==expectedChunks) restoreFailures.push({code:'restore-incomplete',path:'world',detail:'restored '+restoredChunks.length+' of '+expectedChunks+' chunks'});
 	restoreRequired('water',data.water!=null,()=>{
 		if(!WATER || typeof WATER.restore!=='function') throw new Error('water restorer unavailable');
@@ -4500,7 +4982,13 @@ function applyGameDataCore(data,opts){
 	restoreRespawnTotems(hasOwn('respawnTotems') ? data.respawnTotems : (legacyWorldMarkers.respawnTotems || {seed:WORLDGEN.worldSeed,list:[]}));
 	validRespawnTotemCells();
 	restoreGrave(hasOwn('grave') ? data.grave : legacyWorldMarkers.grave);
-	const restoredBaseChunks=baseChunkIdsForAudits(restoredChunks);
+	// A parked store restore audits each chunk when it actually comes back to life
+	// (drainRestoreAudits), because these three audits read tiles: handing them the
+	// whole restored world would rehydrate every chunk to check it — measured at 40
+	// seconds for a 505-chunk world, versus a few milliseconds spread over the
+	// frames that need those chunks anyway.
+	const parkedRestore=!!(data.world && data.world.store===true && opts.parkChunks===true);
+	const restoredBaseChunks=parkedRestore ? [] : baseChunkIdsForAudits(restoredChunks);
 	restoreRequired('infrastructure',data.infrastructure!=null,()=>{
 		if(!WORLD || typeof WORLD.restoreInfrastructure!=='function') throw new Error('infrastructure restorer unavailable');
 		return WORLD.restoreInfrastructure(data.infrastructure);
@@ -4704,7 +5192,11 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	importBtn.addEventListener('click',()=>fileInput.click());
 	group.appendChild(importBtn); group.appendChild(fileInput);
 	saveBtn.addEventListener('click',()=>{ performNamedSave(false); });
-	loadBtn.addEventListener('click',()=>{ const result=loadGame(); msg(result===true?'Wczytano zapis główny':(result===null?'Brak głównego zapisu':'Główny zapis odrzucony — autozapis pozostaje zablokowany')); });
+	const reportMainLoad=(result)=>{ msg(result===true?'Wczytano zapis główny':(result===null?'Brak głównego zapisu':'Główny zapis odrzucony — autozapis pozostaje zablokowany')); };
+	// In store mode the main save IS the store: re-reading localStorage here would
+	// hand the player the frozen pre-migration world. Eager (unparked) restore, as
+	// this replaces a world the player is standing in.
+	loadBtn.addEventListener('click',()=>{ if(storeActive()){ loadGameFromStore({parkChunks:false}).then(reportMainLoad,()=>reportMainLoad(false)); return; } reportMainLoad(loadGame()); });
 	saveAsBtn.addEventListener('click',()=>{ performNamedSave(true); });
 	const openBrowserBtn=document.createElement('button'); openBrowserBtn.textContent='Lista zapisów'; openBrowserBtn.style.cssText='margin-top:4px;'; openBrowserBtn.addEventListener('click',()=>{ browser.style.display= browser.style.display==='flex' ? 'none':'flex'; if(browser.style.display==='flex') refreshList(); });
 	group.appendChild(openBrowserBtn); group.appendChild(browser);
@@ -4715,6 +5207,11 @@ document.addEventListener('DOMContentLoaded',()=>{ setTimeout(()=>{ ensurePauseP
 // idle. Full save serialization can be expensive after long tunnel edits because it
 // encodes every modified chunk and writes localStorage synchronously.
 function canRunIdleAutoSave(){
+	// QA seam (window.__mmRunAutoSaveNow): the incremental path is what a playing
+	// session actually gets, and it is gated behind a 90s window plus real hero
+	// idleness. A test that has to wait that gate out is a test that measures the
+	// gate, not the save — and a headless page can starve it indefinitely.
+	if(_forceIdleAutoSave) return true;
 	const now=Date.now();
 	if(_nextAutoSaveRetryAt && now<_nextAutoSaveRetryAt) return false;
 	if(now-_lastAutoSaveAt<AUTO_SAVE_MIN_GAP_MS) return false;
@@ -4883,7 +5380,11 @@ function saveState(){
 	_saveDirty=true;
 	_saveRevision++;
 	saveCriticalState('dirty');
-	scheduleDirtySave();
+	// A store write costs one encoded chunk per edit, so it does not need the old
+	// path's 90-second gap and hero-idleness gate — those existed because a full
+	// localStorage save re-serialized the entire world synchronously.
+	if(storeActive()) scheduleStoreSave();
+	else scheduleDirtySave();
 }
 function requestAutoSaveHeartbeat(){
 	if(_startingNewGame || _saveWritesBlocked || MM.ghostMode) return;
@@ -4896,6 +5397,49 @@ function requestAutoSaveHeartbeat(){
 window.__mmMarkWorldChanged = function(){
 	noteSaveActivity();
 	saveState();
+};
+// Debug/QA hook (tools/save-load-qa.mjs): drive the REAL incremental autosave —
+// the same job, batches, external chunk blobs and publication audit the idle
+// scheduler runs — to completion, skipping only the human-idleness gate. Returns
+// true once the manifest is published, so a driver can assert the external-chunk
+// round trip instead of waiting out a heuristic.
+window.__mmRunAutoSaveNow = function(){
+	if(_saveWritesBlocked || MM.ghostMode) return false;
+	// Store mode has no idleness gate to bypass — the delta write is already cheap
+	// enough to run on a debounce. Return its promise so a driver can await the
+	// published transaction instead of guessing at a delay.
+	if(storeActive()) return persistStoreSave('qa');
+	const prev=_forceIdleAutoSave;
+	_forceIdleAutoSave=true;
+	try{
+		_saveDirty=true;
+		if(_saveStateT){ clearTimeout(_saveStateT); _saveStateT=null; }
+		if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; }
+		// One batch per turn, exactly as the scheduler would; the guard is the
+		// chunk cap plus slack for the publication pass.
+		for(let turn=0; turn<SAVE_CHUNK_RESTORE_CAP+8; turn++){
+			runAutoSaveWork();
+			if(!_autoSaveJob && !_saveDirty) break;
+		}
+	}finally{
+		_forceIdleAutoSave=prev;
+		if(_autoSaveWorkT){ clearTimeout(_autoSaveWorkT); _autoSaveWorkT=null; }
+	}
+	return window.__lastSaveMode==='incremental';
+};
+// Debug/QA hooks for the store (tools/save-load-qa.mjs). __mmStashWalNow journals
+// the unwritten deltas WITHOUT publishing them, which is the state a tab killed
+// mid-write leaves behind — the only way to prove the next boot replays it.
+window.__mmStashWalNow = function(){ return stashStoreWal(); };
+window.__mmStoreInfo = function(){
+	const info=SAVE_STORE.info();
+	return {
+		backend:_storeBackend||'(unopened)', storeBackend:info.backend, persistent:info.persistent,
+		baselineSeed:_storeBaselineSeed, baselineChunks:_storeChunkVers.size,
+		lastDelta:_storeLastDelta, needsRepublish:_storeNeedsFullRepublish, owner:storeOwnerRecord(),
+		pendingAudits:_pendingRestoreAudits.size, walKey:info.walKey, stats:info.stats,
+		lastSaveMode:window.__lastSaveMode||'', lastSaveChunks:window.__lastSaveChunks|0
+	};
 };
 // Debug/visual-test hook (tools/tile-art-shot.mjs): teleport the hero so headless
 // screenshot runs can frame surface/cave scenes without simulated input.
@@ -4917,6 +5461,16 @@ function flushPendingSave(){
 	// not published its manifest yet; otherwise repeated tab hides leak quota.
 	cancelPendingSaveWork();
 	saveCriticalState('flush',true);
+	if(storeActive()){
+		// IndexedDB cannot be awaited here. Journal the unwritten deltas
+		// synchronously, then still kick the async write — browsers often let it
+		// finish, and if they do the next boot finds the journal already redundant.
+		if(_saveDirty){
+			stashStoreWal();
+			persistStoreSave('flush');
+		}
+		return;
+	}
 	if(_saveDirty){ if(saveGame(false)) _saveDirty=false; }
 }
 window.addEventListener('pagehide',flushPendingSave);
@@ -4930,31 +5484,53 @@ function startNewGame(requestedSeed){
 	_saveDirty=false;
 	cancelPendingSaveWork();
 	_committedSaveIdentity=null;
-	try{
-		if(PLANTS && PLANTS.reset) PLANTS.reset();
-		clearActiveGameStorage(localStorage);
-		const seedStore=typeof sessionStorage!=='undefined' ? sessionStorage : null;
-		const chosenSeed=normalizeWorldSeed(requestedSeed);
-		if(chosenSeed===null) queueFreshWorldSeed(seedStore);
-		else if(queueWorldSeed(seedStore,chosenSeed)===null) throw new Error('Could not queue selected world seed');
-	}catch(e){
-		_startingNewGame=false;
-		console.warn('New game reset failed',e);
-		msg('Nie udało się wyczyścić bieżącej gry');
-		return false;
+	const wipeAndNavigate=()=>{
+		try{
+			if(PLANTS && PLANTS.reset) PLANTS.reset();
+			clearActiveGameStorage(localStorage);
+			const seedStore=typeof sessionStorage!=='undefined' ? sessionStorage : null;
+			const chosenSeed=normalizeWorldSeed(requestedSeed);
+			if(chosenSeed===null) queueFreshWorldSeed(seedStore);
+			else if(queueWorldSeed(seedStore,chosenSeed)===null) throw new Error('Could not queue selected world seed');
+		}catch(e){
+			_startingNewGame=false;
+			console.warn('New game reset failed',e);
+			msg('Nie udało się wyczyścić bieżącej gry');
+			return false;
+		}
+		// challenge URL params must not haunt the NEXT world: a reset from a cursed
+		// link navigates to the bare path (the pending handoff rides sessionStorage)
+		if(/[?&](seed|mods)=/.test(window.location.search)) window.location.href=window.location.pathname;
+		else window.location.reload();
+		return true;
+	};
+	// IndexedDB is a separate budget that clearActiveGameStorage cannot reach, and
+	// it is now where the world lives. Drop the abandoned world FIRST: if that
+	// fails, refuse the new game while the current one is still intact rather than
+	// wipe localStorage and boot into the old world the store still holds.
+	if(storeActive()){
+		SAVE_STORE.clearAll().then(()=>{
+			SAVE_STORE.walClear();
+			clearStoreOwner();
+			wipeAndNavigate();
+		},(e)=>{
+			_startingNewGame=false;
+			console.warn('Store clear failed',e);
+			msg('Nie udało się usunąć poprzedniego świata — nowa gra przerwana');
+		});
+		return true;
 	}
-	// challenge URL params must not haunt the NEXT world: a reset from a cursed
-	// link navigates to the bare path (the pending handoff rides sessionStorage)
-	if(/[?&](seed|mods)=/.test(window.location.search)) window.location.href=window.location.pathname;
-	else window.location.reload();
-	return true;
+	return wipeAndNavigate();
 }
 // The game's bookends: the title overlay greets a human boot (auto-skips under
 // headless QA — see title_screen.js contract) and the finale report needs the
 // same startNewGame for its "Nowa warstwa" button. Both freeze the sim via the
 // uiOverlayHold() gate in the main loop.
 try{
-	if(!MM.ghostMode) TITLE_SCREEN.boot({ hasSave: !!localStorage.getItem(SAVE_KEY), onNewGame: startNewGame }); // watchers skip straight to the stream
+	// The title screen is built before the store has been read, so "Kontynuuj" asks
+	// the synchronous owner marker whether a store world exists — otherwise a
+	// migrated player would be greeted as if they had never played.
+	if(!MM.ghostMode) TITLE_SCREEN.boot({ hasSave: !!localStorage.getItem(SAVE_KEY) || !!storeOwnerRecord(), onNewGame: startNewGame }); // watchers skip straight to the stream
 	FINALE.wire({ onNewGame: startNewGame });
 }catch(e){ console.warn('title/finale boot failed', e); }
 // Uwaga Warstwy: re-assert the composed hostility floor now that finale.js has
@@ -18273,7 +18849,7 @@ function regenWorld(){
 
 	if(SMOKE && SMOKE.reset) SMOKE.reset();
 	// Reset inventory/tools/hotbar
-	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; inv.tools.glider=false; hotbarIndex=0; // if god mode active, restore 100 stack after reset
+	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); clearToolFlags(); player.tool='basic'; hotbarIndex=0; // if god mode active, restore 100 stack after reset
 	// Fresh world = fresh hero arc: XP, level, skill points and milestones restart
 	player.xp=0; player.energy=0; player.soot=0; player._smokeTint=0; if(HERO_LAMP && HERO_LAMP.reset) HERO_LAMP.reset(); if(VISION_MODES && VISION_MODES.reset) VISION_MODES.reset(); TREASURE_SCANNER.reset(); TREASURE_DROP_WINDOW.reset(); heroLampButtonKey=''; visionButtonKey=''; treasureButtonKey=''; refreshHeroLampButton(); refreshVisionButton(); refreshTreasureButton(); if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
 	// Ensure all animals are removed when creating a new world and prevent immediate respawn
@@ -19080,7 +19656,11 @@ function debugNpcMetrics(){
 }
 window.teleportHeroToNextNpc = function(dir){ return jumpDebugNpc(dir); };
 window.teleportHeroToNearestNpc = function(){ return jumpDebugNearestNpc(); };
-const loadResult=MM.ghostMode ? null : loadGame(); // watchers boot blank and stream the host's world instead
+// Top-level await: main.js is the entry module (index.html loads it directly and
+// nothing imports it), so the rest of boot simply waits for the world to come out
+// of IndexedDB. The title screen is already up by now, and the boot watchdog
+// allows fifteen seconds — a store read is milliseconds.
+const loadResult=MM.ghostMode ? null : await bootLoadGame(); // watchers boot blank and stream the host's world instead
 const loaded=loadResult===true;
 const loadRejected=loadResult===false;
 if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
@@ -19749,6 +20329,9 @@ const MAX_FRAME_DT=0.05;
 let lastPowerCatchupSaveAt=0;
 function runGameFrame(totalDt,ts){
 	if(WORLD && WORLD.maintainChunkCache) WORLD.maintainChunkCache();
+	// Store-restored chunks are parked, not live: audit each one as it comes back,
+	// two per frame. A no-op (and a single Set size check) once the queue drains.
+	drainRestoreAudits(2);
 	const steps=Math.max(1,Math.ceil(Math.max(0,totalDt)/MAX_FRAME_DT));
 	const stepDt=Math.max(0,totalDt)/steps;
 	for(let i=0;i<steps;i++) runGameStep(stepDt,ts);
@@ -20162,7 +20745,7 @@ window.regenWorldSameSeed = function(){ try{ resetWorldTransitionRuntime(); if(M
 	if(SMOKE && SMOKE.reset) SMOKE.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
-	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); inv.tools.stone=inv.tools.meteor=inv.tools.diamond=inv.tools.bedrock=false; inv.bedrockPickDurability=0; player.tool='basic'; inv.tools.glider=false; hotbarIndex=0; player.xp=0; player.energy=0; player.soot=0; player._smokeTint=0; if(HERO_LAMP && HERO_LAMP.reset) HERO_LAMP.reset(); if(VISION_MODES && VISION_MODES.reset) VISION_MODES.reset(); TREASURE_SCANNER.reset(); TREASURE_DROP_WINDOW.reset(); heroLampButtonKey=''; visionButtonKey=''; treasureButtonKey=''; refreshHeroLampButton(); refreshVisionButton(); refreshTreasureButton(); if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
+	RESOURCE_KEYS.forEach(k=>{ inv[k]=0; }); clearToolFlags(); player.tool='basic'; hotbarIndex=0; player.xp=0; player.energy=0; player.soot=0; player._smokeTint=0; if(HERO_LAMP && HERO_LAMP.reset) HERO_LAMP.reset(); if(VISION_MODES && VISION_MODES.reset) VISION_MODES.reset(); TREASURE_SCANNER.reset(); TREASURE_DROP_WINDOW.reset(); heroLampButtonKey=''; visionButtonKey=''; treasureButtonKey=''; refreshHeroLampButton(); refreshVisionButton(); refreshTreasureButton(); if(PROGRESS && PROGRESS.reset) PROGRESS.reset(); applyProgressHp(); applyHeroEnergyCapacity(); clearRespawnTotems(); clearHealingShelters(); grave=null; saveGrave();
 	// Also remove all animals when regenerating with same seed and freeze spawns briefly
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); if(MOBS.freezeSpawns) MOBS.freezeSpawns(4000); }catch(e){} } if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
 	resetCraftingAvailability();

@@ -170,7 +170,11 @@ const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8')
 assert.ok(/import \{ titleScreen as TITLE_SCREEN \} from '\.\/engine\/title_screen\.js';/.test(mainSrc), 'main.js imports the title screen');
 assert.ok(/import \{ finale as FINALE \} from '\.\/engine\/finale\.js';/.test(mainSrc), 'main.js imports the finale');
 assert.ok(/new CustomEvent\('mm-hero-died'/.test(mainSrc), 'heroDied dispatches mm-hero-died');
-assert.ok(/TITLE_SCREEN\.boot\(\{ hasSave: !!localStorage\.getItem\(SAVE_KEY\), onNewGame: startNewGame \}\)/.test(mainSrc), 'title boots with the autosave probe and startNewGame');
+// The world now lives in IndexedDB, which cannot be read before the title screen
+// is built — so "Kontynuuj" also consults the synchronous owner marker the store
+// writes on every successful save. Without it a migrated player would be greeted
+// as though they had never played.
+assert.ok(/TITLE_SCREEN\.boot\(\{ hasSave: !!localStorage\.getItem\(SAVE_KEY\) \|\| !!storeOwnerRecord\(\), onNewGame: startNewGame \}\)/.test(mainSrc), 'title boots with both save probes and startNewGame');
 assert.ok(/FINALE\.wire\(\{ onNewGame: startNewGame \}\)/.test(mainSrc), 'finale gets the new-game hook');
 assert.ok(/function uiOverlayHold\(\)/.test(mainSrc), 'the overlay hold gate exists');
 assert.ok(/if\(!paused && !overlayHold && !ghostHold\)\{/.test(mainSrc), 'the sim step gates on the overlay hold (and the ghost-spectator hold)');

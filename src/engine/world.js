@@ -112,6 +112,11 @@ window.MM = window.MM || {};
   const EVICT_DROP_BUDGET=8;
   const EVICT_TIME_BUDGET_MS=2;
   const chunkCacheStats={parked:0,rehydrated:0,evictRuns:0,evictBatches:0,dropped:0,lastEvictMs:0};
+  // Rehydration notices for save-restore bookkeeping (see rehydrateChunk). Off
+  // until someone asks for them, so a solo session pays nothing.
+  const rehydratedKeys=new Set();
+  const REHYDRATE_QUEUE_MAX=4096;
+  let rehydrateWatch=false;
   let genDepth=0, evictPending=false, evicting=false, lastRevivedKey=null;
   let evictWork=null;            // resumable {iterator,remaining,heap,target,phase,...}
   let evictRetrySize=-1, evictRetryPcx=0, evictRetryPsy=0;
@@ -205,6 +210,11 @@ window.MM = window.MM || {};
     chunkCacheStats.rehydrated++;
     lastRevivedKey=k; // the eviction below must not instantly re-park what was just demanded
     if(evictWork) evictWork.protected.add(k);       // scan may take several maintenance turns
+    // Announce it, do not act on it: rehydration happens INSIDE a getTile, and a
+    // registry audit reads tiles — running one here would recurse through the very
+    // read that asked for the chunk. The consumer (main.js) drains this on its own
+    // frame instead. Bounded: a full queue simply stops recording.
+    if(rehydrateWatch && rehydratedKeys.size<REHYDRATE_QUEUE_MAX) rehydratedKeys.add(k);
     if(world.size>CHUNK_CAP) requestEvict();
     return arr;
   }
@@ -2557,26 +2567,57 @@ window.MM = window.MM || {};
     markOverlaySections(touchedSections);
   }
   function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); parked.clear(); peekParkCache.clear(); evictWork=null; evictPending=false; evictRetrySize=-1; evictRetryRequested=false; lastRevivedKey=null; liveChunkAddEpoch=0; versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  // Shared prologue for both restore paths: validate the reference against this
+  // world's geometry and normalize the payload. Chest blocks from old saves are
+  // removed rather than converted — only fresh mob/reward drops make chests now.
+  function prepareRestoredChunk(key,arr){
+    const ref=normalizeChunkRef(key);
+    if(!ref || !Number.isInteger(ref.cx)) return null;
+    const maxChunk=Math.ceil(MAX_COORD/CHUNK_W);
+    if(Math.abs(ref.cx)>maxChunk) return null;
+    if(ref.base){
+      if(ref.key!==ck(ref.cx)) return null;
+    }else{
+      if(!Number.isInteger(ref.sy) || ref.sy<WORLD_MIN_SECTION || ref.sy>WORLD_MAX_SECTION || isBaseSection(ref.sy)) return null;
+      if(ref.key!==ckSection(ref.cx,ref.sy)) return null;
+    }
+    const expected=CHUNK_W*(ref.base ? WORLD_H : WORLD_SECTION_H);
+    if(!(arr instanceof Uint8Array) || arr.length!==expected) return null;
+    return {ref, next:stripChestTiles(arr)};
+  }
+  // A save load hands the world every chunk the player ever edited AT ONCE. Making
+  // each one live costs a full 4.4 KB array apiece and blows straight past
+  // CHUNK_CAP, after which eviction parks them back down at EVICT_DROP_BUDGET per
+  // turn — thousands of turns of maintenance for a large world, all of it undoing
+  // work the load just did. So park them directly: `parked` is the same cold store
+  // eviction produces, a read rehydrates one losslessly, and nothing else in the
+  // engine can tell the difference. Chunks carrying a never-park tile still go
+  // live, because teleporters.js discovers its network by scanning the live map.
+  function restoreChunkParked(key,arr){
+    const prepared=prepareRestoredChunk(key,arr);
+    if(!prepared) return false;
+    const {ref,next}=prepared;
+    if(chunkContainsNeverParkTile(next)) return setChunkArray(key,next);
+    const wasLive=world.has(ref.key);
+    if(wasLive) world.delete(ref.key);
+    peekParkCache.delete(ref.key);
+    parked.set(ref.key,packChunkArray(next));
+    chunkCacheStats.parked++;
+    invalidateViewsFor(ref);
+    // Interior backdrops are derived, never saved: the same replay the live path
+    // runs, since it writes the separate background layer rather than the chunk.
+    if(ref.base){ try{ applyDevastatedCity(null,ref.cx,true); }catch(e){} }
+    return true;
+  }
   // Save loading replaces whole chunk arrays: any cached section view over the
   // old array must be dropped or reads would silently hit the orphaned buffer.
   function setChunkArray(key,arr){
-    const ref=normalizeChunkRef(key);
-    if(!ref || !Number.isInteger(ref.cx)) return false;
-    const maxChunk=Math.ceil(MAX_COORD/CHUNK_W);
-    if(Math.abs(ref.cx)>maxChunk) return false;
-    if(ref.base){
-      if(ref.key!==ck(ref.cx)) return false;
-    }else{
-      if(!Number.isInteger(ref.sy) || ref.sy<WORLD_MIN_SECTION || ref.sy>WORLD_MAX_SECTION || isBaseSection(ref.sy)) return false;
-      if(ref.key!==ckSection(ref.cx,ref.sy)) return false;
-    }
-    const expected=CHUNK_W*(ref.base ? WORLD_H : WORLD_SECTION_H);
-    if(!(arr instanceof Uint8Array) || arr.length!==expected) return false;
+    const prepared=prepareRestoredChunk(key,arr);
+    if(!prepared) return false;
+    const ref=prepared.ref;
     const previous=world.get(ref.key);
     const previousNeverPark=!!previous && chunkContainsNeverParkTile(previous);
-    // Old saves may contain chest blocks. They are intentionally removed, not
-    // converted: only fresh mob/reward drops populate physical chests now.
-    const next=stripChestTiles(arr);
+    const next=prepared.next;
     const nextNeverPark=!!previous && chunkContainsNeverParkTile(next);
     parked.delete(ref.key); peekParkCache.delete(ref.key); // restored data supersedes any parked copy
     setLiveChunk(ref.key,next); invalidateViewsFor(ref);
@@ -2593,6 +2634,22 @@ window.MM = window.MM || {};
   worldAPI.ensureChunk = ensureChunk;
   worldAPI.ensureSection = ensureSection;
   worldAPI.setChunkArray = setChunkArray;
+  worldAPI.restoreChunkParked = restoreChunkParked;
+  // Save-restore support: watch which parked chunks come back to life, so a
+  // deferred per-chunk audit can run when the chunk is actually needed instead of
+  // rehydrating a whole world at load time to audit it.
+  worldAPI.watchRehydratedChunks = function(on){ rehydrateWatch=on!==false; if(!rehydrateWatch) rehydratedKeys.clear(); return rehydrateWatch; };
+  worldAPI.takeRehydratedChunks = function(limit){
+    if(!rehydratedKeys.size) return [];
+    const cap=Number.isFinite(limit) ? Math.max(1,limit|0) : rehydratedKeys.size;
+    const out=[];
+    for(const k of rehydratedKeys){
+      out.push(k);
+      if(out.length>=cap) break;
+    }
+    for(const k of out) rehydratedKeys.delete(k);
+    return out;
+  };
   worldAPI.sectionHeight = WORLD_SECTION_H;
   worldAPI.minSection = WORLD_MIN_SECTION;
   worldAPI.maxSection = WORLD_MAX_SECTION;

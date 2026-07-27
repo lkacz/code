@@ -447,7 +447,10 @@ assert.ok(/const ghostHold=!!MM\.ghostMode;/.test(mainSrc), 'loop derives the gh
 assert.ok(/if\(!paused && !overlayHold && !ghostHold\)\{/.test(mainSrc), 'sim branch respects the ghost hold');
 assert.ok(/else if\(ghostHold && GHOST_CLIENT && GHOST_CLIENT\.frame\)\{/.test(mainSrc), 'watcher frame replaces the sim');
 assert.ok(/if\(GHOST_HOST && GHOST_HOST\.active\(\)\) GHOST_HOST\.frame\(simulationDt,ts\);/.test(mainSrc), 'host streams from inside the scaled sim branch');
-assert.ok(/const loadResult=MM\.ghostMode \? null : loadGame\(\);/.test(mainSrc), 'watchers skip the local save at boot');
+// The boot load is awaited now (the world comes out of IndexedDB), but a watcher
+// still never touches local persistence: it streams the host's world instead.
+assert.ok(/const loadResult=MM\.ghostMode \? null : await bootLoadGame\(\);/.test(mainSrc), 'watchers skip the local save at boot');
+assert.ok(/async function bootLoadGame\(\)\{[\s\S]{0,1800}return loadGame\(\);\n\}/.test(mainSrc), 'the boot loader still falls back to the localStorage path');
 assert.ok(/if\(!MM\.ghostMode\) TITLE_SCREEN\.boot\(/.test(mainSrc), 'watchers skip the title screen');
 assert.ok(/MM\.ghostBridge=\{/.test(mainSrc), 'ghost bridge published');
 for(const key of ['applyGameData:', 'buildSave:', 'snapshotDrops:', 'restoreDrops:', 'snapshotSeasons:', 'restoreSeasons:', 'snapshotInfra:', 'restoreInfra:', 'snapshotConstructionBackground:', 'restoreConstructionBackground:', 'healHero:', 'addHeroEnergy:', 'nudgeZoom:', 'setCamCenter:', 'snapCameraToPlayer:', 'revealAround:', 'stepCosmetics:']){

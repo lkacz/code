@@ -216,6 +216,27 @@ guardianAftermath.update(0.1, player, getTile, setTile);
 assert.equal(guardianAftermath.status().active, null, 'aftermath expires after three in-game days');
 assert.ok(saveMarks > 0, 'aftermath lifecycle marks the world dirty');
 
+// The IDLE round trip. main.js loads this snapshot through restoreRequired,
+// which reads an explicit false as "the save is corrupt" and fails the WHOLE
+// load. Nearly every save is taken with no aftermath running, so answering
+// false to one's own idle snapshot made every save unloadable — the game
+// dropped into the recovery banner and locked autosave on every boot.
+guardianAftermath.reset();
+const idleSnap = guardianAftermath.snapshot();
+assert.equal(idleSnap.active, null, 'an idle world snapshots as inactive');
+assert.equal(guardianAftermath.restore(idleSnap), true, 'restore ACCEPTS its own idle snapshot (a false here fails the whole save)');
+assert.equal(guardianAftermath.status().active, null, 'restoring an idle snapshot leaves no aftermath running');
+assert.equal(guardianAftermath.restore(JSON.parse(JSON.stringify(idleSnap))), true, 'the idle snapshot survives the JSON round trip a save performs');
+// A run that has served its full duration restores as finished, not as corrupt.
+guardianAftermath.start('fire', {elapsed:0, nextIn:10});
+const spentSnap = Object.assign(guardianAftermath.snapshot(), {elapsed:guardianAftermath.config.DURATION_SECONDS + 5});
+assert.equal(guardianAftermath.restore(spentSnap), true, 'an expired aftermath restores as over, not as a rejected save');
+assert.equal(guardianAftermath.status().active, null, 'an expired aftermath leaves nothing running');
+// Genuinely malformed input must still be refused — that is what the seam is for.
+assert.equal(guardianAftermath.restore(null), false, 'a missing snapshot object is still refused');
+assert.equal(guardianAftermath.restore({v:1, active:'not-a-kind'}), false, 'an unknown aftermath kind is still refused');
+guardianAftermath.reset();
+
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
 const worldSrc = await readFile(new URL('../src/engine/world.js', import.meta.url), 'utf8');

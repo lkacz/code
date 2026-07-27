@@ -871,13 +871,21 @@ const guardianAftermath = (function(){
   function restore(data){
     reset();
     if(!data || typeof data !== 'object') return false;
+    // An IDLE snapshot ({v:1, active:null}) is valid input, not malformed: the
+    // world simply had no aftermath running — which is the state almost every
+    // save is taken in. main.js's restoreRequired seam reads an explicit false
+    // as "this save is corrupt" and fails the WHOLE load, so answering false
+    // here made every ordinary save unloadable and locked autosave behind the
+    // recovery banner. Same for a run that has served its full duration: it
+    // restores as finished, and a finished aftermath is a successful restore.
+    if(data.active == null) return true;
     const kind = normalizeKind(data.active);
     if(!kind) return false;
     state.active = kind;
     state.elapsed = clamp(finite(data.elapsed, 0), 0, DURATION_SECONDS);
     if(state.elapsed >= DURATION_SECONDS){
       reset();
-      return false;
+      return true;
     }
     state.nextIn = clamp(finite(data.nextIn, baseInterval(kind)), 0, baseInterval(kind) * 8);
     state.seq = Math.max(1, Math.floor(finite(data.seq, 1)));
