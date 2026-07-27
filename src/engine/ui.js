@@ -2436,13 +2436,258 @@ MM.ui = (function(){
       ]
     }, actions, menuPanel);
   }
+  // Zbrojownia (engine/gear_forge.js + main.js RECIPES + inventory builtins):
+  // the developer armoury. Everything the hero can WEAR or FIRE reachable from
+  // ONE searchable list, plus the ammo/jewels/hero stock that make a weapon
+  // actually testable rather than merely owned.
+  // Hand-rolled instead of buildFeatureDebugPanel on purpose: that helper is a
+  // button strip, and this panel needs a filter box, a list and four knobs.
+  // Typing here is safe — isEditableTarget() covers INPUT/SELECT, so the global
+  // keydown listeners bail and 'g' in the search box cannot toggle God mode.
+  function injectGearDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('gearDebugBox')) return;
+    actions = actions || {};
+    const SELECT_CSS='width:100%; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px;';
+    const INPUT_CSS='width:100%; box-sizing:border-box; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px;';
+    const box=document.createElement('div');
+    box.id='gearDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(224,179,65,.22); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Zbrojownia: sprzet, bronie, amunicja (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+
+    function fillSelect(sel, list, keepValue){
+      const want=keepValue!=null ? String(keepValue) : sel.value;
+      while(sel.firstChild) sel.removeChild(sel.firstChild);
+      (list||[]).forEach(o=>{
+        const opt=document.createElement('option');
+        opt.value=String(o.id);
+        opt.textContent=String(o.label);
+        sel.appendChild(opt);
+      });
+      if(want && (list||[]).some(o=>String(o.id)===want)) sel.value=want;
+      else if(sel.options.length) sel.selectedIndex=0;
+    }
+    function listFrom(fn, fallback){
+      try{ const r=(typeof fn==='function') ? fn() : null; return Array.isArray(r)&&r.length ? r : fallback; }
+      catch(e){ return fallback; }
+    }
+
+    const search=document.createElement('input');
+    search.id='gearDebugSearch';
+    search.type='text';
+    search.placeholder='Szukaj (Enter = utworz pierwszy z listy)';
+    search.style.cssText=INPUT_CSS;
+    box.appendChild(search);
+
+    const filterRow=document.createElement('div');
+    filterRow.style.cssText='display:flex; gap:4px; width:100%;';
+    const group=document.createElement('select');
+    group.id='gearDebugGroup';
+    group.style.cssText=SELECT_CSS+' flex:1 1 50%;';
+    const kind=document.createElement('select');
+    kind.id='gearDebugKind';
+    kind.style.cssText=SELECT_CSS+' flex:1 1 50%;';
+    filterRow.appendChild(group);
+    filterRow.appendChild(kind);
+    box.appendChild(filterRow);
+
+    const list=document.createElement('select');
+    list.id='gearDebugList';
+    list.size=10;
+    list.style.cssText=SELECT_CSS+' height:auto;';
+    box.appendChild(list);
+
+    const knobRow=document.createElement('div');
+    knobRow.style.cssText='display:flex; gap:4px; width:100%; align-items:center; font-size:11px;';
+    const tier=document.createElement('select');
+    tier.id='gearDebugTier';
+    tier.style.cssText=SELECT_CSS+' flex:1 1 60%;';
+    const plusWrap=document.createElement('label');
+    plusWrap.style.cssText='display:flex; align-items:center; gap:3px; flex:0 0 auto; opacity:.85;';
+    plusWrap.appendChild(document.createTextNode('+N'));
+    const plus=document.createElement('input');
+    plus.id='gearDebugPlus';
+    plus.type='number';
+    plus.min='-99'; plus.max='99'; plus.step='1'; plus.value='0';
+    plus.style.cssText=INPUT_CSS+' width:52px;';
+    plusWrap.appendChild(plus);
+    knobRow.appendChild(tier);
+    knobRow.appendChild(plusWrap);
+    box.appendChild(knobRow);
+
+    const toggleRow=document.createElement('div');
+    toggleRow.style.cssText='display:flex; gap:10px; width:100%; font-size:11px; opacity:.85;';
+    function toggle(id, text, checked, tip){
+      const wrap=document.createElement('label');
+      wrap.style.cssText='display:flex; align-items:center; gap:4px;';
+      wrap.title=tip||text;
+      const cb=document.createElement('input');
+      cb.id=id; cb.type='checkbox'; cb.checked=!!checked;
+      cb.style.cssText='width:auto; margin:0;';
+      wrap.appendChild(cb);
+      wrap.appendChild(document.createTextNode(text));
+      toggleRow.appendChild(wrap);
+      return cb;
+    }
+    const unique=toggle('gearDebugUnique','unikat',false,'Wymusza znalezisko unikalne — mocniejsza wersja tej samej funkcji');
+    const equip=toggle('gearDebugEquip','zaloz',true,'Zaklada przedmiot od razu po utworzeniu');
+    box.appendChild(toggleRow);
+
+    const name=document.createElement('input');
+    name.id='gearDebugName';
+    name.type='text';
+    name.placeholder='Nazwa (opcjonalna — steruje materialem broni)';
+    name.title='weapons.js dobiera material i poze z nazwy: iryd/diament/obsyd/kamien/drewno/elektr, topor/maczuga/dzida';
+    name.style.cssText=INPUT_CSS;
+    box.appendChild(name);
+
+    const preview=document.createElement('div');
+    preview.id='gearDebugPreview';
+    preview.style.cssText='width:100%; font-size:10px; opacity:.8; min-height:12px;';
+    box.appendChild(preview);
+
+    function spec(){
+      const n=Math.trunc(parseFloat(plus.value));
+      return {
+        id:list.value||'',
+        tier:tier.value||'rare',
+        plus:Number.isFinite(n) ? Math.max(-99,Math.min(99,n)) : 0,
+        unique:!!unique.checked,
+        equip:!!equip.checked,
+        name:name.value||'',
+        query:search.value||'',
+        group:group.value||'',
+        kind:kind.value||''
+      };
+    }
+    function refreshPreview(){
+      let text='';
+      try{ text=(typeof actions.preview==='function') ? String(actions.preview(spec())||'') : ''; }
+      catch(e){ text='blad podgladu'; }
+      preview.textContent=text || 'wybierz pozycje z listy';
+    }
+    function refreshList(){
+      let rows=[];
+      try{ rows=(typeof actions.catalog==='function') ? (actions.catalog(spec())||[]) : []; }
+      catch(e){ rows=[]; }
+      fillSelect(list, rows, list.value);
+      if(!rows.length){
+        const opt=document.createElement('option');
+        opt.value=''; opt.textContent='(brak trafien)';
+        list.appendChild(opt);
+      }
+      // A narrowed search should shrink the box, not leave ten empty rows
+      // between the query and the buttons that act on it.
+      list.size=Math.max(3, Math.min(10, rows.length||1));
+      refreshPreview();
+    }
+    search.addEventListener('input',refreshList);
+    group.addEventListener('change',refreshList);
+    kind.addEventListener('change',refreshList);
+    list.addEventListener('change',refreshPreview);
+    tier.addEventListener('change',refreshPreview);
+    plus.addEventListener('change',refreshPreview);
+    unique.addEventListener('change',refreshPreview);
+
+    const metrics=document.createElement('div');
+    metrics.id='gearDebugBoxMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    function refreshMetrics(){
+      let text='';
+      try{ text=(typeof actions.metrics==='function') ? String(actions.metrics()||'') : ''; }
+      catch(e){ text='blad metryk'; }
+      metrics.textContent=text || 'brak metryk zbrojowni';
+    }
+    // The result of the last action replaces the preview line: what the game
+    // actually stored after sanitize, not what the panel asked for.
+    function report(txt, fallback){
+      const t=String(txt||'');
+      if(t){ preview.textContent=t; msg('Zbrojownia: '+t); }
+      else msg('Zbrojownia: '+(fallback||'brak celu'));
+      refreshMetrics();
+    }
+    function run(act, arg, fallback){
+      try{
+        const out=(typeof actions[act]==='function') ? actions[act](arg) : null;
+        report(out, fallback);
+        return out;
+      }catch(e){ msg('Zbrojownia: blad'); return null; }
+    }
+
+    const ACTION_BUTTONS=[
+      ['make','Utworz','#e0b341','Tworzy zaznaczona pozycje w wybranym tierze'],
+      ['makeList','Cala lista','#c8a860','Tworzy WSZYSTKIE pozycje widoczne na liscie'],
+      ['random','Losowy lup','#b9a6ff','Jedna losowa rolka jak ze skrzyni w wybranym tierze'],
+      ['heroKit','Bohater','#8de6b8','Energia, wszystkie kilofy, lotnia, halogen, czyste statusy'],
+      ['wipe','Wyczysc torbe','#3a3d44','Odrzuca cala zdobyta torbe (buildy testowe od zera)']
+    ];
+    ACTION_BUTTONS.forEach(([act,txt,color,tip])=>{
+      const b=document.createElement('button');
+      b.id='gearDebug_'+act;
+      b.textContent=txt;
+      b.title=tip;
+      b.style.cssText='flex:1 1 100px; font-size:11px; padding:3px 6px; border:1px solid '+color+'99;';
+      b.addEventListener('click',()=>{ run(act, spec(), txt+' — brak celu'); });
+      box.appendChild(b);
+    });
+
+    const ammoLab=document.createElement('div');
+    ammoLab.textContent='Amunicja i zapasy (debug):';
+    ammoLab.style.cssText='width:100%; font-size:11px; opacity:.7; margin-top:4px;';
+    box.appendChild(ammoLab);
+    listFrom(actions.ammoBundles, [{id:'', label:'(brak amunicji)'}]).forEach(bundle=>{
+      const b=document.createElement('button');
+      b.id='gearDebugAmmo_'+bundle.id;
+      b.textContent=String(bundle.label);
+      b.title='Napelnia zapas: '+bundle.label;
+      b.style.cssText='flex:1 1 100px; font-size:11px; padding:3px 6px; border:1px solid #7cc4ff99;';
+      b.addEventListener('click',()=>{ run('ammo', bundle.id, bundle.label+' — brak celu'); });
+      box.appendChild(b);
+    });
+
+    box.appendChild(metrics);
+    panel.appendChild(box);
+
+    // Populate AFTER the box is mounted: main.js wires this panel while the game
+    // is still booting, so RECIPES/inventory may not be readable on this tick.
+    function populate(){
+      fillSelect(group, listFrom(actions.groups, [{id:'',label:'Wszystko'}]), group.value);
+      fillSelect(kind, listFrom(actions.kinds, [{id:'',label:'Kazdy rodzaj'}]), kind.value);
+      fillSelect(tier, listFrom(actions.tiers, [{id:'rare',label:'Rzadki'}]), tier.value || 'rare');
+      refreshList();
+      refreshMetrics();
+    }
+    populate();
+    setTimeout(populate, 300);
+    // Enter anywhere in the two text fields creates the top hit — the fastest
+    // gesture in the panel. blur() first: an input holding focus while the panel
+    // rebuilds is the mid-edit freeze this codebase has paid for before.
+    [search,name].forEach(input=>{
+      input.addEventListener('keydown',e=>{
+        if(e.key!=='Enter') return;
+        e.preventDefault();
+        e.stopPropagation();
+        input.blur();
+        run('make', spec(), 'Utworz — brak celu');
+      });
+    });
+    // Metrics only: rebuilding the <option> list on a timer would yank an open
+    // dropdown shut mid-selection.
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1500);
+  }
   function setRadarPulsing(active){
     const b = document.getElementById('radarMenuBtn');
     if(!b) return;
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, injectNoiseDebugPanel, injectWildfireDebugPanel, injectCaveInDebugPanel, injectForestDebugPanel, injectKilnDebugPanel, injectGliderDebugPanel, injectLayerDebugPanel, injectEconomyDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, injectNoiseDebugPanel, injectWildfireDebugPanel, injectCaveInDebugPanel, injectForestDebugPanel, injectKilnDebugPanel, injectGliderDebugPanel, injectLayerDebugPanel, injectEconomyDebugPanel, injectGearDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

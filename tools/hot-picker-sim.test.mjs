@@ -83,7 +83,9 @@ extra=[];
 
 // --- source pins: main.js wiring + index.html shell ---------------------------
 const mainSrc=readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-assert.match(mainSrc, /import \{ createHotPickerModel, createHotPicker \} from '\.\/engine\/hot_picker\.js'/, 'main.js imports the picker module');
+// foldText rides along: the developer armoury search reuses the picker's
+// Polish-diacritics folding instead of growing a second copy of it.
+assert.match(mainSrc, /import \{ createHotPickerModel, createHotPicker, foldText \} from '\.\/engine\/hot_picker\.js'/, 'main.js imports the picker module');
 assert.match(mainSrc, /MM\.groupedHotSelect=HOTPICKER\.open/, 'slot clicks open the module picker');
 assert.match(mainSrc, /document\.addEventListener\('pointerdown',e=>\{ if\(hotSelectMenu[\s\S]{0,220}closeHotSelect/,
   'popover dismissal listens on POINTERDOWN — a click dismisser fires after chip re-renders detach the target and closes the menu on every chip press');

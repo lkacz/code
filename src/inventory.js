@@ -447,6 +447,12 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     bow:['attackDamage','fireCooldown'],
     harpoon:['attackDamage','fireCooldown'],
     thrown:['attackDamage','fireCooldown'],
+    // A rubber pistol's cadence is a REAL number on the item (weapons.js reads
+    // `w.fireCooldown` when it arms a shot) — it was missing here, so sanitize
+    // fell back to the melee list and silently ate it: both pistols fired at the
+    // same 0.28 s default and the tar pistol's declared 0.30 s never existed.
+    // `fireRange` is deliberately absent: a ricochet has a bounce budget, not a reach.
+    bouncy:['attackDamage','fireCooldown'],
     flame:['fireDps','fireRange'],
     hose:['fireDps','fireRange'],
     gas:['fireDps','fireRange'],

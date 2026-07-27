@@ -36,9 +36,10 @@ import { cape as CAPE } from './engine/cape.js';
 import { necklace as NECKLACE } from './engine/necklace.js';
 import { antennas as ANTENNAS } from './engine/antennas.js';
 import { chests as CHESTS } from './engine/chests.js';
+import { gearForge as GEAR_FORGE } from './engine/gear_forge.js';
 import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engine/crafting.js';
 import { furnishings as FURNISHINGS } from './engine/furnishings.js';
-import { createHotPickerModel, createHotPicker } from './engine/hot_picker.js';
+import { createHotPickerModel, createHotPicker, foldText } from './engine/hot_picker.js';
 import { createCraftDrag } from './engine/craft_drag.js';
 import './inventory.js';
 import { mobs as MOBS } from './engine/mobs.js';
@@ -18594,6 +18595,199 @@ function spawnDebugMechMob(){
 	}
 	return false;
 }
+// --- Zbrojownia deweloperska (engine/gear_forge.js) --------------------------
+// Injected FIRST of the ~30 debug panels on purpose: the toolbox is one long
+// scrolling column, and this is the panel a testing session opens every time.
+// Everything the hero can WEAR or FIRE in one searchable list. Three sources,
+// one grant path each — so the forge can never drift from the real game:
+//   * łup     → GEAR_FORGE.buildDef + MM.inventory.grantItem (a chest-grade roll
+//               with the profile forced, the tier chosen and +N seeded)
+//   * craft   → the recipe's OWN make(), executed without paying its cost, so a
+//               new recipe joins the forge the day it is written
+//   * builtin → already owned; the row only equips it
+// None of this writes the world (no tile, entity or drop is touched), so no hact
+// intent is involved. Every action still refuses on a guest replica: the .devOnly
+// CSS gate HIDES the panel, it never removes the handlers, and a same-machine
+// co-op guest boots with that gate briefly open.
+const GEAR_FORGE_BULK_CAP=60; // "cała lista" must not silently eat MAX_BAG (300)
+function gearForgeBlocked(){ return !!MM.ghostMode || !MM.inventory || !GEAR_FORGE; }
+function gearForgeDescribe(item){
+	const INV=MM.inventory;
+	if(!item) return '';
+	const chips=(INV && INV.statChips) ? INV.statChips(item) : [];
+	const bits=chips.map(c=>c.label+' '+c.text);
+	return (item.name||item.id)+(item.tier?' ['+item.tier+']':'')+(bits.length?' — '+bits.join(', '):'');
+}
+// One row per selectable thing. Craft rows carry the recipe group instead of an
+// item kind (a recipe's output kind is not knowable without running it).
+function gearForgeRows(){
+	const rows=[];
+	if(GEAR_FORGE && Array.isArray(GEAR_FORGE.CATALOG))
+		for(const e of GEAR_FORGE.CATALOG) rows.push({id:e.id, label:'🎲 '+e.label, group:'loot', kind:e.kind, cgroup:''});
+	for(const r of RECIPES){
+		if(!r || typeof r.make!=='function') continue;
+		rows.push({id:'craft:'+r.id, label:'🔨 '+(r.name||r.id), group:'craft', kind:'', cgroup:recipeGroup(r)});
+	}
+	const INV=MM.inventory;
+	if(INV && INV.allItems && INV.isBuiltin)
+		for(const it of INV.allItems()){
+			if(!INV.isBuiltin(it.id)) continue;
+			rows.push({id:'builtin:'+it.id, label:'📦 '+(it.name||it.id), group:'builtin', kind:it.kind, cgroup:''});
+		}
+	return rows;
+}
+function gearForgeCatalog(spec){
+	spec=spec||{};
+	const wantGroup=String(spec.group||'');
+	const sel=String(spec.kind||'');
+	const wantKind=sel.startsWith('kind:') ? sel.slice(5) : '';
+	const wantCgroup=sel.startsWith('cg:') ? sel.slice(3) : '';
+	const q=foldText(String(spec.query||'').trim());
+	return gearForgeRows().filter(row=>{
+		if(wantGroup && row.group!==wantGroup) return false;
+		if(wantKind && row.kind!==wantKind) return false;
+		if(wantCgroup && row.cgroup!==wantCgroup) return false;
+		if(q && !foldText(row.label).includes(q) && !foldText(row.id).includes(q)) return false;
+		return true;
+	}).map(row=>({id:row.id, label:row.label}));
+}
+function gearForgeMake(spec){
+	if(gearForgeBlocked()) return '';
+	spec=spec||{};
+	const INV=MM.inventory;
+	const id=String(spec.id||'');
+	if(!id) return '';
+	if(id.startsWith('builtin:')){
+		const item=INV.getItem(id.slice(8));
+		if(!item) return '';
+		if(spec.equip) INV.equip(item.id);
+		return (spec.equip?'założono ':'masz już ')+gearForgeDescribe(item);
+	}
+	if(id.startsWith('craft:')){
+		const r=RECIPES.find(x=>x.id===id.slice(6));
+		if(!r || typeof r.make!=='function') return '';
+		craftedOutputFailed=false;
+		const made=r.make();
+		if(made===false || craftedOutputFailed) return '';
+		updateInventory(); updateHotbarCounts(); checkCraftingAvailability({silent:true});
+		return 'wytworzono za darmo: '+(r.name||r.id);
+	}
+	const def=GEAR_FORGE.buildDef(id, {tier:spec.tier, plus:spec.plus, unique:spec.unique, name:spec.name});
+	if(!def) return '';
+	if(!INV.grantItem(def, {equip:!!spec.equip, markNew:false})) return '';
+	// Read the item BACK: sanitizeLootItem silently drops fields it does not
+	// allow, so the panel reports what the game stored, not what we asked for.
+	return (spec.equip?'założono ':'do torby: ')+gearForgeDescribe(INV.getItem(def.id));
+}
+function gearForgeMakeList(spec){
+	if(gearForgeBlocked()) return '';
+	const rows=gearForgeCatalog(spec);
+	if(!rows.length) return '';
+	const take=rows.slice(0, GEAR_FORGE_BULK_CAP);
+	let made=0;
+	for(const row of take){ if(gearForgeMake(Object.assign({}, spec, {id:row.id, equip:false}))) made++; }
+	if(!made) return '';
+	return 'utworzono '+made+'/'+rows.length+(rows.length>take.length?' (limit '+GEAR_FORGE_BULK_CAP+' na klik)':'');
+}
+function gearForgeRandom(spec){
+	if(gearForgeBlocked() || !CHESTS || !CHESTS.genItem) return '';
+	spec=spec||{};
+	const INV=MM.inventory;
+	const tier=GEAR_FORGE.TIER_ORDER.includes(spec.tier)?spec.tier:'rare';
+	const def=CHESTS.genItem(Math.random, tier, spec.unique?{forceUnique:true}:{});
+	if(!def) return '';
+	def.id=GEAR_FORGE.mintItemId(def.kind);
+	const plus=Math.trunc(Number(spec.plus)||0);
+	if(plus) def.enhancement=Math.max(-99,Math.min(99,plus));
+	if(!INV.grantItem(def, {equip:!!spec.equip, markNew:false})) return '';
+	return 'rolka: '+gearForgeDescribe(INV.getItem(def.id));
+}
+function gearForgeAmmo(bundleId){
+	if(gearForgeBlocked()) return '';
+	const grants=GEAR_FORGE.ammoGrants(bundleId);
+	if(!grants.length) return '';
+	for(const g of grants) inv[g.key]=(inv[g.key]|0)+g.amount;
+	updateInventory(); updateHotbarCounts(); checkCraftingAvailability({silent:true});
+	const bundle=GEAR_FORGE.ammoBundle(bundleId);
+	return (bundle?bundle.label:'zapasy')+': +'+grants[0].amount+' × '+grants.length;
+}
+function gearForgeHeroKit(){
+	if(gearForgeBlocked()) return '';
+	inv.tools.stone=true; inv.tools.meteor=true; inv.tools.diamond=true; inv.tools.bedrock=true;
+	inv.bedrockPickDurability=BEDROCK_PICK_MAX_DURABILITY;
+	inv.tools.glider=true;
+	inv.halogen=Math.max(1, inv.halogen|0);
+	try{ if(MM.heroEnergy && MM.heroEnergy.add) MM.heroEnergy.add(9999); }catch(e){}
+	try{ if(MM.heroStatus && MM.heroStatus.clearAll) MM.heroStatus.clearAll(); }catch(e){}
+	updateInventory(); updateHotbarCounts(); checkCraftingAvailability({silent:true});
+	return 'kilofy, lotnia, halogen, pełna energia, czyste statusy';
+}
+function gearForgeWipe(){
+	if(gearForgeBlocked()) return '';
+	const INV=MM.inventory;
+	if(!INV.bagItems || !INV.discard) return '';
+	let n=0;
+	for(const id of INV.bagItems().map(i=>i.id)){ if(INV.discard(id)) n++; }
+	return n ? ('odrzucono z torby: '+n) : '';
+}
+function gearForgeKindOptions(){
+	const INV=MM.inventory;
+	const labels=(INV && INV.KIND_LABELS) || {};
+	const out=[{id:'', label:'Każdy rodzaj'}];
+	for(const k of ['cape','eyes','outfit','weapon','pickaxe','charm','antenna'])
+		out.push({id:'kind:'+k, label:'· '+(labels[k]||k)});
+	for(const g of CRAFT_GROUPS) out.push({id:'cg:'+g.id, label:'⚒ '+g.label});
+	return out;
+}
+function gearForgePreview(spec){
+	spec=spec||{};
+	const id=String(spec.id||'');
+	if(!id) return '';
+	if(id.startsWith('builtin:')){
+		const item=MM.inventory && MM.inventory.getItem(id.slice(8));
+		return item ? ('wbudowane · '+gearForgeDescribe(item)) : '';
+	}
+	if(id.startsWith('craft:')){
+		const r=RECIPES.find(x=>x.id===id.slice(6));
+		if(!r) return '';
+		const cost=recipeCostEntries(r).map(([k,v])=>v+'× '+(RES_LABEL[k]||k)).join(', ')||'—';
+		return 'rzemiosło · '+(r.name||r.id)+' · normalny koszt: '+cost+' (tu za darmo)';
+	}
+	const entry=GEAR_FORGE && GEAR_FORGE.catalogEntry(id);
+	if(!entry) return '';
+	const tier=GEAR_FORGE.tierAtLeast(spec.tier, entry.minTier);
+	// A forced profile below its minTier falls THROUGH genItem's pool check into
+	// a random roll — say so instead of handing over a different item silently.
+	const bumped=(tier!==spec.tier) ? ' · tier ↑ '+tier+' (niżej rolka ignoruje ten profil)' : '';
+	return (entry.mode==='gen'?'rolka · ':'wzorzec · ')+entry.label+' · '+tier
+		+(spec.plus?' · +'+spec.plus:'')+(spec.unique?' · unikat':'')+bumped;
+}
+function gearForgeMetrics(){
+	const INV=MM.inventory;
+	if(!INV) return '';
+	const bag=INV.bagItems ? INV.bagItems().length : 0;
+	const weapon=INV.equippedItem ? INV.equippedItem('weapon') : null;
+	let arrows=0, thrown=0;
+	for(const g of GEAR_FORGE.ammoGrants('arrows')) arrows+=inv[g.key]|0;
+	for(const g of GEAR_FORGE.ammoGrants('thrown')) thrown+=inv[g.key]|0;
+	return 'torba '+bag+'/300 | broń '+(weapon?weapon.name:'pięści')
+		+' | strzały '+arrows+' | rzuty '+thrown+(MM.ghostMode?' | GOŚĆ: kuźnia zablokowana':'');
+}
+if(MM.ui && MM.ui.injectGearDebugPanel) MM.ui.injectGearDebugPanel({
+	groups:()=>[{id:'',label:'Wszystkie źródła'},{id:'loot',label:'🎲 Łup (rolki i wzorce)'},{id:'craft',label:'🔨 Rzemiosło (za darmo)'},{id:'builtin',label:'📦 Wbudowane'}],
+	kinds:gearForgeKindOptions,
+	tiers:()=> GEAR_FORGE.TIER_ORDER.map(t=>({id:t, label:GEAR_FORGE.TIER_LABELS[t]||t})),
+	ammoBundles:()=> GEAR_FORGE.AMMO_BUNDLES.map(b=>({id:b.id, label:b.label})),
+	catalog:gearForgeCatalog,
+	preview:gearForgePreview,
+	make:gearForgeMake,
+	makeList:gearForgeMakeList,
+	random:gearForgeRandom,
+	ammo:gearForgeAmmo,
+	heroKit:gearForgeHeroKit,
+	wipe:gearForgeWipe,
+	metrics:gearForgeMetrics
+}, menuPanel);
 // Inject debug time-of-day slider (non-intrusive) at end of menu only once
 if(MM.ui && MM.ui.injectTimeSlider) MM.ui.injectTimeSlider(menuPanel);
 if(MM.ui && MM.ui.injectBackgroundDebugPanel) MM.ui.injectBackgroundDebugPanel(menuPanel);
