@@ -1265,7 +1265,12 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	// world-touching branch on !a.coopOwner (no world ignition, no gas detonation, no
 	// gascloud/bomb splat), and the resolver never lets a coop shaft carry `fire`.
 	assert.ok(/if\(a\.fire && !a\.coopOwner\)\{/.test(wsrcH), 'a coop arrow never detonates gas or ignites the world');
+	// The !a.coopOwner guard must stay in the ignition CONDITION itself, ahead of
+	// the per-ammo rules inside it (plain rubber never lights, tar rubber does):
+	// no branch under here may be reachable by a guest projectile.
 	assert.ok(/if\(!a\.fire && !a\.coopOwner && \(\(FIRE/.test(wsrcH), 'a coop arrow never catches fire in flight (no terrain ignition on impact)');
+	assert.ok(/function igniteBouncyBall\(a\)\{\s*\n\s*if\(!a \|\| !a\.flammable \|\| a\.fire \|\| a\.coopOwner\) return false;/.test(wsrcH),
+		'the incendiary ball cannot be lit on a guest projectile either');
 	assert.ok(/if\(a\.coopOwner\) return; \/\/ a guest projectile never detonates terrain/.test(wsrcH), 'a coop bomb splat is refused');
 	// death: the grave is a WORLD mechanic — a hero guest keeps its inventory
 	// (a replica-local grave would be stream-wiped and the halved resources lost)

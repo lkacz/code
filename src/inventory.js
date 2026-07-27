@@ -52,7 +52,10 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {id:'melee',  key:'2', label:'Broń biała', icon:'👊', types:['melee']},
     // Ranged slot: bows, underwater harpoon launchers and hand throws rotate here
     {id:'bow',    key:'3', label:'Dystansowe', icon:'🎯', types:['bow','harpoon','thrown']},
-    {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas','electric']}
+    // Slot 4 = hand-held devices with a trigger. Streams emit, 'bouncy' fires a
+    // discrete ricocheting projectile — it sits here rather than in the ranged
+    // slot because it is a GUN, not a drawn/thrown shot (no charge, no arc aiming).
+    {id:'stream', key:'4', label:'Miotacze',   icon:'🔥', types:['flame','hose','gas','electric','bouncy']}
   ];
 
   // --- Player-facing stat presentation (single source for ALL item stat display) ---
@@ -102,6 +105,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
       chips.push({icon:item.pickPerk==='lucky'?'🍀':item.pickPerk==='double'?'✌️':'⛓️', label:'Perk kilofa', text:PICK_PERK_LABELS[item.pickPerk]+' (szansa)', good:true});
     if(item.mergePerk && MERGE_PERK_LABELS[item.mergePerk])
       chips.push({icon:item.mergePerk==='vampire'?'🩸':item.mergePerk==='venom'?'☠️':item.mergePerk==='frost'?'❄️':item.mergePerk==='storm'?'⚡':'🔥', label:'Perk fuzji', text:MERGE_PERK_LABELS[item.mergePerk], good:true});
+    if(item.bouncyKind && BOUNCY_KIND_LABELS[item.bouncyKind])
+      chips.push({icon:item.bouncyKind==='tar'?'🔥':'🔴', label:'Amunicja', text:BOUNCY_KIND_LABELS[item.bouncyKind], good:true});
     if(typeof item.damageReductionBonus==='number' && item.damageReductionBonus)
       chips.push({icon:'🛡️', label:'Redukcja obrażeń', text:'+'+Math.round(item.damageReductionBonus*100)+'%', good:item.damageReductionBonus>0});
     if(typeof item.energyCost==='number' && item.energyCost>0)
@@ -235,7 +240,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {id:'ironperson', kind:'outfit', name:'Iron',    crushResistBonus:2, desc:'Pancerz wzmacnia na zawały i głębiny'},
     // Weapons (starter set; better ones drop from chests).
     // weaponType: 'melee' (default) strikes the aimed tile, 'bow' shoots arrows,
-    // 'flame'/'hose'/'gas' streams terrain effects; 'electric' fires an energy beam.
+    // 'flame'/'hose'/'gas' streams terrain effects; 'electric' fires an energy beam;
+    // 'bouncy' fires ricocheting rubber balls (crafted only — see RECIPES in main.js).
     {id:'stick',        kind:'weapon', weaponType:'melee', name:'Kij',             attackDamage:1, desc:'Prosty kij na początek'},
     {id:'stone_blade',  kind:'weapon', weaponType:'melee', name:'Ostrze kamienne', attackDamage:3, desc:'Ciężkie, ale skuteczne'},
     {id:'spear',        kind:'weapon', weaponType:'melee', name:'Włócznia',        attackDamage:2, fireRange:3, desc:'Długi prosty atak na trzy pola; przytrzymaj LPM, aby wzmocnić pchnięcie'},
@@ -291,6 +297,9 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'wood',    label:'Drewno',  color:'#8b5a2b', tile:'WOOD'},
     {key:'lightWood', label:'Lekkie drewno', color:'#d9c9a3', tile:'LIGHT_WOOD'},
     {key:'hardWood', label:'Twarde drewno', color:'#5e3a1c', tile:'HARD_WOOD'},
+    {key:'rubber', label:'Kauczuk', color:'#8a8768', tile:'RUBBER_WOOD'},
+    {key:'rubberBall', label:'Kulki kauczukowe', color:'#e0533f', tile:null},
+    {key:'rubberBallTar', label:'Kulki smołowe', color:'#4a3a30', tile:null},
     {key:'ladder',  label:'Drabinka', color:'#b98243', tile:'LADDER'},
     {key:'bedrockLadder', label:'Drabinka macierzysta', color:'#6f7890', tile:'BEDROCK_LADDER'},
     {key:'woodDoor', label:'Drzwi drewniane', color:'#9b6730', tile:'WOOD_DOOR'},
@@ -510,7 +519,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
   const ITEM_NUM_FIELDS=['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus','damageReductionBonus'];
-  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode','antennaActive','pickPerk','mergePerk'];
+  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode','antennaActive','pickPerk','mergePerk','bouncyKind'];
   // Material identity of a crafted hand weapon (weapons.js MELEE_EFFECTS holds
   // the numbers) — anything else smuggled into meleeEffect is dropped on ingest.
   const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika', sunder:'Rozłupanie pancerza'};
@@ -523,6 +532,12 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   const PICK_PERK_LABELS={lucky:'Szczęśliwy przebój', double:'Podwójny urobek', vein:'Pękająca żyła'};
   // Merge-forged weapon perk identity (weapons.js MERGE_PERKS holds the numbers).
   const MERGE_PERK_LABELS={vampire:'Wampiryzm', venom:'Jad', frost:'Szron', storm:'Burza', fury:'Furia', ember:'Żar'};
+  // Ammunition identity of a bouncy pistol (weapons.js BOUNCY_KINDS holds the
+  // numbers — restitution, bounce budget and the flammable flag never ride the
+  // item). Same contract as meleeEffect: a crafted weapon is sanitized on ingest,
+  // so a kind that is NOT listed here is dropped and the pistol silently falls
+  // back to plain rubber. That is exactly how the tar pistol first shipped broken.
+  const BOUNCY_KIND_LABELS={plain:'Kauczukowe kulki', tar:'Smołowe kulki (zapalne)'};
   const AQUATIC_STYLES={trident:'melee',crossbow:'bow',harpoon:'harpoon'};
   const ITEM_KINDS=new Set(['cape','eyes','outfit','weapon','pickaxe','charm','antenna']);
   function sanitizeLootItem(raw,fallbackKind){
@@ -538,6 +553,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     if(it.antennaActive && (kind!=='antenna' || !ANTENNA_ACTIVE_LABELS[it.antennaActive])) delete it.antennaActive;
     if(it.pickPerk && (kind!=='pickaxe' || !PICK_PERK_LABELS[it.pickPerk])) delete it.pickPerk;
     if(it.mergePerk && (kind!=='weapon' || !MERGE_PERK_LABELS[it.mergePerk])) delete it.mergePerk;
+    if(it.bouncyKind && (kind!=='weapon' || (it.weaponType||'melee')!=='bouncy' || !BOUNCY_KIND_LABELS[it.bouncyKind])) delete it.bouncyKind;
     if(typeof it.damageReductionBonus==='number'){
       const f=Math.max(0,Math.min(0.25,+it.damageReductionBonus.toFixed(2)));
       if(f<=0) delete it.damageReductionBonus; else it.damageReductionBonus=f;
@@ -1261,7 +1277,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
 
   MM.inventory={
     SLOTS, KIND_LABELS, TIER_COLORS, STAT_LABELS, STAT_RULES, RESOURCES, BASE_ATTACK,
-    MELEE_EFFECT_LABELS, ANTENNA_ACTIVE_LABELS, JEWELS,
+    MELEE_EFFECT_LABELS, ANTENNA_ACTIVE_LABELS, BOUNCY_KIND_LABELS, JEWELS,
     WEAPON_CATEGORIES, KIND_STAT_PRIORITY, WEAPON_TYPE_STATS, allowedStatsFor,
     PICK_PERK_LABELS, MERGE_PERK_LABELS, mergeWeapons, mergeChance,
     weaponCategory, categoryWeapons, selectedWeaponForCategory, isShortcut, setShortcut, cycleWeaponCategory,

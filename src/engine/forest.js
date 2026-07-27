@@ -46,7 +46,7 @@ import { T, CHUNK_W, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, isAutumnLeaf } from '../
     try{ const t = getTile(x, y); return t === undefined ? T.STONE : t; }catch(e){ return T.STONE; }
   }
   function isSoil(t){ return t === T.GRASS || t === T.DIRT || t === T.GRASS_SNOW; }
-  function isTrunk(t){ return t === T.WOOD || t === T.GOLDEN_WOOD || t === T.LIGHT_WOOD || t === T.HARD_WOOD; }
+  function isTrunk(t){ return t === T.WOOD || t === T.GOLDEN_WOOD || t === T.LIGHT_WOOD || t === T.HARD_WOOD || t === T.RUBBER_WOOD; }
   function isCanopy(t){ return t === T.LEAF || isAutumnLeaf(t); }
   function isClear(t){ return t === T.AIR; }
 
@@ -114,6 +114,7 @@ import { T, CHUNK_W, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y, isAutumnLeaf } from '../
         const t = getSafe(getTile, x + dx, y + dy);
         if(t === T.LIGHT_WOOD) return 'lightwood';
         if(t === T.HARD_WOOD) return 'hardwood';
+        if(t === T.RUBBER_WOOD) return 'rubber';
       }
     }
     return null;

@@ -304,12 +304,14 @@ window.MM = window.MM || {};
     const id=generatedTreeId(wx,s,variant);
     // Special-wood variants reuse an existing tree SHAPE but mint a distinct trunk
     // tile: golden megaOak (10 wood), lightwood mangrove (buoyant boat timber),
-    // hardwood conifer (tough arrow shafts). TRUNK resolves the species; the three
-    // host branches (megaOak/mangrove/conifer) emit TRUNK, every other variant
-    // stays ordinary wood. Trailing/optional param keeps existing callers valid.
+    // hardwood conifer (tough arrow shafts), rubber oak (latex for bouncing ammo).
+    // TRUNK resolves the species; the host branches (megaOak/mangrove/conifer/oak)
+    // emit TRUNK, every other variant stays ordinary wood. Trailing/optional param
+    // keeps existing callers valid.
     const TRUNK = golden ? T.GOLDEN_WOOD
       : variant==='lightwood' ? T.LIGHT_WOOD
       : variant==='hardwood' ? T.HARD_WOOD
+      : variant==='rubber' ? T.RUBBER_WOOD
       : T.WOOD;
     function put(localX,y,t){
       if(y>=0 && y<WORLD_H && localX>=0 && localX<CHUNK_W){
@@ -385,6 +387,28 @@ window.MM = window.MM || {};
         put(lx+2*d,top,T.LEAF);
         put(lx+2*d,top+1,T.LEAF); // drooping frond tip
         put(lx+d,top-1,T.LEAF);   // upward arc near the crown
+      }
+    } else if(variant==='rubber'){
+      // Hevea silhouette: a bare, slim, noticeably TALL bole with the crown lifted
+      // clear of the understorey — you spot a rubber tree by the empty trunk, not
+      // by its leaves. It grows on the oak footprint (canGrowTreeAt reserves the
+      // oak trunk), so the bole is raised cell by cell and STOPS at the first
+      // obstruction; the crown is then anchored on the real top instead of an
+      // intended one, or an interrupted trunk would leave a floating canopy.
+      const wanted=6+Math.floor(randSeed(wx*3.331+97)*3);
+      let top=s-1;
+      for(let i=0;i<wanted;i++){
+        const ty=s-1-i;
+        if(ty<0 || rawTile(arr,lx,ty)!==T.AIR) break;
+        put(lx,ty,TRUNK);
+        top=ty;
+      }
+      const spread=2;
+      for(let dy=-2; dy<=1; dy++){
+        for(let dx=-spread; dx<=spread; dx++){
+          const dist=Math.abs(dx)*0.86+Math.abs(dy)*1.05;
+          if(dist<=spread-1 || dist<=spread+(randSeed(wx*3.331+dx*37+dy*53)-0.30)) put(lx+dx, top-1+dy, T.LEAF);
+        }
       }
     } else { // oak
       const trunkH=4+Math.floor(randSeed(wx+80)*3); for(let i=0;i<trunkH;i++){ const ty=s-1-i; if(ty<0) break; put(lx,ty,T.WOOD); }
@@ -1425,14 +1449,17 @@ window.MM = window.MM || {};
         // a high-roll means a stubbed randSeed()=>0 never selects golden (test-safe).
         const golden = variant==='megaOak' && WG.randSeed(wx*7.919+131) > 0.996;
         if(canGrowTreeAt(arr,lx,s,variant)){
-          // Uncommon wood species (~6% of that biome's trees): light wood swaps a
+          // Uncommon wood species (~6-14% of that biome's trees): light wood swaps a
           // swamp MANGROVE (pale, buoyant boat timber growing by water), hard wood
-          // swaps a snow CONIFER (dense, slow-grown arrow grain). Fresh salts + a
-          // HIGH-roll => a stubbed randSeed()=>0 never swaps (test-safe); canGrowTreeAt
-          // keeps the base mangrove/conifer footprint — only the trunk tile changes.
+          // swaps a snow CONIFER (dense, slow-grown arrow grain), rubber swaps a
+          // FOREST OAK (latex for bouncing ammunition — the only species whose yield
+          // is not timber, so it is left the most findable of the three). Fresh salts
+          // + a HIGH-roll => a stubbed randSeed()=>0 never swaps (test-safe);
+          // canGrowTreeAt keeps the base footprint — only the trunk tile changes.
           let species = variant;
           if(variant==='mangrove' && WG.randSeed(wx*6.271+211) > 0.94) species='lightwood';
           else if(variant==='conifer' && WG.randSeed(wx*8.537+307) > 0.94) species='hardwood';
+          else if(variant==='oak' && biome===0 && WG.randSeed(wx*9.113+419) > 0.86) species='rubber';
           buildTree(arr,lx,s,species,wx,golden);
           plantedTree=true;
         }

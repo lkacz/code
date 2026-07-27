@@ -2046,6 +2046,7 @@ const ghostHost = (function(){
 				dmg: Math.max(1, Math.min(NET.HERO_RULES.DMG_MAX, Number(pl.n) || 1)),
 				fire: !!pl.f2, snowball: !!pl.sb, rock: !!pl.rk, thrown: !!pl.th, harpoon: !!pl.hp2,
 				sticky: !!pl.sk, // special throws keep their fuse — host-owned params in the resolver
+				bouncy: !!pl.bo, // names a rubber ball; bounce count/restitution are the resolver's
 				splat: (pl.sp === 'wet' || pl.sp === 'gascloud') ? pl.sp : null, // balloon/grenade bursts, host-owned radii
 				ownerGid: entry.gid, duelGid: b.duelWith || null }; // duel arrows re-check consent at impact
 			try{ if(bridge.ghostHeroShoot) bridge.ghostHeroShoot({ x: b.x, y: b.y }, spec); }catch(e){ /* fine */ }

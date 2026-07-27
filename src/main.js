@@ -5637,6 +5637,15 @@ const RECIPES=[
 	{id:'frost_flasks', name:'Lodowe fiolki x4', cost:{snow:2}, make(){ inv.frostFlask+=4; msg('Lodowe fiolki +4 - rozpryskuja mroz (komb: mokry cel -> brya lodu)'); }},
 	{id:'molotovs', name:'Koktajle Molotowa x3', cost:{coal:2, wood:1}, make(){ inv.molotov+=3; msg('Koktajle Molotowa +3 - ognisty rozprysk, podpala teren'); }},
 	{id:'sticky_bombs', name:'Lepkie bomby x2', cost:{clay:1, coal:1}, make(){ inv.stickyBomb+=2; msg('Lepkie bomby +2 - przyklejaja sie i wybuchaja po chwili'); }},
+	// Kauczuk: amunicja odbijajaca sie (weapons.js weaponType 'bouncy'). Kulki sa
+	// tanie i czesto do odzyskania, bo cala wartosc broni siedzi w rykoszecie.
+	{id:'rubber_balls', name:'Kulki kauczukowe x12', cost:{rubber:2}, make(){ inv.rubberBall+=12; msg('Kulki kauczukowe +12 - odbijaja sie od scian i wrogow; czesc mozna podniesc po strzale'); }},
+	{id:'bouncer_pistol', name:'Pistolet kauczukowy', cost:{rubber:8, steel:2, wood:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'bouncy',bouncyKind:'plain',name:'Pistolet kauczukowy',attackDamage:3,fireCooldown:0.28,tier:'uncommon',desc:'Klawisz 4: wystrzeliwuje kulki kauczukowe. Male obrazenia, ale kulka odbija sie od scian i wrogow — kazde odbicie slabsze. PPM = seria'}); }},
+	// Smola: kauczuk nasycony weglem. Kulka sama nie plonie — dopiero KONTAKT z
+	// ogniem (plonacy kafel, lawa, plonacy wrog) ja zapala; wtedy roznosi ogien
+	// rykoszetem i podpala kazdego trafionego. Zaplon skraca budzet odbic.
+	{id:'rubber_balls_tar', name:'Kulki smolowe x12', cost:{rubber:2, coal:2}, make(){ inv.rubberBallTar+=12; msg('Kulki smolowe +12 - same nie plona, ale ogien je zapala: wtedy podpalaja teren i wrogow przy kazdym odbiciu'); }},
+	{id:'bouncer_pistol_tar', name:'Pistolet smolowy', cost:{rubber:8, steel:2, coal:4}, make(){ grantCraftedItem({kind:'weapon',weaponType:'bouncy',bouncyKind:'tar',name:'Pistolet smolowy',attackDamage:3,fireCooldown:0.30,tier:'rare',desc:'Klawisz 4: kulki smolowe. Przelec kulke przez ogien, lawe albo plonacego wroga — zapalona roznosi pozar rykoszetem i podpala trafionych. PPM odpala je od razu'}); }},
 	{id:'obsidian_sword', name:'Miecz obsydianowy', cost:{obsidian:4, wood:2}, make(){ grantCraftedItem({kind:'weapon',weaponType:'melee',name:'Miecz obsydianowy',attackDamage:6,tier:'rare',desc:'Wykuty z hartowanej lawy'}); }},
 	// Bron wodna ma osobna fizyke w weapons.js: pod woda jest szybsza i mocniejsza,
 	// a na powierzchni pozostaje uzyteczna, lecz wyraznie przegrywa ze zwykla bronia.
@@ -5790,6 +5799,10 @@ const CRAFT_RECIPE_META={
 	frost_flasks:{group:'weapons',icon:'🧊',out:'frostFlask',amount:4,desc:'Rozprysk mrozu — na mokrym celu zamraza go w bryle lodu.'},
 	molotovs:{group:'weapons',icon:'🔥',out:'molotov',amount:3,desc:'Ognisty rozprysk: podpala trafione cele i latwopalny teren.'},
 	sticky_bombs:{group:'weapons',icon:'🧨',out:'stickyBomb',amount:2,desc:'Klei sie do scian i mobow; krotki lont, maly krater.'},
+	rubber_balls:{group:'weapons',icon:'🔴',out:'rubberBall',amount:12,tint:'#e0533f',desc:'Ubity kauczuk: kulka odbija sie od scian i wrogow, tracac sile z kazdym odbiciem. Czesc lezy potem na ziemi do podniesienia.'},
+	bouncer_pistol:{group:'weapons',icon:'🔫',tint:'#e0533f',desc:'Slaby pojedynczy strzal, ale rykoszet siega tam, gdzie luk nie dosiegnie: za rog, w glab korytarza, przez cala grupe wrogow.'},
+	rubber_balls_tar:{group:'weapons',icon:'🟤',out:'rubberBallTar',amount:12,tint:'#4a3a30',desc:'Kauczuk nasycony smola. Sama nie plonie — ale kazdy kontakt z ogniem ja zapala, a plonaca kulka podpala teren i wrogow przy kazdym odbiciu. Spalona nie wraca.'},
+	bouncer_pistol_tar:{group:'weapons',icon:'🔥',tint:'#ff7a3a',desc:'Ten sam rykoszet, tylko zapalny: przeprowadz kulke przez ogien albo plonacego wroga, a poniesie pozar dalej. Klawisz 4 przelacza miedzy pistoletami.'},
 	obsidian_sword:{group:'weapons',icon:'🗡️',tint:'#7a5cc1',desc:'Craftowany ekwipunek trafia do torby i od razu sie zaklada.'},
 	trident_steel:{group:'weapons',icon:'🔱',tint:'#72c7d8',desc:'Trzytileowy zasieg. Pod woda szybszy i mocniejszy, na ladzie nieporeczny.'},
 	underwater_crossbow:{group:'weapons',icon:'🏹',tint:'#4ea5b8',desc:'Krotki podwodny naciag, maly opad i lekki opor; na powierzchni slabsza od luku.'},
@@ -7150,7 +7163,7 @@ function tileShadeAmp(t){
 	if(t===T.ANTIMATTER_CRYSTAL) return 4;
 	if(t===T.DIAMOND) return 0;
 	if(t===T.WOOD) return 8;
-	if(t===T.GOLDEN_WOOD || t===T.LIGHT_WOOD || t===T.HARD_WOOD) return 8;
+	if(t===T.GOLDEN_WOOD || t===T.LIGHT_WOOD || t===T.HARD_WOOD || t===T.RUBBER_WOOD) return 8;
 	if(t===T.GRASS || t===T.UNSTABLE_GRASS) return 8;
 	if(isLeaf(t)) return 9;
 	if(t===T.MUD) return 6;
@@ -7257,7 +7270,7 @@ function tileEdgeFamily(t){
 		case T.FROZEN_DIRT: case T.FROZEN_SAND: case T.FROZEN_CLAY: return EDGE_EARTH;
 		case T.SAND: case T.UNSTABLE_SAND: case T.QUICKSAND: return EDGE_SAND;
 		case T.SNOW: case T.TOXIC_SNOW: case T.ICE: case T.MOTHER_ICE: return EDGE_FROST;
-		case T.WOOD: case T.GOLDEN_WOOD: case T.LIGHT_WOOD: case T.HARD_WOOD: return EDGE_WOOD;
+		case T.WOOD: case T.GOLDEN_WOOD: case T.LIGHT_WOOD: case T.HARD_WOOD: case T.RUBBER_WOOD: return EDGE_WOOD;
 		case T.LEAF: case T.AUTUMN_LEAF_ORANGE: case T.AUTUMN_LEAF_RED: return EDGE_LEAF;
 		case T.STEEL: case T.TRACK: case T.BRICK: case T.CHIMNEY: case T.GRAPHENE: return EDGE_BUILT;
 		case T.UFO_CONCRETE: return EDGE_METEOR;
@@ -9048,6 +9061,14 @@ function _drawMaterialTile(g,t,px,py,h){
 		dot(g,px,py,11+((h>>>11)&2),0,2,TILE,'rgba(30,16,7,0.30)');
 		strokePath(g,'rgba(120,74,36,0.32)',1,[[px+6,py+5],[px+11,py+7],[px+7,py+11],[px+13,py+14]]);
 		dot(g,px,py,8,8,4,3,'rgba(16,8,3,0.28)');
+	} else if(t===T.RUBBER_WOOD){
+		// Rubber wood (drops/previews): pale olive bark with the diagonal tapping
+		// cuts and a bead of milky latex — the tree reads as a worked, tapped trunk.
+		drawBlockBevel(g,px,py,'rgba(226,231,190,0.16)','rgba(58,58,38,0.26)');
+		dot(g,px,py,4+((h>>>7)&2),0,2,TILE,'rgba(96,98,70,0.26)');
+		strokePath(g,'rgba(58,58,38,0.34)',1,[[px+3,py+15],[px+9,py+9],[px+16,py+4]]);
+		strokePath(g,'rgba(246,248,232,0.44)',1,[[px+3,py+16],[px+9,py+10],[px+16,py+5]]);
+		dot(g,px,py,9,12,2,3,'rgba(248,250,238,0.60)');
 	} else if(isDoorTile(t)){
 		drawDoorTile(g,t,px,py,h,0);
 	} else if(isTrapdoorTile(t)){
@@ -10069,6 +10090,14 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 					// dense double-vein reading as tight heavy grain. Baked once per chunk.
 					if(t===T.LIGHT_WOOD){ cctx.fillStyle='rgba(255,252,235,0.30)'; cctx.fillRect(lx*TILE+5 + ((h>>5)&6), y*TILE, 1, TILE); cctx.fillStyle='rgba(150,130,90,0.16)'; cctx.fillRect(lx*TILE + ((h>>8)&4), y*TILE, 1, TILE); }
 					if(t===T.HARD_WOOD){ cctx.fillStyle='rgba(0,0,0,0.30)'; cctx.fillRect(lx*TILE + ((h>>8)&3), y*TILE, 2, TILE); cctx.fillStyle='rgba(0,0,0,0.20)'; cctx.fillRect(lx*TILE+9 + ((h>>5)&4), y*TILE, 2, TILE); }
+					// Rubber wood: a diagonal tapping cut with a pale latex bead under
+					// it — the one trunk in the family you read as HARVESTED, not sawn.
+					if(t===T.RUBBER_WOOD){ const rx0=lx*TILE, ry0=y*TILE;
+						cctx.fillStyle='rgba(96,98,70,0.24)'; cctx.fillRect(rx0 + ((h>>8)&4), ry0, 2, TILE);
+						cctx.fillStyle='rgba(246,248,232,0.34)';
+						for(let k=0;k<5;k++) cctx.fillRect(rx0+3+k*3, ry0+14-k*3, 2, 1);
+						if((h&3)===0){ cctx.fillStyle='rgba(250,252,242,0.72)'; cctx.fillRect(rx0+8+((h>>6)&4), ry0+12+((h>>10)&5), 2, 2); }
+					}
 				// Golden trunk: a magnificent gilt grain — a dark vein, a bright gilt
 				// highlight streak and an occasional sparkle. Baked once per chunk
 				// rebuild (not per frame), so the extra strokes are effectively free.
@@ -11749,8 +11778,16 @@ document.querySelectorAll('#weaponBar .wepSlot').forEach(el=>{
 	};
 });
 // Slot 4 shows WHAT it will emit, not a fixed flame: water hose 💧, gas ☠️,
-// electric beam ⚡ — the icon follows the selected stream weapon.
-const STREAM_SLOT_ICONS={flame:'🔥',hose:'💧',gas:'☠️',electric:'⚡'};
+// electric beam ⚡, bouncing rubber ball 🔴, incendiary tar ball 🟤 — the icon
+// follows the selected device. The two bouncy pistols share a weaponType, so the
+// tar one is keyed by its AMMO ('bouncyTar'); without that the player could not
+// tell which pistol slot 4 is holding.
+const STREAM_SLOT_ICONS={flame:'🔥',hose:'💧',gas:'☠️',electric:'⚡',bouncy:'🔴',bouncyTar:'🟤'};
+function streamSlotIconKey(it){
+	const wt=it && it.weaponType;
+	if(wt==='bouncy' && it.bouncyKind==='tar') return 'bouncyTar';
+	return wt;
+}
 // Status line = optional color swatch + short text (rebuilt per update; ~2 nodes)
 function setWepSub(slot,parts){
 	if(!slot.sub) return;
@@ -11859,7 +11896,7 @@ function updateWeaponBar(){
 			}else{ // throwers: fuel resource, or hero energy for the electric beam
 				const kind=preview.weaponType;
 				slot.el.dataset.streamKind=kind||'';
-				if(slot.icon) slot.icon.textContent=STREAM_SLOT_ICONS[kind]||'🔥';
+				if(slot.icon) slot.icon.textContent=STREAM_SLOT_ICONS[streamSlotIconKey(preview)]||'🔥';
 				if(kind==='electric'){
 					const en=(MM.heroEnergy && MM.heroEnergy.info)? MM.heroEnergy.info():null;
 					const cost=Math.max(1,Number(preview.energyCost)||10);
@@ -11867,6 +11904,14 @@ function updateWeaponBar(){
 						setWepSub(slot,[{dot:'#ffd24a'},Math.floor(Math.max(0,en.energy||0))+'/'+Math.round(en.max)]);
 						out= en.energy<cost*0.2; low= !out && en.energy<cost*1.5;
 					}
+				}else if(kind==='bouncy'){
+					// the pistol burns real ammo, not a fuel resource: show the ball count
+					// for the ammo THIS pistol is chambered for (plain rubber vs tar)
+					const ball=(WEAPONS && WEAPONS.bouncyInfo)? WEAPONS.bouncyInfo(preview.bouncyKind):null;
+					if(ball){
+						setWepSub(slot,[{dot:ball.color},String(ball.count)]);
+						out= ball.count<=0; low= !out && ball.count<AMMO_LOW;
+					}else setWepSub(slot,[]);
 				}else{
 					const fuel=(WEAPONS && WEAPONS.fuelInfo)? WEAPONS.fuelInfo(kind):null;
 					if(fuel){
@@ -15784,7 +15829,7 @@ function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptio
 	types.forEach(t=>{ const b=document.createElement('button'); b.textContent=t.label; const baseBg='rgba(255,255,255,.08)'; const rareBg=t.col? t.col+'33': baseBg; const border=t.col? t.col+'88':'rgba(255,255,255,.15)'; b.style.cssText='text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;'; if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8'; b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' -> '+t.label); }); hotSelectOptions.appendChild(b); });
 	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='block'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
 const HOT_SELECT_GROUPS=[
-	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','CLAY','DIRT','STONE','WOOD','LIGHT_WOOD','HARD_WOOD','LEAF','SNOW','TOXIC_SNOW','WATER']},
+	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','CLAY','DIRT','STONE','WOOD','LIGHT_WOOD','HARD_WOOD','RUBBER_WOOD','LEAF','SNOW','TOXIC_SNOW','WATER']},
 	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','TIN_ORE','GOLD_ORE','SILVER_ORE','SILVER_INGOT','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL','MOTHER_ICE','MOTHER_LAVA','GRAPHITE','GRAPHENE']},
 	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
 	{id:'home',label:'Dom i wyposażenie',tiles:['CHAIR_WOOD','CHAIR_STONE','CHAIR_STEEL','RUSTIC_STOOL','PINE_TABLE','WALL_SHELF','OAK_CABINET','COZY_BED','BOOKCASE','PATCHWORK_SOFA','HAMMOCK','WOVEN_RUG','POTTED_FERN','WALL_CLOCK','MIRROR','AQUARIUM','TERRARIUM','CHANDELIER','INDOOR_FOUNTAIN','HOLOGRAM_ART','DESK_LAMP','RADIO','TELEVISION','GAME_CONSOLE','REFRIGERATOR','COFFEE_MACHINE','AIR_PURIFIER','MEDICAL_STATION','HEALING_POD','ZERO_G_LOUNGER','MEMORY_PROJECTOR','CHRONO_CLOCK','BIOLUM_GARDEN','MINIATURE_SUN','DREAM_SYNTH','COSMIC_ORRERY']},
@@ -16589,6 +16634,7 @@ function minimapTileColor(t){
 	if(t===T.GOLDEN_WOOD) return '#e6b422';
 	if(t===T.LIGHT_WOOD) return '#d9c9a3';
 	if(t===T.HARD_WOOD) return '#5e3a1c';
+	if(t===T.RUBBER_WOOD) return '#8a8768';
 	if(t===T.AUTUMN_LEAF_RED) return '#8f5a2a';
 	if(t===T.AUTUMN_LEAF_ORANGE) return '#d7832f';
 	if(t===T.LEAF) return '#2faa2f';
@@ -18990,7 +19036,7 @@ if(MM.ui && MM.ui.injectForestDebugPanel) MM.ui.injectForestDebugPanel({
 		for(let dx=-24;dx<=24;dx++) for(let dy=-14;dy<=6;dy++){
 			const x=Math.floor(player.x)+dx, y=Math.floor(player.y)+dy;
 			const t=getTile(x,y);
-			if(t===T.WOOD||t===T.LEAF||t===T.LIGHT_WOOD||t===T.HARD_WOOD||t===T.GOLDEN_WOOD||t===T.SAPLING){ setTile(x,y,T.AIR); n++; }
+			if(t===T.WOOD||t===T.LEAF||t===T.LIGHT_WOOD||t===T.HARD_WOOD||t===T.RUBBER_WOOD||t===T.GOLDEN_WOOD||t===T.SAPLING){ setTile(x,y,T.AIR); n++; }
 		}
 		if(n) noteSaveActivity();
 		return n;

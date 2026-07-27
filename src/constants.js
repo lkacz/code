@@ -68,7 +68,12 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   SAPLING:145,
   // Piec wypałowy — a sealed brick chamber that bakes heat recipes in bulk
   // (engine/kiln.js). Solid: it is the chamber's mouth, not a doorway.
-  KILN:146
+  KILN:146,
+  // Rubber tree trunk (engine/trees.js): a pale, olive-barked forest species that
+  // fells/burns like wood (isWood below) but drops raw 'rubber' (kauczuk) instead
+  // of timber — the elastic material behind bouncing ammunition (the 'bouncy'
+  // weaponType in engine/weapons.js). Placeable like the other wood species.
+  RUBBER_WOOD:147
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -302,6 +307,11 @@ INFO[T.GOLDEN_WOOD]={hp:4,color:'#e6b422',drops:[{item:'wood',min:10,max:10}],pa
 // own boat / arrow recipes. isWood() (below) keeps them felling/burning like wood.
 INFO[T.LIGHT_WOOD]={hp:3,color:'#d9c9a3',drops:[{item:'lightWood',min:2,max:3}],passable:false,flammable:true,burnTime:52};
 INFO[T.HARD_WOOD]={hp:6,color:'#5e3a1c',drops:[{item:'hardWood',min:2,max:3}],passable:false,flammable:true,burnTime:80};
+// Rubber wood: soft, latex-rich forest trunk. Same drops:[…] contract as its two
+// siblings, but the yield is raw 'rubber' (kauczuk), not timber — you cannot
+// build with a rubber tree, you tap it for the elastic that makes bouncing ammo.
+// Latex is oily, so the burn runs hot and long for such a soft (low hp) trunk.
+INFO[T.RUBBER_WOOD]={hp:3,color:'#8a8768',drops:[{item:'rubber',min:2,max:3}],passable:false,flammable:true,burnTime:70};
 // Vine: passable green drape under mangrove canopies. Mined for 'vine' (→ 'rope').
 // Passable + flammable → routes as passable-utility (like GLOWSHROOM); burns fast.
 INFO[T.VINE]={hp:1,color:'#3f7d3a',drop:'vine',passable:true,flammable:true,burnTime:1.2};
@@ -371,7 +381,7 @@ export const isLeaf = t => t === T.LEAF || isAutumnLeaf(t);
 // felling/stability/fire/crush behavior. Systems that key off "this tile is a
 // tree trunk" must use isWood, not a bare t===T.WOOD, or golden trunks are
 // invisible to them (won't fell, won't hold the tree up, won't crush).
-export const isWood = t => t === T.WOOD || t === T.GOLDEN_WOOD || t === T.LIGHT_WOOD || t === T.HARD_WOOD;
+export const isWood = t => t === T.WOOD || t === T.GOLDEN_WOOD || t === T.LIGHT_WOOD || t === T.HARD_WOOD || t === T.RUBBER_WOOD;
 // Temperature-system tile families. Frozen earth is the permafrost variant of a
 // diggable soil; both directions of the mapping stay here so worldgen, seasons,
 // fire and reactions never invent their own pairs.

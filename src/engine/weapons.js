@@ -83,6 +83,46 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     // fireBowShot/firePowerBow guards) — it never enters the arrows array.
     {id:'grapple', key:'arrowGrapple', label:'hakowe', damage:0, speed:1, life:1, spread:0, color:'#9a7b4a', head:'#d9c48a', grapple:true}
   ];
+  // --- Bouncing rubber ammunition (weaponType 'bouncy', slot 4) ----------------
+  // The rubber-ball pistol trades damage for GEOMETRY: one shot is feeble, but the
+  // ball ricochets off walls AND off the creatures it hits, so it reaches around a
+  // corner, down a shaft, or through a whole pack. Every ricochet costs energy and
+  // bite, so a chain naturally runs out instead of pinballing forever:
+  //   - walls barely dull the ball (WALL_DAMAGE_KEEP) — that is the trick shot;
+  //   - a BODY absorbs a lot (HIT_DAMAGE_KEEP) — that is the falloff the player feels;
+  //   - the ball dies on bounce budget, on minimum speed or on its lifetime,
+  //     whichever comes first, and the rubber survives often enough to pick up.
+  // `dmg` is kept as a FLOAT through the chain (it is rounded only where damage is
+  // actually applied), otherwise integer rounding would flatten the decay curve.
+  const BOUNCY_SPEED=19;             // muzzle speed: flatter and faster than an arrow
+  const BOUNCY_GRAVITY_MULT=0.52;    // a light ball hangs; the shot reads as a line
+  const BOUNCY_LIFE=3.2;
+  const BOUNCY_MAX_BOUNCES=6;
+  const BOUNCY_WALL_RESTITUTION=0.86;
+  const BOUNCY_BODY_RESTITUTION=0.70;
+  const BOUNCY_WALL_DAMAGE_KEEP=0.92;
+  const BOUNCY_HIT_DAMAGE_KEEP=0.62;
+  const BOUNCY_MIN_SPEED=4.5;        // below this the ball has nothing left to give
+  const BOUNCY_RECOVER_CHANCE=0.5;   // "część można podnieść": half the balls survive
+  const BOUNCY_COLOR='#e0533f', BOUNCY_HIGHLIGHT='#ffbdae';
+  // A LIT tar ball is already melting, so it gets only a short tail of bounces.
+  // This is the arson budget: without it one ball could carry fire through six
+  // wall hits and light a whole forest — the exact reason the plain ball is
+  // exempt from catching fire at all.
+  const BOUNCY_BURN_BOUNCES=3;
+  // Ammunition kinds for the 'bouncy' family, keyed off the weapon's `bouncyKind`
+  // exactly like THROWN_KINDS/`thrownKind` — so a second pistol is a second entry
+  // here plus a recipe, and the slot-4 key already rotates between them.
+  //   plain — inert rubber: bounces, never burns, half of them survive to pick up
+  //   tar   — pitch-soaked rubber: does NOT burn on its own, but ANY contact with
+  //           fire (a burning tile, lava, or a creature already alight) lights it,
+  //           and a lit ball then sets flammable tiles and every creature it
+  //           touches on fire. It never comes back — it burns away.
+  const BOUNCY_KINDS={
+    plain:{key:'rubberBall',    label:'Kulki kauczukowe', color:BOUNCY_COLOR, head:BOUNCY_HIGHLIGHT},
+    tar:  {key:'rubberBallTar', label:'Kulki smołowe',    color:'#4a3a30',    head:'#a08258', flammable:true}
+  };
+  const BOUNCY_AMMO_KEY=BOUNCY_KINDS.plain.key;
   // Hand-thrown projectiles (weaponType 'thrown', rotated in the ranged slot with
   // bows). Slower and lobbier than arrows; each kind carries its own splat:
   //   snow  — white puff + a brief chill (slow) on creatures caught in it
@@ -153,7 +193,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   const flameHeatRays=[];
   const streamFuelDebt={flame:0,hose:0,gas:0};
   const warnAt=Object.create(null);
-  let bowCd=0, harpoonCd=0, meleeCd=0, bossAcc=0, ultCharge=1, electricCd=0, throwCd=0;
+  // One cooldown per weapon FAMILY: sharing a timer would mean firing the pistol
+  // silently locks the bow (and vice versa) for a player who switches mid-fight.
+  let bowCd=0, harpoonCd=0, meleeCd=0, bossAcc=0, ultCharge=1, electricCd=0, throwCd=0, bouncyCd=0;
   let heroFlameHitCd=0;
   let lastWeaponCombatFxAt=0, lastWeaponCombatFxKey='', lastWeaponCombatFxX=0, lastWeaponCombatFxY=0;
   let iridiumPierces=0;
@@ -316,7 +358,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     return extra&&typeof extra==='object'?Object.assign(meta,extra):meta;
   }
   function projectileCombatVisualMeta(a,extra){
-    const cls=a&&a.harpoon?'harpoon':a&&a.thrown?'thrown':'bow';
+    const cls=a&&a.harpoon?'harpoon':a&&a.thrown?'thrown':a&&a.bouncy?'bouncy':'bow';
     const meta={
       forceVisual:true,
       weaponMaterial:String(a&&a.weaponMaterial||''),
@@ -1225,6 +1267,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(bowCharge.active || spearCharge.active) cancelHeld();
     if(type==='harpoon') return fireHarpoon(player, aimX, aimY, w);
     if(type==='thrown') return fireThrown(player, aimX, aimY, w);
+    if(type==='bouncy') return fireBouncy(player, aimX, aimY, w);
     if(type==='electric') return fireElectric(player, aimX, aimY, w, 1);
     if(STREAMS[type]) return fireStream(player, aimX, aimY, w, dt||0.016, type);
     return fireMelee(player, aimX, aimY);
@@ -1300,6 +1343,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         return false;
       }
     }
+    if(type==='bouncy'){
+      const bspec=bouncySpec(w);
+      if(!canSpendResource(bspec.key,1)){ warnNoBouncyAmmo(bspec); return false; }
+    }
     if(STREAMS[type] && ultCharge>=0.35){
       const spec=STREAM_FUEL[type];
       const plannedCost=streamBurstFuelCost(type,Math.min(1,ultCharge));
@@ -1313,6 +1360,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(type==='bow') return firePowerBow(player, aimX, aimY, w, charge);
     if(type==='harpoon') return firePowerHarpoon(player, aimX, aimY, w, charge);
     if(type==='thrown') return firePowerThrown(player, aimX, aimY, w, charge);
+    if(type==='bouncy') return firePowerBouncy(player, aimX, aimY, w, charge);
     if(STREAMS[type]) return firePowerStream(player, aimX, aimY, w, type, charge);
     return firePowerMelee(player, aimX, aimY, w, charge);
   }
@@ -1548,6 +1596,87 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const profile=harpoonWaterProfile(w,player);
     harpoonCd=Math.max(0.24,((w&&w.fireCooldown)||0.68)*profile.cooldownMult);
     return spawnHarpoonShot(player,aimX,aimY,w,{});
+  }
+  // --- bouncy pistol ----------------------------------------------------------
+  function bouncySpec(w){
+    const id=(w && typeof w.bouncyKind==='string') ? w.bouncyKind : 'plain';
+    return BOUNCY_KINDS[id] || BOUNCY_KINDS.plain;
+  }
+  function bouncyAmmoCount(kind){
+    const spec=BOUNCY_KINDS[kind] || BOUNCY_KINDS.plain;
+    return resourceCount(spec.key);
+  }
+  function bouncyInfo(kind){
+    const id=(typeof kind==='string' && BOUNCY_KINDS[kind]) ? kind : 'plain';
+    const spec=BOUNCY_KINDS[id];
+    return {kind:id, key:spec.key, label:spec.label, color:spec.color, flammable:!!spec.flammable,
+      count:resourceCount(spec.key), bounces:BOUNCY_MAX_BOUNCES};
+  }
+  function warnNoBouncyAmmo(spec){ sayLimited('bouncy_empty_'+spec.key,'Brak: '+spec.label); }
+  function spawnBouncyBall(player,dx,dy,w,opts){
+    opts=opts||{};
+    const spec=opts.spec || bouncySpec(w);
+    const sp=BOUNCY_SPEED*(opts.speedMult||1);
+    const base=Math.max(1,(w && w.attackDamage)||3)*(opts.dmgMult||1);
+    return pushArrow({
+      x:player.x + dx*0.62,
+      y:player.y - 0.18 + dy*0.62,
+      vx:dx*sp,
+      vy:dy*sp - 0.5,
+      dmg:base,
+      life:BOUNCY_LIFE*(opts.lifeMult||1), stuck:false, stuckT:ARROW_STUCK,
+      bouncy:true, bounces:Math.max(1,Math.round(BOUNCY_MAX_BOUNCES*(opts.bounceMult||1))),
+      // `flammable` only says the ball CAN take fire — it never starts alight.
+      // Something in the world has to light it (see the ignition gate in update()).
+      flammable:!!spec.flammable, bouncyKind:spec===BOUNCY_KINDS.tar?'tar':'plain',
+      tier:'bouncy', color:spec.color, headColor:spec.head,
+      gravityMult:BOUNCY_GRAVITY_MULT, windResponse:0.5, windCap:sp*1.2,
+      power:!!opts.specialAttack, specialAttack:!!opts.specialAttack, luckyStrike:!!opts.luckyStrike,
+      weaponPrestige:weaponPrestigeRank(w), weaponGlow:weaponPrestigeColor(w), weaponMaterial:weaponMaterialProfile(w).id, mergePerk:(w&&w.mergePerk)||undefined
+    });
+  }
+  function fireBouncy(player, aimX, aimY, w){
+    if(bouncyCd>0 || !player) return false;
+    const spec=bouncySpec(w);
+    if(!spendResource(spec.key,1)){ warnNoBouncyAmmo(spec); return false; }
+    bouncyCd=Math.max(0.16,(w && w.fireCooldown)||0.28);
+    const v=aimVector(player,aimX,aimY);
+    spawnBouncyBall(player,v.dx,v.dy,w,{spec});
+    player.facing=v.dx>=0?1:-1;
+    triggerHeldActionFx('bouncy',0.9,150,false);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
+    return true;
+  }
+  // Ult: a tight burst of four balls with a longer bounce budget — a room full of
+  // ricochets rather than one bigger bullet, which is what this weapon is FOR.
+  // Tar balls in the burst leave the barrel ALREADY LIT: the ult is the one way
+  // to strike a light yourself, so the incendiary pistol is not dead weight when
+  // there is no fire in the room (same idea as obsidian arrows igniting on a full
+  // draw). A lit ball immediately takes the short burn-bounce budget.
+  function firePowerBouncy(player, aimX, aimY, w, charge){
+    const spec=bouncySpec(w);
+    const roll=specialAttackRoll();
+    const v=aimVector(player,aimX,aimY);
+    let fired=0;
+    for(let i=0;i<4;i++){
+      if(!spendResource(spec.key,1)) break;
+      const ang=(i-1.5)*0.075;
+      const ca=Math.cos(ang), sa=Math.sin(ang);
+      const ball=spawnBouncyBall(player, v.dx*ca-v.dy*sa, v.dx*sa+v.dy*ca, w,
+        {spec, speedMult:1.06+charge*0.18, dmgMult:roll.mult, bounceMult:1.5, lifeMult:1.25,
+         specialAttack:true, luckyStrike:roll.lucky && i===0});
+      // the guest path returns nothing (the HOST flies the real ball) — never
+      // assume a projectile object came back
+      if(ball && spec.flammable) igniteBouncyBall(ball);
+      fired++;
+    }
+    if(!fired){ warnNoBouncyAmmo(spec); return false; }
+    if(roll.lucky) noteLuckyStrike(player.x+v.dx*1.3,player.y-0.45+v.dy*1.3);
+    player.facing=v.dx>=0?1:-1;
+    triggerHeldActionFx('bouncy',1.5,260,false);
+    bouncyCd=Math.max(bouncyCd,0.22);
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('bow'); }catch(e){}
+    return true;
   }
   function releaseHeld(player, aimX, aimY){
     const w=equippedWeapon();
@@ -2388,8 +2517,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     else if(a.splat==='bomb') cause='sticky_bomb';
     return {
       source:a.coopOwner?'coop':'hero',
-      kind:trueSnow?'snowball':(a.harpoon?'harpoon':(thrown?'thrown':'arrow')),
-      weaponType:thrown?'thrown':(a.harpoon?'harpoon':'bow'),
+      // 'bouncy' carries no elemental keyword by design (combatElementFromOpts
+      // classifies from these strings) — a rubber ball is pure kinetic damage.
+      kind:trueSnow?'snowball':(a.harpoon?'harpoon':(a.bouncy?'bouncy':(thrown?'thrown':'arrow'))),
+      weaponType:a.bouncy?'bouncy':(thrown?'thrown':(a.harpoon?'harpoon':'bow')),
       element:trueSnow?'ice':((water||spit)?'water':(a.fire?'fire':undefined)),
       snowball:trueSnow,
       spit,
@@ -2506,6 +2637,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   }
   function arrowDamageAtRange(a){
     const base=Math.max(0.5,Number(a && a.dmg)||1);
+    // A ricochet is SUPPOSED to travel far, so distance is not what dulls a rubber
+    // ball — bounces are (bounceBallOff* already scale a.dmg). Stacking the arrow
+    // range band on top would make every bounced hit the 1-damage floor at once
+    // and erase the falloff curve the weapon is built around.
+    if(a && a.bouncy) return Math.max(1,Math.round(base));
     const mult=ARROW_DAMAGE_FALLOFF[arrowRangeBand(a)] || ARROW_DAMAGE_FALLOFF.long;
     return Math.max(1,Math.round(base*mult));
   }
@@ -2529,6 +2665,111 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     }catch(e){}
     try{ if(MM.audio && MM.audio.play) MM.audio.play('spark',{x:tx+0.5,y:ty+0.5}); }catch(e){}
     return true;
+  }
+  // --- rubber-ball ricochet ----------------------------------------------------
+  // A tile grid gives no surface normal, so the normal is RECONSTRUCTED from which
+  // axis actually crossed into the blocking cell: sample the two cells the ball
+  // could have entered through (same row / same column as where it started this
+  // substep). Flipping only the blocked axis is what makes a floor bounce read as
+  // a bounce instead of a straight rebound back at the shooter.
+  function bouncyImpactFx(a,tx,ty,strength){
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnSparks) p.spawnSparks((tx+0.5)*tile,(ty+0.5)*tile,'common',Math.max(2,Math.round(3*strength)));
+    }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('step',{x:a.x,y:a.y}); }catch(e){}
+  }
+  // A tar ball takes light. Only ever called for a `flammable` ball, and never on
+  // a coop projectile — a guest shot must stay inert to the host's world, and
+  // `fire` is what unlocks every world-touching branch below.
+  function igniteBouncyBall(a){
+    if(!a || !a.flammable || a.fire || a.coopOwner) return false;
+    a.fire=true;
+    a.bounces=Math.min(Number(a.bounces)||0, BOUNCY_BURN_BOUNCES);
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnSparks) p.spawnSparks(a.x*tile,a.y*tile,'rare',5);
+    }catch(e){}
+    try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('rubber_napalm','Smołowa kulka łapie ogień i roznosi go rykoszetem!'); }catch(e){}
+    return true;
+  }
+  // Where a LIT ball touches, flammable terrain catches. fire.ignite() is the one
+  // chokepoint and it already refuses non-flammable, wet or already-burning tiles,
+  // so stone walls stay stone and the arson stays bounded by the fire system.
+  function spreadBouncyFire(a,tx,ty,getTile,setTile){
+    if(!a || !a.fire || a.coopOwner || !FIRE) return false;
+    try{ return !!FIRE.ignite(tx,ty,getTile,setTile); }catch(e){ return false; }
+  }
+  // End of the chain: half the rubber survives as a real ground pickup, the rest
+  // is spent. Never a coop ball — a guest projectile mints no host resources.
+  // A ball that BURNED never comes back: the rubber went up with it.
+  function retireBouncyBall(a){
+    if(!a) return false;
+    let dropped=false;
+    if(!a.coopOwner && !a.fire && Math.random()<BOUNCY_RECOVER_CHANCE){
+      try{
+        if(MM.drops && typeof MM.drops.spawnResource==='function'){
+          dropped=!!MM.drops.spawnResource(a.x,a.y-0.15,BOUNCY_AMMO_KEY,1,{vx:(a.vx||0)*0.15,vy:-0.9});
+        }
+      }catch(e){ dropped=false; }
+    }
+    if(!dropped){
+      try{
+        const p=MM.particles, tile=MM.TILE||20;
+        if(p && p.spawnSparks) p.spawnSparks(a.x*tile,a.y*tile,a.fire?'rare':'common',3);
+      }catch(e){}
+    }
+    // a ball that burns out leaves its last flame where it fell
+    if(a.fire) spreadBouncyFire(a,Math.floor(a.x),Math.floor(a.y),lastGetTile,lastSetTile);
+    return dropped;
+  }
+  function bounceBallOffTile(a,tx,ty,dx,dy,getTile){
+    if(!a || !(a.bounces>0)) return false;
+    const px=a.x-dx, py=a.y-dy;
+    const prevTx=Math.floor(px), prevTy=Math.floor(py);
+    // The cell we came FROM must be free, or there is no valid place to rebound
+    // to (a ball buried by a world edit, or spawned inside geometry): retire it
+    // instead of nudging it around inside solid rock forever.
+    let trapped=false;
+    try{ trapped=isSolid(getTile(prevTx,prevTy)); }catch(e){ trapped=true; }
+    if(trapped) return false;
+    const solidAt=(x,y)=>{ try{ return isSolid(getTile(x,y)); }catch(e){ return false; } };
+    let flipX = prevTx!==tx && solidAt(tx,prevTy);
+    let flipY = prevTy!==ty && solidAt(prevTx,ty);
+    if(!flipX && !flipY){ flipX=true; flipY=true; } // clipped a corner exactly
+    a.x=px; a.y=py;
+    if(flipX) a.vx=-(a.vx||0);
+    if(flipY) a.vy=-(a.vy||0);
+    a.vx*=BOUNCY_WALL_RESTITUTION;
+    a.vy*=BOUNCY_WALL_RESTITUTION;
+    a.bounces--;
+    a.bounced=true;
+    a.dmg=Math.max(0.35,(Number(a.dmg)||1)*BOUNCY_WALL_DAMAGE_KEEP);
+    a.pierceGate=0; // a wall does not shield the next creature
+    bouncyImpactFx(a,tx,ty,1);
+    return Math.hypot(a.vx,a.vy)>=BOUNCY_MIN_SPEED;
+  }
+  // Bouncing off a BODY: the target absorbs most of the punch, so the ball kicks
+  // back along its own path (with a little lift and scatter, like a real ball off
+  // a moving mass) and must clear the body before it can register another hit.
+  function bounceBallOffBody(a){
+    if(!a || !(a.bounces>0)) return false;
+    const vx=Number(a.vx)||0, vy=Number(a.vy)||0;
+    const speed=Math.hypot(vx,vy)||1;
+    // Scatter kept SMALL on purpose. A body is round, so some deflection is
+    // honest — but at ±16° the rebound missed a target six tiles away more often
+    // than it hit, which turns a planned ricochet into a dice roll. ±9° plus a
+    // gentle lift keeps the chain readable while still looking like a bounce.
+    const scatter=(Math.random()-0.5)*0.30;
+    const ang=Math.atan2(-vy,-vx)+scatter;
+    const out=speed*BOUNCY_BODY_RESTITUTION;
+    a.vx=Math.cos(ang)*out;
+    a.vy=Math.sin(ang)*out - 1.1; // balls kick UP off a body
+    a.bounces--;
+    a.bounced=true;
+    a.dmg=Math.max(0.35,(Number(a.dmg)||1)*BOUNCY_HIT_DAMAGE_KEEP);
+    a.pierceGate=(Number(a.travel)||0)+0.9;
+    return Math.hypot(a.vx,a.vy)>=BOUNCY_MIN_SPEED;
   }
   function tileKey(x,y){ return x+','+y; }
   function noteStoneHeat(tx,ty,touched){
@@ -2750,6 +2991,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(meleeCd>0) meleeCd-=dt;
     if(electricCd>0) electricCd-=dt;
     if(throwCd>0) throwCd-=dt;
+    if(bouncyCd>0) bouncyCd-=dt;
     if(swing.t>0) swing.t-=dt;
     for(let i=coopSwings.length-1;i>=0;i--){ coopSwings[i].t-=dt; if(coopSwings[i].t<=0) coopSwings.splice(i,1); }
     if(explodeCd>0) explodeCd-=dt;
@@ -2805,6 +3047,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       a.inWater=false;
       a.life-=dt;
       if(a.life<=0){
+        // A spent rubber ball is not a broken shaft: it settles, and often stays
+        // as a pickup (retireBouncyBall owns that roll for every exit path).
+        if(a.bouncy){ retireBouncyBall(a); arrows.splice(i,1); continue; }
         if(!beginArrowExpiryFall(a)) arrows.splice(i,1);
         continue;
       }
@@ -2832,7 +3077,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         // an arrow flying through open flame or over lava catches fire — but never a
         // coop (guest) arrow: a fire arrow ignites terrain on impact, and a guest
         // projectile must stay inert to the world (it may still wound creatures)
-        if(!a.fire && !a.coopOwner && ((FIRE && FIRE.isBurning(tx,ty)) || getTile(tx,ty)===T.LAVA)) a.fire=true;
+        // A PLAIN rubber ball is deliberately EXEMPT: a ricochet that can carry
+        // fire through six wall bounces would set half a forest alight for one
+        // ball. A TAR ball is the opposite — taking light from the world is the
+        // whole weapon — but igniting cuts its bounce budget right down, which is
+        // what keeps the same arson bounded (igniteBouncyBall owns that clamp).
+        if(!a.fire && !a.coopOwner && ((FIRE && FIRE.isBurning(tx,ty)) || getTile(tx,ty)===T.LAVA)){
+          if(!a.bouncy) a.fire=true;
+          else if(a.flammable) igniteBouncyBall(a);
+        }
         // Sand needs contact detection without ever entering a target's damage
         // handler (many of those deliberately clamp even zero to chip damage).
         // Its status splat is the entire effect.
@@ -2902,6 +3155,14 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           continue;
         }
         if(roamingBossResult==='blocked'){
+          if(a.bouncy){
+            // Armour plate is a wall to a rubber ball: bounce off it instead of
+            // sticking, so the shot keeps its identity against a boss too.
+            if(bounceBallOffTile(a,tx,ty,dx,dy,getTile)) break;
+            retireBouncyBall(a);
+            arrows.splice(i,1);
+            break;
+          }
           if(a.stickyFuse){
             a.x-=a.vx*sdt*0.4; a.y-=a.vy*sdt*0.4;
             a.stuck=true; a.stuckT=a.stickyFuse;
@@ -2931,6 +3192,28 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           if(a.stagger && MM.mobs && MM.mobs.chillAt) MM.mobs.chillAt(tx,ty,{dur:a.stagger,source:a.coopOwner?'coop':'hero',cause:'stagger'}); // stone arrows stop the target in its tracks
           if(a.splat) splatProjectile(a,getTile,setTile);
           if(!a.coopOwner) addUltCharge(0.08); // only the hero's own shots feed the hero's ult
+          // Rubber ball: rebound off the body it just hit and go looking for the
+          // next one. This is the whole weapon — one shot, several victims, each
+          // taking less than the last (bounceBallOffBody owns both curves).
+          if(a.bouncy){
+            // A creature that is ALREADY BURNING is a light source like any other:
+            // set one enemy alight with anything, then carry that fire through the
+            // rest of the pack on the rebound. hitMob is already resolved here, so
+            // this costs no extra scan.
+            if(a.flammable && !a.fire && hitMob && MM.mobs && MM.mobs.hasStatus && MM.mobs.hasStatus(hitMob,'burn')){
+              igniteBouncyBall(a);
+            }
+            a.bodyHits=(Number(a.bodyHits)||0)+1;
+            // the journal entry fires on the SECOND victim: one hit is a shot,
+            // two from one ball is the trick the weapon exists for
+            if(a.bodyHits===2 && !a.coopOwner){
+              try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('rubber_ricochet','Kulka odbiła się od wroga prosto w następnego!'); }catch(e){}
+            }
+            if(bounceBallOffBody(a)) continue;
+            retireBouncyBall(a);
+            arrows.splice(i,1);
+            break;
+          }
           if(breakArrowOnImpact(a,'creature')){
             arrows.splice(i,1);
             break;
@@ -2957,13 +3240,19 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         if(!a.spent && !a.coopOwner && openChestFromWeaponHit(a.x,a.y,chestProjectileOpts)){
           noteWeaponCombatHit(a.x,a.y,0,{source:'hero',kind:chestProjectileOpts.kind},projectileCombatVisualMeta(a,{target:'chest',power:0.72}));
           if(a.splat) splatProjectile(a,getTile,setTile);
-          if(arrowResourceKey(a)){
+          if(a.bouncy){
+            retireBouncyBall(a);
+            arrows.splice(i,1);
+          } else if(arrowResourceKey(a)){
             if(breakArrowOnImpact(a,'chest')) arrows.splice(i,1);
             else stickArrowForRecovery(a,sdt);
           } else arrows.splice(i,1);
           break;
         }
-        if(!a.noDamage && !a.spent && !a.coopOwner && t===T.GLASS && shatterGlassAt(tx,ty,setTile,getTile)){
+        // A soft ball does NOT shatter glass — it bounces off it (the pane is
+        // solid, so the ricochet branch below owns it). Skipping this branch is
+        // also what keeps the ball out of the shaft-fragment exit path.
+        if(!a.bouncy && !a.noDamage && !a.spent && !a.coopOwner && t===T.GLASS && shatterGlassAt(tx,ty,setTile,getTile)){
           noteWeaponCombatHit(a.x,a.y,0,{source:'hero',kind:a.harpoon?'harpoon':'arrow'},projectileCombatVisualMeta(a,{target:'terrain',targetMaterial:'glass',power:0.9}));
           if(arrowResourceKey(a)){
             if(breakArrowOnImpact(a,'glass')){ arrows.splice(i,1); break; }
@@ -2976,6 +3265,17 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           if(!a.spent && tryIridiumPierceBlock(a,tx,ty,t,getTile,setTile)){
             if(a.fire && FIRE) FIRE.ignite(tx,ty,getTile,setTile);
             continue;
+          }
+          // rubber balls ricochet off the wall and keep hunting; when the bounce
+          // budget or the speed runs out they settle (and half of them stay).
+          // A LIT tar ball leaves fire on every surface it kisses — that, plus the
+          // creature ignition below, is the whole point of the incendiary variant.
+          if(a.bouncy){
+            spreadBouncyFire(a,tx,ty,getTile,setTile);
+            if(bounceBallOffTile(a,tx,ty,dx,dy,getTile)) continue;
+            retireBouncyBall(a);
+            arrows.splice(i,1);
+            break;
           }
           // sticky bombs cling to the wall and detonate after their fuse
           if(a.stickyFuse){
@@ -3306,6 +3606,40 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           ctx.closePath(); ctx.fill();
           ctx.fillStyle=a.headColor||'#c9ced6';
           ctx.fillRect(-TILE*0.06,-TILE*0.10,TILE*0.10,TILE*0.08);
+          ctx.restore();
+          continue;
+        }
+        if(a.bouncy){
+          // Rubber ball: a squash-and-stretch sphere. It elongates ALONG its own
+          // velocity, so a fast shot reads as a streak and a spent one as a bead —
+          // the visual is the remaining energy, which is also the remaining threat.
+          const px=a.x*TILE, py=a.y*TILE;
+          const vx=a.vx||0, vy=a.vy||0;
+          const speed=Math.hypot(vx,vy);
+          const stretch=1+Math.min(0.55,speed/BOUNCY_SPEED*0.45);
+          const r=TILE*0.155*(0.72+Math.min(1,(Number(a.bounces)||0)/BOUNCY_MAX_BOUNCES)*0.28);
+          ctx.save();
+          ctx.translate(px,py);
+          if(speed>0.2) ctx.rotate(Math.atan2(vy,vx));
+          ctx.fillStyle='rgba(224,83,63,0.22)';
+          ctx.beginPath(); ctx.ellipse(-r*stretch*0.8,0,r*stretch*0.9,r*0.7,0,0,Math.PI*2); ctx.fill();
+          ctx.fillStyle=a.color||BOUNCY_COLOR;
+          ctx.beginPath(); ctx.ellipse(0,0,r*stretch,r,0,0,Math.PI*2); ctx.fill();
+          ctx.fillStyle=a.headColor||BOUNCY_HIGHLIGHT;
+          ctx.beginPath(); ctx.ellipse(-r*0.22,-r*0.32,r*0.34,r*0.28,0,0,Math.PI*2); ctx.fill();
+          if(a.fire){
+            // Burning tar: a hot core plus a flame trailing BEHIND the ball, so a
+            // fast ricochet reads as a streak of fire instead of a red dot. The
+            // trail sits on the tail side because the shape is already rotated
+            // into the direction of travel.
+            const fl=Math.sin(nowMs()*0.03 + a.x)*0.5+0.5;
+            ctx.globalCompositeOperation='lighter';
+            ctx.fillStyle='rgba(255,150,50,'+(0.42+0.26*fl).toFixed(3)+')';
+            ctx.beginPath(); ctx.ellipse(-r*stretch*0.95,0,r*(1.15+fl*0.45),r*0.8,0,0,Math.PI*2); ctx.fill();
+            ctx.fillStyle='rgba(255,236,164,'+(0.55+0.28*fl).toFixed(3)+')';
+            ctx.beginPath(); ctx.arc(0,0,r*(0.52+fl*0.16),0,Math.PI*2); ctx.fill();
+            ctx.globalCompositeOperation='source-over';
+          }
           ctx.restore();
           continue;
         }
@@ -3715,6 +4049,12 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     }else if(kind==='thrown'){
       ctx.beginPath(); ctx.arc(facing*3*s,-6*s,(5+power*2)*s,facing>0?-2.5:-0.65,facing>0?-0.5:-2.65); ctx.stroke();
       ctx.beginPath(); ctx.arc(facing*9*s,-8*s,1.5*s,0,Math.PI*2); ctx.fill();
+    }else if(kind==='bouncy'){
+      // a short compressed-air pop, not a flame: one ring plus the leaving ball
+      ctx.strokeStyle=BOUNCY_HIGHLIGHT; ctx.fillStyle=BOUNCY_COLOR;
+      ctx.beginPath(); ctx.arc(muzzle,-2.6*s,(2.2+power*1.4)*s,0,Math.PI*2); ctx.stroke();
+      ctx.globalAlpha*=0.85;
+      ctx.beginPath(); ctx.arc(muzzle+facing*(4+power*2.5)*s,-2.6*s,1.5*s,0,Math.PI*2); ctx.fill();
     }
     ctx.restore();
     drawHeldAquaticFx(ctx,TILE,it,facing,player);
@@ -3922,7 +4262,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     } else {
       // stream device: body + nozzle tinted by class, with a faint idle wisp
       drawHeldPrestigeBack(ctx,TILE,it,facing);
-      const tint= type==='flame'? '#b35324' : type==='hose'? '#2c7ef8' : type==='electric'? '#53e9ff' : '#4d9230';
+      const tint= type==='flame'? '#b35324' : type==='hose'? '#2c7ef8' : type==='electric'? '#53e9ff' : type==='bouncy'? BOUNCY_COLOR : '#4d9230';
       const prestige=weaponPrestigeRank(it);
       ctx.fillStyle=material.dark; ctx.fillRect(facing===1?-2:-4.5, -4, 6.5, 3);
       ctx.fillStyle=col||tint; ctx.fillRect(facing===1?4.5:-6.5, -3.7, 2.2, 2.4);
@@ -3939,6 +4279,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       }else if(type==='electric'){
         ctx.strokeStyle='#8ffaff'; ctx.lineWidth=1;
         for(let i=0;i<3;i++){ const x=(facing===1?0.4+i*1.7:-0.4-i*1.7); ctx.beginPath(); ctx.arc(x,-2.5,1.1,0,Math.PI*2); ctx.stroke(); }
+      }else if(type==='bouncy'){
+        // a stubby pistol: short slide, a drum of balls under the barrel tinted
+        // by the ammo it is loaded with (red rubber vs black tar)
+        const bspec=bouncySpec(it);
+        ctx.fillStyle=material.body; ctx.fillRect(facing===1?-1:-5.5, -3.2, 6.5, 1.6);
+        ctx.fillStyle=bspec.color;
+        ctx.beginPath(); ctx.arc(facing===1?-2.4:2.4,-1.2,1.5,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=bspec.head;
+        ctx.beginPath(); ctx.arc(facing===1?-2.8:2.0,-1.7,0.55,0,Math.PI*2); ctx.fill();
       }
       if(prestige>=3){
         ctx.fillStyle=prestige===4?'#ffffff':(col||tint);
@@ -4013,7 +4362,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       dir:spearCharge.dir<0?-1:1
     };
   }
-  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; swing.form='sword'; swing.charge=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; resetBowCharge(); resetSpearCharge(); }
+  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bouncyCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; swing.form='sword'; swing.charge=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; resetBowCharge(); resetSpearCharge(); }
 
   // --- ghost mirror: the hero's weapons, seen from the cheap seats ------------
   // A watcher runs the full renderer but no simulation, so its weapons module
@@ -4023,7 +4372,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   // read-only), and the watcher integrates it locally between packets so arrows
   // keep flying smoothly instead of teleporting once per network tick.
   const GHOST_FX_CAP={arrows:24, puffs:80, beams:8, blasts:8};
-  const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8, FX_SAND=16, FX_SPIT=32, FX_TOXIC_SPIT=64, FX_HARPOON=128, FX_AQUATIC=256;
+  const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8, FX_SAND=16, FX_SPIT=32, FX_TOXIC_SPIT=64, FX_HARPOON=128, FX_AQUATIC=256, FX_BOUNCY=512;
   // --- co-op guest combat: body-attributed swings and arrows -----------------------
   // Embodied multiplayer guests fight through the SAME damage chains and the SAME
   // projectile array as the hero, but attributed 'coop': no host ult charge, no
@@ -4088,7 +4437,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       vx, vy,
       dmg:Math.max(1,Math.min(45,Math.round(Number(spec.dmg)||1))),
       life:ARROW_LIFE*0.85, stuck:false, stuckT:ARROW_STUCK,
-      tier:'wood', color:'#caa472', headColor:'#dfe6f1',
+      tier:spec.bouncy?'bouncy':'wood',
+      color:spec.bouncy?BOUNCY_COLOR:'#caa472', headColor:spec.bouncy?BOUNCY_HIGHLIGHT:'#dfe6f1',
       recoverable:false, coopOwner:true, windCap:cap*1.35,
       // A coop (guest) projectile is INERT to the world by contract: it may wound
       // creatures but must never edit terrain, ignite the world, spawn/detonate gas or
@@ -4101,6 +4451,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       // and crops stay unchanged.
       snowball:!!spec.snowball, rock:!!spec.rock, thrown:!!spec.thrown, harpoon:!!spec.harpoon,
       stickyFuse:spec.sticky?2.5:0, // the fuse length is the HOST's, the guest only names the kind
+      // A guest may only NAME a rubber ball; the bounce budget, restitution and
+      // falloff are the host's own constants — never numbers off the wire.
+      bouncy:!!spec.bouncy, bounces:spec.bouncy?BOUNCY_MAX_BOUNCES:0,
+      gravityMult:spec.bouncy?BOUNCY_GRAVITY_MULT:1,
       splat:(spec.splat==='wet')?'wet':undefined, // burst kind only — radii/durations are the handlers' own
       // duel identity, HOST-stamped: consent is re-verified at impact time
       ownerGid:coopGid(spec.ownerGid),
@@ -4122,7 +4476,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(arrows.length) st.ar=arrows.slice(-GHOST_FX_CAP.arrows).map(a=>[
       +a.x.toFixed(2), +a.y.toFixed(2), +(a.vx||0).toFixed(2), +(a.vy||0).toFixed(2),
       (a.stuck?FX_STUCK:0)|(a.power?FX_POWER:0)|(a.rock?FX_ROCK:0)|(a.snowball?FX_SNOW:0)|
-      (a.sandSpray?FX_SAND:0)|(a.spitDroplet?FX_SPIT:0)|(a.toxicSpit?FX_TOXIC_SPIT:0)|(a.harpoon?FX_HARPOON:0)|(a.aquatic?FX_AQUATIC:0),
+      (a.sandSpray?FX_SAND:0)|(a.spitDroplet?FX_SPIT:0)|(a.toxicSpit?FX_TOXIC_SPIT:0)|(a.harpoon?FX_HARPOON:0)|(a.aquatic?FX_AQUATIC:0)|(a.bouncy?FX_BOUNCY:0),
       +(a.ang||0).toFixed(3), a.color||'', a.headColor||'', (Number(a.sandSeed)>>>0)||0,
       Math.max(0,Math.min(4,Number(a.weaponPrestige)||0)), a.weaponGlow||'', a.weaponMaterial||''
     ]);
@@ -4182,7 +4536,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         sandSeed:(num(a[8])>>>0)||1,
         weaponPrestige:Math.max(0,Math.min(4,num(a[9]))), weaponGlow:typeof a[10]==='string'?a[10].slice(0,24):'',
         weaponMaterial:typeof a[11]==='string'?a[11].slice(0,16):'', aquatic:!!(f&FX_AQUATIC),
-        gravityMult:(f&FX_HARPOON)?0.12:1,
+        bouncy:!!(f&FX_BOUNCY), bounces:(f&FX_BOUNCY)?BOUNCY_MAX_BOUNCES:0,
+        gravityMult:(f&FX_HARPOON)?0.12:((f&FX_BOUNCY)?BOUNCY_GRAVITY_MULT:1),
         life:9, stuckT:9, travel:0, maxTravel:1e9, ghost:true});
     }
     puffs.length=0;
@@ -4237,9 +4592,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,drawWorldLight,drawHeroReflection,lightSource:weaponLightSource,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
     coopMeleeAt,spawnCoopArrow,spawnHeroProjectile,
     ghostFxState,ghostApplyFx,ghostStepFx,
-    arrowInfo,setArrowPref,fuelInfo,thrownInfo,stoneInfo,hudStatus,addUltCharge,
-    metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowResourceKey,dropSurvivingArrow,spawnDroppedArrowPickup,splatProjectile,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,projectileImpactOpts,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern}};
+    arrowInfo,setArrowPref,fuelInfo,thrownInfo,stoneInfo,bouncyInfo,hudStatus,addUltCharge,
+    metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),bouncyAmmo:bouncyAmmoCount(),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
+    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowResourceKey,dropSurvivingArrow,spawnDroppedArrowPickup,splatProjectile,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,projectileImpactOpts,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern,
+      spawnBouncyBall,bounceBallOffTile,bounceBallOffBody,retireBouncyBall,bouncyAmmoCount,
+      bouncySpec,igniteBouncyBall,spreadBouncyFire,bouncyKinds:BOUNCY_KINDS,bouncyBurnBounces:BOUNCY_BURN_BOUNCES,
+      bouncyTuning:{speed:BOUNCY_SPEED,gravityMult:BOUNCY_GRAVITY_MULT,life:BOUNCY_LIFE,maxBounces:BOUNCY_MAX_BOUNCES,
+        wallRestitution:BOUNCY_WALL_RESTITUTION,bodyRestitution:BOUNCY_BODY_RESTITUTION,
+        wallDamageKeep:BOUNCY_WALL_DAMAGE_KEEP,hitDamageKeep:BOUNCY_HIT_DAMAGE_KEEP,
+        minSpeed:BOUNCY_MIN_SPEED,recoverChance:BOUNCY_RECOVER_CHANCE,ammoKey:BOUNCY_AMMO_KEY}}};
 })();
 // ESM export (progressive migration)
 export const weapons = (typeof window!=='undefined' && window.MM) ? window.MM.weapons : undefined;

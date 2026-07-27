@@ -427,6 +427,9 @@ const ghostClient = (function(){
 				vx: +(Number(a.vx) || 0).toFixed(2), vy: +(Number(a.vy) || 0).toFixed(2),
 				n: Math.max(1, Math.min(45, Math.round(Number(a.dmg) || 1))),
 				f2: a.fire ? 1 : 0, sb: a.snowball ? 1 : 0, rk: a.rock ? 1 : 0, th: a.thrown ? 1 : 0, hp2: a.harpoon ? 1 : 0, sk: a.stickyFuse ? 1 : 0,
+				// 'bo' only NAMES the shot as a rubber ball — the bounce budget,
+				// restitution and damage falloff are all the host resolver's.
+				bo: a.bouncy ? 1 : 0,
 				sp: (a.splat === 'wet' || a.splat === 'gascloud') ? a.splat : 0 });
 			return true;
 		},
