@@ -1248,6 +1248,11 @@ assert.ok(!/Math\.random/.test(reliefBody), 'relief is hash-anchored — a bake 
 assert.ok(!/frameMs|stressed|critical/.test(reliefBody), 'relief never reads the frame clock');
 assert.match(reliefBody, /if\(fam===EDGE_BUILT\)\{/, 'constructed blocks get the per-tile bevel frame (mortar joints)');
 assert.match(reliefBody, /g\.fillRect\(bx\+1,by\+1,bw,1\);/, 'every bump is an emboss PAIR — the shadow sits one px down-right of the highlight, consistent with the top-left key light');
+// The wood branch has its own shadow shape (a column, not a row) — the pin
+// above does not reach it, and deleting the wood shadow line would ship a
+// bare highlight with no key-light consistency while the suite stayed green
+// (adversarial review, verified by execution).
+assert.match(reliefBody, /g\.fillRect\(bx\+1,by\+1,1,bh\);/, 'wood grain is an emboss pair too — its shadow column rides one px down-right of the ridge');
 // The three defects the diff review flagged and arithmetic confirmed, pinned:
 // the wood grain must clamp so its shadow row ends inside the tile (unclamped
 // it floated 2 px below overhangs), both emboss halves scale with sun (shadow

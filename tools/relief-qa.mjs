@@ -63,7 +63,7 @@ const STAGE = `(async()=>{
 	// frost family is represented by MOTHER_ICE. The tutorial NPC idles around
 	// x=0, out of reach of the +30 offset.
 	const start=Math.round(player.x)+30;
-	const mats=[3,54,2,72,5,67];   // stone, dirt, sand, MOTHER_ICE, wood, brick
+	const mats=[3,54,2,72,5,67,71];   // stone, dirt, sand, MOTHER_ICE, wood, brick, UFO_CONCRETE (meteor family)
 	const SPAN=mats.length*5-2;
 	let site=null;
 	for(let d=0; d<600 && site===null; d++){
@@ -127,7 +127,7 @@ const STAGE = `(async()=>{
 const RECTS = (g) => `(()=>{
 	if(typeof window.__mmWorldToScreen!=='function') return 'FAIL no-seam';
 	const rects=[];
-	for(let b=0;b<6;b++){
+	for(let b=0;b<7;b++){
 		const tl=window.__mmWorldToScreen(${g.wallX0}+b*5, ${g.topY});
 		const br=window.__mmWorldToScreen(${g.wallX0}+b*5+4, ${g.botY}+1);
 		// bottom inset 8px: the surface tile UNDER each block is turf whose live
@@ -162,7 +162,7 @@ const PIN = (g) => `(()=>{
 	// drifts on the block tops, and a drift above a block flips its oU bake.
 	// Re-assert the staged tiles and the air above them so every shot bakes
 	// from the same world.
-	const W=MM.world, mats=[3,54,2,72,5,67];
+	const W=MM.world, mats=[3,54,2,72,5,67,71];
 	for(let b=0;b<mats.length;b++){
 		const x0=${g.wallX0}+b*5;
 		for(let dx=0;dx<4;dx++){
@@ -299,27 +299,30 @@ async function main(){
 					}
 				}
 				const mA=sumA.map(v=>v/Math.max(1,n)), mB=sumB.map(v=>v/Math.max(1,n));
+				// ONE pass: mean-corrected diff (the cancellation above is only real
+				// if it is actually SUBTRACTED here — an earlier revision computed
+				// the means and then compared raw absolutes, dead code an
+				// adversarial review caught), per-BLOCK counts (an aggregate would
+				// let four of six families go dark and still pass), and the bbox.
 				let changed=0, total=0, maxd=0;
+				let bx0=1e9,by0=1e9,bx1=-1,by1=-1;
+				const perBlock=[];
 				for(const rc of rects){
+					let bc=0, bt=0;
 					for(let y=Math.max(0,rc.y); y<Math.min(h,rc.y+rc.h); y++){
 						for(let x=Math.max(0,rc.x); x<Math.min(w,rc.x+rc.w); x++){
 							const i=(y*w+x)*4;
-							const d=Math.abs(da[i]-db[i])+Math.abs(da[i+1]-db[i+1])+Math.abs(da[i+2]-db[i+2]);
-							total++;
-							if(d>18) changed++;
+							let d=0;
+							for(let c=0;c<3;c++) d+=Math.abs((da[i+c]-mA[c])-(db[i+c]-mB[c]));
+							bt++;
+							if(d>18){ bc++; if(x<bx0)bx0=x; if(x>bx1)bx1=x; if(y<by0)by0=y; if(y>by1)by1=y; }
 							if(d>maxd) maxd=d;
 						}
 					}
+					perBlock.push(+(bc/Math.max(1,bt)).toFixed(4));
+					changed+=bc; total+=bt;
 				}
-				let bx0=1e9,by0=1e9,bx1=-1,by1=-1;
-				for(const rc of rects){
-					for(let y=Math.max(0,rc.y); y<Math.min(h,rc.y+rc.h); y++) for(let x=Math.max(0,rc.x); x<Math.min(w,rc.x+rc.w); x++){
-						const i=(y*w+x)*4;
-						const d=Math.abs(da[i]-db[i])+Math.abs(da[i+1]-db[i+1])+Math.abs(da[i+2]-db[i+2]);
-						if(d>18){ if(x<bx0)bx0=x; if(x>bx1)bx1=x; if(y<by0)by0=y; if(y>by1)by1=y; }
-					}
-				}
-				return JSON.stringify({changed, total, maxd, box:[bx0,by0,bx1,by1]});
+				return JSON.stringify({changed, total, maxd, perBlock, box:[bx0,by0,bx1,by1]});
 			})()` });
 			return JSON.parse(r.result.value);
 		};
@@ -337,6 +340,18 @@ async function main(){
 		await sleep(300);
 		await guardCamera();
 		const shotOn = await shoot();
+		// Relief-bake DETERMINISM needs the relief bake photographed TWICE: the
+		// revert comparison below only compares two STANDARD bakes, in which
+		// drawTerrainRelief never ran (adversarial review). Toggle off and on
+		// again — two full cache drops apart — and demand the same pixels.
+		await run('cycleOff', TOGGLE(false));
+		await sleep(900);
+		await run('cycleOn', TOGGLE(true));
+		await sleep(2200);
+		await run('pin', PIN(g));
+		await sleep(300);
+		await guardCamera();
+		const shotOn2 = await shoot();
 		const t0 = await run('toggleOff', TOGGLE(false));
 		if (!t0.startsWith('OK ') || JSON.parse(t0.slice(3)).config) { failed = true; console.error('FAIL  the panel checkbox did not disable relief'); }
 		await sleep(2200);
@@ -361,15 +376,22 @@ async function main(){
 
 		const dOn = await diffInPage(shotOff, shotOn);
 		const dRevert = await diffInPage(shotOff, shotOff2);
-		console.log('diff on:', JSON.stringify(dOn), ' revert:', JSON.stringify(dRevert));
+		const dRebake = await diffInPage(shotOn, shotOn2);
+		console.log('diff on:', JSON.stringify(dOn), ' revert:', JSON.stringify(dRevert), ' rebake:', JSON.stringify(dRebake));
 		const checks = [
-			// the blocks span ~6x(76x156) px; the bumps and bevels must touch a
-			// real fraction of them or the effect is a rounding error, not a
-			// feature (the repo has measured a "delta>0" that no eye could see)
+			// aggregate first — then EVERY family on its own block, because an
+			// aggregate would let four of seven families go dark and still pass
+			// (adversarial review): a deleted RELIEF_HI entry silently returns.
 			['relief visibly changes the baked blocks (>2% of their pixels)', dOn.changed > dOn.total * 0.02],
-			// and the revert must actually revert: proves the gate, the cache
-			// drop AND bake determinism in one comparison
-			['toggling off restores the standard bake (<0.2% residue)', dRevert.changed < dOn.total * 0.002]
+			...dOn.perBlock.map((frac, i) => [
+				`family #${i} (${['rock', 'earth', 'sand', 'frost', 'wood', 'built', 'meteor'][i]}) shows relief on its own block (>1% of it)`, frac > 0.01
+			]),
+			// the revert must actually revert: the gate and the cache drop
+			['toggling off restores the standard bake (<0.2% residue)', dRevert.changed < dOn.total * 0.002],
+			// and the relief bake itself must be deterministic: two full cache
+			// drops apart, the SAME relief pixels (the revert pair above only
+			// ever compared two standard bakes)
+			['re-baking relief reproduces it exactly (<0.2% residue)', dRebake.changed < dOn.total * 0.002]
 		];
 		for (const [name, ok] of checks){ console.log((ok ? 'PASS  ' : 'FAIL  ') + name); if (!ok) failed = true; }
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 3).join('\n---\n'));
