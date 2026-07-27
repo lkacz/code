@@ -52,8 +52,17 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
   const CFG = {
     HOT_RX: 72,            // superset of every legacy per-module ACTIVE window
     HOT_RY: 46,
-    WAKE_MIN_LAG: 1.5,     // below this a normal dt step covers the gap
+    // Noise guard only. A continuously-hot machine's lag is EXACTLY zero (its
+    // stamp is the same float that becomes prevNow), so anything above this is
+    // real missed time and must be credited. The first version used 1.5 s here
+    // and an audit proved by execution that a 0.4 s frame hitch and a 1 s
+    // window-edge flicker were both silently forfeited — endFrame re-stamps
+    // whether or not wakeDt paid the debt out.
+    WAKE_MIN_LAG: 0.05,
     WAKE_MAX_DEFAULT: 900, // modules pass their own cap; this is the fallback
+    // Snapshot ages clamp here: every module wake cap is ≤3600 s, so beyond
+    // twice that all debts look identical — no reason to serialize huge floats.
+    SNAPSHOT_AGE_CAP: 7200,
     STAMP_CAP: 20000,
     MAX_WINDOWS: 16        // host + MAX_GHOSTS embodied guests, with slack
   };
@@ -146,10 +155,15 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
     return Math.max(0, prevNow - s);
   }
   // The one-call module seam. null = frozen (skip the machine entirely).
+  // One region key serves both the hot check and the stamp lookup — this runs
+  // once per hot machine per frame, so the second string concat isHot+
+  // staleSeconds would have paid was pure waste.
   function wakeDt(dt, x, y, wakeCap){
     if(!tracking) return dt;
-    if(!isHot(x, y)){ metricsState.frozenSkips++; return null; }
-    const lag = staleSeconds(x, y);
+    const k = rKey(colOf(x), secOf(y));
+    if(!hotRegions.has(k)){ metricsState.frozenSkips++; return null; }
+    const s = stamps.get(k);
+    const lag = (s === undefined) ? 0 : (prevNow - s);
     if(lag <= CFG.WAKE_MIN_LAG) return dt;
     metricsState.wakes++;
     const cap = (Number.isFinite(wakeCap) && wakeCap > 0) ? wakeCap : CFG.WAKE_MAX_DEFAULT;
@@ -157,13 +171,18 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
   }
 
   // ---------------------------------------------------------------- state
+  // Region keys are two signed integers — anything else in a restored snapshot
+  // is noise and must not occupy capped map slots.
+  const REGION_KEY_RE = /^-?\d{1,7},-?\d{1,3}$/;
   function snapshot(){
     // Ages, not absolute stamps: they stay meaningful if the clock is ever
-    // rebased, and they compress well (most regions share similar ages).
+    // rebased, they compress well (most regions share similar ages), and they
+    // clamp at SNAPSHOT_AGE_CAP — past every module's wake cap all debts are
+    // equal, so week-old floats would only bloat the manifest.
     const list = [];
     for(const [k, s] of stamps){
       if(list.length >= CFG.STAMP_CAP) break;
-      list.push([k, +(Math.max(0, now - s)).toFixed(1)]);
+      list.push([k, +(Math.min(CFG.SNAPSHOT_AGE_CAP, Math.max(0, now - s))).toFixed(1)]);
     }
     return { v: 1, now: +now.toFixed(2), stamps: list };
   }
@@ -176,10 +195,10 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
     if(Array.isArray(data.stamps)){
       for(const row of data.stamps){
         if(stamps.size >= CFG.STAMP_CAP) break;
-        if(!Array.isArray(row) || typeof row[0] !== 'string' || row[0].length > 24) continue;
+        if(!Array.isArray(row) || typeof row[0] !== 'string' || !REGION_KEY_RE.test(row[0])) continue;
         const age = Number(row[1]);
         if(!Number.isFinite(age) || age < 0) continue;
-        stamps.set(row[0], now - age);
+        stamps.set(row[0], now - Math.min(CFG.SNAPSHOT_AGE_CAP, age));
       }
     }
     return true;

@@ -91,6 +91,35 @@ assert.ok(S && S.beginFrame && S.wakeDt, 'world sim module exports its frame/gat
   S.endFrame();
 }
 
+// ----------------------------------------------- small debts are still debts
+// Proven forfeited by an audit before the fix: WAKE_MIN_LAG was 1.5 s, and
+// endFrame re-stamps whether or not wakeDt paid out — so a 0.4 s frame hitch
+// (GC, a heavy decode) and a 1 s window-edge flicker both silently lost their
+// production. The threshold is a float-noise guard, nothing more: for a
+// continuously-hot machine the lag is EXACTLY zero (its stamp is the same
+// float that becomes prevNow), so anything above epsilon is real missed time.
+{
+  S.reset();
+  assert.ok(S.CFG.WAKE_MIN_LAG <= 0.1, 'the wake threshold is a noise guard, not a forfeiture window (' + S.CFG.WAKE_MIN_LAG + ')');
+  const hero = {x: 0, y: 0};
+  const frame = (dt) => { S.beginFrame(dt, hero, null); const s = S.wakeDt(dt, 0, 0, 900); S.endFrame(); return s; };
+  frame(0.016); frame(0.016);
+  S.skip(0.4);                                      // one hitched frame
+  const hitch = frame(0.016);
+  assert.ok(hitch > 0.4, 'a sub-second hitch is credited, not forfeited (' + hitch.toFixed(3) + 's)');
+  S.reset();
+  frame(0.016);
+  hero.x = CHUNK_W * 8;
+  for(let i = 0; i < 10; i++) frame(0.1);           // 1 s cold flicker at the old home
+  hero.x = 0;
+  S.beginFrame(0.016, hero, null);
+  const flick = S.wakeDt(0.016, 0, 0, 900);
+  S.endFrame();
+  assert.ok(flick > 0.9, 'a one-second window-edge flicker is credited too (' + flick.toFixed(3) + 's)');
+  const cont = frame(0.016);
+  assert.equal(cont, 0.016, 'while a continuously-hot machine still owes exactly dt — no double-processing');
+}
+
 // ------------------------------------------------------------- co-op windows
 {
   S.reset();
@@ -136,6 +165,14 @@ assert.ok(S && S.beginFrame && S.wakeDt, 'world sim module exports its frame/gat
   assert.equal(S.restore(null), false, 'a missing snapshot object is refused');
   assert.equal(S.restore({v: 1, now: -5, stamps: 'junk'}), true, 'malformed fields degrade to a fresh clock rather than failing the save');
   assert.equal(S.now(), 0, 'a negative clock resets to zero');
+  // Stamp hygiene: region keys are two signed integers; anything else in a
+  // tampered snapshot must not occupy capped map slots, and ages clamp at the
+  // snapshot cap (past every module's wake cap all debts are equal anyway).
+  assert.equal(S.restore({v: 1, now: 100, stamps: [['0,0', 5], ['<script>', 5], ['1'.repeat(30), 5], ['3,x', 5], [42, 5], ['2,1', -3], ['4,0', 1e9]]}), true, 'a partially garbage stamp list still restores');
+  assert.equal(S._debug.stamps.size, 2, 'only canonical region keys with sane ages occupy slots');
+  assert.ok(S._debug.stamps.get('4,0') >= 100 - S.CFG.SNAPSHOT_AGE_CAP - 1e-6, 'a fabricated billion-second debt clamps at the snapshot cap');
+  const clampSnap = S.snapshot();
+  assert.ok(clampSnap.stamps.every(r => r[1] <= S.CFG.SNAPSHOT_AGE_CAP), 'serialized ages never exceed the cap — old worlds cannot bloat the manifest');
 }
 
 // ------------------------------------------------------------------ stamp cap

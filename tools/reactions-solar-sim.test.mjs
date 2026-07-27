@@ -128,6 +128,28 @@ assert.ok(solar._debug.fullLightSunAt(0.03,0.5)>0,'dawn provides a small but non
   const woken=solar.energyAt(200,10,getTile);
   assert.ok(Math.abs(nearby-woken)<=solar._debug.STORAGE_RATE*2+0.05,
     'the wake pays the absence back through the same math — watched and unwatched farms converge');
+
+  // The audit's second find, pinned by execution: pruneCells used to pay one
+  // getTile per registered cell on its cadence — for a far farm that was the
+  // exact far-read cost the wakeDt gate had just eliminated, and each read
+  // rehydrated a parked chunk. Frozen cells must be INERT: no validation reads
+  // until their region wakes.
+  {
+    let farReads=0;
+    const farXs=new Set([200,204,208]);
+    setTile(204,10,T.SOLAR_BATTERY);
+    setTile(208,10,T.SOLAR_BATTERY);
+    const countingGet=(x,y)=>{ if(farXs.has(x)) farReads++; return getTile(x,y); };
+    hero.x=0;
+    for(let i=0;i<30;i++){ worldSim.beginFrame(0.05,hero,null); solar.update(0.05,hero,countingGet); worldSim.endFrame(); }
+    assert.equal(farReads,0,'1.5 s of prune cadence reads ZERO tiles of frozen cells');
+    // …while a hot stale record is still validated and dropped on wake
+    tiles.delete(key(204,10));
+    hero.x=204;
+    for(let i=0;i<10;i++){ worldSim.beginFrame(0.05,hero,null); solar.update(0.05,hero,countingGet); worldSim.endFrame(); }
+    assert.ok(farReads>0,'the wake validates what the freeze left alone');
+    assert.equal(solar.energyAt(204,10,getTile),0,'a raw far removal is discovered the moment its region wakes');
+  }
   worldSim.reset();            // later blocks tick without frames; an armed gate would freeze them
 }
 

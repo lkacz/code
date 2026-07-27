@@ -7,6 +7,7 @@ const springPlatforms = (function(){
   const PAD_GLOW=Object.freeze({color:'#fff6a0', rTiles:0.78, a:0.26, pulse:0.35});
   const CAPACITY = 70;
   const CHARGE_RATE = 34;
+  const WAKE_MAX_SECONDS = 3600; // charge is capacity-clamped
   const LAUNCH_COST = 28;
   const POWERED_LAUNCH = -31;
   const UNPOWERED_LAUNCH = POWERED_LAUNCH / Math.sqrt(3);
@@ -218,7 +219,6 @@ const springPlatforms = (function(){
       chargeFromNetwork(m,step,getTile,opts||{});
     }
   }
-  const WAKE_MAX_SECONDS=3600; // charge is capacity-clamped
 
   function catchUp(simDt,player,getTile,opts){
     const dt=Math.max(0,Math.min(900,Number(simDt)||0));

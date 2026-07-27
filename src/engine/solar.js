@@ -34,9 +34,11 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   // day-curve AVERAGE (averageDaylight), not the instant at the moment of
   // return — otherwise a farm visited only at night would never have produced.
   const WAKE_MAX_SECONDS = 3600; // output is storage-capacity-clamped
+  // Below this lag the instantaneous sun is accurate enough; averaging exists
+  // for gaps long enough to cross day-cycle phases.
+  const WAKE_SUN_AVG_THRESHOLD = 30;
   const CLUSTER_LIMIT = 80;
   const CELL_CAP = 1600;
-  const FAR_IDLE_PRUNE_DIST = 260;
   const CATCHUP_MAX_SECONDS = 1800;
   const CATCHUP_SLICE_SECONDS = 15;
   const DAY_CYCLE_SECONDS = 600;
@@ -46,7 +48,7 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   // panels still have to see the natural surface through a genuinely open shaft.
   const LOCAL_SKY_CLEARANCE = 48;
   let scanT = 0;
-  let pruneT = 0; // pruning does one getTile per registered cell — interval work, not per-frame
+  let pruneT = 0; // prune reads tiles only for HOT cells (frozen ones are inert)
   let visibleScanAt = 0;
   let visibleScanKey = '';
   let lastGetTile = null;
@@ -326,21 +328,33 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
     }
     m.pulse=Math.max(0,(m.pulse||0)-PULSE_DECAY*dt);
   }
+  // Registry hygiene. Frozen far cells are NEVER read here: the audit caught
+  // this loop paying one getTile per registered cell on its 0.35 s cadence —
+  // for a 600-panel far farm that was 600 far-tile reads the wakeDt gate had
+  // just eliminated, each one rehydrating a parked chunk. A frozen cell is
+  // validated the moment its region wakes (the hot branch below); until then a
+  // stale record is inert and costs nothing. The old idle+distance prune is
+  // gone with the reads — it existed to bound the remote per-frame work, which
+  // is now zero by construction; cap pressure still evicts far idle cells
+  // first, using the cell's own `storage` flag instead of a tile probe.
   function pruneCells(player,getTile){
     if(typeof getTile!=='function') return;
+    const SIM=MM.worldSim;
     const px=player && Number.isFinite(player.x) ? player.x : 0;
     const py=player && Number.isFinite(player.y) ? player.y : 0;
     const candidates=[];
     for(const [k,m] of cells){
       if(!m || !finiteTile(m.x,m.y)){ cells.delete(k); exposureCache.delete(k); continue; }
-      const t=getSafe(getTile,m.x,m.y,T.AIR);
-      if(!isSourceTile(t)){ cells.delete(k); exposureCache.delete(k); continue; }
-      const energy=Math.max(0,Number(m.energy)||0);
-      const power=Math.max(0,Number(m.power)||0);
-      const dist=Math.abs(m.x-px)+Math.abs(m.y-py);
-      const idle=energy<=0.001 && power<=0.001;
-      if(cells.size>CELL_CAP || (idle && dist>FAR_IDLE_PRUNE_DIST)){
-        candidates.push({k,score:(idle?100000:0)+dist-energy*12-(isStorageTile(t)?160:0)});
+      if(!SIM || SIM.isHot(m.x,m.y)){
+        const t=getSafe(getTile,m.x,m.y,T.AIR);
+        if(!isSourceTile(t)){ cells.delete(k); exposureCache.delete(k); continue; }
+      }
+      if(cells.size>CELL_CAP){
+        const energy=Math.max(0,Number(m.energy)||0);
+        const power=Math.max(0,Number(m.power)||0);
+        const dist=Math.abs(m.x-px)+Math.abs(m.y-py);
+        const idle=energy<=0.001 && power<=0.001;
+        candidates.push({k,score:(idle?100000:0)+dist-energy*12-(m.storage?160:0)});
       }
     }
     if(cells.size<=CELL_CAP) return;
@@ -392,16 +406,13 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
       // A woken panel is paid the day-curve average over its gap, not the
       // instant of return: the same averaging the throttled-tab catch-up uses.
       let sun=baseSun;
-      if(step>dt+CFG_WAKE_SUN_THRESHOLD){
+      if(step>dt+WAKE_SUN_AVG_THRESHOLD){
         if(!wakeCycle){ const current=currentCycleInfo(); wakeCycle={current,end:normalizedCycleInfo(current).cycleT}; }
         sun=averageDaylight(step,wakeCycle.end,wakeCycle.current);
       }
       updateCell(m,step,getTile,sun*transmission);
     }
   }
-  // Below this lag the instantaneous sun is accurate enough; averaging exists
-  // for gaps long enough to cross day-cycle phases.
-  const CFG_WAKE_SUN_THRESHOLD = 30;
   function catchUp(dt,player,getTile){
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return false;
     const simDt=Math.max(0,Math.min(CATCHUP_MAX_SECONDS,Number(dt)||0));
