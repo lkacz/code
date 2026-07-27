@@ -152,4 +152,34 @@ function buildChamber(){
   if(!mainDbg.includes('MM.ui.injectKilnDebugPanel(')) throw new Error('injectKilnDebugPanel must be wired from main.js');
 }
 
+// ------------------------------------------------- the coal burns while you mine
+// THE far-world expectation, verbatim: light a kiln, walk away, come back later —
+// the fire kept burning and the batches are baked. Under worldSim the frozen kiln
+// paid NOTHING per frame while away; the wake frame settles the whole absence
+// through the same progress math (lava is persistent heat, so the full gap
+// credits — a flame that died while frozen would credit nothing, by design).
+{
+  K.reset(); buildChamber();
+  K.noteKiln(6, 10);
+  const { worldSim } = await import('../src/engine/world_sim.js');
+  worldSim.reset();
+  set(5, 8, T.CLAY); set(6, 8, T.CLAY); set(7, 8, T.CLAY);   // the batch
+  set(6, 11, T.LAVA);                                        // persistent heat
+  const hero = { x: 6, y: 9 };
+  const frame = (dt) => { worldSim.beginFrame(dt, hero, null); K.update(dt, null, get, set); worldSim.endFrame(); };
+  frame(0.1);                                  // lit and stamped at the owner's feet
+  const firedBefore = K.metrics().fired;
+  hero.x = 600;                                // off to the mines
+  let reads = 0;
+  const countingGet = (x, y) => { reads++; return get(x, y); };
+  for(let i = 0; i < 60; i++){ worldSim.beginFrame(0.1, hero, null); K.update(0.1, null, countingGet, set); worldSim.endFrame(); }
+  assert.equal(reads, 0, 'a frozen kiln reads NOTHING — 6 s of absence cost zero tile probes');
+  assert.equal(K.metrics().fired, firedBefore, 'and nothing bakes while frozen (the wake settles it instead)');
+  hero.x = 6;                                  // home again
+  frame(0.1);
+  assert.ok(K.metrics().fired >= firedBefore + 3, 'the wake frame bakes everything the absent seconds paid for (fired ' + K.metrics().fired + ')');
+  assert.equal(get(6, 8) === T.CLAY, false, 'the clay in the chamber really became brick');
+  worldSim.reset();
+}
+
 console.log('kiln-sim: all assertions passed');

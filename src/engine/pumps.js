@@ -1181,18 +1181,29 @@ const pumps = (function(){
     const dynamo=opts && opts.dynamo;
     const px=player && Number.isFinite(player.x) ? player.x : 0;
     const py=player && Number.isFinite(player.y) ? player.y : 0;
+    const SIM=MM.worldSim;
+    // Far pumps are FROZEN (worldSim gate): the pump moves WATER, and water is a
+    // frozen neighbor-coupled system out there — pumping against a world that is
+    // not simulating would mint or destroy volume. On wake, energy catch-up gets
+    // the full gap (battery-clamped) while the TRANSFER gets the same bounded
+    // window the throttled-tab catch-up always used: what the pump can honestly
+    // move against water that only now resumed flowing.
     for(const [k,m] of machines){
-      if(!m || getSafe(getTile,m.x,m.y,T.AIR)!==T.WATER_PUMP){
+      if(!m){ machines.delete(k); continue; }
+      const step=SIM ? SIM.wakeDt(dt,m.x,m.y,CATCHUP_MAX_SECONDS) : dt;
+      if(step===null) continue;
+      if(getSafe(getTile,m.x,m.y,T.AIR)!==T.WATER_PUMP){
         machines.delete(k);
         continue;
       }
       m.dir=normalizeDir(m.dir);
       m.energy=clampEnergy(m.energy);
       m.pulse=Math.max(0,(m.pulse||0)-dt*2.6);
-      m.flowT=Math.max(0,(m.flowT||0)-dt);
-      chargeFromNetwork(m,dt,getTile,dynamo);
-      pumpTransfer(m,dt,getTile,setTile);
-      pumpGasTransfer(m,dt,getTile,setTile);
+      m.flowT=Math.max(0,(m.flowT||0)-step);
+      chargeFromNetwork(m,step,getTile,dynamo);
+      const transferStep=Math.min(step,dt+CATCHUP_TRANSFER_SECONDS);
+      pumpTransfer(m,transferStep,getTile,setTile);
+      pumpGasTransfer(m,transferStep,getTile,setTile);
     }
     processPassiveNetworks(dt,getTile,setTile);
     if(machines.size>MACHINE_CAP){

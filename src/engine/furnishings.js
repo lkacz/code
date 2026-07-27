@@ -336,7 +336,6 @@ const POWER_SCAN_INTERVAL=.5;
 const POWER_RADIUS_X=20;
 const POWER_RADIUS_Y=14;
 const LOCAL_POWER_SECONDS=90;
-const POWER_REMOTE_INTERVAL=1;
 const POWER_CATCHUP_MAX_SECONDS=1800;
 const POWER_STATE_CAP=1600;
 const powerRuntime={scanT:0,remoteT:0,clockMs:0,states:new Map(),lastGetTile:null,scans:0,remoteTicks:0,visited:0,drained:0,changes:0,errors:0};
@@ -444,18 +443,18 @@ export function updatePower(dt,player,getTile,power){
       }
     }
   }
-  powerRuntime.remoteT+=step;
-  const remoteStep=powerRuntime.remoteT>=POWER_REMOTE_INTERVAL ? powerRuntime.remoteT : 0;
-  if(remoteStep>0){ powerRuntime.remoteT=0; powerRuntime.remoteTicks++; }
   // Drain continuously rather than in a half-second lump. This puts household
   // electronics in the same per-frame fair allocator as pumps, turrets and
   // teleporter batteries, so scan cadence cannot distort their network share.
+  // Far appliances are FROZEN behind the worldSim gate (the old 1 Hz remote tick
+  // is gone); a wake pays the gap back, bounded by the same cap the throttled-tab
+  // catch-up always used.
+  const SIM=(typeof MM!=='undefined' && MM) ? MM.worldSim : null;
   for(const [k,state] of powerRuntime.states){
     const x=Number.isFinite(state.x) ? state.x : 0;
     const y=Number.isFinite(state.y) ? state.y : 0;
-    const nearby=Math.abs(x-px)<=POWER_RADIUS_X && Math.abs(y-py)<=POWER_RADIUS_Y;
-    const elapsed=nearby ? step : remoteStep;
-    if(!(elapsed>0)) continue;
+    const elapsed=SIM ? SIM.wakeDt(step,x,y,POWER_CATCHUP_MAX_SECONDS) : step;
+    if(elapsed===null || !(elapsed>0)) continue;
     if(tickPowerState(k,state,elapsed,getTile,power).changed) changed=true;
   }
   return changed;

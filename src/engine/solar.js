@@ -28,9 +28,12 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   const SCAN_INTERVAL = 2.0;
   const SCAN_RX = 52;
   const SCAN_RY = 32;
-  const ACTIVE_RX = 68;
-  const ACTIVE_RY = 42;
-  const REMOTE_UPDATE_INTERVAL = 1.0;
+  // Far panels are FROZEN (MM.worldSim gate) — the old 1 Hz remote cadence kept
+  // paying exposure scans and tile reads for every panel ever built. On wake the
+  // region's staleness arrives as one big dt; the sun over that gap is the
+  // day-curve AVERAGE (averageDaylight), not the instant at the moment of
+  // return — otherwise a farm visited only at night would never have produced.
+  const WAKE_MAX_SECONDS = 3600; // output is storage-capacity-clamped
   const CLUSTER_LIMIT = 80;
   const CELL_CAP = 1600;
   const FAR_IDLE_PRUNE_DIST = 260;
@@ -43,7 +46,6 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   // panels still have to see the natural surface through a genuinely open shaft.
   const LOCAL_SKY_CLEARANCE = 48;
   let scanT = 0;
-  let remoteUpdateT = 0;
   let pruneT = 0; // pruning does one getTile per registered cell — interval work, not per-frame
   let visibleScanAt = 0;
   let visibleScanKey = '';
@@ -374,27 +376,32 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
     }
     pruneT-=dt;
     if(pruneT<=0 || cells.size>CELL_CAP){ pruneT=0.35; pruneCells(player,getTile); }
-    remoteUpdateT+=dt;
-    const remoteDt=remoteUpdateT>=REMOTE_UPDATE_INTERVAL ? remoteUpdateT : 0;
-    if(remoteDt>0) remoteUpdateT=0;
-    const hasPlayer=!!(player && Number.isFinite(player.x) && Number.isFinite(player.y));
-    const px=hasPlayer ? player.x : 0;
-    const py=hasPlayer ? player.y : 0;
+    const SIM=MM.worldSim;
     const baseSun=daylight();
     const weatherByColumn=new Map();
+    let wakeCycle=null; // computed lazily: only a frame that actually wakes a region pays for it
     for(const m of cells.values()){ // Map iteration is delete-safe; the spread was per-frame garbage
-      const nearby=!hasPlayer || (Math.abs(m.x-px)<=ACTIVE_RX && Math.abs(m.y-py)<=ACTIVE_RY);
-      const step=nearby ? dt : remoteDt;
-      if(!(step>0)) continue;
+      const step=SIM ? SIM.wakeDt(dt,m.x,m.y,WAKE_MAX_SECONDS) : dt;
+      if(step===null) continue;
       const column=Math.floor(m.x/2);
       let transmission=weatherByColumn.get(column);
       if(transmission===undefined){
         transmission=baseSun>0 ? cloudTransmissionAt(column*2+1) : 1;
         weatherByColumn.set(column,transmission);
       }
-      updateCell(m,step,getTile,baseSun*transmission);
+      // A woken panel is paid the day-curve average over its gap, not the
+      // instant of return: the same averaging the throttled-tab catch-up uses.
+      let sun=baseSun;
+      if(step>dt+CFG_WAKE_SUN_THRESHOLD){
+        if(!wakeCycle){ const current=currentCycleInfo(); wakeCycle={current,end:normalizedCycleInfo(current).cycleT}; }
+        sun=averageDaylight(step,wakeCycle.end,wakeCycle.current);
+      }
+      updateCell(m,step,getTile,sun*transmission);
     }
   }
+  // Below this lag the instantaneous sun is accurate enough; averaging exists
+  // for gaps long enough to cross day-cycle phases.
+  const CFG_WAKE_SUN_THRESHOLD = 30;
   function catchUp(dt,player,getTile){
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return false;
     const simDt=Math.max(0,Math.min(CATCHUP_MAX_SECONDS,Number(dt)||0));
@@ -536,7 +543,6 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   function reset(){
     cells.clear();
     scanT=0;
-    remoteUpdateT=0;
     visibleScanAt=0;
     visibleScanKey='';
     lastGetTile=null;
@@ -570,7 +576,7 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
     reset,
     metrics,
     catchUp,
-    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,SUN_CURVE_EXPONENT,PANEL_BUFFER_DECAY,LOCAL_SKY_CLEARANCE,SCAN_INTERVAL,SCAN_RX,SCAN_RY,ACTIVE_RX,ACTIVE_RY,REMOTE_UPDATE_INTERVAL,CELL_CAP,CATCHUP_MAX_SECONDS,CATCHUP_SLICE_SECONDS,clusterCells,daylight,averageDaylight,clearSkyForSolar,cloudTransmissionAt,solarCurve,fullLightSunAt,ensureVisible,debugChargeAt,debugSetEnergyAt,isGeneratingState}
+    _debug:{cells,PANEL_CAPACITY,STORAGE_CAPACITY,PANEL_RATE,STORAGE_RATE,SUN_CURVE_EXPONENT,PANEL_BUFFER_DECAY,LOCAL_SKY_CLEARANCE,SCAN_INTERVAL,SCAN_RX,SCAN_RY,WAKE_MAX_SECONDS,CELL_CAP,CATCHUP_MAX_SECONDS,CATCHUP_SLICE_SECONDS,clusterCells,daylight,averageDaylight,clearSkyForSolar,cloudTransmissionAt,solarCurve,fullLightSunAt,ensureVisible,debugChargeAt,debugSetEnergyAt,isGeneratingState}
   };
   MM.solar=api;
 })();

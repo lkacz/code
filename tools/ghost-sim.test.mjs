@@ -1856,11 +1856,19 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/brain\.update\(team, steerable, dt, squadPartyTarget\(steerable,player\), teamHooks\(team,player,getTile,setTile,ctx\), \{now\}\);/.test(inv),
 		'the squad brain hunts the party member nearest the squad center');
 
+	// The per-module coopBodyNear proximity check moved into worldSim: its hot
+	// set is built from the host hero PLUS every embodied body, so one gate keeps
+	// a turret guarding a guest awake with the host far away — for every gated
+	// module at once, not just turrets.
+	const ws = readFileSync(new URL('../src/engine/world_sim.js', import.meta.url), 'utf8');
+	assert.ok(/if\(b && !b\.dead && Number\.isFinite\(b\.x\) && Number\.isFinite\(b\.y\)\) windows\.push\(\{x: b\.x, y: b\.y\}\);/.test(ws),
+		'worldSim hot windows include every live embodied co-op body');
+	const mainWs = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
+	assert.ok(/WORLD_SIM\.beginFrame\(dt, player, MM\.coopBodies\)/.test(mainWs),
+		'main feeds MM.coopBodies into the hot set every frame (CLAUDE.md rule 3)');
 	const tur = readFileSync(new URL('../src/engine/turrets.js', import.meta.url), 'utf8');
-	assert.ok(/function coopBodyNear\(bodies,x,y\)\{\s*\n\s*if\(!bodies\) return false;/.test(tur),
-		'turrets’ body proximity check early-returns with no bodies (zero cost in solo play)');
-	assert.ok(/if\(hasPlayer && \(Math\.abs\(m\.x-px\)>ACTIVE_RX \|\| Math\.abs\(m\.y-py\)>ACTIVE_RY\) && !coopBodyNear\(coop,m\.x,m\.y\)\)\{/.test(tur),
-		'a turret near an embodied guest stays awake even with the host far away');
+	assert.ok(/const step=SIM \? SIM\.wakeDt\(dt,m\.x,m\.y,WAKE_MAX_SECONDS\) : dt;/.test(tur),
+		'turrets gate through worldSim (frozen far, wake pays the gap)');
 	assert.ok(/if\(coop\) for\(const b of coop\)\{ if\(!b\.dead\) scanNearby\(b,getTile\); \}/.test(tur),
 		'turret discovery also scans around guest bodies');
 }

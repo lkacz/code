@@ -451,17 +451,29 @@ for(const tile of [T.FIRE_TURRET,T.WATER_TURRET]){
   assert.equal(turrets.metrics().machines,0,'restore processes only a bounded prefix of oversized turret data');
 }
 
+// Far-world contract (worldSim): a frozen far turret runs NOTHING — the old 1 Hz
+// background charge is gone, and the wake frame pays the whole gap back through
+// one capacity-clamped charge call.
 {
   reset();
+  const { worldSim } = await import('../src/engine/world_sim.js');
+  worldSim.reset();
   setTile(1000,10,T.TURRET);
+  const hero={x:1000.5,y:10.5};
+  const frame=(dt)=>{ worldSim.beginFrame(dt,hero,null); turrets.update(dt,hero,getTile,setTile,{dynamo}); worldSim.endFrame(); };
+  frame(1/30);                       // registered and stamped while its builder stands there
   const realTeleporters=globalThis.MM.teleporters;
-  let chargeCalls=0;
-  globalThis.MM.teleporters={chargeBatteryAt(){ chargeCalls++; return 1; }};
-  turrets.update(1/30,{x:0.5,y:10.5},getTile,setTile,{dynamo});
-  assert.equal(chargeCalls,0,'far-away turrets do not run cable-network charging each frame');
-  for(let i=0;i<31;i++) turrets.update(1/30,{x:0.5,y:10.5},getTile,setTile,{dynamo});
-  assert.equal(chargeCalls,1,'far-away turrets charge on a bounded one-second background tick');
+  let chargeCalls=0, chargeDt=0;
+  globalThis.MM.teleporters={chargeBatteryAt(_x,_y,_battery,dt){ chargeCalls++; chargeDt=dt; return 0; }};
+  hero.x=0.5;
+  for(let i=0;i<61;i++) frame(1/30);   // ~2 s away — past WAKE_MIN_LAG, so the wake owes a real gap
+  assert.equal(chargeCalls,0,'a frozen far turret never touches the cable network — not even at a cadence');
+  hero.x=1000.5;
+  frame(1/30);
+  assert.equal(chargeCalls,1,'the wake frame charges once');
+  assert.ok(chargeDt>1.8,'…and its step carries the whole frozen gap ('+chargeDt.toFixed(2)+'s)');
   globalThis.MM.teleporters=realTeleporters;
+  worldSim.reset();
 }
 
 {

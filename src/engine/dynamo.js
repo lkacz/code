@@ -23,13 +23,14 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   const CATCHUP_MAX_SECONDS = 900;
   const VISIBLE_SCAN_INTERVAL_MS = 250;
   let visibleScanKey = '';
-  // Far machines tick at interval cadence (same pattern as solar): every dynamo
-  // ever built used to pay ~12-15 tile reads of validation + wind sampling EVERY
-  // frame, a per-frame cost that scaled with lifetime construction.
-  const ACTIVE_RX = 68;
-  const ACTIVE_RY = 42;
-  const REMOTE_UPDATE_INTERVAL = 1.0;
-  let remoteT = 0;
+  // Far machines are FROZEN (MM.worldSim gate): zero work, zero tile reads.
+  // The old 1 Hz remote cadence still paid validation + wind sampling for every
+  // dynamo ever built — a recurring cost scaling with lifetime construction,
+  // and after the parked-restore wave its tile reads kept rehydrating cold
+  // chunks. On wake the region's staleness arrives as one big dt through the
+  // SAME production math (rate×dt, capacity-clamped), so a returning player
+  // finds the energy the wind earned while nobody watched.
+  const WAKE_MAX_SECONDS = 3600; // output is ENERGY_CAPACITY-clamped: a big lag is safe
   let visibleScanAt = 0;
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
@@ -338,18 +339,14 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   }
   function update(dt,getTile){
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return;
-    remoteT+=dt;
-    const remoteDt=remoteT>=REMOTE_UPDATE_INTERVAL ? remoteT : 0;
-    if(remoteDt>0) remoteT=0;
-    const p=(typeof window!=='undefined' && window.player) || null;
-    const hasPlayer=!!(p && Number.isFinite(p.x) && Number.isFinite(p.y));
-    const px=hasPlayer ? p.x : 0;
-    const py=hasPlayer ? p.y : 0;
+    const SIM=MM.worldSim;
     for(const [k,m] of machines){
       if(!m || !finiteTile(m.x,m.y)){ machines.delete(k); continue; }
-      const nearby=!hasPlayer || (Math.abs(m.x-px)<=ACTIVE_RX && Math.abs(m.y-py)<=ACTIVE_RY);
-      const step=nearby ? dt : remoteDt;
-      if(!(step>0)) continue;
+      // The gate comes BEFORE any tile read: a frozen machine costs the loop
+      // nothing but this coordinate check. Absent worldSim (Node suites that
+      // import this module alone) the gate passes dt through unchanged.
+      const step=SIM ? SIM.wakeDt(dt,m.x,m.y,WAKE_MAX_SECONDS) : dt;
+      if(step===null) continue;
       if(!isValidSlot(m.x,m.y,getTile)){
         machines.delete(k);
         continue;
@@ -593,7 +590,7 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
     return best;
   }
 
-  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,dismantleRefundForCells,recordFlow,absorbNear,energyAt,drainAt,receiveElectricChargeAt,windEnergyPerSecAt,generatedNear,onTileChanged,update,catchUp,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC,CATCHUP_MAX_SECONDS,isGeneratingState}};
+  const api={isCasing,isSlot,isValidSlot,slotOrientation,plannedCells,structureCellsAt,dismantleRefundForCells,recordFlow,absorbNear,energyAt,drainAt,receiveElectricChargeAt,windEnergyPerSecAt,generatedNear,onTileChanged,update,catchUp,draw,snapshot,restore,reset,metrics,_debug:{machines,MAX_POWER,ENERGY_CAPACITY,MACHINE_CAP,windSpeedForSlot,WIND_MIN_SPEED,WIND_RATED_SPEED,WIND_MAX_ENERGY_PER_SEC,CATCHUP_MAX_SECONDS,WAKE_MAX_SECONDS,isGeneratingState}};
   MM.dynamo=api;
 })();
 

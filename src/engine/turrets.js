@@ -14,9 +14,9 @@ const turrets = (function(){
   const PUFF_CAP = 120;
   // Discovery-only cadence (placements register instantly via onTileChanged).
   const PLAYER_SCAN_INTERVAL = 2.5;
-  const ACTIVE_RX = 64;
-  const ACTIVE_RY = 42;
-  const REMOTE_CHARGE_INTERVAL = 1;
+  // Far turrets are FROZEN behind the worldSim gate (its hot set includes every
+  // embodied co-op body); a wake pays the charge gap back capacity-clamped.
+  const WAKE_MAX_SECONDS = 3600;
   const MOUNTED_SCAN_INTERVAL = 0.2;
   const VISIBLE_SCAN_INTERVAL_MS = 220;
   const WATER_TURRET_TANK = 24;
@@ -105,7 +105,7 @@ const turrets = (function(){
     let m=machines.get(k);
     if(!m){
       if(!makeRoomForMachine()) return null;
-      m={x,y,kind,energy:0,cooldown:Math.random()*0.25,scanT:Math.random()*0.18,pulse:0,aim:0,target:null,lastSeen:0,activeT:0,remoteChargeT:0};
+      m={x,y,kind,energy:0,cooldown:Math.random()*0.25,scanT:Math.random()*0.18,pulse:0,aim:0,target:null,lastSeen:0,activeT:0};
       machines.set(k,m);
     }
     m.x=x; m.y=y; m.kind=kind;
@@ -119,7 +119,6 @@ const turrets = (function(){
     m.cooldown=Math.max(0,Number(m.cooldown)||0);
     m.scanT=Math.max(0,Number(m.scanT)||0);
     m.pulse=clamp(Number(m.pulse)||0,0,1);
-    m.remoteChargeT=clamp(Number(m.remoteChargeT)||0,0,REMOTE_CHARGE_INTERVAL*2);
     return m;
   }
 
@@ -130,14 +129,6 @@ const turrets = (function(){
   function coopBodies(){
     const list=(typeof MM!=='undefined' && MM.coopBodies) || null;
     return (list && list.length) ? list : null;
-  }
-  function coopBodyNear(bodies,x,y){
-    if(!bodies) return false;
-    for(const b of bodies){
-      if(!b || b.dead || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
-      if(Math.abs(x-b.x)<=ACTIVE_RX && Math.abs(y-b.y)<=ACTIVE_RY) return true;
-    }
-    return false;
   }
   function scanNearby(player,getTile){
     if(!player || typeof getTile!=='function') return;
@@ -692,29 +683,27 @@ const turrets = (function(){
     const hasPlayer=!!(player && Number.isFinite(player.x) && Number.isFinite(player.y));
     const px=hasPlayer ? player.x : 0;
     const py=hasPlayer ? player.y : 0;
+    const SIM=MM.worldSim;
+    // Far turrets are FROZEN behind the worldSim gate — no validation reads, no
+    // remote charge cadence. The gate's hot set already includes every embodied
+    // co-op body (worldSim.beginFrame is fed MM.coopBodies), so a turret guarding
+    // a guest stays awake with the host far away, exactly as before.
     for(const [k,m] of machines){
-      if(!m || !isTurretTile(getSafe(getTile,m.x,m.y,T.AIR))){
+      if(!m){ machines.delete(k); continue; }
+      const step=SIM ? SIM.wakeDt(dt,m.x,m.y,WAKE_MAX_SECONDS) : dt;
+      if(step===null){ m.target=null; m.scanT=0; continue; }
+      if(!isTurretTile(getSafe(getTile,m.x,m.y,T.AIR))){
         machines.delete(k);
         continue;
       }
       const cfg=cfgFor(m.kind);
-      m.cooldown=Math.max(0,(m.cooldown||0)-dt);
+      // decays pay the wake gap back; combat state never catches up (no
+      // retroactive shots — a frozen turret was not fighting anything)
+      m.cooldown=Math.max(0,(m.cooldown||0)-step);
       m.scanT=Math.max(0,(m.scanT||0)-dt);
       m.pulse=Math.max(0,(m.pulse||0)-dt*2.8);
       m.activeT=Math.max(0,(m.activeT||0)-dt);
-      if(hasPlayer && (Math.abs(m.x-px)>ACTIVE_RX || Math.abs(m.y-py)>ACTIVE_RY) && !coopBodyNear(coop,m.x,m.y)){
-        m.target=null;
-        m.scanT=0;
-        m.remoteChargeT=Math.min(REMOTE_CHARGE_INTERVAL*2,(m.remoteChargeT||0)+dt);
-        if(m.remoteChargeT>=REMOTE_CHARGE_INTERVAL){
-          chargeFromNetwork(m,m.remoteChargeT,getTile,dynamo);
-          m.remoteChargeT=0;
-        }
-        continue;
-      }
-      const chargeDt=dt+(m.remoteChargeT||0);
-      m.remoteChargeT=0;
-      chargeFromNetwork(m,chargeDt,getTile,dynamo);
+      chargeFromNetwork(m,step,getTile,dynamo);
       if(m.scanT<=0){
         m.scanT=cfg.scan+Math.random()*0.08;
         m.target=nearestHostileTarget(m,getTile);
@@ -769,7 +758,6 @@ const turrets = (function(){
       m.scanT=0;
       m.pulse=0;
       m.activeT=0;
-      m.remoteChargeT=0;
       chargeFromNetwork(m,simDt,getTile,dynamo);
       if(Math.abs((m.energy||0)-before)>0.0001) changed=true;
     }
@@ -998,7 +986,7 @@ const turrets = (function(){
     receiveWaterAt,
     waterNeedAt,
     fireMountedAt,
-    _debug:{machines,shots,puffs,TURRET_CAPACITY,CHARGE_RATE,CATCHUP_MAX_SECONDS,MACHINE_CAP,ACTIVE_RX,ACTIVE_RY,REMOTE_CHARGE_INTERVAL,CFG,WATER_TURRET_TANK,WATER_TURRET_START_WATER,WATER_TURRET_WATER_PER_SHOT,debugChargeAt,debugSetEnergyAt,debugSetWaterAt,ensureMachine,fireAt,chargeFromNetwork,nearestMobTarget,nearestBossTarget,nearestUfoTarget,nearestHostileTarget}
+    _debug:{machines,shots,puffs,TURRET_CAPACITY,CHARGE_RATE,CATCHUP_MAX_SECONDS,WAKE_MAX_SECONDS,MACHINE_CAP,CFG,WATER_TURRET_TANK,WATER_TURRET_START_WATER,WATER_TURRET_WATER_PER_SHOT,debugChargeAt,debugSetEnergyAt,debugSetWaterAt,ensureMachine,fireAt,chargeFromNetwork,nearestMobTarget,nearestBossTarget,nearestUfoTarget,nearestHostileTarget}
   };
   MM.turrets=api;
   return api;

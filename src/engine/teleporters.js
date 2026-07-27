@@ -30,11 +30,9 @@ import { isHeroPassableTile } from './material_physics.js';
   // All scalar state stays frame-accurate. Stable distant machines use a
   // bounded validation cadence so full or source-less endpoints do not turn
   // tile checks and cable discovery into a per-frame lifetime-construction cost.
-  const ACTIVE_RX = 68;
-  const ACTIVE_RY = 42;
-  const REMOTE_UPDATE_INTERVAL = 1.0;
-  const REMOTE_VALIDATIONS_PER_SECOND = MACHINE_CAP/REMOTE_UPDATE_INTERVAL;
-  const REMOTE_VALIDATION_MAX_PER_UPDATE = 64;
+  // Far machines are FROZEN behind the worldSim gate; the wake step below pays
+  // the region's whole absence through the normal charge/validation path.
+  const WAKE_MAX_SECONDS = 3600; // battery-capacity-clamped, so a big lag is safe
   const COPPER_DELIVERY_EFFICIENCY = 0.5;
   const SILVER_DELIVERY_EFFICIENCY = 1;
   const COPPER_HEAT_THRESHOLD = 12;
@@ -57,8 +55,6 @@ import { isHeroPassableTile } from './material_physics.js';
 
   let networkRev = 1;
   let scanT = 0;
-  let remoteClock = 0;
-  let remoteValidationCredit = 0;
   let teleporterListStamp = '';
   let teleporterListCache = [];
   let visibleScanKey = '';
@@ -96,21 +92,6 @@ import { isHeroPassableTile } from './material_physics.js';
       if(isMachineNetworkTile(getSafe(getTile,x+dx,y+dy,T.AIR))) return true;
     }
     return false;
-  }
-  function remoteValidationPhase(m){
-    let h=Math.imul((m.x|0)^0x9e3779b9,0x85ebca6b);
-    h^=Math.imul((m.y|0)^0xc2b2ae35,0x27d4eb2d);
-    h^=h>>>16;
-    return (h>>>0)/4294967296*REMOTE_UPDATE_INTERVAL;
-  }
-  function armRemoteValidation(m){
-    if(!Number.isFinite(m.remoteCheckAt)) m.remoteCheckAt=remoteClock+remoteValidationPhase(m);
-  }
-  function takeRemoteValidationBudget(dt,due){
-    remoteValidationCredit=Math.min(REMOTE_VALIDATION_MAX_PER_UPDATE,remoteValidationCredit+REMOTE_VALIDATIONS_PER_SECOND*dt);
-    const count=Math.min(due,REMOTE_VALIDATION_MAX_PER_UPDATE,Math.floor(remoteValidationCredit+1e-9));
-    remoteValidationCredit=Math.max(0,remoteValidationCredit-count);
-    return count;
   }
   function basePowerTileAt(x,y,getTile){
     let t=getSafe(getTile,x,y,T.AIR);
@@ -1255,7 +1236,6 @@ import { isHeroPassableTile } from './material_physics.js';
     if(!(dt>0) || !isFinite(dt) || typeof getTile!=='function') return;
     if(externalPowerFramePending) externalPowerFramePending=false;
     else advancePowerFrame();
-    remoteClock+=dt;
     decayWireActivity(dt,getTile);
     scanT-=dt;
     if(scanT<=0){
@@ -1263,19 +1243,18 @@ import { isHeroPassableTile } from './material_physics.js';
       scanNearbyTeleporters(player,getTile);
     }
     if(player && player._teleporterCooldown>0) player._teleporterCooldown=Math.max(0,player._teleporterCooldown-dt);
-    const hasPlayer=!!(player && Number.isFinite(player.x) && Number.isFinite(player.y));
-    const px=hasPlayer ? player.x : 0;
-    const py=hasPlayer ? player.y : 0;
+    const px=(player && Number.isFinite(player.x)) ? player.x : 0;
+    const py=(player && Number.isFinite(player.y)) ? player.y : 0;
     const dynamo=opts && opts.dynamo;
+    const SIM=MM.worldSim;
     const chargeRows=[];
-    const dueRemote=[];
-    const validateAndQueue=(k,m)=>{
+    const validateAndQueue=(k,m,step)=>{
       if(getSafe(getTile,m.x,m.y,T.AIR)!==T.TELEPORTER){
         machines.delete(k);
         networkCache.delete(k);
         return false;
       }
-      const want=batteryChargeDemand(m,dt,TELEPORTER_CAPACITY,CHARGE_RATE);
+      const want=batteryChargeDemand(m,step,TELEPORTER_CAPACITY,CHARGE_RATE);
       if(want>0 && Number.isFinite(want)){
         const net=networkFor(m.x,m.y,getTile);
         const hasSources=networkSources(net).length>0;
@@ -1283,40 +1262,33 @@ import { isHeroPassableTile } from './material_physics.js';
         m.sourceLessRev=hasSources ? 0 : networkRev;
         const registered=registerPowerDemandForNetwork(net,m.x,m.y,want,getTile,dynamo);
         m.lastNetworkId=registered.networkId;
-        chargeRows.push({m,step:dt,net});
+        chargeRows.push({m,step,net});
       }
       return true;
     };
+    // Far teleporters are FROZEN (worldSim gate) — no validation reads, no
+    // network scans, no charging. The old remote path still validated and
+    // CHARGED every far non-full battery every frame; now the whole absence
+    // arrives as one wake step through the same demand/allocation math, so a
+    // battery fills by exactly what the network could have given it (the wake
+    // step is one allocator pass: a scarce shared source pays a single step's
+    // worth, which under-credits contested networks rather than minting energy).
     for(const [k,m] of machines){
       if(!m){
         machines.delete(k);
         networkCache.delete(k);
         continue;
       }
-      // These scalar transitions are cheap and must remain real-time. In
-      // particular, spending a previously full remote battery between cadence
-      // ticks must not let it recharge for time during which it was still full.
-      m.cooldown=Math.max(0,(m.cooldown||0)-dt);
+      const step=SIM ? SIM.wakeDt(dt,m.x,m.y,WAKE_MAX_SECONDS) : dt;
+      if(step===null) continue;
+      // Scalar decays pay the wake gap back too: a cooldown that would have
+      // expired while nobody watched has expired by the time anyone returns.
+      m.cooldown=Math.max(0,(m.cooldown||0)-step);
       m.pulse=Math.max(0,(m.pulse||0)-dt*2.6);
-      const nearby=!hasPlayer || (m && Math.abs(m.x-px)<=ACTIVE_RX && Math.abs(m.y-py)<=ACTIVE_RY);
-      const full=!!(m && finiteNonNegative(m.energy,0)>=TELEPORTER_CAPACITY-1e-9);
-      const knownSourceLess=!!(m && (m.locallyIsolated || m.sourceLessRev===networkRev));
+      const full=!!(finiteNonNegative(m.energy,0)>=TELEPORTER_CAPACITY-1e-9);
+      const knownSourceLess=!!(m.locallyIsolated || m.sourceLessRev===networkRev);
       if(full || knownSourceLess) clearMachinePowerDemand(m);
-      if(!nearby && (full || knownSourceLess)){
-        armRemoteValidation(m);
-        if(m.remoteCheckAt<=remoteClock) dueRemote.push({k,m});
-        continue;
-      }
-      m.remoteCheckAt=NaN;
-      validateAndQueue(k,m);
-    }
-    const remoteBudget=takeRemoteValidationBudget(dt,dueRemote.length);
-    for(let i=0;i<remoteBudget;i++){
-      const row=dueRemote[i];
-      if(!validateAndQueue(row.k,row.m)) continue;
-      const stillFull=finiteNonNegative(row.m.energy,0)>=TELEPORTER_CAPACITY-1e-9;
-      const stillSourceLess=row.m.locallyIsolated || row.m.sourceLessRev===networkRev;
-      row.m.remoteCheckAt=(stillFull || stillSourceLess) ? remoteClock+REMOTE_UPDATE_INTERVAL : NaN;
+      validateAndQueue(k,m,step);
     }
     // Register every active or woken machine before any source is drained.
     // Otherwise the first endpoint could consume a scarce shared network before
@@ -1473,7 +1445,6 @@ import { isHeroPassableTile } from './material_physics.js';
       if(!m) continue;
       m.locallyIsolated=!hasMachineNetworkNeighbor(m.x,m.y,worldGet);
       m.sourceLessRev=m.locallyIsolated ? networkRev : 0;
-      m.remoteCheckAt=NaN;
     }
   }
   function snapshot(){
@@ -1512,8 +1483,6 @@ import { isHeroPassableTile } from './material_physics.js';
     networkRev++;
     invalidateTeleporterSearch();
     scanT=0;
-    remoteClock=0;
-    remoteValidationCredit=0;
     visibleScanKey='';
     visibleScanAt=0;
   }
@@ -1569,7 +1538,7 @@ import { isHeroPassableTile } from './material_physics.js';
     restore,
     reset,
     metrics,
-    _debug:{machines,networkCache,wireActivity,fairDemandRegistry,fairFrameAllocations,copperHeatBuffers,TELEPORTER_CAPACITY,MACHINE_CAP,NETWORK_CAP,NETWORK_ENDPOINT_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,ACTIVE_RX,ACTIVE_RY,REMOTE_UPDATE_INTERVAL,REMOTE_VALIDATIONS_PER_SECOND,REMOTE_VALIDATION_MAX_PER_UPDATE,COPPER_DELIVERY_EFFICIENCY,SILVER_DELIVERY_EFFICIENCY,COPPER_HEAT_THRESHOLD,debugCharge,debugSetEnergy,ensureMachine,listLoadedTeleporters,nearestTeleporter,teleporterUnderPlayer,tryTeleport,networkFor,networkDeliveryEfficiency,sourceRouteInfo,isAlienBunkerTeleporter,maxMinAlloc,maxMinAllocWeighted,networkIdentity}
+    _debug:{machines,networkCache,wireActivity,fairDemandRegistry,fairFrameAllocations,copperHeatBuffers,TELEPORTER_CAPACITY,MACHINE_CAP,NETWORK_CAP,NETWORK_ENDPOINT_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,WAKE_MAX_SECONDS,COPPER_DELIVERY_EFFICIENCY,SILVER_DELIVERY_EFFICIENCY,COPPER_HEAT_THRESHOLD,debugCharge,debugSetEnergy,ensureMachine,listLoadedTeleporters,nearestTeleporter,teleporterUnderPlayer,tryTeleport,networkFor,networkDeliveryEfficiency,sourceRouteInfo,isAlienBunkerTeleporter,maxMinAlloc,maxMinAllocWeighted,networkIdentity}
   };
   MM.teleporters=api;
 })();

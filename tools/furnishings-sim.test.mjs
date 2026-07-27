@@ -504,8 +504,11 @@ assert.equal(radioDef.sound,null,'radio delegates music to the dedicated station
     'actual placement and its ghost preview share the catalogue support validator');
   assert.match(mainSource,/FURNISHINGS\.updatePower\(dt,player,getTile,HOME_FURNISHING_POWER\)/,
     'the live game drains powered furnishings through the canonical electrical network');
-  assert.match(mainSource,/FURNISHINGS\.catchUpPower\(simDt,getTile,HOME_FURNISHING_POWER\)/,
-    'background-tab catch-up includes persistent household electrical loads');
+  // Background-tab gaps now ride the ONE worldSim mechanism: the clock skips
+  // without stamping, so every hot appliance pays the gap back through the same
+  // wakeDt path a far one uses — a second per-module fan-out would double-credit.
+  assert.match(mainSource,/WORLD_SIM && WORLD_SIM\.skip\(simDt\)/,
+    'background-tab catch-up rides the worldSim clock skip (household loads included)');
   assert.match(mainSource,/FURNISHINGS\.drawMirrors\([\s\S]*renderReflection:drawHomeMirrorReflection/,
     'the live world invokes the late clipped mirror pass');
   assert.match(mainSource,/tiles:\['CHAIR_WOOD'[\s\S]*'MIRROR'/,
@@ -598,10 +601,14 @@ assert.ok(receiveElectricChargeAt(5,1,1,(x,y)=>audioTiles.get(x+','+y)||T.AIR)>0
 updatePower(.6,{x:5,y:1},(x,y)=>audioTiles.get(x+','+y)||T.AIR,powerContext);
 assert.equal(isPoweredAt(5,1,(x,y)=>audioTiles.get(x+','+y)||T.AIR,powerContext),true,'a rifle-charged radio operates temporarily without house-grid energy');
 
-// A house left behind remains an electrical load, but remote work is grouped
-// into one-second ticks instead of paying the network traversal every frame.
+// Far-world contract (worldSim): a house left behind is FROZEN — its appliances
+// stop drawing the network entirely — and the frame its region wakes settles the
+// whole absence in one capped draw. The old 1 Hz remote tick paid a network
+// traversal per second for every appliance ever placed.
 resetRuntimeCaches();
-const remoteTiles=new Map([['100,1',T.RADIO]]);
+const { worldSim: wsFurn } = await import('../src/engine/world_sim.js');
+wsFurn.reset();
+const remoteTiles=new Map([['300,1',T.RADIO]]);
 const remoteGet=(x,y)=>remoteTiles.get(x+','+y)||T.AIR;
 let remoteEnergy=10;
 const remotePower={
@@ -611,20 +618,28 @@ const remotePower={
     drainNetworkEnergyAt:(_x,_y,amount)=>{ const got=Math.min(remoteEnergy,amount); remoteEnergy-=got; return got; }
   }
 };
-assert.equal(onPowerTileChanged(100,1,T.AIR,T.RADIO,remoteGet),true,'placing powered furniture registers it for remote simulation');
-for(let i=0;i<12;i++) updatePower(.1,{x:0,y:1},remoteGet,remotePower);
-assert.ok(remoteEnergy<9.99,'remote household electronics continue consuming real network energy');
-assert.equal(runtimeMetrics().power.remoteTicks,1,'twelve small frames collapse remote work into one bounded tick');
+assert.equal(onPowerTileChanged(300,1,T.AIR,T.RADIO,remoteGet),true,'placing powered furniture registers it for remote simulation');
+const furnHero={x:300,y:1};
+const furnFrame=(dt)=>{ wsFurn.beginFrame(dt,furnHero,null); updatePower(dt,furnHero,remoteGet,remotePower); wsFurn.endFrame(); };
+furnFrame(.1);                             // stamped while its owner stands in the house
+const stampedEnergy=remoteEnergy;
+furnHero.x=0;
+for(let i=0;i<90;i++) furnFrame(.1);       // 9 s away — enough for the radio's small draw to be measurable
+assert.equal(remoteEnergy,stampedEnergy,'a frozen far household draws NOTHING from the network');
+furnHero.x=300;                            // coming home settles the absence
+furnFrame(.1);
+assert.ok(remoteEnergy<stampedEnergy-.2,'the wake frame charges the whole absence to the source in one draw');
 const remoteSnap=snapshotPower();
-assert.ok(remoteSnap.list.some(row=>row.x===100 && row.tile===T.RADIO),'remote powered furniture is present in the power snapshot');
+assert.ok(remoteSnap.list.some(row=>row.x===300 && row.tile===T.RADIO),'remote powered furniture is present in the power snapshot');
 resetRuntimeCaches();
 assert.equal(restorePower(remoteSnap,remoteGet),1,'remote household power state restores without a player visit');
 const beforeCatchUp=remoteEnergy;
 catchUpPower(10,remoteGet,remotePower);
-assert.ok(remoteEnergy<beforeCatchUp-.3,'background-tab catch-up charges remote household consumption to the source');
-remoteTiles.delete('100,1');
-onPowerTileChanged(100,1,T.RADIO,T.AIR,remoteGet);
+assert.ok(remoteEnergy<beforeCatchUp-.3,'the module-level catch-up API still charges household consumption to the source');
+remoteTiles.delete('300,1');
+onPowerTileChanged(300,1,T.RADIO,T.AIR,remoteGet);
 assert.equal(runtimeMetrics().power.tracked,0,'removing remote furniture unregisters its background load immediately');
+wsFurn.reset();
 
 resetRuntimeCaches();
 let mutedReads=0;

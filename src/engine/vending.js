@@ -359,8 +359,14 @@ import { T, INFO, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
   }
   function update(dt,getTile){
     const d=Math.max(0,Math.min(0.1,Number(dt)||0));
+    const SIM=MM.worldSim;
     for(const [raw,m] of machines){
-      if(!m || !finiteTile(m.x,m.y) || (typeof getTile==='function' && getSafe(getTile,m.x,m.y,T.AIR)!==T.VENDING_MACHINE)){
+      if(!m || !finiteTile(m.x,m.y)){ machines.delete(raw); continue; }
+      // Far machines skip even the validation read (worldSim gate): the only
+      // per-frame state is a cosmetic pulse, but the getTile probe was
+      // rehydrating parked chunks. A stale record is validated on wake.
+      if(SIM && !SIM.isHot(m.x,m.y)) continue;
+      if(typeof getTile==='function' && getSafe(getTile,m.x,m.y,T.AIR)!==T.VENDING_MACHINE){
         machines.delete(raw);
         continue;
       }

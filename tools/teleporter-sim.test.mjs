@@ -193,29 +193,41 @@ function rangeFairnessSample(playerX){
   assert.ok(mixedRange.every((energy,index)=>Math.abs(energy-allNear[index])<0.002),'mixed near/far endpoints preserve the same scarce-source allocation as all-near peers');
 }
 
+// Far-world contract (worldSim): a frozen far teleporter is never validated —
+// not even at a cadence — because validation is a tile read and a frozen region
+// makes none. A raw removal (a low-level restore bypassing topology hooks) is
+// therefore discovered the frame its region WAKES, which is also the first
+// frame anything could observe the stale record.
 {
   reset();
+  const { worldSim } = await import('../src/engine/world_sim.js');
+  worldSim.reset();
   setTile(0,10,T.TELEPORTER);
-  const farPlayer={x:200,y:200,w:0.7,h:0.95,vx:0,vy:0,energy:0};
-  tick(0.2,farPlayer);
-  tiles.delete(k(0,10)); // bypass topology notifications like a low-level restore
-  tick(0.2,farPlayer);
-  assert.equal(teleporters.metrics().machines,1,'a raw distant removal may wait for the bounded remote validation cadence');
-  let waited=0.2;
-  while(teleporters.metrics().machines && waited<teleporters._debug.REMOTE_UPDATE_INTERVAL+0.05){
-    tick(0.05,farPlayer);
-    waited+=0.05;
-  }
-  assert.equal(teleporters.metrics().machines,0,'the next bounded remote validation removes an invalid teleporter');
-  assert.ok(waited<=teleporters._debug.REMOTE_UPDATE_INTERVAL+0.051,'raw removals are discovered within one staggered validation interval');
+  const hero={x:0,y:10,w:0.7,h:0.95,vx:0,vy:0,energy:0};
+  const frame=(dt)=>{ worldSim.beginFrame(dt,hero,null); tick(dt,hero); worldSim.endFrame(); };
+  frame(0.2);                                  // registered and stamped while hot
+  hero.x=200; hero.y=200;
+  tiles.delete(k(0,10));                       // bypass topology notifications like a low-level restore
+  frame(0.2); frame(0.2);
+  assert.equal(teleporters.metrics().machines,1,'a frozen region is never validated, so the stale record survives — at zero cost');
+  hero.x=0; hero.y=10;                         // return: the wake validates immediately
+  frame(0.2);
+  assert.equal(teleporters.metrics().machines,0,'the wake frame discovers the raw removal');
+  worldSim.reset();
 
   setTile(0,10,T.TELEPORTER);
   setTile(0,10,T.AIR);
   assert.equal(teleporters.metrics().machines,0,'normal topology notifications remove distant teleporters immediately');
 }
 
+// Far-world contract (worldSim): the old staggered remote-validation schedule
+// existed to bound how many FAR endpoints a frame could touch. Under the freeze
+// that bound is now exact zero — a frame reads no tiles of any frozen endpoint,
+// no matter how many hundred of them the player has built.
 {
   reset();
+  const { worldSim } = await import('../src/engine/world_sim.js');
+  worldSim.reset();
   const endpointKeys=new Set();
   const count=240;
   for(let i=0;i<count;i++){
@@ -223,22 +235,20 @@ function rangeFairnessSample(playerX){
     endpointKeys.add(k(x,10));
     setTile(x,10,T.TELEPORTER);
   }
-  const covered=new Set();
-  const farPlayer={x:-10000,y:200,w:0.7,h:0.95,vx:0,vy:0,energy:0};
-  let maxValidated=0;
+  const farHero={x:-10000,y:200,w:0.7,h:0.95,vx:0,vy:0,energy:0};
+  let touched=0;
+  const countingGetTile=(x,y)=>{
+    if(endpointKeys.has(k(x,y))) touched++;
+    return getTile(x,y);
+  };
   for(let frame=0;frame<23;frame++){
-    const validated=new Set();
-    const countingGetTile=(x,y)=>{
-      const id=k(x,y);
-      if(endpointKeys.has(id)) validated.add(id);
-      return getTile(x,y);
-    };
-    teleporters.update(0.05,farPlayer,countingGetTile,setTile,{dynamo});
-    maxValidated=Math.max(maxValidated,validated.size);
-    for(const id of validated) covered.add(id);
+    worldSim.beginFrame(0.05,farHero,null);
+    teleporters.update(0.05,farHero,countingGetTile,setTile,{dynamo});
+    worldSim.endFrame();
   }
-  assert.ok(maxValidated<=teleporters._debug.REMOTE_VALIDATION_MAX_PER_UPDATE,'remote validation never exceeds its hard per-update endpoint budget');
-  assert.equal(covered.size,count,'the staggered remote schedule covers every source-less endpoint within approximately one second');
+  assert.equal(touched,0,'240 frozen endpoints cost a frame ZERO tile reads — the budget the stagger used to ration is simply gone');
+  assert.equal(teleporters.metrics().machines,count,'and every frozen record survives untouched for its eventual wake');
+  worldSim.reset();
 }
 
 {

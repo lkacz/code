@@ -118,6 +118,8 @@ import { vitalsHud as VITALS_HUD } from './engine/vitals_hud.js';
 import { titleScreen as TITLE_SCREEN } from './engine/title_screen.js';
 // The world's home on disk: IndexedDB, one record per chunk, delta writes.
 import { saveStore as SAVE_STORE } from './engine/save_store.js';
+// Far-world simulation clock: frozen far regions + closed-form catch-up on wake.
+import { worldSim as WORLD_SIM } from './engine/world_sim.js';
 import { finale as FINALE } from './engine/finale.js';
 // Ghost spectator mode (link-join watchers): ghost_client flips MM.ghostMode at
 // import time when the URL carries ?watch=ROOM — everything below honors it.
@@ -4265,6 +4267,9 @@ function buildSaveObject(opts){
 	attention: timedSavePart('attention',()=>((ATTENTION && ATTENTION.snapshot) ? ATTENTION.snapshot() : null),perf),
 	kiln: timedSavePart('kiln',()=>((KILN && KILN.snapshot) ? KILN.snapshot() : null),perf),
 	wind: timedSavePart('wind',()=>((WIND && WIND.snapshot) ? WIND.snapshot() : null),perf),
+	// the far-world clock: without it every region would wake with zero lag
+	// after a reload and forfeit the catch-up it was owed
+	worldSim: timedSavePart('worldSim',()=>((WORLD_SIM && WORLD_SIM.snapshot) ? WORLD_SIM.snapshot() : null),perf),
 	seasons: timedSavePart('seasons',()=>((SEASONS && SEASONS.snapshot) ? SEASONS.snapshot() : null),perf),
 	clouds: timedSavePart('clouds',()=>((CLOUDS && CLOUDS.snapshot) ? CLOUDS.snapshot() : null),perf),
 	dynamo: timedSavePart('dynamo',()=>((DYNAMO && DYNAMO.snapshot) ? DYNAMO.snapshot() : null),perf),
@@ -4913,6 +4918,10 @@ function applyGameDataCore(data,opts){
 	try{ if(FOREST && FOREST.reset) FOREST.reset(); }catch(e){}
 	try{ if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); }catch(e){}
 	try{ if(KILN && KILN.reset) KILN.reset(); }catch(e){}
+	// reset BEFORE the conditional restore below: a save without a worldSim
+	// field (pre-clock era) must start a fresh clock, not inherit this
+	// session's stamps against a different world
+	try{ if(WORLD_SIM && WORLD_SIM.reset) WORLD_SIM.reset(); }catch(e){}
 	try{ if(TREES && TREES.reset) TREES.reset(); }catch(e){}
 	try{ if(GRASS && GRASS.reset) GRASS.reset(); }catch(e){}
 	try{ if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); }catch(e){}
@@ -5016,6 +5025,7 @@ function applyGameDataCore(data,opts){
 	try{ if(ATTENTION && ATTENTION.restore && data.attention!=null) ATTENTION.restore(data.attention); }catch(e){}
 	try{ if(KILN && KILN.restore && data.kiln!=null) KILN.restore(data.kiln); }catch(e){}
 	restoreRequired('wind',data.wind!=null,()=>{ if(WIND && WIND.restore) return WIND.restore(data.wind); throw new Error('wind restorer unavailable'); });
+	restoreRequired('worldSim',data.worldSim!=null,()=>{ if(WORLD_SIM && WORLD_SIM.restore) return WORLD_SIM.restore(data.worldSim); throw new Error('world sim restorer unavailable'); });
 	restoreRequired('seasons',data.seasons!=null,()=>{ if(SEASONS && SEASONS.restore) return SEASONS.restore(data.seasons); throw new Error('seasons restorer unavailable'); });
 	restoreRequired('clouds',data.clouds!=null,()=>{ if(CLOUDS && CLOUDS.restore) return CLOUDS.restore(data.clouds); throw new Error('clouds restorer unavailable'); });
 	restoreRequired('dynamo',data.dynamo!=null,()=>{ if(DYNAMO && DYNAMO.restore) return DYNAMO.restore(data.dynamo,getTile); throw new Error('dynamo restorer unavailable'); });
@@ -18845,7 +18855,7 @@ function regenWorld(){
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
 
 	// Reset transient systems
-	mining=false; if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); if(FOREST && FOREST.reset) FOREST.reset(); if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); if(KILN && KILN.reset) KILN.reset(); if(FALLING && FALLING.reset) FALLING.reset(); if(BOATS && BOATS.reset) BOATS.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(COMPANIONS && COMPANIONS.reset) COMPANIONS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+	mining=false; if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); if(FOREST && FOREST.reset) FOREST.reset(); if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); if(KILN && KILN.reset) KILN.reset(); if(WORLD_SIM && WORLD_SIM.reset) WORLD_SIM.reset(); if(FALLING && FALLING.reset) FALLING.reset(); if(BOATS && BOATS.reset) BOATS.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(COMPANIONS && COMPANIONS.reset) COMPANIONS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 
 	if(SMOKE && SMOKE.reset) SMOKE.reset();
 	// Reset inventory/tools/hotbar
@@ -20344,23 +20354,20 @@ function runHeroFrame(totalDt,ts){
 function catchUpPowerSystems(dt){
 	const simDt=Math.max(0,Math.min(1800,Number(dt)||0));
 	if(simDt<=0.001) return false;
-	let changed=false;
-	try{ if(DYNAMO && DYNAMO.catchUp) changed=!!DYNAMO.catchUp(simDt,getTile,{wind:WIND}) || changed; }catch(e){ console.warn('dynamo catch-up failed',e); }
-	try{ if(SOLAR && SOLAR.catchUp) changed=!!SOLAR.catchUp(simDt,player,getTile,{background:BACKGROUND,clouds:CLOUDS}) || changed; }catch(e){ console.warn('solar catch-up failed',e); }
-	try{ if(FURNISHINGS && FURNISHINGS.catchUpPower) changed=!!FURNISHINGS.catchUpPower(simDt,getTile,HOME_FURNISHING_POWER) || changed; }catch(e){ console.warn('furnishing power catch-up failed',e); }
-	try{ if(TELEPORTERS && TELEPORTERS.catchUp) changed=!!TELEPORTERS.catchUp(simDt,player,getElectricNetworkTile,setTile,{dynamo:DYNAMO,heroEnergy:MM.heroEnergy}) || changed; }catch(e){ console.warn('teleporter catch-up failed',e); }
-	try{ if(PUMPS && PUMPS.catchUp) changed=!!PUMPS.catchUp(simDt,player,getFluidNetworkTile,setTile,{dynamo:DYNAMO,teleporters:TELEPORTERS}) || changed; }catch(e){ console.warn('pump catch-up failed',e); }
-	try{ if(TURRETS && TURRETS.catchUp) changed=!!TURRETS.catchUp(simDt,player,getTile,setTile,{dynamo:DYNAMO,teleporters:TELEPORTERS,pumps:PUMPS}) || changed; }catch(e){ console.warn('turret catch-up failed',e); }
-	try{ if(SPRING_PLATFORMS && SPRING_PLATFORMS.catchUp) changed=!!SPRING_PLATFORMS.catchUp(simDt,player,getElectricNetworkTile,{dynamo:DYNAMO,teleporters:TELEPORTERS}) || changed; }catch(e){ console.warn('spring platform catch-up failed',e); }
-	if(changed){
-		const now=Date.now();
-		noteSaveActivity();
-		if(now-lastPowerCatchupSaveAt>2500){
-			lastPowerCatchupSaveAt=now;
-			saveState();
-		}
+	// One mechanism, not two: jump the world-sim clock WITHOUT stamping. Every
+	// hot region becomes stale by the gap, so the very next frame every machine
+	// pays it back through the same wakeDt path a far region uses on approach.
+	// The old per-module catch-up fan-out would now DOUBLE-credit hot machines
+	// (once here, once through their wake lag) — it must never come back
+	// alongside the clock skip.
+	if(!(WORLD_SIM && WORLD_SIM.skip(simDt))) return false;
+	const now=Date.now();
+	noteSaveActivity();
+	if(now-lastPowerCatchupSaveAt>2500){
+		lastPowerCatchupSaveAt=now;
+		saveState();
 	}
-	return changed;
+	return true;
 }
 // --- Ocean shore hint: first contact with a sealed deep-water basin teaches boats ---
 let oceanHintT=0, oceanHintShown=(function(){ try{ return localStorage.getItem('mm_ocean_hint_v1')==='1'; }catch(e){ return false; } })();
@@ -20389,6 +20396,11 @@ function runGameStep(dt,ts){
 		updateBlink(ts);
 		return;
 	}
+	// Far-world clock: advance sim time and recompute the hot set (host hero +
+	// every embodied co-op body — CLAUDE.md rule 3) BEFORE any machine registry
+	// runs, so all of them read the same pre-frame staleness. Stamping happens in
+	// endFrame at the bottom, after the last registry ran.
+	if(WORLD_SIM) WORLD_SIM.beginFrame(dt, player, MM.coopBodies);
 	if(TELEPORTERS && TELEPORTERS.beginPowerFrame) TELEPORTERS.beginPowerFrame();
 	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
 	// Weapon use: canvas taps keep exact pointer aim, the right stick keeps its
@@ -20455,6 +20467,7 @@ function runGameStep(dt,ts){
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
 updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(SMR && SMR.update) SMR.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+	if(WORLD_SIM) WORLD_SIM.endFrame();
 }
 // Hero-mode guest frame (driven from the loop's ghost branch): ONLY the hero-side
 // systems step here — the world (water, fire, creatures, machines, seasons) is
@@ -20741,7 +20754,7 @@ if(!window.__lootNoticeInit){
 }
 
 // Regenerate world using the CURRENT seed (do not change WG.worldSeed)
-window.regenWorldSameSeed = function(){ try{ resetWorldTransitionRuntime(); if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); if(FOREST && FOREST.reset) FOREST.reset(); if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); if(KILN && KILN.reset) KILN.reset(); if(FALLING && FALLING.reset) FALLING.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+window.regenWorldSameSeed = function(){ try{ resetWorldTransitionRuntime(); if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); if(FOREST && FOREST.reset) FOREST.reset(); if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); if(KILN && KILN.reset) KILN.reset(); if(WORLD_SIM && WORLD_SIM.reset) WORLD_SIM.reset(); if(FALLING && FALLING.reset) FALLING.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 	if(SMOKE && SMOKE.reset) SMOKE.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}

@@ -64,6 +64,7 @@ import { isSolidCollisionTile } from './material_physics.js';
   const ORPHAN_TTL = 6, ORPHAN_MAX = 24;
   const BOILER_CAP = 600, JET_CAP = 1200;
   const BOILER_ELECTRIC_CAP = 24;
+  const WAKE_MAX_SECONDS = 900; // tank caps clamp everything a big wake step does
   let sweepAcc = STEAM_CFG.SWEEP_INTERVAL; // first update sweeps immediately
   let simT = 0;
   const metricsState = {boilers:0, jets:0, boiled:0, vented:0, lifted:0, waterDrunk:0, lavaHeat:0, energyHeat:0};
@@ -432,8 +433,22 @@ import { isSolidCollisionTile } from './material_physics.js';
     }
     // Map iteration is delete-safe in JS (ticks only ever delete entries),
     // so no per-frame defensive array copies.
-    for(const b of boilers.values()) tickBoiler(b,dt,getTile,setTile);
-    for(const j of jets.values()) tickJet(j,dt,player,getTile,setTile);
+    // Far machines are FROZEN (worldSim gate): a charged boiler left behind used
+    // to keep paying lava probes and validation reads every frame forever. On
+    // wake, one big step settles boiling/venting — every rate in tickBoiler is
+    // clamped by tank capacities, so a large dt cannot mint steam. Jets carry
+    // only cosmetic timers, so their wake lag is irrelevant (dt-capped inside).
+    const SIM=MM.worldSim;
+    for(const b of boilers.values()){
+      const step=SIM ? SIM.wakeDt(dt,b.x,b.y,WAKE_MAX_SECONDS) : dt;
+      if(step===null) continue;
+      tickBoiler(b,step,getTile,setTile);
+    }
+    for(const j of jets.values()){
+      const step=SIM ? SIM.wakeDt(dt,j.x,j.y,WAKE_MAX_SECONDS) : dt;
+      if(step===null) continue;
+      tickJet(j,Math.min(step,0.25),player,getTile,setTile);
+    }
     metricsState.boilers=boilers.size;
     metricsState.jets=jets.size;
   }

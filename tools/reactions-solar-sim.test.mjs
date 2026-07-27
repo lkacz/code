@@ -104,16 +104,31 @@ assert.ok(solar._debug.fullLightSunAt(0.03,0.5)>0,'dawn provides a small but non
   assert.equal(solar._debug.isGeneratingState(solar._debug.cells.get('5,10')),true,'sunlit solar panel lights its live-generation status');
 }
 
+// Far-world contract (worldSim): a far farm is FROZEN — zero work, zero tile
+// reads — and the frame the player returns pays back the whole absence through
+// the same production math. The old 1 Hz remote tick produced continuously; the
+// new model produces the SAME energy, just settled at the moment of return.
 {
   reset();
+  const { worldSim } = await import('../src/engine/world_sim.js');
+  worldSim.reset();
   setTile(0,10,T.SOLAR_BATTERY);
   setTile(200,10,T.SOLAR_BATTERY);
-  for(let i=0;i<400;i++) solar.update(0.05,{x:0,y:10},getTile);
+  const hero={x:200,y:10};
+  const frame=(dt)=>{ worldSim.beginFrame(dt,hero,null); solar.update(dt,hero,getTile); worldSim.endFrame(); };
+  frame(0.05);                 // the far farm is stamped while its builder stands there
+  hero.x=0;
+  for(let i=0;i<400;i++) frame(0.05);   // 20 s of watched production at home
   const nearby=solar.energyAt(0,10,getTile);
-  const remote=solar.energyAt(200,10,getTile);
-  assert.ok(remote>5,'a registered remote solar farm keeps producing while the player is away');
-  assert.ok(Math.abs(nearby-remote)<=solar._debug.STORAGE_RATE*solar._debug.REMOTE_UPDATE_INTERVAL+0.01,
-    'one-second remote solar ticks stay equivalent to watched production within one bounded tick');
+  const frozen=solar.energyAt(200,10,getTile);
+  assert.ok(nearby>5,'the watched battery produced normally under the gate');
+  assert.ok(frozen<0.2,'the far farm is frozen while nobody is there — no tile reads, no production');
+  hero.x=200;                  // return: one frame settles the whole absence
+  frame(0.05);
+  const woken=solar.energyAt(200,10,getTile);
+  assert.ok(Math.abs(nearby-woken)<=solar._debug.STORAGE_RATE*2+0.05,
+    'the wake pays the absence back through the same math — watched and unwatched farms converge');
+  worldSim.reset();            // later blocks tick without frames; an armed gate would freeze them
 }
 
 {

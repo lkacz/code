@@ -29,6 +29,7 @@ import { T } from '../constants.js';
     COST_PER_FIRE: 1.0,   // progress needed to transmute one tile
     RESCAN_SEC: 1.4,      // chamber revalidation cadence
     MAX_KILNS: 48,        // tracked kilns (hard bound)
+    WAKE_MAX_SEC: 600,    // wake catch-up window (chamber-bounded output anyway)
   };
 
   const kilns = new Map();   // "x,y" -> {x,y,progress,chamber:[],rescan,lit}
@@ -108,20 +109,33 @@ import { T } from '../constants.js';
   function update(dt, player, getTile, setTile){
     if(!(dt > 0) || typeof getTile !== 'function' || typeof setTile !== 'function') return;
     if(!kilns.size) return;
+    const SIM = MM.worldSim;
     for(const [k2, k] of kilns){
+      // Far kilns are FROZEN (worldSim gate) — this loop used to run full-rate
+      // for every kiln everywhere, chamber rescans included. On wake the whole
+      // absence arrives as one step: the fire that burned unwatched has baked
+      // its batches by the time anyone is back to open the chamber. The step
+      // cap is generous because output is chamber-bounded anyway (fireOnce
+      // returns false when nothing eligible remains and progress zeroes).
+      const step = SIM ? SIM.wakeDt(dt, k.x, k.y, CFG.WAKE_MAX_SEC) : dt;
+      if(step === null) continue;
       if(getSafe(getTile, k.x, k.y) !== T.KILN){ kilns.delete(k2); continue; }
-      k.rescan -= dt;
+      k.rescan -= step;
       if(k.rescan <= 0){
         k.rescan = CFG.RESCAN_SEC;
         k.chamber = chamberAt(k.x, k.y, getTile) || [];
       }
       if(!k.chamber.length){ k.lit = false; continue; }
-      const rate = heatRate(k, dt, getTile);
+      // heatRate probes the CURRENT heat source over the whole step: lava is
+      // persistent so a woken lava-fired kiln credits its full absence; a flame
+      // that died out while frozen credits nothing (the documented compromise —
+      // fire is a frozen neighbor-coupled system with no closed form).
+      const rate = heatRate(k, step, getTile);
       const wasLit = k.lit;
       k.lit = rate > 0;
       if(k.lit && !wasLit) stats.lit++;
       if(!k.lit) continue;
-      k.progress += rate * dt;
+      k.progress += rate * step;
       while(k.progress >= CFG.COST_PER_FIRE){
         k.progress -= CFG.COST_PER_FIRE;
         if(!fireOnce(k, getTile, setTile)){ k.progress = 0; break; }  // nothing left to bake

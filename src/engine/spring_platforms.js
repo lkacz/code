@@ -202,16 +202,23 @@ const springPlatforms = (function(){
       scanT=PLAYER_SCAN_INTERVAL;
       scanNearby(player,getTile);
     }
+    const SIM=MM.worldSim;
     for(const [raw,m] of machines){
-      if(!m || getSafe(getTile,m.x,m.y,T.AIR)!==T.SPRING_PLATFORM){
+      if(!m){ machines.delete(raw); continue; }
+      // Far platforms are FROZEN (worldSim gate): no validation read, no network
+      // charge. The wake step pays the whole gap back, capacity-clamped.
+      const step=SIM ? SIM.wakeDt(dt,m.x,m.y,WAKE_MAX_SECONDS) : dt;
+      if(step===null) continue;
+      if(getSafe(getTile,m.x,m.y,T.AIR)!==T.SPRING_PLATFORM){
         machines.delete(raw);
         continue;
       }
-      m.cooldown=Math.max(0,(m.cooldown||0)-dt);
+      m.cooldown=Math.max(0,(m.cooldown||0)-step);
       m.pulse=Math.max(0,(m.pulse||0)-dt*1.8);
-      chargeFromNetwork(m,dt,getTile,opts||{});
+      chargeFromNetwork(m,step,getTile,opts||{});
     }
   }
+  const WAKE_MAX_SECONDS=3600; // charge is capacity-clamped
 
   function catchUp(simDt,player,getTile,opts){
     const dt=Math.max(0,Math.min(900,Number(simDt)||0));
