@@ -884,6 +884,7 @@ let energyFxEmitT=0;
 let heroEnergyDeltaAcc=0;
 let heroLampSaveAt=0;
 let heroLampButtonKey='';
+let debugEnergyAutoRenews=false;
 let turboFx=0, turboSparkT=0;
 let turboRechargePauseT=0;
 let turboEnergyHoldSpent=0;
@@ -1665,6 +1666,21 @@ function applyHeroEnergyCapacity(){
 	player.maxEnergy=target;
 	player.energy=Math.max(0, Math.min(target, Number(player.energy)||0));
 }
+function renewDebugHeroEnergyIfEmpty(){
+	if(!debugEnergyAutoRenews || !player || player.hp<=0) return false;
+	applyHeroEnergyCapacity();
+	if((Number(player.energy)||0)>0.0001) return false;
+	player.energy=player.maxEnergy||heroEnergyCapacity();
+	energyChargeFx.t=Math.max(energyChargeFx.t||0,0.42);
+	energyChargeFx.intensity=Math.max(energyChargeFx.intensity||0,0.72);
+	energyChargeFx.source=null;
+	return true;
+}
+function setDebugEnergyAutoRenews(enabled){
+	debugEnergyAutoRenews=!!enabled;
+	if(debugEnergyAutoRenews) renewDebugHeroEnergyIfEmpty();
+	return debugEnergyAutoRenews;
+}
 function noteHeroEnergyDelta(delta,opts){
 	const n=Number(delta)||0;
 	if(!Number.isFinite(n) || Math.abs(n)<=1e-6) return;
@@ -1717,6 +1733,7 @@ function spendHeroEnergy(amount){
 	if(player.energy<0.0001) player.energy=0;
 	noteHeroEnergyDelta(player.energy-before,{force:n>=1});
 	applyUnderwaterEnergyUseDamage(n);
+	renewDebugHeroEnergyIfEmpty();
 	return true;
 }
 function spendContinuousHeroEnergy(amount){
@@ -1730,6 +1747,7 @@ function spendContinuousHeroEnergy(amount){
 	if(player.energy<0.0001) player.energy=0;
 	noteHeroEnergyDelta(-spent);
 	applyUnderwaterEnergyUseDamage(spent);
+	renewDebugHeroEnergyIfEmpty();
 	return spent;
 }
 function chargeHeroEnergy(amount, opts){
@@ -1763,6 +1781,7 @@ function drainHeroEnergy(opts){
 		energyChargeFx.intensity=0;
 		energyChargeFx.source=null;
 	}
+	renewDebugHeroEnergyIfEmpty();
 	noteSaveActivity();
 	saveState();
 	return before;
@@ -1802,6 +1821,7 @@ function spendTurboEnergy(dt){
 	if(player.energy<0.0001) player.energy=0;
 	recordTurboEnergyUse(spent);
 	applyUnderwaterEnergyUseDamage(spent);
+	renewDebugHeroEnergyIfEmpty();
 	if(player.energy<=TURBO_MIN_ENERGY) reportTurboEnergyUse(true);
 	const now=performance.now();
 	if(now-_lastEnergySaveAt>2500){ _lastEnergySaveAt=now; saveState(); }
@@ -2125,6 +2145,8 @@ Object.assign(TILE_LABELS,{
 	[T.WATER_TURRET]:'Wiezyczka wodna',
 	[T.SPRING_PLATFORM]:'Platforma sprezynowa',
 	[T.TRACK]:'Gasienica',
+	[T.MECH_DRILL_HEAD]:'Glowica wiertnicza mecha',
+	[T.LADDER_MODULE]:'Modul drabiny',
 	[T.CHAIR_WOOD]:'Fotel drewniany',
 	[T.CHAIR_STONE]:'Fotel kamienny',
 	[T.CHAIR_STEEL]:'Fotel stalowy',
@@ -5714,6 +5736,8 @@ const RECIPES=[
 	{id:'graphene_exoplate', name:'Grafenowy egzoszkielet', cost:{graphene:3, steel:2}, make(){ grantCraftedItem({kind:'outfit',name:'Grafenowy egzoszkielet',crushResistBonus:3,tier:'rare',desc:'Najtwardszy material swiata w formie pancerza — przygniecenia bola o wiele mniej'}); }},
 	{id:'spring_platform', name:'Platforma sprezynowa', cost:{steel:2, copperWire:2, transistor:1}, make(){ inv.springPlatform+=1; msg('Platforma sprezynowa +1 - zasil ja dla pelnego wybicia'); }},
 	{id:'tracks', name:'Gasienice x3', cost:{steel:2, coal:1}, make(){ inv.track+=3; msg('Gasienice +3 - modul napedu dla ciezkich konstrukcji'); }},
+	{id:'mech_drill_head', name:'Glowica wiertnicza mecha', cost:{diamond:12, steel:8, obsidian:4, copperWire:4, transistor:2}, make(){ inv.mechDrillHead+=1; msg('Glowica wiertnicza +1 - pelny dolny rzad tworzy mecha kopiacego pionowo w dol'); }},
+	{id:'ladder_module', name:'Modul drabiny', cost:{steel:4, copperWire:2, transistor:2, ladder:6}, make(){ inv.ladderModule+=1; msg('Modul drabiny +1 - na wiertnicy zostawia drabine, a postawiony w jaskini buduje ja w gore'); }},
 	{id:'chair_wood', name:'Fotel drewniany', cost:{wood:3}, make(){ inv.chairWood+=1; msg('Fotel drewniany +1 - mebel: w domu przyspiesza leczenie, na maszynie z gasienicami sterujesz nia jak mechem'); }},
 	{id:'chair_stone', name:'Fotel kamienny', cost:{stone:4, wood:1}, make(){ inv.chairStone+=1; msg('Fotel kamienny +1 - trwalszy mebel do domu i kabiny mecha'); }},
 	{id:'chair_steel', name:'Fotel stalowy', cost:{steel:2, copperWire:1}, make(){ inv.chairSteel+=1; msg('Fotel stalowy +1 - mebel; jako fotel pilota najlepiej przenosi energie bohatera na naped'); }},
@@ -5869,6 +5893,8 @@ const CRAFT_RECIPE_META={
 	solar_battery:{group:'machines',icon:'🔋',out:'solarBattery',amount:1,desc:'Zachowuje dzienny uzysk na noc; sam nie zastapi stabilnego dynama ani elektrowni wodnej.'},
 	spring_platform:{group:'machines',icon:'⏫',out:'springPlatform',amount:1,desc:'Wybija bardzo wysoko po zasileniu; bez energii daje tylko jedna trzecia wysokosci.'},
 	tracks:{group:'machines',icon:'=',out:'track',amount:3,desc:'Trzyblokowy modul napedu gasienicowego.'},
+	mech_drill_head:{group:'machines',icon:'◆',out:'mechDrillHead',amount:1,desc:'Diamentowa glowica. Pelny dolny rzad zmienia konstrukcje z fotelem w pionowa wiertnice; urobek znika, a praca zuzywa energie i diamenty.'},
+	ladder_module:{group:'machines',icon:'🪜',out:'ladderModule',amount:1,desc:'Zuzywa zwykle drabinki. Na wiertnicy zostawia pionowy szlak, a postawiony osobno w wykopanej przestrzeni buduje w gore.'},
 	chair_wood:{group:'furniture',icon:'🪑',out:'chairWood',amount:1,home:{tier:1,bonus:.5,category:'furniture'},desc:'Zwykly mebel: w oswietlonym domu przyspiesza leczenie. Postawiony na maszynie z gasienicami staje sie fotelem pilota (drewno slabo przenosi energie bohatera).'},
 	chair_stone:{group:'furniture',icon:'🪑',out:'chairStone',amount:1,home:{tier:1,bonus:.5,category:'furniture'},desc:'Trwalszy mebel do domu i kabiny mecha; lepiej przenosi energie bohatera.'},
 	chair_steel:{group:'furniture',icon:'🪑',out:'chairSteel',amount:1,home:{tier:2,bonus:.5,category:'furniture'},desc:'Najtrwalszy fotel: komfort w domu, a jako fotel pilota pelne przeniesienie energii bohatera na naped.'},
@@ -9198,6 +9224,40 @@ function _drawMaterialTile(g,t,px,py,h){
 		dot(g,px,py,7,0,1,TILE,'rgba(255,255,255,0.13)');
 		dot(g,px,py,4,4,3,3,'rgba(45,53,63,0.24)');
 		dot(g,px,py,13,13,3,3,'rgba(246,252,255,0.22)');
+	} else if(t===T.MECH_DRILL_HEAD){
+		drawBlockBevel(g,px,py,'rgba(143,247,255,0.30)','rgba(3,13,20,0.46)');
+		g.fillStyle='#263c49';
+		g.fillRect(px+2,py+2,TILE-4,7);
+		g.fillStyle='#59dff2';
+		g.beginPath();
+		g.moveTo(px+3,py+8);
+		g.lineTo(px+TILE-3,py+8);
+		g.lineTo(px+TILE-6,py+TILE-3);
+		g.lineTo(px+TILE*0.5,py+TILE-7);
+		g.lineTo(px+6,py+TILE-3);
+		g.closePath();
+		g.fill();
+		g.fillStyle='rgba(238,255,255,0.88)';
+		g.fillRect(px+4,py+4,TILE-8,2);
+		g.fillRect(px+TILE*0.5-1,py+9,2,TILE-13);
+	} else if(t===T.LADDER_MODULE){
+		drawBlockBevel(g,px,py,'rgba(255,218,158,0.20)','rgba(20,10,3,0.44)');
+		g.fillStyle='#34271d';
+		g.fillRect(px+3,py+3,TILE-6,TILE-6);
+		g.strokeStyle='#d8a15d';
+		g.lineWidth=2;
+		g.beginPath();
+		g.moveTo(px+6,py+TILE-3); g.lineTo(px+6,py+4);
+		g.moveTo(px+TILE-6,py+TILE-3); g.lineTo(px+TILE-6,py+4);
+		for(let yy=7;yy<=15;yy+=4){ g.moveTo(px+6,py+yy); g.lineTo(px+TILE-6,py+yy); }
+		g.stroke();
+		g.fillStyle='#fff0b0';
+		g.beginPath();
+		g.moveTo(px+TILE*0.5,py+2);
+		g.lineTo(px+TILE*0.5-3,py+6);
+		g.lineTo(px+TILE*0.5+3,py+6);
+		g.closePath();
+		g.fill();
 	} else if(t===T.TRACK){
 		drawBlockBevel(g,px,py,'rgba(255,255,255,0.16)','rgba(7,10,14,0.30)');
 		drawTrackTileArt(g,px,py,h,0);
@@ -10025,6 +10085,34 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				}
 				if(t===T.TRACK){
 					drawTrackTileArt(cctx,lx*TILE,y*TILE,h,0);
+				}
+				if(t===T.MECH_DRILL_HEAD){
+					const px=lx*TILE, py=y*TILE;
+					cctx.fillStyle='#263c49';
+					cctx.fillRect(px+2,py+2,TILE-4,7);
+					cctx.fillStyle='#59dff2';
+					cctx.beginPath();
+					cctx.moveTo(px+3,py+8);
+					cctx.lineTo(px+TILE-3,py+8);
+					cctx.lineTo(px+TILE-6,py+TILE-3);
+					cctx.lineTo(px+TILE*0.5,py+TILE-7);
+					cctx.lineTo(px+6,py+TILE-3);
+					cctx.closePath();
+					cctx.fill();
+					cctx.fillStyle='rgba(238,255,255,0.88)';
+					cctx.fillRect(px+4,py+4,TILE-8,2);
+				}
+				if(t===T.LADDER_MODULE){
+					const px=lx*TILE, py=y*TILE;
+					cctx.fillStyle='#34271d';
+					cctx.fillRect(px+3,py+3,TILE-6,TILE-6);
+					cctx.strokeStyle='#d8a15d';
+					cctx.lineWidth=2;
+					cctx.beginPath();
+					cctx.moveTo(px+6,py+TILE-3); cctx.lineTo(px+6,py+4);
+					cctx.moveTo(px+TILE-6,py+TILE-3); cctx.lineTo(px+TILE-6,py+4);
+					for(let yy=7;yy<=15;yy+=4){ cctx.moveTo(px+6,py+yy); cctx.lineTo(px+TILE-6,py+yy); }
+					cctx.stroke();
 				}
 				if(t===T.IRIDIUM){
 					cctx.strokeStyle='rgba(220,244,255,0.44)';
@@ -15459,7 +15547,7 @@ function canPlaceInfrastructureAt(tx,ty,id,remoteContext){
 	if(isPowerCableTileId(id) && getInfrastructureTiles(tx,ty).some(t=>isPowerCableTileId(t))) return {ok:false,id,overlay:true,reason:'W tym miejscu jest juz przewod elektryczny'};
 	if(INFO[cur] && INFO[cur].chestTier) return {ok:false, id, overlay:true, reason:'Skrzynia blokuje instalacje'};
 	if(INFO[cur] && INFO[cur].cache) return {ok:false, id, overlay:true, reason:'Skrytka blokuje instalacje'};
-	if(cur===T.DYNAMO || cur===T.DYNAMO_SLOT || cur===T.TELEPORTER || cur===T.WATER_PUMP || cur===T.STEAM_BOILER || cur===T.STEAM_JET || cur===T.VENDING_MACHINE || cur===T.TURRET || cur===T.FIRE_TURRET || cur===T.WATER_TURRET || cur===T.SPRING_PLATFORM || cur===T.SOLAR_PANEL || cur===T.SOLAR_BATTERY || cur===T.ANTIGRAVITY_BEACON || cur===T.METEOR_SIREN) return {ok:false, id, overlay:true, reason:'Maszyna blokuje instalacje'};
+	if(cur===T.DYNAMO || cur===T.DYNAMO_SLOT || cur===T.TELEPORTER || cur===T.WATER_PUMP || cur===T.STEAM_BOILER || cur===T.STEAM_JET || cur===T.MECH_DRILL_HEAD || cur===T.LADDER_MODULE || cur===T.VENDING_MACHINE || cur===T.TURRET || cur===T.FIRE_TURRET || cur===T.WATER_TURRET || cur===T.SPRING_PLATFORM || cur===T.SOLAR_PANEL || cur===T.SOLAR_BATTERY || cur===T.ANTIGRAVITY_BEACON || cur===T.METEOR_SIREN) return {ok:false, id, overlay:true, reason:'Maszyna blokuje instalacje'};
 	if(remoteActor){
 		const actorBlocked=remotePlacementActorBlockedReason(remoteBody,tx,ty,id);
 		if(actorBlocked) return {ok:false, id, overlay:true, reason:actorBlocked};
@@ -15967,7 +16055,7 @@ const HOT_SELECT_GROUPS=[
 	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','TIN_ORE','GOLD_ORE','SILVER_ORE','SILVER_INGOT','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL','MOTHER_ICE','MOTHER_LAVA','GRAPHITE','GRAPHENE']},
 	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
 	{id:'home',label:'Dom i wyposażenie',tiles:['CHAIR_WOOD','CHAIR_STONE','CHAIR_STEEL','RUSTIC_STOOL','PINE_TABLE','WALL_SHELF','OAK_CABINET','COZY_BED','BOOKCASE','PATCHWORK_SOFA','HAMMOCK','WOVEN_RUG','POTTED_FERN','WALL_CLOCK','MIRROR','AQUARIUM','TERRARIUM','CHANDELIER','INDOOR_FOUNTAIN','HOLOGRAM_ART','DESK_LAMP','RADIO','TELEVISION','GAME_CONSOLE','REFRIGERATOR','COFFEE_MACHINE','AIR_PURIFIER','MEDICAL_STATION','HEALING_POD','ZERO_G_LOUNGER','MEMORY_PROJECTOR','CHRONO_CLOCK','BIOLUM_GARDEN','MINIATURE_SUN','DREAM_SYNTH','COSMIC_ORRERY']},
-		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','KILN','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET','SMR_CELL']},
+		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','MECH_DRILL_HEAD','LADDER_MODULE','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','KILN','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET','SMR_CELL']},
 	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER','BEDROCK_LADDER','WATER_PUMP','TRANSISTOR','TORCH','WEATHERVANE','LIGHTNING_ROD','RESPAWN_TOTEM','PIT_PROP','SAPLING']},
 	{id:'food',label:'Jedzenie',tiles:['MEAT','ROTTEN_MEAT','BAKED_MEAT','GLOWSHROOM']},
 	{id:'chest',label:'Skrzynie',tiles:['CHEST_COMMON','CHEST_UNCOMMON','CHEST_RARE','CHEST_EPIC','CHEST_LEGENDARY']},
@@ -16904,7 +16992,7 @@ function stepMinimapBuild(MW,MH){
 						continue;
 					}
 					const c=minimapTileColor(t);
-					if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || isFurnishingTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.STEAM_BOILER || t===T.STEAM_JET || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
+					if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || t===T.MECH_DRILL_HEAD || t===T.LADDER_MODULE || isFurnishingTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.STEAM_BOILER || t===T.STEAM_JET || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
 					if(!color) color=c;
 				}
 			}
@@ -18411,7 +18499,7 @@ function debugStepMechs(frames,controls){
 }
 function spawnDebugMech(kind){
 	if(!MECHS || !MECHS.forceSpawn) return false;
-	const spawnKind=kind==='solar' ? 'solar' : (kind==='forge_tracks' ? 'forge_tracks' : 'forge');
+	const spawnKind=kind==='solar' ? 'solar' : (kind==='forge_tracks' ? 'forge_tracks' : (kind==='drill' ? 'drill' : 'forge'));
 	const m=MECHS.forceSpawn(spawnKind,player,getTile,setTile);
 	if(!m) return false;
 	debugStepMechs(18,{});
@@ -19197,6 +19285,9 @@ if(MM.ui && MM.ui.injectSpringPlatformDebugPanel) MM.ui.injectSpringPlatformDebu
 	empty:emptyDebugSpringPlatform,
 	metrics:()=> (SPRING_PLATFORMS && SPRING_PLATFORMS.metrics) ? SPRING_PLATFORMS.metrics() : null
 }, menuPanel);
+if(MM.ui && MM.ui.injectEnergyDebugPanel) MM.ui.injectEnergyDebugPanel({
+	autoRenews:setDebugEnergyAutoRenews
+}, menuPanel);
 if(MM.ui && MM.ui.injectMechDebugPanel) MM.ui.injectMechDebugPanel({
 	zoneLeft:()=>debugJumpMechZone(-1),
 	zoneRight:()=>debugJumpMechZone(1),
@@ -19205,6 +19296,7 @@ if(MM.ui && MM.ui.injectMechDebugPanel) MM.ui.injectMechDebugPanel({
 	spawnSolar:()=>spawnDebugMech('solar'),
 	spawnForge:()=>spawnDebugMech('forge'),
 	spawnCrawler:()=>spawnDebugMech('forge_tracks'),
+	spawnDrill:()=>spawnDebugMech('drill'),
 	killPilot:killDebugMechPilot,
 	board:toggleDebugMechBoard,
 	capture:captureDebugMech,
@@ -21170,6 +21262,7 @@ function runGameStep(dt,ts){
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
 updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(SMR && SMR.update) SMR.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+	renewDebugHeroEnergyIfEmpty();
 	if(WORLD_SIM) WORLD_SIM.endFrame();
 }
 // Hero-mode guest frame (driven from the loop's ghost branch): ONLY the hero-side
@@ -21189,6 +21282,7 @@ function runHeroStep(dt,ts){
 		if(mi){ player.x=mi.x+0.5; player.y=mi.y-0.2; player.vx=mi.vx; player.vy=mi.vy; player.onGround=true; }
 		updateHeroEnergy(dt); updateHeroLamp(dt); updateSpecialVision(dt);
 		updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+		renewDebugHeroEnergyIfEmpty();
 		return;
 	}
 	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
@@ -21224,6 +21318,7 @@ function runHeroStep(dt,ts){
 	updateMining(dt);
 	updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt);
 	updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+	renewDebugHeroEnergyIfEmpty();
 	window.__mmHeroStepsEnd=(window.__mmHeroStepsEnd|0)+1; // debug seam: a stall here while __mmHeroSteps grows = a mid-frame throw
 }
 let lastLoopErrAt=0; function loop(ts){

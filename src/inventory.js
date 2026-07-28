@@ -348,6 +348,8 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     {key:'respawnTotem', label:'Totem odrodzenia', color:'#e23b4e', tile:'RESPAWN_TOTEM'},
     {key:'steel',   label:'Stal',    color:'#8f9aa6', tile:'STEEL'},
     {key:'track',   label:'Gasienica', color:'#48515b', tile:'TRACK'},
+    {key:'mechDrillHead', label:'Glowica wiertnicza mecha', color:'#59dff2', tile:'MECH_DRILL_HEAD'},
+    {key:'ladderModule', label:'Modul drabiny', color:'#d8a15d', tile:'LADDER_MODULE'},
     {key:'chairWood',  label:'Fotel drewniany', color:'#a9743c', tile:'CHAIR_WOOD'},
     {key:'chairStone', label:'Fotel kamienny',  color:'#8d939c', tile:'CHAIR_STONE'},
     {key:'chairSteel', label:'Fotel stalowy',   color:'#9fb0bd', tile:'CHAIR_STEEL'},

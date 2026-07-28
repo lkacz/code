@@ -99,9 +99,19 @@ assert.match(uiSrc, /debugNumber\('hostility','reach',1,0\.25,4\)/, 'hostility r
 assert.match(uiSrc, /debugSet\('hostility','intensity',readIntensity\(\)\)/, 'hostility intensity slider persists changes');
 assert.match(uiSrc, /debugSet\('hostility','reach',readReach\(\)\)/, 'hostility reach slider persists changes');
 
+assert.match(uiSrc, /energy:\{autoRenews:false\}/, 'hero energy auto-renew has a safe disabled default');
+assert.match(uiSrc, /function injectEnergyDebugPanel\(actions, menuPanel\)/, 'ui exposes the hero energy debug toggle');
+assert.match(uiSrc, /Energy: auto renews/, 'debug menu names the auto-renew toggle explicitly');
+assert.match(uiSrc, /debugSet\('energy','autoRenews',chk\.checked\)/, 'energy auto-renew persists across app runs');
+assert.match(uiSrc, /dataset\.devTools==='1'/, 'stored debug energy renewal stays disabled on guest replicas');
+assert.match(mainSrc, /function renewDebugHeroEnergyIfEmpty\(\)[\s\S]*player\.energy=player\.maxEnergy\|\|heroEnergyCapacity\(\)/, 'an exhausted hero is refilled to the current full capacity');
+assert.match(mainSrc, /function setDebugEnergyAutoRenews\(enabled\)/, 'main exposes one setter for the persisted toggle');
+assert.match(mainSrc, /injectEnergyDebugPanel\(\{[\s\S]*autoRenews:setDebugEnergyAutoRenews/, 'main wires the energy toggle into the debug menu');
+
 assert.match(uiSrc, /function injectMechDebugPanel\(actions, menuPanel\)/, 'ui exposes a mech debug panel injector');
 assert.match(uiSrc, /\['spawnForge','Spawn forge'/, 'mech debug panel can force-spawn forge mechs');
 assert.match(uiSrc, /\['spawnCrawler','Spawn gasienice'/, 'mech debug panel can force-spawn tracked forge crawlers');
+assert.match(uiSrc, /\['spawnDrill','Spawn wiertnice'/, 'mech debug panel can force-spawn the vertical boring rig');
 assert.match(uiSrc, /\['procRight','Strefa ->'/, 'mech debug panel can force far-zone prototype mech spawns');
 assert.match(uiSrc, /\['capture','Przejmij'/, 'mech debug panel can capture a pilot-defeated mech');
 assert.match(uiSrc, /\['driveRight','Krok ->'/, 'mech debug panel can test rider movement power gating');
@@ -110,7 +120,7 @@ assert.match(uiSrc, /\['shield','Pancerz'/, 'mech debug panel can test armor abs
 assert.match(uiSrc, /\['pit','Dol'/, 'mech debug panel can set up pit jump/escape tests');
 assert.match(uiSrc, /\['wall','Sciana'/, 'mech debug panel can set up house/wall attack tests');
 assert.match(mainSrc, /injectMechDebugPanel\(\{/, 'main wires the mech debug panel into the menu');
-for(const action of ['zoneLeft','zoneRight','procLeft','procRight','spawnSolar','spawnForge','spawnCrawler','killPilot','board','capture','driveLeft','driveRight','jumpTest','fillPower','emptyPower','powerRig','shield','damage','fireHit','waterHit','destroy','wall','trees','pit','mob','saveLoad','reset','metrics']){
+for(const action of ['zoneLeft','zoneRight','procLeft','procRight','spawnSolar','spawnForge','spawnCrawler','spawnDrill','killPilot','board','capture','driveLeft','driveRight','jumpTest','fillPower','emptyPower','powerRig','shield','damage','fireHit','waterHit','destroy','wall','trees','pit','mob','saveLoad','reset','metrics']){
 	assert.match(mainSrc, new RegExp(action+':'), 'main wires mech debug action '+action);
 }
 

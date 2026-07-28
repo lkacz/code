@@ -13,7 +13,7 @@ globalThis.CustomEvent = globalThis.CustomEvent || class { constructor(type,opts
 const events=[];
 globalThis.dispatchEvent = ev => { events.push(ev); return true; };
 globalThis.msg = text => { events.push({type:'msg',detail:{text}}); };
-globalThis.inv = { coal:5, steel:0, track:0, chairWood:0, chairStone:0, chairSteel:0 };
+globalThis.inv = { coal:5, steel:0, track:0, chairWood:0, chairStone:0, chairSteel:0, diamond:0, ladder:0, mechDrillHead:0, ladderModule:0 };
 globalThis.player = {x:0,y:0,w:0.7,h:0.95,vx:0,vy:0,onGround:true,hp:100,maxHp:100,xp:0,energy:0,maxEnergy:120};
 globalThis.MM.heroEnergy = {
   info(){ return {energy:globalThis.player.energy||0, max:globalThis.player.maxEnergy||120}; },
@@ -575,5 +575,66 @@ assert.equal(getTile(330,16),T.WOOD, 'house walls are untouched');
 const hintsAfter=events.filter(e=>e.type==='msg' && /podwozia|za duza/.test((e.detail && e.detail.text) || '')).length;
 assert.equal(hintsAfter,hintsBefore, 'furniture chairs never nag about missing mech parts (no tracks = no mech intent)');
 assert.equal(mechs.wantsInteractKey(globalThis.player), false, 'E over a furniture chair stays with the wardrobe panel');
+
+// --- Scenario 10: diamond boring rig + optional ladder module ----------------
+mechs.reset();
+for(const [raw] of [...tiles]) tiles.delete(raw);
+infra.clear();
+globalThis.inv.diamond=20;
+globalThis.inv.ladder=20;
+setTile(401,17,T.CHAIR_STEEL);
+setTile(400,18,T.STEEL);
+setTile(401,18,T.DYNAMO);
+setTile(402,18,T.LADDER_MODULE);
+for(let x=400;x<=402;x++) setTile(x,19,T.MECH_DRILL_HEAD);
+setTile(401,20,T.DIAMOND); // valuable terrain is dust, never a mining payout
+for(let x=400;x<=402;x++) setTile(x,22,T.BEDROCK);
+sitAt(401,17);
+assert.equal(seat(),true,'a full-width drill-head row assembles a vertical boring mech');
+const drill=mechs.heroMech();
+assert.equal(drill.variant,'drill','drill heads select the drill drive variant');
+assert.equal(mechs._debug.mechDrillCircuitConnected(drill),true,'the conductive drill row reaches the onboard dynamo');
+drill.energy=100;
+const diamondBefore=globalThis.inv.diamond;
+settle(100,{});
+assert.equal(getTile(401,20),T.AIR,'diamond ore in the shaft is ground to dust');
+assert.ok(globalThis.inv.diamond<diamondBefore,'boring consumes diamonds continuously instead of yielding ore');
+assert.ok(drill.drilledBlocks>=6,'the rig records every destroyed shaft block');
+assert.equal(globalThis.MM.world.hasInfrastructure(402,18,T.LADDER),true,'the attached module leaves an ordinary ladder behind');
+const stoppedY=drill.y;
+settle(100,{});
+assert.equal(drill.y,stoppedY,'bedrock stops the rig without being destroyed');
+assert.equal(getTile(401,22),T.BEDROCK,'bedrock remains intact');
+const drillSnap=mechs.snapshot();
+assert.equal(drillSnap.list[0].variant,'drill','save data keeps the drill variant');
+assert.ok(Number.isInteger(drillSnap.list[0].drilledBlocks),'save data keeps drill progress');
+mechs.reset();
+
+// --- Scenario 11: standalone module builds upward in excavated cave ----------
+for(const [raw] of [...tiles]) tiles.delete(raw);
+infra.clear();
+globalThis.inv.ladder=3;
+setTile(500,100,T.LADDER_MODULE);
+for(let y=97;y<=99;y++) setTile(500,y,T.AIR);
+globalThis.player.x=500.5;
+globalThis.player.y=100;
+globalThis.player.onGround=true;
+settle(120,{});
+assert.equal(globalThis.inv.ladder,0,'standalone ladder module consumes ordinary crafted ladders');
+for(let y=97;y<=99;y++) assert.equal(globalThis.MM.world.hasInfrastructure(500,y,T.LADDER),true,'standalone module left rung at '+y);
+assert.equal(getTile(500,100),T.LADDER_MODULE,'module remains removable after the ladder is complete');
+
+// --- Scenario 12: debug menu factory exposes the complete boring rig --------
+mechs.reset();
+globalThis.player.x=600.5;
+globalThis.player.y=18.5;
+const debugDrill=mechs.forceSpawn('drill',globalThis.player,getTile,setTile);
+assert.ok(debugDrill,'debug factory spawns a boring mech');
+assert.equal(debugDrill.kind,'built','debug boring rig uses the ordinary player-built mech simulation');
+assert.equal(debugDrill.variant,'drill','debug boring rig selects the drill drive');
+assert.equal(debugDrill.energy,debugDrill.maxEnergy,'debug boring rig arrives fully charged');
+assert.equal(debugDrill.cells.filter(c=>c.t===T.MECH_DRILL_HEAD).length,3,'debug boring rig has a full three-head bottom row');
+assert.ok(debugDrill.cells.some(c=>c.t===T.LADDER_MODULE),'debug boring rig includes the optional ladder module');
+assert.equal(mechs._debug.mechDrillCircuitConnected(debugDrill),true,'debug boring rig heads are connected to its battery');
 
 console.log('built-mechs-sim ok');

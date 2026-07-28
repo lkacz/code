@@ -20,7 +20,8 @@ MM.ui = (function(){
     gas:{power:2},
     wind:{speed:0,mode:'natural',profile:null},
     seasons:{enabled:true,forced:null},
-    hostility:{intensity:1,reach:1}
+    hostility:{intensity:1,reach:1},
+    energy:{autoRenews:false}
   };
   function debugStorageAvailable(){ return typeof localStorage!=='undefined'; }
   function debugDefaultSection(section){ return Object.assign({}, DEBUG_DEFAULTS[section] || {}); }
@@ -1902,6 +1903,7 @@ MM.ui = (function(){
       ['spawnSolar','Spawn solar','Wymusza solar-mecha przy graczu','Mech solarny przyzwany','Brak miejsca na solar-mecha'],
       ['spawnForge','Spawn forge','Wymusza forge-mecha przy graczu','Forge-mech przyzwany','Brak miejsca na forge-mecha'],
       ['spawnCrawler','Spawn gasienice','Wymusza forge crawlera z 3-blokowa realna gasienica TRACK','Crawler przyzwany','Brak miejsca na crawlera'],
+      ['spawnDrill','Spawn wiertnice','Wymusza naladowana wiertnice z trzema glowicami i modulem drabiny','Wiertnica przyzwana','Brak miejsca na wiertnice'],
       ['killPilot','Pilot KO','Pokonuje pilota bez niszczenia kadluba','Pilot pokonany','Brak pilota do pokonania'],
       ['board','Wsiadz/wyjdz','Przejmuje pustego mecha albo z niego wysiada','Przelaczono jazde mechem','Najpierw pokonaj pilota'],
       ['capture','Przejmij','Pokonuje pilota i od razu wsiada','Mech przejety','Nie udalo sie przejac mecha'],
@@ -1938,6 +1940,34 @@ MM.ui = (function(){
       if(!document.body.contains(box)){ clearInterval(timer); return; }
       if(!panel.hidden) refreshMetrics();
     },1200);
+    panel.appendChild(box);
+  }
+  function injectEnergyDebugPanel(actions, menuPanel){
+    const panel=menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('energyDebugBox')) return;
+    actions=actions||{};
+    const box=document.createElement('div');
+    box.id='energyDebugBox';
+    box.style.cssText='display:flex; align-items:center; gap:6px; margin-top:6px; border-top:1px solid rgba(118,236,255,.16); padding-top:6px;';
+    const label=document.createElement('label');
+    label.style.cssText='display:flex; align-items:center; gap:6px; font-size:11px; cursor:pointer;';
+    const chk=document.createElement('input');
+    chk.type='checkbox';
+    chk.id='energyAutoRenewsDebug';
+    const armed=document.documentElement && document.documentElement.dataset.devTools==='1';
+    chk.checked=!!(armed && debugSection('energy').autoRenews);
+    label.appendChild(chk);
+    label.appendChild(document.createTextNode('Energy: auto renews'));
+    box.appendChild(label);
+    function apply(){
+      if(typeof actions.autoRenews==='function') actions.autoRenews(chk.checked);
+    }
+    chk.addEventListener('change',()=>{
+      debugSet('energy','autoRenews',chk.checked);
+      apply();
+      msg('Energy: auto renews '+(chk.checked?'ON':'OFF'));
+    });
+    apply();
     panel.appendChild(box);
   }
   function injectPumpDebugPanel(actions, menuPanel){
@@ -2940,7 +2970,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, injectNoiseDebugPanel, injectWildfireDebugPanel, injectCaveInDebugPanel, injectForestDebugPanel, injectKilnDebugPanel, injectGliderDebugPanel, injectLayerDebugPanel, injectEconomyDebugPanel, injectGearDebugPanel, injectCapeDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectEnergyDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, injectNoiseDebugPanel, injectWildfireDebugPanel, injectCaveInDebugPanel, injectForestDebugPanel, injectKilnDebugPanel, injectGliderDebugPanel, injectLayerDebugPanel, injectEconomyDebugPanel, injectGearDebugPanel, injectCapeDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

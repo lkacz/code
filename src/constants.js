@@ -73,7 +73,11 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   // fells/burns like wood (isWood below) but drops raw 'rubber' (kauczuk) instead
   // of timber — the elastic material behind bouncing ammunition (the 'bouncy'
   // weaponType in engine/weapons.js). Placeable like the other wood species.
-  RUBBER_WOOD:147
+  RUBBER_WOOD:147,
+  // Built-mech excavation tools (engine/mechs.js). A complete bottom row of
+  // drill heads turns a chair-crowned construction into a vertical boring rig.
+  // The ladder module can ride the rig or extend a shaft upward when placed.
+  MECH_DRILL_HEAD:148, LADDER_MODULE:149
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -318,6 +322,8 @@ INFO[T.VINE]={hp:1,color:'#3f7d3a',drop:'vine',passable:true,flammable:true,burn
 INFO[T.PIT_PROP]={hp:4,color:'#8a6236',drop:'wood',passable:true,flammable:true,burnTime:2.2};
 INFO[T.SAPLING]={hp:1,color:'#5fae4a',drop:'wood',passable:true,flammable:true,burnTime:0.9};
 INFO[T.KILN]={hp:14,color:'#9c5b3a',drop:'brick',passable:false,machine:true};
+INFO[T.MECH_DRILL_HEAD]={hp:16,color:'#4b7180',drop:'mechDrillHead',passable:false,machine:'mechDrillHead',powerDevice:true,conductor:true};
+INFO[T.LADDER_MODULE]={hp:10,color:'#6f5b43',drop:'ladderModule',passable:false,machine:'ladderModule'};
 // --- the glow attribute -------------------------------------------------------
 // ONE declaration that a thing emits light. Tiles carry it here; creatures,
 // weapons, projectiles, drops and effects carry the same shape on their own

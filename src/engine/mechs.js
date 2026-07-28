@@ -71,7 +71,14 @@ import { damageBlastCreatures } from './explosion_damage.js';
     BUILT_PANEL_ENERGY: 8,
     BUILT_MAX_ENERGY_CAP: 300,
     BUILT_SEAT_SCAN_COOLDOWN: 0.9,
-    BUILT_SEAT_JUMP_GRACE: 0.35
+    BUILT_SEAT_JUMP_GRACE: 0.35,
+    DRILL_STEP_INTERVAL: 0.55,
+    DRILL_BASE_ENERGY: 1.5,
+    DRILL_BLOCK_ENERGY: 0.5,
+    DRILL_BLOCKS_PER_DIAMOND: 4,
+    LADDER_MODULE_INTERVAL: 0.55,
+    LADDER_MODULE_RADIUS: 10,
+    LADDER_MODULE_MAX_RUN: 500
   };
   // Chair material sets how efficiently the seated hero's own energy reaches the
   // drive: steel is a clean link, wood wastes the most.
@@ -88,6 +95,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
   let spawnFreezeT = 0;
   let lastGetTile = null;
   let lastSetTile = null;
+  let standaloneLadderT = 0;
 
   function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
   function finite(v){ return Number.isFinite(Number(v)); }
@@ -157,6 +165,15 @@ import { damageBlastCreatures } from './explosion_damage.js';
     notifyResources(key,amount);
     return true;
   }
+  function spendResource(key,n,ctx){
+    const amount=Math.max(0,n|0);
+    if(amount<=0 || (ctx && ctx.godMode)) return true;
+    const inv=root.inv;
+    if(!inv || (Number(inv[key])||0)<amount) return false;
+    inv[key]=Math.max(0,(Number(inv[key])||0)-amount);
+    notifyResources(key,-amount);
+    return true;
+  }
   function addXp(amount,x,y,species){
     const p=root.player;
     const n=Math.max(0,Math.round(Number(amount)||0));
@@ -190,7 +207,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     T.WOOD_DOOR,T.STONE_DOOR,T.STEEL_DOOR,
     T.WOOD_TRAPDOOR,T.STONE_TRAPDOOR,T.STEEL_TRAPDOOR,
     T.LADDER,T.BEDROCK_LADDER,T.CHAIR_WOOD,T.CHAIR_STONE,T.CHAIR_STEEL,
-    T.STEAM_BOILER,T.STEAM_JET
+    T.STEAM_BOILER,T.STEAM_JET,T.MECH_DRILL_HEAD,T.LADDER_MODULE
   ]);
   function isMechComponentTile(t){ return MECH_COMPONENT_TILES.has(t); }
   function isPowerCableTile(t){ return t===T.COPPER_WIRE || t===T.SILVER_WIRE; }
@@ -1375,6 +1392,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(t===T.SPRING_PLATFORM) return 'spring';
     if(t===T.STEAM_BOILER) return 'boiler';
     if(t===T.STEAM_JET) return 'jet';
+    if(t===T.MECH_DRILL_HEAD) return 'drill';
+    if(t===T.LADDER_MODULE) return 'ladderModule';
     if(isMountedTurretTile(t)) return 'turret';
     if(t===T.SOLAR_PANEL) return 'solar';
     if(t===T.SOLAR_BATTERY) return 'power';
@@ -1394,7 +1413,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(infra.length && isPlayerPassableTile(t)) return {t:T.AIR,infra};
     return null;
   }
-  function isDriveTile(t){ return t===T.TRACK || t===T.SPRING_PLATFORM; }
+  function isDriveTile(t){ return t===T.TRACK || t===T.SPRING_PLATFORM || t===T.MECH_DRILL_HEAD; }
   function scanBuiltStructure(sx,sy,getTile){
     sx=Math.floor(sx); sy=Math.floor(sy);
     if(!isChairTile(getSafe(getTile,sx,sy,T.AIR))) return {ok:false,reason:'chair'};
@@ -1436,10 +1455,20 @@ import { damageBlastCreatures } from './explosion_damage.js';
     const tracks=bottom.filter(c=>c.t===T.TRACK).length;
     const springs=bottom.filter(c=>c.t===T.SPRING_PLATFORM).length;
     const jets=bottom.filter(c=>c.t===T.STEAM_JET).length;
+    const drills=bottom.filter(c=>c.t===T.MECH_DRILL_HEAD).length;
     let drive=null;
     if(tracks===bottom.length && tracks>=CFG.BUILT_MIN_TRACKS) drive='tracks';
     else if(springs===bottom.length && springs>=1) drive='springs';
     else if(jets===bottom.length && jets>=CFG.BUILT_MIN_JETS) drive='steam';
+    else if(drills===bottom.length && drills>=1){
+      const body=cells.filter(c=>c.t!==T.AIR);
+      const minX=Math.min(...body.map(c=>c.x));
+      const maxX=Math.max(...body.map(c=>c.x));
+      const drillX=new Set(bottom.map(c=>c.x));
+      let fullWidth=true;
+      for(let x=minX;x<=maxX;x++) if(!drillX.has(x)){ fullWidth=false; break; }
+      if(fullWidth) drive='drill';
+    }
     if(!drive) return {ok:false,reason:'platform'};
     // a steam airship needs its boiler aboard — the jets alone are dead pipes
     if(drive==='steam' && !cells.some(c=>c.t===T.STEAM_BOILER)) return {ok:false,reason:'boiler'};
@@ -1573,7 +1602,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
     }
     const analysis=analyzeBuiltCells(scan.cells);
     if(!analysis.ok){
-      if(analysis.reason==='platform' && scan.sawDrive) seatHint('Fotel jest, ale brakuje podwozia: caly dolny rzad musza tworzyc gasienice (min. '+CFG.BUILT_MIN_TRACKS+'), platformy sprezynowe albo dysze parowe (min. '+CFG.BUILT_MIN_JETS+').');
+      if(analysis.reason==='platform' && scan.sawDrive) seatHint('Fotel jest, ale brakuje podwozia: caly dolny rzad musza tworzyc gasienice (min. '+CFG.BUILT_MIN_TRACKS+'), platformy sprezynowe, dysze parowe (min. '+CFG.BUILT_MIN_JETS+') albo glowice wiertnicze na cala szerokosc.');
       if(analysis.reason==='boiler') seatHint('Dysze parowe sa, ale statek nie ma kotla: wbuduj kociol parowy w kadlub.');
       return null;
     }
@@ -1603,8 +1632,17 @@ import { damageBlastCreatures } from './explosion_damage.js';
     mechs.push(m);
     markCellIndexDirty();
     boardBuiltMech(m,player);
+    if(analysis.drive==='drill'){
+      // A boring rig leaves its surface station behind, so load the hull reserve
+      // once at launch from nearby real dynamos/batteries/SMR/rods. The transfer
+      // drains those shared machine stores; it never mints private mech power.
+      const launchCharge=externalPowerDrainNear(m,m.maxEnergy,getTile);
+      if(launchCharge>0) m.energy=Math.min(m.maxEnergy,(m.energy||0)+launchCharge);
+    }
     const hasSource=countCells(m,isPowerSourceCell)>0;
-    if(analysis.drive==='steam'){
+    if(analysis.drive==='drill'){
+      say('Wiertnica zlozona! Sama schodzi pionowo. Naladuj ja przy powierzchni z dynama lub baterii; zuzywa 1 diament na '+CFG.DRILL_BLOCKS_PER_DIAMOND+' startych blokow. Skok zatrzymuje i parkuje maszyne.');
+    } else if(analysis.drive==='steam'){
       say('Parowy statek zlozony! W wznosi (pali pare z kotla), A/D steruje, skok wysiada. Kociol pije wode i grzeje sie energia lub zarem.');
     } else if(analysis.drive==='tracks' && !hasSource){
       say('Mech zlozony! Ruszy na twojej energii - dynamo, panele lub bateria odciaza bohatera.');
@@ -1830,10 +1868,176 @@ import { damageBlastCreatures } from './explosion_damage.js';
   }
   // ===== end steam flight ====================================================
 
+  // ===== vertical boring rig ================================================
+  function drillCells(m){
+    return (m && m.cells || []).filter(c=>c && (c.t===T.MECH_DRILL_HEAD || c.role==='drill'));
+  }
+  function ladderModuleCell(m){
+    return (m && m.cells || []).find(c=>c && (c.t===T.LADDER_MODULE || c.role==='ladderModule')) || null;
+  }
+  function hasDrillDrive(m){ return !!m && m.variant==='drill' && drillCells(m).length>0; }
+  function mechDrillCircuitConnected(m,energised){
+    const heads=drillCells(m);
+    if(!heads.length) return false;
+    if(!energised) energised=energisedCells(m);
+    return heads.every(c=>cellPowered(c,energised));
+  }
+  function drillCircuitEfficiency(m){
+    const heads=drillCells(m);
+    if(!heads.length || !mechDrillCircuitConnected(m)) return 0;
+    const lossless=energisedCells(m,true);
+    return heads.every(c=>cellPowered(c,lossless)) ? 1 : 0.5;
+  }
+  function drillProtectedTile(t){
+    if(t===T.BEDROCK) return true;
+    const info=INFO[t] || {};
+    return !!(info.unmineable || info.protected || info.story || info.altar ||
+      info.guardianRelic || info.machine || info.chestTier || info.cache);
+  }
+  function drillTargets(m,getTile){
+    const out=[];
+    const seen=new Set();
+    for(const c of drillCells(m)){
+      const x=Math.floor(m.x+c.dx), y=Math.floor(m.y+c.dy+1);
+      const key=x+','+y;
+      if(seen.has(key)) continue;
+      seen.add(key);
+      out.push({x,y,t:getSafe(getTile,x,y,T.BEDROCK)});
+    }
+    return out;
+  }
+  function spendDrillEnergy(m,amount,getTile,ctx){
+    if(ctx && ctx.godMode) return true;
+    const efficiency=drillCircuitEfficiency(m);
+    if(efficiency<=0) return false;
+    const useful=Math.max(0,Number(amount)||0);
+    const raw=useful/efficiency;
+    const have=Math.max(0,Number(m.energy)||0);
+    if(have+0.00001<raw) return false;
+    m.energy=Math.max(0,have-raw);
+    recordMechCopperLoss(m,raw,useful,getTile);
+    m.powerPulse=Math.min(1,(m.powerPulse||0)+0.3);
+    return true;
+  }
+  function layDrillLadder(m,oldY,ctx){
+    const module=ladderModuleCell(m);
+    if(!module) return false;
+    const x=Math.floor(m.x+module.dx), y=Math.floor(oldY+module.dy);
+    const w=worldApi();
+    if(!w || typeof w.hasInfrastructure!=='function') return false;
+    try{ if(w.hasInfrastructure(x,y,T.LADDER)) return true; }catch(e){}
+    if(!spendResource('ladder',1,ctx)){
+      if(simT-(m._noLadderMsgT||-9)>2.5){
+        m._noLadderMsgT=simT;
+        say('Modul drabiny jest pusty - potrzebuje zwyklych drabinek z ekwipunku.');
+      }
+      return false;
+    }
+    if(setInfraAt(x,y,T.LADDER)) return true;
+    addResource('ladder',1);
+    return false;
+  }
+  function updateDrillMech(m,dt,player,getTile,setTile,ctx){
+    m.vx=0; m.vy=0; m.onGround=true;
+    m.drillT=Math.max(0,(Number(m.drillT)||0)-dt);
+    if(m.drillT>0){ syncRider(player); return; }
+    m.drillT=CFG.DRILL_STEP_INTERVAL;
+    const targets=drillTargets(m,getTile);
+    if(!targets.length || targets.some(c=>!inWorldY(c.y) || drillProtectedTile(c.t))){
+      if(simT-(m._drillStopMsgT||-9)>2.5){
+        m._drillStopMsgT=simT;
+        say('Wiertnica zatrzymana: skala macierzysta albo chroniona konstrukcja blokuje glowice.');
+      }
+      syncRider(player);
+      return;
+    }
+    const solids=targets.filter(c=>isBlockingTile(c.t));
+    const wear=Math.max(0,m.drillWear|0)+solids.length;
+    const diamonds=Math.floor(wear/CFG.DRILL_BLOCKS_PER_DIAMOND);
+    const energy=CFG.DRILL_BASE_ENERGY+solids.length*CFG.DRILL_BLOCK_ENERGY;
+    if(!mechDrillCircuitConnected(m)){
+      if(simT-(m._drillPowerMsgT||-9)>2.5){
+        m._drillPowerMsgT=simT;
+        say('Wiertnica zatrzymana: wszystkie glowice musza dotykac zasilonej sieci mecha.');
+      }
+      syncRider(player);
+      return;
+    }
+    if(!(ctx && ctx.godMode) && (!root.inv || (Number(root.inv.diamond)||0)<diamonds)){
+      if(simT-(m._drillDiamondMsgT||-9)>2.5){
+        m._drillDiamondMsgT=simT;
+        say('Wiertnica zatrzymana: dosyp diamentow (1 na '+CFG.DRILL_BLOCKS_PER_DIAMOND+' starte bloki).');
+      }
+      syncRider(player);
+      return;
+    }
+    if(!spendDrillEnergy(m,energy,getTile,ctx)){
+      if(simT-(m._drillPowerMsgT||-9)>2.5){
+        m._drillPowerMsgT=simT;
+        say('Wiertnica zatrzymana: za malo energii w pokladowej sieci.');
+      }
+      syncRider(player);
+      return;
+    }
+    if(!spendResource('diamond',diamonds,ctx)){ syncRider(player); return; }
+    m.drillWear=wear%CFG.DRILL_BLOCKS_PER_DIAMOND;
+    for(const c of solids){
+      for(const it of infraStackAt(c.x,c.y)) clearInfraAt(c.x,c.y,it);
+      if(setSafe(setTile,c.x,c.y,T.AIR)) afterWorldTileRemoved(c.x,c.y,getTile);
+    }
+    const oldY=m.y;
+    m.y+=1;
+    m.drilledBlocks=(m.drilledBlocks|0)+solids.length;
+    m.crushFx=1;
+    markCellIndexDirty();
+    layDrillLadder(m,oldY,ctx);
+    playMech(m,solids.length?'break':'charge',0.18);
+    syncRider(player);
+  }
+  // ===== end vertical boring rig ============================================
+
+  // A standalone module is deliberately stateless: while the owner is nearby,
+  // it spends ordinary crafted ladder items and extends through excavated
+  // underground space. Removing it stops the job; placed rungs remain.
+  function updateStandaloneLadderModules(dt,player,getTile){
+    standaloneLadderT-=dt;
+    if(standaloneLadderT>0 || !player || !finite(player.x) || !finite(player.y)) return;
+    standaloneLadderT=CFG.LADDER_MODULE_INTERVAL;
+    if(!root.inv || (Number(root.inv.ladder)||0)<=0) return;
+    const px=Math.floor(player.x), py=Math.floor(player.y), r=CFG.LADDER_MODULE_RADIUS;
+    for(let y=Math.max(WORLD_TOP,py-r);y<=Math.min(WORLD_BOTTOM-1,py+r);y++){
+      for(let x=px-r;x<=px+r;x++){
+        if(getSafe(getTile,x,y,T.AIR)!==T.LADDER_MODULE) continue;
+        let target=null;
+        for(let i=1;i<=CFG.LADDER_MODULE_MAX_RUN;i++){
+          const ty=y-i;
+          if(!inWorldY(ty)) break;
+          let has=false;
+          try{ has=!!(worldApi() && worldApi().hasInfrastructure && worldApi().hasInfrastructure(x,ty,T.LADDER)); }catch(e){}
+          if(has) continue;
+          const t=getSafe(getTile,x,ty,T.BEDROCK);
+          let surface=-Infinity;
+          try{ surface=Math.floor(WORLDGEN.surfaceHeight(x)); }catch(e){}
+          if(ty<surface || !isReplaceableNaturalOpenTile(t,false)) break;
+          target={x,y:ty};
+          break;
+        }
+        if(!target) continue;
+        if(!spendResource('ladder',1,null)) return;
+        if(!setInfraAt(target.x,target.y,T.LADDER)) addResource('ladder',1);
+        return;
+      }
+    }
+  }
+
   function updateSeatedBuiltMech(m,dt,player,getTile,setTile,ctx){
     const controls=(ctx && ctx.controls) || {};
     if(controls.jump && simT-(m._seatT||0)>CFG.BUILT_SEAT_JUMP_GRACE){
       parkBuiltMech(m,player,getTile,setTile,{hop:true});
+      return;
+    }
+    if(hasDrillDrive(m)){
+      updateDrillMech(m,dt,player,getTile,setTile,ctx||{});
       return;
     }
     let dir=0;
@@ -1977,6 +2181,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
     if(mechs.some(m=>m.guestGid===gid)) return {ok:false, reason:'driving'};
     const m=nearestBoardable(body);
     if(!m) return {ok:false, reason:'no-mech'};
+    // Drilling spends the seated hero's local diamonds. Hero guests keep their
+    // inventory guest-side, so the host cannot honestly charge that material.
+    if(hasDrillDrive(m)) return {ok:false, reason:'drill-local-only'};
     m.guestGid=gid;
     m.guestControls={left:false,right:false,up:false};
     m.vx=0;
@@ -2165,6 +2372,7 @@ import { damageBlastCreatures } from './explosion_damage.js';
       scanT=CFG.SCAN_INTERVAL;
       if(spawnFreezeT<=0) scanSpawns(player,getTile);
     }
+    updateStandaloneLadderModules(dt,player,getTile);
     for(const m of mechs) updateMech(m,dt,player,getTile,setTile,ctx||{});
     for(let i=mechs.length-1;i>=0;i--){
       const m=mechs[i];
@@ -2936,6 +3144,10 @@ import { damageBlastCreatures } from './explosion_damage.js';
             return cell;
           });
           out.variant=m.variant||'tracks';
+          if(hasDrillDrive(m)){
+            out.drillWear=Math.max(0,Math.min(CFG.DRILL_BLOCKS_PER_DIAMOND-1,m.drillWear|0));
+            out.drilledBlocks=Math.max(0,m.drilledBlocks|0);
+          }
           // hull boiler tanks ride the save too: without this a steam airship
           // reloads dry and falls out of the sky (world boilers are covered by
           // steam_machines.snapshot, but only once the hull is parked back)
@@ -2996,8 +3208,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
         let seed=Number.isFinite(Number(raw.salvageSeed)) ? Number(raw.salvageSeed)|0 : Math.floor(Number(raw.x));
         if(raw.kind==='built' && Array.isArray(raw.cells)){
           const cells=sanitizeSavedBuiltCells(raw.cells);
-          m=makeBuiltMechFromCells(cells,Number(raw.x),Number(raw.y),raw.variant==='springs'?'springs':(raw.variant==='steam'?'steam':'tracks'));
+          m=makeBuiltMechFromCells(cells,Number(raw.x),Number(raw.y),raw.variant==='springs'?'springs':(raw.variant==='steam'?'steam':(raw.variant==='drill'?'drill':'tracks')));
           if(!m) continue;
+          if(m.variant==='drill'){
+            m.drillWear=Number.isFinite(Number(raw.drillWear)) ? clamp(Number(raw.drillWear)|0,0,CFG.DRILL_BLOCKS_PER_DIAMOND-1) : 0;
+            m.drilledBlocks=Number.isFinite(Number(raw.drilledBlocks)) ? clamp(Number(raw.drilledBlocks)|0,0,10000000) : 0;
+          }
           seed=0;
           // hull boiler tanks: clamp against the shared physics table and only
           // accept entries that still map to a boiler cell of this hull
@@ -3068,11 +3284,44 @@ import { damageBlastCreatures } from './explosion_damage.js';
     seatBlock=null;
     lastSeatTry=null;
     seatHintAt=-99;
+    standaloneLadderT=0;
     markCellIndexDirty();
     spawnFreezeT=Math.max(0,Math.min(20,Number(opts&&opts.suppressSpawns)||0));
   }
+  function makeDebugDrillMech(x,getTile){
+    const cells=[];
+    pushCell(cells,1,0,T.CHAIR_STEEL,'chair');
+    pushCell(cells,0,1,T.STEEL,'body');
+    pushCell(cells,1,1,T.SOLAR_BATTERY,'power');
+    pushCell(cells,2,1,T.LADDER_MODULE,'ladderModule');
+    pushCell(cells,0,2,T.STEEL,'body');
+    pushCell(cells,1,2,T.COPPER_WIRE,'wire');
+    pushCell(cells,2,2,T.STEEL,'body');
+    pushCell(cells,0,3,T.MECH_DRILL_HEAD,'drill');
+    pushCell(cells,1,3,T.MECH_DRILL_HEAD,'drill');
+    pushCell(cells,2,3,T.MECH_DRILL_HEAD,'drill');
+    const bounds=normalizeCells(cells);
+    const y=spawnYFor(x,getTile,{cells,bounds});
+    if(!Number.isFinite(y)) return null;
+    const m=makeBuiltMechFromCells(cells,x,y,'drill');
+    if(!m) return null;
+    m.name='Wiertnica debug';
+    m.energy=m.maxEnergy;
+    m.facing=1;
+    return m;
+  }
   function forceSpawn(kind,player,getTile,setTile){
     const requested=String(kind||'');
+    if(requested==='drill'){
+      const base=player && finite(player.x) ? player.x : 0;
+      const x=Math.round(base+6);
+      const m=makeDebugDrillMech(x,getTile);
+      rememberWorldFns(getTile,setTile);
+      if(!m) return null;
+      mechs.push(m);
+      markCellIndexDirty();
+      return m;
+    }
     const normalized=requested==='solar'?'solar':'forge';
     const base=player && finite(player.x) ? player.x : (normalized==='solar'?-CFG.MIN_DISTANCE:CFG.MIN_DISTANCE);
     const dir=normalized==='solar'?-1:1;
@@ -3101,6 +3350,8 @@ import { damageBlastCreatures } from './explosion_damage.js';
       pilots:mechs.filter(m=>m.pilotAlive).length,
       abandoned:mechs.filter(m=>!m.pilotAlive && !m.rider).length,
       built:mechs.filter(m=>m.kind==='built').length,
+      drills:mechs.filter(hasDrillDrive).length,
+      drilledBlocks:mechs.reduce((n,m)=>n+Math.max(0,m.drilledBlocks|0),0),
       energy:+mechs.reduce((n,m)=>n+(m.energy||0),0).toFixed(2),
       mountedTurrets:mechs.filter(m=>!!mountedTurretCell(m)).length,
       poweredTurrets:mechs.filter(m=>mechTurretCircuitConnected(m)).length,
@@ -3115,12 +3366,12 @@ import { damageBlastCreatures } from './explosion_damage.js';
     guestBoardNearest,guestUnboard,guestSetControls,guestDriveInfo,anyGuestDriven,mechById,
     snapshot,restore,reset,forceSpawn,metrics,heroOnTracks,
     trySeatFromWorld,wantsInteractKey,tileOverlayAt,absorbDynamoFlow,
-    steamTotal:mechSteamTotal,hasSteamDrive,
+    steamTotal:mechSteamTotal,hasSteamDrive,hasDrillDrive,
     refillMountedWaterAt,
     _debug:{
       mechs:()=>mechs,mountedTurretCell,makeBlueprint,makeMech,trySpawnZone,zoneShouldSpawn,zoneSpawnX,CFG,
       isMechComponentTile,scanBuiltStructure,analyzeBuiltCells,assembleBuiltMechAt,parkBuiltMech,
-      mechTrackCircuitConnected,mechTrackCircuitEfficiency,mechCircuitEfficiencyAt,mechTurretCircuitConnected,energisedCells,chairEnergyMult,
+      mechTrackCircuitConnected,mechTrackCircuitEfficiency,mechCircuitEfficiencyAt,mechTurretCircuitConnected,mechDrillCircuitConnected,energisedCells,chairEnergyMult,
       seatState:()=>({block:seatBlock,lastTry:lastSeatTry})
     }
   };
