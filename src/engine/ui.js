@@ -2444,6 +2444,259 @@ MM.ui = (function(){
   // button strip, and this panel needs a filter box, a list and four knobs.
   // Typing here is safe — isEditableTarget() covers INPUT/SELECT, so the global
   // keydown listeners bail and 'g' in the search box cannot toggle God mode.
+  // Cape tuning knobs — [key, label, step, hint]. BOUNDS are not listed here on
+  // purpose: cape.js owns the sanitiser (`tuningRange`) and the panel must never
+  // advertise a range the integrator would clamp away, so the slider takes its
+  // min/max from the sim. Defaults likewise come from the sim, so the shipped
+  // numbers live in exactly one file.
+  const CAPE_KNOBS=[
+    ['grav','Ciężar',0.5,'Grawitacja płótna. Wyżej = peleryna cięższa, wisi pionowo i trudniej ją unieść.'],
+    ['gov','Tłumik trzepotu',0.1,'Liniowy opór powietrza — główny hamulec falowania. Wyżej = spokojniejsza tkanina.'],
+    ['flutter','Zasiew trzepotu',0.05,'Amplituda fali biegnącej, którą wzmacnia aerodynamika. 0 = brak własnego falowania.'],
+    ['drag','Opór aero',0.05,'Wzmocnienie oporu kwadratowego: silnik trzepotu i reakcji na powietrze.'],
+    ['wind','Wiatr',0.05,'Czułość na wiatr świata.'],
+    ['stiff','Sztywność',0.05,'Prostuje ogniwa i zacieśnia limit zgięcia. Wyżej = tkanina zachowuje się jak skóra.'],
+    ['damp','Tłumienie',0.002,'Przesunięcie tłumienia Verleta. Ujemne = ruch szybciej wygasa (mniej „gumy").'],
+    ['len','Długość',0.02,'Mnożnik długości płótna.'],
+    ['bias','Odchył za plecy',0.2,'Stałe odchylenie przeciwne do zwrotu. 0 = peleryna wisi pionowo.']
+  ];
+  // One-click comparisons. A preset is a PARTIAL patch applied over the shipped
+  // defaults, so switching between them is reproducible in either direction.
+  const CAPE_PRESETS=[
+    ['default','Domyślna',null,'Wartości prosto z tabeli tkanin'],
+    ['heavy','Cięższa',{grav:30,gov:3.2,flutter:0.65,drag:0.9,stiff:1.2,damp:-0.010},'Więcej masy, wyraźnie mniej falowania'],
+    ['calm','Spokojna',{grav:26,gov:4.4,flutter:0.35,drag:0.75,stiff:1.35,damp:-0.020},'Ciężkie sukno, prawie bez trzepotu'],
+    ['lively','Żywa',{grav:16,gov:1.4,flutter:1.5,drag:1.25,stiff:0.85,damp:0.004},'Lekka i ruchliwa — punkt odniesienia']
+  ];
+  function injectCapeDebugPanel(actions, menuPanel){
+    const panel = menuPanel || document.getElementById('menuPanel');
+    if(!panel || document.getElementById('capeDebugBox')) return;
+    actions = actions || {};
+    const SELECT_CSS='background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px;';
+    const box=document.createElement('div');
+    box.id='capeDebugBox';
+    box.style.cssText='display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; border-top:1px solid rgba(198,166,255,.22); padding-top:6px;';
+    const label=document.createElement('div');
+    label.textContent='Peleryna: tkanina i fizyka (debug):';
+    label.style.cssText='width:100%; font-size:11px; opacity:.7;';
+    box.appendChild(label);
+
+    const defs=(()=>{ try{ return (typeof actions.defaults==='function' && actions.defaults()) || {}; }catch(e){ return {}; } })();
+    const ranges=(()=>{ try{ return (typeof actions.range==='function' && actions.range()) || {}; }catch(e){ return {}; } })();
+
+    // --- look row: which fabric/silhouette the hero is wearing right now ------
+    const lookRow=document.createElement('div');
+    lookRow.style.cssText='display:flex; gap:4px; width:100%;';
+    const fabricSel=document.createElement('select');
+    fabricSel.id='capeDebugFabric';
+    fabricSel.style.cssText=SELECT_CSS+' flex:1 1 55%;';
+    const styleSel=document.createElement('select');
+    styleSel.id='capeDebugStyle';
+    styleSel.style.cssText=SELECT_CSS+' flex:1 1 45%;';
+    function fill(sel, rows, firstLabel){
+      const opt0=document.createElement('option');
+      opt0.value=''; opt0.textContent=firstLabel;
+      sel.appendChild(opt0);
+      (rows||[]).forEach(o=>{
+        const opt=document.createElement('option');
+        opt.value=String(o.id); opt.textContent=String(o.label);
+        sel.appendChild(opt);
+      });
+    }
+    function listFrom(fn){
+      try{ const r=(typeof fn==='function') ? fn() : null; return Array.isArray(r) ? r : []; }
+      catch(e){ return []; }
+    }
+    fill(fabricSel, listFrom(actions.fabrics), '— tkanina z ekwipunku —');
+    fill(styleSel, listFrom(actions.styles), '— krój z ekwipunku —');
+    lookRow.appendChild(fabricSel);
+    lookRow.appendChild(styleSel);
+    box.appendChild(lookRow);
+
+    const look2=document.createElement('div');
+    look2.style.cssText='display:flex; gap:10px; width:100%; align-items:center; font-size:11px; opacity:.85;';
+    const iridWrap=document.createElement('label');
+    iridWrap.style.cssText='display:flex; align-items:center; gap:4px;';
+    iridWrap.title='Wymusza opalizację (tęczowy odcień z kąta stycznej) niezależnie od nazwy przedmiotu';
+    const irid=document.createElement('input');
+    irid.id='capeDebugIrid'; irid.type='checkbox';
+    irid.style.cssText='width:auto; margin:0;';
+    iridWrap.appendChild(irid);
+    iridWrap.appendChild(document.createTextNode('opalizacja'));
+    const colorWrap=document.createElement('label');
+    colorWrap.style.cssText='display:flex; align-items:center; gap:4px;';
+    colorWrap.title='Podmienia barwę płótna; dopóki nie ruszysz próbnika, obowiązuje kolor z ekwipunku';
+    const color=document.createElement('input');
+    color.id='capeDebugColor'; color.type='color'; color.value='#b91818';
+    color.style.cssText='width:34px; height:20px; padding:0; border-radius:6px;';
+    colorWrap.appendChild(color);
+    colorWrap.appendChild(document.createTextNode('barwa'));
+    look2.appendChild(iridWrap);
+    look2.appendChild(colorWrap);
+    box.appendChild(look2);
+
+    // The colour picker only counts as an override once it has been touched —
+    // otherwise opening the panel would silently repaint the equipped cape with
+    // the swatch's arbitrary initial value.
+    let colorTouched=false;
+    function lookSpec(){
+      const o={};
+      if(fabricSel.value) o.fabric=fabricSel.value;
+      if(styleSel.value) o.style=styleSel.value;
+      if(irid.checked) o.irid=true;
+      if(colorTouched) o.color=color.value;
+      return Object.keys(o).length ? o : null;
+    }
+    function applyLook(){
+      const spec=lookSpec();
+      try{ if(typeof actions.look==='function') actions.look(spec); }catch(e){}
+      debugSet('cape','fabric',fabricSel.value||'');
+      debugSet('cape','style',styleSel.value||'');
+      debugSet('cape','irid',!!irid.checked);
+      debugSet('cape','color',colorTouched?color.value:'');
+      refreshMetrics();
+    }
+    fabricSel.addEventListener('change',applyLook);
+    styleSel.addEventListener('change',applyLook);
+    irid.addEventListener('change',applyLook);
+    color.addEventListener('input',()=>{ colorTouched=true; applyLook(); });
+
+    // --- physics sliders -----------------------------------------------------
+    const rows={};
+    CAPE_KNOBS.forEach(([key,text,step,tip])=>{
+      const r=ranges[key]||[0,1];
+      const row=document.createElement('label');
+      row.style.cssText='width:100%; display:flex; align-items:center; gap:6px; font-size:11px; opacity:.85;';
+      row.title=tip;
+      const name=document.createElement('span');
+      name.textContent=text;
+      name.style.cssText='flex:0 0 96px;';
+      const input=document.createElement('input');
+      input.id='capeDebug_'+key;
+      input.type='range';
+      input.min=String(r[0]); input.max=String(r[1]); input.step=String(step);
+      input.value=String(defs[key]!=null?defs[key]:r[0]);
+      input.style.cssText='flex:1; min-width:70px;';
+      const val=document.createElement('span');
+      val.style.cssText='flex:0 0 40px; text-align:right; opacity:.7;';
+      input.addEventListener('input',()=>{ pushTune(key); });
+      row.appendChild(name); row.appendChild(input); row.appendChild(val);
+      box.appendChild(row);
+      rows[key]={input,val,step};
+    });
+    function readKnob(key){
+      const n=parseFloat(rows[key].input.value);
+      return Number.isFinite(n) ? n : (defs[key]!=null?defs[key]:0);
+    }
+    function showKnob(key){
+      const step=rows[key].step;
+      const dp=step<0.01?3:(step<0.1?2:1);
+      rows[key].val.textContent=readKnob(key).toFixed(dp);
+    }
+    function pushTune(key){
+      showKnob(key);
+      const v=readKnob(key);
+      try{ if(typeof actions.tune==='function') actions.tune({[key]:v}); }catch(e){}
+      debugSet('cape',key,v);
+      refreshMetrics();
+    }
+    // Write the whole knob set at once (presets, restore) — one sim call, one
+    // storage write per key, and every slider left showing the truth.
+    function setAll(values){
+      const patch={};
+      CAPE_KNOBS.forEach(([key])=>{
+        const v=values[key]!=null ? values[key] : (defs[key]!=null?defs[key]:0);
+        rows[key].input.value=String(v);
+        patch[key]=readKnob(key);   // re-read: the input snaps to its own step grid
+        showKnob(key);
+        debugSet('cape',key,patch[key]);
+      });
+      try{ if(typeof actions.tune==='function') actions.tune(patch); }catch(e){}
+      refreshMetrics();
+    }
+
+    // --- presets + export ----------------------------------------------------
+    const presetRow=document.createElement('div');
+    presetRow.style.cssText='display:flex; flex-wrap:wrap; gap:4px; width:100%;';
+    CAPE_PRESETS.forEach(([id,text,patch,tip])=>{
+      const b=document.createElement('button');
+      b.id='capeDebugPreset_'+id;
+      b.textContent=text;
+      b.title=tip;
+      b.style.cssText='flex:1 1 72px; font-size:11px; padding:3px 6px; border:1px solid rgba(198,166,255,.58);';
+      b.addEventListener('click',()=>{
+        setAll(Object.assign({}, defs, patch||{}));
+        msg('Peleryna: '+text);
+      });
+      presetRow.appendChild(b);
+    });
+    const exportBtn=document.createElement('button');
+    exportBtn.id='capeDebugExport';
+    exportBtn.textContent='Eksport';
+    exportBtn.title='Wypisuje aktualne nastawy i wynikowe wartości tkanin — gotowe do wklejenia w cape_fabrics.js';
+    exportBtn.style.cssText='flex:1 1 72px; font-size:11px; padding:3px 6px; border:1px solid rgba(255,220,150,.58);';
+    presetRow.appendChild(exportBtn);
+    box.appendChild(presetRow);
+
+    const dump=document.createElement('textarea');
+    dump.id='capeDebugDump';
+    dump.readOnly=true;
+    dump.rows=4;
+    dump.hidden=true;
+    dump.style.cssText='width:100%; box-sizing:border-box; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:10px; font-family:monospace; resize:vertical;';
+    box.appendChild(dump);
+    exportBtn.addEventListener('click',()=>{
+      let text='';
+      try{ text=(typeof actions.export==='function') ? String(actions.export()||'') : ''; }
+      catch(e){ text=''; }
+      dump.hidden=!text;
+      dump.value=text;
+      if(text){ try{ console.log(text); }catch(e){} }
+      msg(text ? 'Peleryna: nastawy w polu poniżej (i w konsoli)' : 'Peleryna: brak eksportu');
+      // A focused input inside the toolbox freezes updateUi's mid-edit guard —
+      // select for copying, then hand focus straight back.
+      try{ dump.select(); dump.blur(); }catch(e){}
+    });
+
+    const metrics=document.createElement('div');
+    metrics.id='capeDebugMetrics';
+    metrics.style.cssText='width:100%; font-size:10px; opacity:.68;';
+    box.appendChild(metrics);
+    function refreshMetrics(){
+      let text='';
+      try{ text=(typeof actions.metrics==='function') ? String(actions.metrics()||'') : ''; }
+      catch(e){ text='blad metryk'; }
+      metrics.textContent=text || 'brak metryk peleryny';
+    }
+
+    // --- restore the stored session -----------------------------------------
+    // Absent keys keep the shipped defaults: a half-written section must not
+    // zero out the knobs it never mentions.
+    (function applyStored(){
+      const stored={};
+      CAPE_KNOBS.forEach(([key])=>{
+        const r=ranges[key]||[-1e9,1e9];
+        const fallback=defs[key]!=null?defs[key]:0;
+        stored[key]=debugHasKey('cape',key) ? debugNumber('cape',key,fallback,r[0],r[1]) : fallback;
+      });
+      setAll(stored);
+      if(!debugHasSection('cape')) return;
+      const saved=debugSection('cape');
+      const fab=String(saved.fabric||'');
+      const sty=String(saved.style||'');
+      if(fab && [...fabricSel.options].some(o=>o.value===fab)) fabricSel.value=fab;
+      if(sty && [...styleSel.options].some(o=>o.value===sty)) styleSel.value=sty;
+      irid.checked=!!saved.irid;
+      if(typeof saved.color==='string' && /^#[0-9a-f]{6}$/i.test(saved.color)){ color.value=saved.color; colorTouched=true; }
+      try{ if(typeof actions.look==='function') actions.look(lookSpec()); }catch(e){}
+    })();
+    refreshMetrics();
+    const timer=setInterval(()=>{
+      if(!document.body.contains(box)){ clearInterval(timer); return; }
+      if(!panel.hidden) refreshMetrics();
+    },1000);
+    panel.appendChild(box);
+  }
   function injectGearDebugPanel(actions, menuPanel){
     const panel = menuPanel || document.getElementById('menuPanel');
     if(!panel || document.getElementById('gearDebugBox')) return;
@@ -2687,7 +2940,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, injectNoiseDebugPanel, injectWildfireDebugPanel, injectCaveInDebugPanel, injectForestDebugPanel, injectKilnDebugPanel, injectGliderDebugPanel, injectLayerDebugPanel, injectEconomyDebugPanel, injectGearDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, injectNoiseDebugPanel, injectWildfireDebugPanel, injectCaveInDebugPanel, injectForestDebugPanel, injectKilnDebugPanel, injectGliderDebugPanel, injectLayerDebugPanel, injectEconomyDebugPanel, injectGearDebugPanel, injectCapeDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

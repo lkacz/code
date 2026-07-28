@@ -18921,6 +18921,59 @@ if(MM.ui && MM.ui.injectGearDebugPanel) MM.ui.injectGearDebugPanel({
 	wipe:gearForgeWipe,
 	metrics:gearForgeMetrics
 }, menuPanel);
+// Cape workshop, second only to the armoury: wear any of the ten fabrics
+// without owning the item and dial the cloth's feel live. The tuning knobs live
+// in cape.js and are identity by default — this seam only forwards sanitised
+// numbers and reports back what the renderer actually chose.
+if(MM.ui && MM.ui.injectCapeDebugPanel) MM.ui.injectCapeDebugPanel({
+	fabrics:()=> CAPE.fabricList ? CAPE.fabricList() : [],
+	styles:()=> (CAPE.styles||[]).map(id=>{
+		const it=MM.inventory && MM.inventory.getItem ? MM.inventory.getItem(id) : null;
+		return {id, label:(it&&it.name)||id};
+	}),
+	defaults:()=> CAPE.tuningDefaults ? CAPE.tuningDefaults() : {},
+	range:()=> CAPE.tuningRange ? CAPE.tuningRange() : {},
+	look:(spec)=> CAPE.setLookOverride ? CAPE.setLookOverride(spec) : null,
+	tune:(patch)=> CAPE.setTuning ? CAPE.setTuning(patch) : null,
+	metrics:()=>{
+		if(!CAPE || !CAPE.activeLook) return '';
+		const L=CAPE.activeLook(), t=CAPE.tuning();
+		const b=CAPE.bounds ? CAPE.bounds() : null;
+		const span=b ? Math.hypot(b.maxX-b.minX, b.maxY-b.minY).toFixed(2) : '?';
+		const ov=CAPE.lookOverride ? CAPE.lookOverride() : null;
+		return 'tkanina '+((L.fab&&L.fab.label)||L.fabId)+(L.irid?' (opal.)':'')+' | kroj '+L.styleId
+			+(ov?' [wymuszone]':' [z ekwipunku]')
+			+' | ciezar '+t.grav.toFixed(1)+' | tlumik '+t.gov.toFixed(1)+' | trzepot x'+t.flutter.toFixed(2)
+			+' | rozpietosc '+span+' kafla';
+	},
+	// Paste-ready: the globals as a setTuning() call, then the per-fabric numbers
+	// AFTER tuning — that second block is what gets baked into cape_fabrics.js
+	// once a feel is settled, so a tuning session ends in a diff, not a memory.
+	export:()=>{
+		if(!CAPE || !CAPE.tuning) return '';
+		const t=CAPE.tuning();
+		const lines=['// cape.js globals — MM.cape.setTuning(...)',
+			'setTuning({grav:'+t.grav+', gov:'+t.gov+', bias:'+t.bias+'});',
+			'// mnozniki: drag x'+t.drag+' | flutter x'+t.flutter+' | wind x'+t.wind
+				+' | stiff x'+t.stiff+' | len x'+t.len+' | damp '+(t.damp>=0?'+':'')+t.damp,
+			'// cape_fabrics.js po nastawach (lengthTiles/drag/damp/bendLimit/straighten/flutter/windMul):'];
+		const F=MM.capeFabrics && MM.capeFabrics.FABRICS;
+		const ids=(MM.capeFabrics && MM.capeFabrics.FABRIC_IDS) || (F?Object.keys(F):[]);
+		ids.forEach(id=>{
+			const f=F[id]; if(!f) return;
+			const n=(v,d)=>Number(v.toFixed(d==null?3:d));
+			lines.push('//   '+id.padEnd(9)
+				+' len '+n(f.lengthTiles*t.len,2)
+				+' | drag '+n(f.drag*t.drag,2)
+				+' | damp '+n(Math.max(0.90,Math.min(0.9985,f.damp+t.damp)))
+				+' | bend '+n(Math.max(0.02,Math.min(1.5,f.bendLimit/t.stiff)),2)
+				+' | straight '+n(f.straighten*t.stiff)
+				+' | flutter '+n(f.flutter*t.flutter,2)
+				+' | wind '+n(f.windMul*t.wind,2));
+		});
+		return lines.join('\n');
+	}
+}, menuPanel);
 // Inject debug time-of-day slider (non-intrusive) at end of menu only once
 if(MM.ui && MM.ui.injectTimeSlider) MM.ui.injectTimeSlider(menuPanel);
 if(MM.ui && MM.ui.injectBackgroundDebugPanel) MM.ui.injectBackgroundDebugPanel(menuPanel);

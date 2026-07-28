@@ -5,6 +5,7 @@ const uiSrc = await readFile(new URL('../src/engine/ui.js', import.meta.url), 'u
 const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const backgroundSrc = await readFile(new URL('../src/engine/background.js', import.meta.url), 'utf8');
 const meteoritesSrc = await readFile(new URL('../src/engine/meteorites.js', import.meta.url), 'utf8');
+const capeSrc = await readFile(new URL('../src/engine/cape.js', import.meta.url), 'utf8');
 const htmlSrc = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 
 const { debugShortcutsEnabled, devToolsArmed, applyDevToolsFlag } = await import('../src/engine/debug_shortcuts.js');
@@ -111,6 +112,49 @@ assert.match(uiSrc, /\['wall','Sciana'/, 'mech debug panel can set up house/wall
 assert.match(mainSrc, /injectMechDebugPanel\(\{/, 'main wires the mech debug panel into the menu');
 for(const action of ['zoneLeft','zoneRight','procLeft','procRight','spawnSolar','spawnForge','spawnCrawler','killPilot','board','capture','driveLeft','driveRight','jumpTest','fillPower','emptyPower','powerRig','shield','damage','fireHit','waterHit','destroy','wall','trees','pit','mob','saveLoad','reset','metrics']){
 	assert.match(mainSrc, new RegExp(action+':'), 'main wires mech debug action '+action);
+}
+
+// --- cape workshop ----------------------------------------------------------
+// The knob roster lives in THREE places (cape.js defaults, cape.js ranges, the
+// ui.js slider table) and a knob missing from any of them is invisible: the
+// slider silently disappears, or the panel offers a control the integrator
+// never reads. Extract all three literals and compare them.
+assert.match(uiSrc, /function injectCapeDebugPanel\(actions, menuPanel\)/, 'ui exposes a cape debug panel injector');
+assert.match(uiSrc, /injectGearDebugPanel, injectCapeDebugPanel, setRadarPulsing/, 'the cape panel is published on the ui api object');
+{
+	const knobBlock=/const CAPE_KNOBS=\[([\s\S]*?)\n {2}\];/.exec(uiSrc);
+	assert.ok(knobBlock, 'CAPE_KNOBS is a literal slider table');
+	const knobKeys=[...knobBlock[1].matchAll(/\['(\w+)'/g)].map(m=>m[1]);
+	assert.deepEqual(knobKeys, ['grav','gov','flutter','drag','wind','stiff','damp','len','bias'],
+		'every tuning knob has a slider, in the order the panel presents them');
+
+	const defBlock=/const TUNE_DEFAULTS=Object\.freeze\(\{([\s\S]*?)\}\);/.exec(capeSrc);
+	assert.ok(defBlock, 'cape.js publishes its tuning defaults as one frozen literal');
+	const defKeys=[...defBlock[1].matchAll(/(\w+):/g)].map(m=>m[1]);
+	assert.deepEqual(new Set(defKeys), new Set(knobKeys), 'the panel exposes exactly the knobs the integrator defaults');
+
+	const rangeBlock=/const TUNE_RANGE=Object\.freeze\(\{([\s\S]*?)\}\);/.exec(capeSrc);
+	assert.ok(rangeBlock, 'cape.js publishes its tuning ranges as one frozen literal');
+	const rangeKeys=[...rangeBlock[1].matchAll(/(\w+):\[/g)].map(m=>m[1]);
+	assert.deepEqual(new Set(rangeKeys), new Set(knobKeys), 'every knob carries a sanitiser range');
+	// The integrator must actually READ each knob — a renamed constant that
+	// stops consulting `tune` leaves a slider that moves nothing.
+	for(const key of knobKeys){
+		assert.match(capeSrc, new RegExp('tune\\.'+key+'\\b'), 'the cape integrator reads tune.'+key);
+	}
+}
+assert.match(uiSrc, /input\.min=String\(r\[0\]\); input\.max=String\(r\[1\]\);/, 'slider bounds come from the sim sanitiser, not a second table in the panel');
+assert.match(uiSrc, /debugSet\('cape',key,v\)/, 'moving a cape slider persists that knob');
+assert.match(uiSrc, /debugHasKey\('cape',key\) \? debugNumber\('cape',key,fallback,r\[0\],r\[1\]\) : fallback/,
+	'a half-written cape section keeps the shipped default for the knobs it never mentions');
+assert.match(uiSrc, /let colorTouched=false;/, 'the cape colour picker only overrides once it has been touched');
+assert.match(uiSrc, /dump\.select\(\); dump\.blur\(\);/, 'the export field hands focus back — a focused toolbox input freezes the mid-edit guard');
+{
+	const capeWire=/injectCapeDebugPanel\(\{([\s\S]*?)\n\}, menuPanel\);/.exec(mainSrc);
+	assert.ok(capeWire, 'main wires the cape workshop into the toolbox');
+	for(const key of ['fabrics','styles','defaults','range','look','tune','metrics','export']){
+		assert.match(capeWire[1], new RegExp('(^|\\n)\\t'+key+':'), 'main wires cape workshop action '+key);
+	}
 }
 
 assert.match(meteoritesSrc, /const STORE_KEY = 'mm_meteorites_v1'/, 'meteorite debug toggle already has stable persisted settings');

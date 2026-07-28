@@ -32,7 +32,57 @@ window.MM = window.MM || {};
   const TELEPORT_DIST = 2.0;  // anchor jump beyond this hard-resets the chain
   const FACING_BIAS = 5.2;    // t/s² idle hang-behind-facing (≈15° sway — reads past the body in profile)
   const AIR_CLAMP = 14;       // apparent-wind clamp (explosion/updraft guard)
+  const LIN_DRAG = 2.2;       // linear viscous term — the flutter governor
   const FALLBACK_FAB = {lengthTiles:0.82, massMul:1, drag:0.85, damp:0.985, bendLimit:0.62, straighten:0.03, flutter:1, windMul:1};
+
+  // --- developer tuning seam -------------------------------------------------
+  // Identity by default: an untouched build integrates exactly the numbers
+  // cape_fabrics.js publishes, so the pinned behaviour suite still describes the
+  // shipping cape. The multipliers (drag/flutter/wind/stiff/len) scale each
+  // fabric's OWN value — the ten archetypes keep their relative identities while
+  // a whole-cloth feel is dialled in; grav/gov/bias are absolute because they are
+  // global constants with no per-fabric counterpart; damp is an OFFSET because
+  // damping lives at 0.97-0.99, where a multiplier is unusable. Written only by
+  // the developer toolbox (ui.js injectCapeDebugPanel) — the shipped game never
+  // touches it, and reading a nine-key object nine times a frame is free.
+  const TUNE_DEFAULTS=Object.freeze({
+    grav:GRAV, gov:LIN_DRAG, flutter:1, drag:1, wind:1, stiff:1, damp:0, len:1, bias:FACING_BIAS
+  });
+  // Ranges are the sanitiser, not just slider bounds: a NaN or an absurd
+  // multiplier reaching the integrator would poison the chain (and `damp` above
+  // 1 makes the Verlet step diverge outright).
+  const TUNE_RANGE=Object.freeze({
+    grav:[0,60], gov:[0,8], flutter:[0,3], drag:[0,3], wind:[0,3],
+    stiff:[0.2,6], damp:[-0.06,0.008], len:[0.4,1.8], bias:[-20,20]
+  });
+  const tune=Object.assign({}, TUNE_DEFAULTS);
+  function setTuning(patch){
+    if(patch && typeof patch==='object'){
+      for(const k in TUNE_RANGE){
+        if(!Object.prototype.hasOwnProperty.call(patch,k)) continue;
+        const n=Number(patch[k]);
+        if(!Number.isFinite(n)) continue;
+        tune[k]=clamp(n,TUNE_RANGE[k][0],TUNE_RANGE[k][1]);
+      }
+    }
+    return Object.assign({}, tune);
+  }
+  function resetTuning(){ Object.assign(tune,TUNE_DEFAULTS); return Object.assign({}, tune); }
+  // Debug look override: the toolbox wears any fabric/silhouette without owning
+  // the item. Null = the equipped cape decides, which is the only shipping path
+  // (inventory.syncCustomization would otherwise stomp a customization write on
+  // the next equip).
+  let lookOverride=null;
+  function setLookOverride(o){
+    if(!o){ lookOverride=null; return null; }
+    const next={};
+    if(o.fabric && FAB && FAB.FABRICS && FAB.FABRICS[o.fabric]) next.fabric=o.fabric;
+    if(o.style && CAPE_STYLES[o.style]) next.style=o.style;
+    if(o.irid!=null) next.irid=!!o.irid;
+    if(typeof o.color==='string' && /^#[0-9a-f]{6}$/i.test(o.color)) next.color=o.color;
+    lookOverride=Object.keys(next).length?next:null;
+    return lookOverride?Object.assign({},lookOverride):null;
+  }
 
   // --- sim state -------------------------------------------------------------
   let simT = 0;               // module clock: all wave phases key off this
@@ -59,15 +109,20 @@ window.MM = window.MM || {};
   // ids (tests, legacy writers) resolve through the fabric table's builtin map.
   function currentLook(){
     const c=getCurrentCustomization();
-    const styleId=c.capeStyle||'classic';
+    const ov=lookOverride;
+    const styleId=(ov&&ov.style)||c.capeStyle||'classic';
     const style=CAPE_STYLES[styleId]||CAPE_STYLES.classic;
     let fabId=c.capeFabric, irid=!!c.capeIrid;
     if(!fabId || !(FAB && FAB.FABRICS && FAB.FABRICS[fabId])){
       const r=FAB ? FAB.resolve({id:styleId}) : {fabric:'cloth', irid:false};
       fabId=r.fabric; irid=r.irid;
     }
+    if(ov){
+      if(ov.fabric) fabId=ov.fabric;
+      if(ov.irid!=null) irid=ov.irid;
+    }
     const fab=(FAB ? FAB.get(fabId) : null)||FALLBACK_FAB;
-    return {style, styleId, fab, fabId, irid, color:c.capeColor||'#b91818', facing:1};
+    return {style, styleId, fab, fabId, irid, color:(ov&&ov.color)||c.capeColor||'#b91818', facing:1};
   }
   // Collar pins at the BACK EDGE of the body, not its centre: in a side view a
   // centre-hung cape drapes inside the sprite and the body occludes it whole.
@@ -208,7 +263,7 @@ window.MM = window.MM || {};
     dt=clamp(dt,1/240,1/30);
     const look=currentLook();
     const fab=look.fab;
-    const segLen=fab.lengthTiles/(SEGS-1);
+    const segLen=fab.lengthTiles*tune.len/(SEGS-1);
     curSegLen=segLen;
     backOffCur+=(backOffTarget(player)-backOffCur)*Math.min(1,dt*10);
     const a=anchorFor(player);
@@ -228,18 +283,19 @@ window.MM = window.MM || {};
     const pvx=Number.isFinite(player.vx)?player.vx:0;
     const pvy=Number.isFinite(player.vy)?player.vy:0;
     const facing=sign(player.facing||1);
-    const wind=sampleWind(a.x,a.y,getTile)*fab.windMul*(look.style.wind||1);
+    const wind=sampleWind(a.x,a.y,getTile)*fab.windMul*tune.wind*(look.style.wind||1);
     const windMag=clamp(Math.abs(wind)/7.2,0,1);
     const speedMag=clamp((Math.abs(pvx)+Math.abs(pvy))/8,0,1);
     // Damping schedule: a calm standing hero settles fast; motion and wind keep
     // the cloth lively. Applied frame-rate independently via pow(base, dt*60).
     const activity=clamp(windMag*1.3+speedMag*1.2,0,1);
-    const dampBase=0.90+(fab.damp-0.90)*(0.30+0.70*activity);
+    const fabDamp=clamp(fab.damp+tune.damp,0.90,0.9985);
+    const dampBase=0.90+(fabDamp-0.90)*(0.30+0.70*activity);
     const tcv=dt/prevDt; prevDt=dt;
     // Flutter seed: near-zero in calm air (its residual would resonate with
     // the chain's pendulum mode and never let it settle) and pitched above
     // the natural frequency — frequency rises with flow speed (Strouhal).
-    const flutterAmp=fab.flutter*(0.03+windMag*2.2+speedMag*0.8);
+    const flutterAmp=fab.flutter*tune.flutter*(0.03+windMag*2.2+speedMag*0.8);
     const phase=simT*(4.6+Math.abs(wind)*1.5);
     cape[0].px=cape[0].x; cape[0].py=cape[0].y;
     cape[0].x=a.x; cape[0].y=a.y;
@@ -274,21 +330,22 @@ window.MM = window.MM || {};
       // bounds the limit cycle to a readable ripple instead of a wild flap.
       const an=awx*nx+awy*ny;
       const at=awx*tx+awy*ty;
-      const dragC=fab.drag*(1-sub*0.65) + fab.drag*1.8*sub;
+      const dragBase=fab.drag*tune.drag;
+      const dragC=dragBase*(1-sub*0.65) + dragBase*1.8*sub;
       // The quadratic gain saturates at |6| — unclamped, its damping side
       // swamps the flutter limit cycle in fast flow and the cloth goes rigid;
       // the linear term keeps the direction response growing with flow speed.
       const anQ=clamp(an,-6,6), atQ=clamp(at,-6,6);
-      let fx=dragC*(an*Math.abs(anQ)*nx + 0.25*at*Math.abs(atQ)*tx + 2.2*awx);
-      let fy=dragC*(an*Math.abs(anQ)*ny + 0.25*at*Math.abs(atQ)*ty + 2.2*awy);
+      let fx=dragC*(an*Math.abs(anQ)*nx + 0.25*at*Math.abs(atQ)*tx + tune.gov*awx);
+      let fy=dragC*(an*Math.abs(anQ)*ny + 0.25*at*Math.abs(atQ)*ty + tune.gov*awy);
       // gravity with buoyancy: soaked cloth sinks gently in water and rides
       // on top of denser lava
       const buoy=1-sub*(lava?1.35:0.78);
-      fy+=GRAV*fab.massMul*buoy;
+      fy+=tune.grav*fab.massMul*buoy;
       // idle hang bias behind the facing direction (small; wind overrides it).
       // Scaled by the SAME buoyancy factor as gravity so the idle hang angle
       // is depth-invariant instead of ballooning where gravity is weak.
-      fx+=-facing*FACING_BIAS*Math.max(0,buoy);
+      fx+=-facing*tune.bias*Math.max(0,buoy);
       // traveling-wave flutter seed perpendicular to the link — the asymmetry
       // the aero feedback loop amplifies; submersion kills it
       const fl=flutterAmp*Math.sin(phase+i*0.8)*(0.3+0.7*i/(SEGS-1))*(1-sub);
@@ -308,8 +365,9 @@ window.MM = window.MM || {};
     // whole inextensible chain exactly in one pass — no iteration count, no
     // rubber-banding on teleport-adjacent moves. Stiff fabrics also blend each
     // link toward its parent direction (leather planks, silk flows).
-    const cosMax=Math.cos(fab.bendLimit), sinMax=Math.sin(fab.bendLimit);
-    const straighten=clamp(fab.straighten*dt*60,0,0.6);
+    const bendLimit=clamp(fab.bendLimit/tune.stiff,0.02,1.5);
+    const cosMax=Math.cos(bendLimit), sinMax=Math.sin(bendLimit);
+    const straighten=clamp(fab.straighten*tune.stiff*dt*60,0,0.6);
     let pdx=0, pdy=1; // reference for the first link: straight down
     for(let i=1;i<SEGS;i++){
       const par=cape[i-1], seg=cape[i];
@@ -773,6 +831,27 @@ window.MM = window.MM || {};
   capeAPI.fabricForItem = function(item){ return FAB ? FAB.resolve(item) : {fabric:'cloth', irid:false}; };
   capeAPI.drawPreviewCape = drawPreviewCape;
   capeAPI.bounds = function(){ return bounds; };
+  // Developer toolbox seams. Copies out, sanitised in — no caller can hand the
+  // integrator a live reference or an unclamped number.
+  capeAPI.tuning = function(){ return Object.assign({}, tune); };
+  capeAPI.tuningDefaults = function(){ return Object.assign({}, TUNE_DEFAULTS); };
+  capeAPI.tuningRange = function(){ const r={}; for(const k in TUNE_RANGE) r[k]=TUNE_RANGE[k].slice(); return r; };
+  capeAPI.setTuning = setTuning;
+  capeAPI.resetTuning = resetTuning;
+  capeAPI.setLookOverride = setLookOverride;
+  capeAPI.lookOverride = function(){ return lookOverride?Object.assign({},lookOverride):null; };
+  // [{id,label}] for pickers — the fabric roster with its Polish labels.
+  capeAPI.fabricList = function(){
+    const F=FAB && FAB.FABRICS;
+    if(!F) return [];
+    return (FAB.FABRIC_IDS||Object.keys(F)).map(id=>({id, label:(F[id]&&F[id].label)||id}));
+  };
+  // The look the renderer would use RIGHT NOW (fabric id + effective physics),
+  // so the toolbox can report what it is actually tuning.
+  capeAPI.activeLook = function(){
+    const l=currentLook();
+    return {fabId:l.fabId, styleId:l.styleId, irid:!!l.irid, color:l.color, fab:Object.assign({}, l.fab)};
+  };
   capeAPI._debug = { submersionAt, currentLook, shade, sampleWind:(p,g)=>sampleWind(p?p.x:0,p?p.y:0,g) };
   MM.cape = capeAPI;
 })();

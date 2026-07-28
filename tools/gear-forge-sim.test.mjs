@@ -222,7 +222,10 @@ assert.equal(FORGE.ammoBundle('nope'), null, 'an unknown bundle grants nothing')
 // --- source pins: the panel, its wiring and the guest refusal ----------------
 assert.match(uiSrc, /function injectGearDebugPanel\(actions, menuPanel\)\{/, 'ui.js declares the armoury panel');
 assert.match(uiSrc, /if\(!panel \|\| document\.getElementById\('gearDebugBox'\)\) return;/, 'the panel injects exactly once');
-assert.match(uiSrc, /injectLayerDebugPanel, injectEconomyDebugPanel, injectGearDebugPanel, setRadarPulsing,/, 'the panel is on the ui aggregate');
+// Ends at the armoury: what FOLLOWS it on the aggregate belongs to whichever
+// panel was added last (debug-settings-sim pins the cape workshop's own slot),
+// and pinning a neighbour's neighbour makes every new panel break this suite.
+assert.match(uiSrc, /injectLayerDebugPanel, injectEconomyDebugPanel, injectGearDebugPanel,/, 'the panel is on the ui aggregate');
 assert.match(uiSrc, /debugSettings:\{load:readDebugSettings,set:debugSet,section:debugSection\}/, 'the debug-settings aggregate entry survived the insert');
 for(const id of ['gearDebugSearch','gearDebugGroup','gearDebugKind','gearDebugList','gearDebugTier','gearDebugPlus','gearDebugUnique','gearDebugEquip','gearDebugName','gearDebugPreview'])
   assert.ok(uiSrc.includes("'" + id + "'"), 'the panel exposes the stable control id ' + id);

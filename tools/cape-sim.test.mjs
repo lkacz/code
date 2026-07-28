@@ -330,5 +330,93 @@ assert.ok(hiY-loY > 0.15, 'saturated drag keeps the cloth alive in a terminal-ve
   delete window.player;
 }
 
+// --- developer tuning seam --------------------------------------------------
+// The toolbox may retune the cloth live, but the SHIPPED cape must be exactly
+// the fabric table: every assertion above describes an untouched seam, so the
+// defaults are pinned by value rather than derived.
+{
+  const D=cape.tuningDefaults();
+  assert.deepEqual(D, {grav:20, gov:2.2, flutter:1, drag:1, wind:1, stiff:1, damp:0, len:1, bias:5.2},
+    'cape tuning is identity by default — an untouched build integrates the fabric table verbatim');
+  const copy=cape.tuning();
+  copy.grav=0;
+  assert.equal(cape.tuning().grav, 20, 'tuning() hands out a copy — a caller cannot reach into the integrator');
+  cape.setTuning({grav:'nonsense', gov:NaN, flutter:undefined, len:Infinity});
+  assert.deepEqual(cape.tuning(), D, 'non-finite tuning input is dropped, never coerced into the sim');
+  const clamped=cape.setTuning({grav:999, stiff:-5, damp:5, len:99, gov:-3});
+  assert.equal(clamped.grav, 60, 'gravity clamps to its published ceiling');
+  assert.equal(clamped.stiff, 0.2, 'stiffness clamps to its published floor');
+  assert.equal(clamped.damp, 0.008, 'the damping OFFSET can never push Verlet damping to 1 — that diverges');
+  assert.equal(clamped.len, 1.8, 'length clamps to its published ceiling');
+  assert.equal(clamped.gov, 0, 'a negative governor would be anti-damping; it clamps to zero');
+  assert.deepEqual(cape.resetTuning(), D, 'reset restores the shipped numbers');
+}
+// Heavier cloth: a bigger gravity term wins against the constant facing bias,
+// so the hem swings closer to vertical AND sits lower.
+{
+  cape.resetTuning();
+  const light=settle(makePlayer({facing:1}),0);
+  cape.setTuning({grav:55});
+  const heavy=settle(makePlayer({facing:1}),0);
+  cape.resetTuning();
+  assert.ok(heavy.tail.y > light.tail.y+0.02, 'raising gravity drops the hem');
+  assert.ok(Math.abs(heavy.tail.x) < Math.abs(light.tail.x)-0.05, 'a heavier cape hangs closer to vertical');
+}
+// The governor is the anti-wiggle knob: peak-to-peak hem travel in a steady
+// wind must actually shrink when it is raised and the flutter seed removed.
+{
+  function agitation(windSpeed){
+    wind.reset(); wind.setOverride(windSpeed);
+    const player=makePlayer({facing:1});
+    cape.init(player);
+    for(let i=0;i<180;i++) cape.update(player,1/60,openTile,solid);  // ride out the transient
+    let lo=Infinity, hi=-Infinity;
+    for(let i=0;i<240;i++){
+      cape.update(player,1/60,openTile,solid);
+      const tail=cape._segments[cape._segments.length-1];
+      if(tail.y<lo) lo=tail.y;
+      if(tail.y>hi) hi=tail.y;
+    }
+    return hi-lo;
+  }
+  cape.resetTuning();
+  const loose=agitation(5.0);
+  cape.setTuning({gov:8, flutter:0});
+  const damped=agitation(5.0);
+  cape.resetTuning();
+  assert.ok(damped < loose*0.6, 'raising the governor and zeroing the flutter seed visibly calms the cloth');
+}
+// Length is a rest-length multiplier, so the chain really gets longer.
+{
+  cape.resetTuning();
+  const normal=settle(makePlayer({facing:1}),0);
+  cape.setTuning({len:1.8});
+  const longer=settle(makePlayer({facing:1}),0);
+  cape.resetTuning();
+  assert.ok(longer.tail.y > normal.tail.y+0.3, 'the length multiplier lengthens the chain');
+}
+// Look override: the toolbox wears a fabric it does not own, and refuses
+// anything outside the roster instead of adopting a bad id.
+{
+  assert.equal(cape.lookOverride(), null, 'the shipping path carries no look override');
+  const roster=cape.fabricList();
+  assert.equal(roster.length, 10, 'the picker offers all ten fabrics');
+  assert.ok(roster.every(o=>o.id && o.label), 'every fabric row carries an id and a label');
+  const set=cape.setLookOverride({fabric:'gilded', style:'royal', irid:true, color:'#123456'});
+  assert.deepEqual(set, {fabric:'gilded', style:'royal', irid:true, color:'#123456'}, 'a full override is adopted verbatim');
+  let live=cape.activeLook();
+  assert.equal(live.fabId, 'gilded', 'the override decides the fabric the renderer paints');
+  assert.equal(live.styleId, 'royal', 'the override decides the silhouette');
+  assert.equal(live.color, '#123456', 'the override decides the swatch');
+  assert.equal(cape.setLookOverride({fabric:'nonsuch', style:'nonsuch', color:'red'}), null,
+    'unknown fabric, style and malformed colour are refused — not written into the renderer');
+  cape.setLookOverride(null);
+  live=cape.activeLook();
+  assert.equal(live.fabId, 'cloth', 'clearing the override hands the cape back to the equipped item');
+  assert.equal(live.color, '#b91818', 'clearing the override hands the swatch back too');
+}
+
+cape.resetTuning();
+cape.setLookOverride(null);
 wind.reset();
 console.log('cape-sim: all assertions passed');
