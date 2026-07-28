@@ -1084,6 +1084,14 @@ assert.ok(!/frameMs\s*>|stressed/.test(shimBody), 'the shimmer never degrades it
 // without a y-cut a fire in a mine below the screen could outrank and silently
 // suppress the plumes actually in view.
 assert.match(shimBody, /if\(ry < yMin \|\| ry > yMax\) continue;/, 'pool/burning sources are cut to the visible rows before the band budget');
+// A third feed for things that radiate without a hot TILE under them (a boss's
+// exposed heart). It brings its own strength; the two tile feeds keep theirs.
+assert.match(shimBody, /const list = li === 0 \? opts\.pools : \(li === 1 \? opts\.burning : opts\.emitters\);/,
+  'the shimmer takes a third live feed of non-tile emitters');
+assert.match(shimBody, /p\.strength = li === 2 \? Math\.max\(0\.2, Math\.min\(1, Number\(s\.strength\) \|\| 0\.7\)\) : strength;/,
+  'an emitter carries its own clamped strength instead of a fixed tile value');
+assert.match(mainSrc, /emitters:\(BOSSES && BOSSES\.heatSources\)\?BOSSES\.heatSources\(player\.x,heatR\):null/,
+  'the boss heart feeds the shimmer through the same x-culled radius as fire');
 assert.match(shimBody, /const sources = heatSrcList;\n\t\tsources\.length = 0;/, 'the shimmer source list is pooled scratch, not a fresh array per frame');
 assert.match(shimBody, /rowBudget: HEAT_ROW_BUDGET, bandCap: HEAT_BAND_CAP/, 'work is capped by fixed row and band budgets instead');
 assert.match(shimBody, /while\(k < openTiles && getTile\(x, band\.y - 1 - k\) === T\.AIR\) k\+\+;/, 'the plume is clipped to the open air above the run — never through a cavern ceiling');

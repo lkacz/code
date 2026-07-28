@@ -212,8 +212,46 @@ assert.match(mainSrc, /function gravityTileLabel\(tid\)\{/, 'the HUD can name a 
 const forgeSrc = readFileSync(new URL('../src/engine/gear_forge.js', import.meta.url), 'utf8');
 assert.match(forgeSrc, /lit_gravity_gun/, 'the developer armoury can mint the gun');
 const discoverySrc = readFileSync(new URL('../src/engine/discovery.js', import.meta.url), 'utf8');
-for (const id of ['grav_bedrock', 'grav_golden', 'grav_bait'])
+for (const id of ['grav_bedrock', 'grav_golden', 'grav_bait', 'grav_feed'])
   assert.ok(discoverySrc.includes(id + ':'), 'discovery catalog carries ' + id);
+
+// --- the thrown block is a BLOCK, at block size --------------------------------
+// Its damage, its landing and its extraction all speak of one whole tile; drawing
+// it at a fraction of one made the gun read as a slingshot. All three states of a
+// carried block — held at the muzzle, in flight, settled — are one tile wide.
+assert.match(wSrc, /const s=TILE;\n {10}ctx\.save\(\);\n {10}ctx\.translate\(px,py\);/,
+  'the flying block draws at exactly one tile');
+assert.ok(!/const s=TILE\*0\.62;/.test(wSrc), 'the miniaturised 0.62-tile flying block is gone');
+assert.match(wSrc, /const s=TILE;\n {10}const off=TILE\*0\.9;/,
+  'the held block matches it, with a stand-off measured from the hero rather than scaled off s');
+assert.ok(!/const s=TILE\*0\.5;\n {10}const hover/.test(wSrc), 'the half-tile held block is gone');
+const bossSrcFlight = readFileSync(new URL('../src/engine/bosses.js', import.meta.url), 'utf8');
+assert.ok(!/const s=TILE\*0\.7;/.test(bossSrcFlight), 'a boss-hurled block is no longer a 0.7-tile pebble');
+const volcanoSrcFlight = readFileSync(new URL('../src/engine/volcano.js', import.meta.url), 'utf8');
+assert.ok(!/ctx\.fillRect\(-TILE\*0\.24,-TILE\*0\.21,TILE\*0\.48,TILE\*0\.42\);/.test(volcanoSrcFlight),
+  'a volcanic bomb is no longer a third of the size of the hitbox that strikes you');
+assert.match(volcanoSrcFlight, /ctx\.fillRect\(-TILE\*0\.5,-TILE\*0\.44,TILE,TILE\*0\.88\);/,
+  'the volcanic bomb spans a full tile');
+
+// --- feeding the block boss ----------------------------------------------------
+// The gun's damage never reaches a creature built of blocks: the material identity
+// rides the impact opts, and the absorbed answer short-circuits the whole chain
+// BEFORE resolveGravityImpactOnCreature, which would otherwise pay mining drops
+// for a block that just became boss flesh.
+assert.match(wSrc, /grav:!!a\.grav, gravTid:a\.gravTid\|0,/,
+  'the impact opts carry the material of the hurled block');
+const iAbsorb = wSrc.indexOf("roamingBossResult==='absorbed'");
+const iPierce = wSrc.indexOf("roamingBossResult==='pierced'");
+const iGravRes = wSrc.indexOf('resolveGravityImpactOnCreature(a,tx,ty,getTile,setTile);');
+assert.ok(iAbsorb > 0 && iPierce > 0 && iGravRes > 0, 'the absorbed branch exists alongside pierce and payout');
+assert.ok(iAbsorb < iPierce && iAbsorb < iGravRes,
+  'an absorbed block leaves before the pierce, blocked and creature-hit chains can pay it out twice');
+const bossAbsorbSrc = bossSrcFlight;
+assert.match(bossAbsorbSrc, /function gravityFeedTile\(opts\)\{/, 'the boss reads the block marker off the opts');
+assert.match(bossAbsorbSrc, /if\(!opts \|\| opts\.grav!==true\) return 0;/,
+  'only a genuine hurled block feeds the beast — never a look-alike opts bag');
+assert.match(bossAbsorbSrc, /const fed=gravityFeedTile\(opts\);\n    if\(fed && absorbThrownBlock\(m,part,fed\)\) return 'absorbed';/,
+  'absorption is resolved before the anchor report and the feed interruption');
 
 console.log('gravity-gun-sim: all assertions passed (55 carryable materials, '
   + Object.keys(GG.GRAV_EFFECTS).length + ' status identities)');

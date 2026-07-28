@@ -137,6 +137,17 @@ window.MM = window.MM || {};
     const n=parseInt(hex.slice(1,7),16);
     return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+clamp(a,0,1).toFixed(3)+')';
   }
+  // Post-FX inlet. The heart is a LIGHT, so it registers with the shared emissive
+  // queue rather than hand-rolling an additive halo that the night overlay would
+  // then dim right back down. glowTier() is >=1 even with every component off —
+  // 'bloom' only amplifies (1.30x radius, 1.22x alpha) — so one registration is
+  // the whole bloom-and-glow story. Canonical caller shape: meteorites.js:2023.
+  function emissiveApi(){
+    try{
+      return (typeof window!=='undefined' && window.MM && window.MM.postFx && window.MM.postFx.addEmissive)
+        ? window.MM.postFx : null;
+    }catch(e){ return null; }
+  }
 
   // ---------------- State ----------------
   let monsters = [];
@@ -279,6 +290,78 @@ window.MM = window.MM || {};
   const NAME_B=['gnak','thar','mok','zur','gor','dath','rok','vash','grim','nax'];
   function hsl(h,s,l){ return 'hsl('+Math.round(h)+','+Math.round(s)+'%,'+Math.round(l)+'%)'; }
 
+  // ---------------- The eye ----------------
+  // Exactly ONE lattice cell ever carries role 'eye' — it is the beast's only
+  // exposed weak point (turrets aim at it, status damage chews it first, losing
+  // it blinds the beast permanently), and three suites pin that singularity. So
+  // all the variety lives in a SPEC rolled off the seeded stream, never in extra
+  // parts. Socket outlines are point rings rather than ellipses on purpose: the
+  // headless boss-sim canvas has no ellipse()/scale(), and the gfx-ultra bench
+  // measured Path2D at 3-7x the cost of plain fills, so a short lineTo ring is
+  // both the portable choice and the cheap one.
+  function ringPoly(n,sx,sy){
+    const out=[];
+    for(let i=0;i<n;i++){ const a=(i/n)*Math.PI*2; out.push([Math.cos(a)*sx, Math.sin(a)*sy]); }
+    return Object.freeze(out);
+  }
+  const EYE_RINGS=Object.freeze({
+    round:  ringPoly(10,1,1),
+    almond: Object.freeze([[-1,0],[-0.55,-0.60],[0,-0.76],[0.55,-0.60],[1,0],[0.55,0.60],[0,0.76],[-0.55,0.60]]),
+    hex:    Object.freeze([[-1,-0.34],[-0.48,-0.92],[0.48,-0.92],[1,-0.34],[0.48,0.92],[-0.48,0.92]]),
+    upright:Object.freeze([[-0.52,-1],[0.18,-0.90],[0.56,0],[0.18,0.90],[-0.52,1],[-0.74,0]]),
+    wide:   Object.freeze([[-1,-0.40],[-0.34,-0.66],[0.34,-0.66],[1,-0.40],[1,0.40],[0.34,0.66],[-0.34,0.66],[-1,0.40]]),
+  });
+  const EYE_SOCKETS=Object.freeze(['round','almond','hex','upright','wide']);
+  const EYE_PUPILS=Object.freeze(['round','slit','hslit','cross','star','ring']);
+  const EYE_SCLERA=Object.freeze(['#f7f3e7','#e6f2ff','#fff3d9','#e7ffe9','#f1e7ff','#ffeae6']);
+  // The iris borrows the world's own hue wheel; the threat accent (cold blue /
+  // hot amber, already on the monster) pulls it toward the region's temperament
+  // so a far-north beast reads icy without a second palette to maintain.
+  function rollEyeSpec(rng,opts){
+    const r=typeof rng==='function'?rng:Math.random;
+    const o=opts||{};
+    const socket=EYE_SOCKETS[Math.floor(r()*EYE_SOCKETS.length)];
+    const pupil=EYE_PUPILS[Math.floor(r()*EYE_PUPILS.length)];
+    // a compound eye splits into 2-3 pupils inside the one socket; a slit never
+    // does (two vertical slits read as a smear rather than as two eyes)
+    const lobes=(pupil==='slit'||pupil==='ring') ? 1 : (r()<0.26 ? (r()<0.4?3:2) : 1);
+    // Always hex, never the hsl() string: mixHexColor and the emissive queue both
+    // want something they can parse, and the same rolls must be drawn whether or
+    // not the region carries a threat accent (or the seed stops being stable).
+    const baseHue=(Number(o.hue)||0)+r()*140-70;
+    const baseSat=52+r()*36, baseLit=42+r()*18;
+    let iris=hexFromHsl(baseHue, baseSat, baseLit);
+    if(o.accent) iris=mixHexColor(iris, o.accent, 0.22+(Number(o.tier)||0)*0.09);
+    return {
+      socket, pupil, lobes,
+      sclera: o.aquatic ? '#dff0ff' : EYE_SCLERA[Math.floor(r()*EYE_SCLERA.length)],
+      iris,
+      rim: shade(o.aquatic?'#26323c':'#241f1c', Math.round(r()*18-9)),
+      size: 0.60+r()*0.30,                 // socket span as a share of the tile
+      squash: 0.72+r()*0.46,               // >1 = a tall eye, <1 = a slot
+      irisR: 0.40+r()*0.20,                // share of the socket
+      pupilR: 0.34+r()*0.26,               // share of the iris
+      tiltA: (r()-0.5)*0.7,                // socket cant, radians
+      lidTop: r()<0.45 ? 0.10+r()*0.22 : 0,// a heavy brow on some beasts
+      blinkEvery: 2.6+r()*4.2,             // per-beast blink clock (seconds)
+      blinkPhase: r()*7,
+      saccade: 0.45+r()*1.15,              // idle drift rate when not hunting
+      glow: r()<0.34 ? 0.35+r()*0.65 : 0,  // a third of beasts have a lit eye
+      veins: Math.floor(r()*3),            // resting bloodshot, before any wound
+    };
+  }
+  // hsl() returns a CSS string, which mixHexColor cannot blend — this is the
+  // same conversion in hex form so the accent tint has something to work with.
+  function hexFromHsl(h,s,l){
+    const hh=(((Number(h)||0)%360)+360)%360, ss=clamp((Number(s)||0)/100,0,1), ll=clamp((Number(l)||0)/100,0,1);
+    const c=(1-Math.abs(2*ll-1))*ss, x=c*(1-Math.abs(((hh/60)%2)-1)), mm=ll-c/2;
+    let r=0,g=0,b=0;
+    if(hh<60){ r=c; g=x; } else if(hh<120){ r=x; g=c; } else if(hh<180){ g=c; b=x; }
+    else if(hh<240){ g=x; b=c; } else if(hh<300){ r=x; b=c; } else { r=c; b=x; }
+    const q=v=>Math.max(0,Math.min(255,Math.round((v+mm)*255))).toString(16).padStart(2,'0');
+    return '#'+q(r)+q(g)+q(b);
+  }
+
   // Build a seeded monster: mirrored blob silhouette, guaranteed-connected, with a
   // buried heart, armor shell, legs (for grounded archetypes) and a front eye.
   // opts.aquatic → a 'swimmer' (tentacled, icy palette, lives in oceans);
@@ -376,9 +459,12 @@ window.MM = window.MM || {};
       else if(legless && p.dy===0) p.role='tentacle';
     }
     const name=NAME_A[Math.floor(rng()*NAME_A.length)]+NAME_B[Math.floor(rng()*NAME_B.length)];
+    // Rolled LAST, after the name, so an existing seed keeps the silhouette and
+    // the stats it always had — only the face is new.
+    const eyeSpec=rollEyeSpec(rng,{hue, aquatic, accent:threat.accent, tier:threat.tier});
     const gargantuan=scale>1;
     const m={
-      id:monsterSeq++, seed, name, archetype, parts, core, hue, bodyBlocks,
+      id:monsterSeq++, seed, name, archetype, parts, core, hue, bodyBlocks, eyeSpec,
       x, y, vx:0, vy:0, dir:facing, onGround:false,
       baseParts:reach.size, aquatic, gargantuan,
       hostility:+host.hostility.toFixed(3), hostilitySide:host.side,
@@ -1372,6 +1458,42 @@ window.MM = window.MM || {};
     return m.occ.has((c.dx+1)+','+c.dy) && m.occ.has((c.dx-1)+','+c.dy)
         && m.occ.has(c.dx+','+(c.dy+1)) && m.occ.has(c.dx+','+(c.dy-1));
   }
+  // ONE number, 0..1, for how hot the heart is running. Sealed behind an intact
+  // armour ring it barely leaks; carve the plating open or wound it and it flares;
+  // a detached heart in agony is at full temperature. Everything thermal reads
+  // this: glow radius, the warmth conducted into the neighbouring plates, the
+  // ember motes, and the heat-haze feed handed to the post-fx shimmer pass.
+  function heartHeat(m){
+    if(!m || !m.core || m.dead) return 0;
+    if(m.dying) return 1;
+    const wound=1-coreHealthRatio(m);
+    return clamp((coreProtected(m)? 0.14 : 0.50) + wound*0.44, 0, 1);
+  }
+  function heartWorldPos(m,out){
+    const c=m && m.core; if(!c){ out.x=0; out.y=0; return out; }
+    if(m.dying && m.heartItem){ out.x=m.heartItem.x; out.y=m.heartItem.y; return out; }
+    out.x=m.x+c.dx+0.5; out.y=m.y+c.dy+0.5;
+    return out;
+  }
+  // Live heat-haze emitters for post_fx's shimmer pass. main.js hands this to
+  // drawHeatShimmerPass BEFORE bosses draw, so it must come from state, not from
+  // the renderer. Pooled scratch (the pass itself re-pools), x-culled by the
+  // caller's radius exactly like FIRE.burningNear.
+  const heatOut=[], heatPool=[], HEAT_POS={x:0,y:0};
+  function heatSources(cx,r){
+    const out=heatOut; out.length=0;
+    const range=Number.isFinite(r)? Math.abs(r) : 48;
+    for(const m of monsters){
+      const heat=heartHeat(m);
+      if(heat<0.34) continue;       // a sealed, healthy heart is warm, not shimmering
+      const pos=heartWorldPos(m,HEAT_POS);
+      if(Number.isFinite(cx) && Math.abs(pos.x-cx)>range) continue;
+      const p=heatPool[out.length] || (heatPool[out.length]={x:0,y:0,strength:0});
+      p.x=pos.x; p.y=pos.y; p.strength=Math.min(1,0.42+heat*0.58);
+      out.push(p);
+    }
+    return out;
+  }
   function coreHealthRatio(m){
     const c=m && m.core;
     if(!c || !(c.maxHp>0)) return 0;
@@ -1456,8 +1578,60 @@ window.MM = window.MM || {};
       && monsters.indexOf(m)>=0 && m.parts.indexOf(part)>=0);
     try{ opts.onTarget(m,'boss',partAlive,anchor); }catch(e){}
   }
+  // A block boss is BUILT of blocks — so a block hurled at it is not a weapon,
+  // it is food. The gravity gun therefore does no damage here at all: the beast
+  // catches the tile, plugs the wound it landed in, or bolts it on as new mass.
+  // Returns the tile id it swallowed, or 0 when the projectile is anything else.
+  function gravityFeedTile(opts){
+    if(!opts || opts.grav!==true) return 0;
+    const tid=Number(opts.gravTid)|0;
+    if(!(tid>0)) return 0;
+    try{ if(!MM.INFO || !MM.INFO[tid]) return 0; }catch(e){ return 0; }
+    return tid;
+  }
+  // foodWord() only names the eight tiles a beast forages; the gun can throw 55,
+  // so anything outside the pantry is simply "a block" rather than mislabelled.
+  function absorbWord(tid){ return EAT_GROW[tid]!==undefined ? foodWord(tid) : 'blokiem'; }
+  function absorbThrownBlock(m,part,tid){
+    if(!m || m.dying || m.dead || !part || !(tid>0)) return false;
+    part.hitT=Math.max(part.hitT||0,0.12);
+    m.absorbT=0.5;                                  // body-wide swallow shimmer
+    m.absorbed=(m.absorbed||0)+1;
+    // 1. mend where it struck — the block is masonry, and this is a hole
+    if(part.hp<part.maxHp-0.01){
+      part.hp=Math.min(part.maxHp, part.hp+CFG.HEAL_PER_BITE);
+      part.healT=0.5;
+      sayLimitedBoss(m,'absorb_heal',m.name+' zamurowało ranę '+absorbWord(tid));
+      return true;
+    }
+    // 2. otherwise it becomes new body — of the very material you threw, so a
+    //    beast fed diamond ends up plated in diamond. growBody re-seals the
+    //    heart if the new cell lands on an armour gap you had just carved.
+    const np=growBody(m,tid);
+    if(np){
+      np.healT=0.5;
+      sayLimitedBoss(m,'absorb_grow',m.name+' wchłonęło '+absorbWord(tid)+' i urosło');
+      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('grav_feed','Blokowy kolos ŻYWI SIĘ rzuconymi blokami — nie karm góry!'); }catch(e){}
+      return true;
+    }
+    // 3. full to the brim: the block is still swallowed, it just adds nothing
+    sayLimitedBoss(m,'absorb_full',m.name+' połknęło blok bez śladu');
+    return true;
+  }
+  function sayLimitedBoss(m,key,text){
+    const now=(typeof performance!=='undefined')? performance.now():0;
+    const at=m._sayAt || (m._sayAt={});
+    if(at[key] && now-at[key]<2200) return;
+    at[key]=now;
+    say(text);
+  }
   function strikePart(m,part,dmg,opts){
     if(!resolvePartTarget({boss:m,part})) return false;
+    // Absorption comes FIRST — before the anchor report (an eaten block has no
+    // projectile left to embed) and before the feed interruption below, so a
+    // grazing beast is not yanked out of its meal by being handed a snack.
+    const fed=gravityFeedTile(opts);
+    if(fed && absorbThrownBlock(m,part,fed)) return 'absorbed';
     reportProjectileAnchor(opts,m,part);
     if(part===m.core && coreProtected(m)){
       // The exact tracked heart remains shielded until one of its four armor
@@ -1513,6 +1687,13 @@ window.MM = window.MM || {};
         return strikePart(m,best,dmg,opts);
       }
       if(coreOv>0){
+        // A thrown block aimed at the sealed heart is still swallowed by the
+        // plating in front of it — feeding never "glances off".
+        const fedCore=gravityFeedTile(opts);
+        if(fedCore){
+          const plate=m.parts.find(p=>Math.abs(p.dx-m.core.dx)+Math.abs(p.dy-m.core.dy)===1) || m.core;
+          if(absorbThrownBlock(m,plate,fedCore)) return 'absorbed';
+        }
         reportProjectileAnchor(opts,m,m.core);
         // the blow glances off the plating sealing the heart — flash the armor ring
         for(const p of m.parts){ if(Math.abs(p.dx-m.core.dx)+Math.abs(p.dy-m.core.dy)===1) p.hitT=0.15; }
@@ -1604,6 +1785,7 @@ window.MM = window.MM || {};
       if(m.gait>1e3) m.gait%=(Math.PI*2);   // keep the phase small for sin() precision
       updateBalance(m,dt);
       for(const part of m.parts){ if(part.hitT>0) part.hitT-=dt; if(part.healT>0) part.healT-=dt; }
+      if(m.absorbT>0) m.absorbT-=dt;   // the swallow shimmer after eating a thrown block
       // distance culling only with a live hero — otherwise it measures from x=0
       if(m.dead || !m.parts.length || m.y>WORLD_H+10 || (hasPlayer && Math.abs(m.x-px)>CFG.CULL_DIST)){
         monsters.splice(i,1);
@@ -1673,6 +1855,156 @@ window.MM = window.MM || {};
     for(const p of m.parts){ if(tileVisible(canDrawTile,m.x+p.dx,m.y+p.dy)) return true; }
     return false;
   }
+  // The body leans about its feet, and the heart light is registered from OUTSIDE
+  // that transform (post_fx draws it far later, under the plain world matrix), so
+  // the anchor point has to be rotated by hand or the halo hangs off a tilted beast.
+  const TILT_PT={x:0,y:0};
+  function tiltPoint(px,py,pivX,pivY,tilt,out){
+    if(!tilt){ out.x=px; out.y=py; return out; }
+    const c=Math.cos(tilt), s=Math.sin(tilt), dx=px-pivX, dy=py-pivY;
+    out.x=pivX+dx*c-dy*s; out.y=pivY+dx*s+dy*c;
+    return out;
+  }
+  const HEART_LIGHT='#ff4a5e';
+  // Hand the attached heart to the shared emissive queue: 'bloom' amplifies it,
+  // plain glow still lights it, and __mmNoPostFX silences it — one call, all three.
+  function registerHeartLight(m,TILE,now,bx,by,wob,pivX,pivY){
+    const E=emissiveApi(); if(!E) return false;
+    const c=m && m.core; if(!c || m.dying) return false;
+    const heat=heartHeat(m);
+    const pulse=0.5+0.5*Math.sin(now*0.006+(m.bobP||0));
+    const pt=tiltPoint((bx+c.dx+0.5)*TILE,(by+c.dy+0.5)*TILE+wob,pivX,pivY,m.tilt,TILT_PT);
+    return E.addEmissive({x:pt.x, y:pt.y, r:TILE*(1.05+heat*1.55+pulse*0.20),
+                          color:HEART_LIGHT, a:0.17+heat*0.44+pulse*0.07});
+  }
+  // Ember motes rising off a hot heart. Stateless on purpose — the phase comes
+  // from `now` and the mote index, so there is no array to tick, allocate or cap.
+  function drawHeartEmbers(ctx,TILE,cx,cy,heat,now,seedP){
+    if(heat<0.34) return;
+    const n=heat>0.8 ? 4 : heat>0.55 ? 3 : 2;
+    for(let i=0;i<n;i++){
+      const t=((now*0.00042)+(seedP||0)+i*0.37)%1;
+      const rise=t*TILE*(1.5+heat*1.1);
+      const sway=Math.sin((t*6.0)+i*2.1)*TILE*0.16;
+      const a=(1-t)*(0.30+heat*0.42);
+      const s=Math.max(1,TILE*(0.09+heat*0.05)*(1-t*0.55));
+      ctx.fillStyle='rgba(255,'+(150+Math.round(heat*70))+',90,'+a.toFixed(3)+')';
+      ctx.fillRect(cx+sway-s/2, cy-rise-s/2, s, s);
+    }
+  }
+  // A boss eye. One part, but never the same face twice: the socket outline, the
+  // pupil glyph, how many pupils, the tints, the cant, the brow, the blink clock
+  // and the idle drift all come from the seeded spec rolled at generation. It
+  // tracks the hero while hunting and wanders when it has not found one yet.
+  function drawBossEye(ctx,TILE,m,p,X,Y,now,enraged){
+    const spec=m.eyeSpec;
+    const cx=X+TILE/2, cy=Y+TILE/2;
+    if(!spec){                                    // pre-spec beast (old save/QA stub)
+      ctx.fillStyle='#fff'; ctx.fillRect(X,Y,TILE,TILE);
+      ctx.fillStyle=enraged?'#f00':'#111'; ctx.fillRect(cx-2+m.dir*3, cy-2, 5, 5);
+      return;
+    }
+    const dmgF=clamp(1-(p.hp/Math.max(1,p.maxHp)),0,1);
+    // socket: the eye is set INTO the body, so the whole tile stays opaque and the
+    // silhouette outline still has something to trace
+    ctx.fillStyle=spec.rim; ctx.fillRect(X,Y,TILE,TILE);
+    // blink — a per-beast clock, so a pack does not blink in lockstep like the hero
+    const bt=((now*0.001)+spec.blinkPhase)%Math.max(0.8,spec.blinkEvery);
+    const blink=bt<0.17 ? 1-Math.abs(bt/0.085-1) : 0;
+    const open=1-blink*0.94;
+    if(open<=0.06) return;                        // eye shut: nothing else to draw
+    const rx=TILE*spec.size*0.5;
+    const ry=rx*spec.squash*open*(1-spec.lidTop*0.5);
+    ctx.save();
+    ctx.translate(cx,cy+TILE*spec.lidTop*0.22);
+    ctx.rotate(spec.tiltA*m.dir);
+    const ring=EYE_RINGS[spec.socket]||EYE_RINGS.round;
+    ctx.beginPath();
+    for(let i=0;i<ring.length;i++){
+      const u=ring[i];
+      if(i===0) ctx.moveTo(u[0]*rx,u[1]*ry); else ctx.lineTo(u[0]*rx,u[1]*ry);
+    }
+    ctx.closePath();
+    // a wounded eye goes bloodshot before it bursts
+    ctx.fillStyle=dmgF>0.02 ? mixHexColor(spec.sclera,'#c8302c',dmgF*0.62) : spec.sclera;
+    ctx.fill();
+    // gaze: locked on while hunting, a slow wander otherwise, dead ahead when blind
+    let gx=m.dir, gy=0;
+    const pr=playerRef();
+    if(m.state==='hunt' && m.hasEye && pr && Number.isFinite(pr.x)){
+      const ex=m.x+p.dx+0.5, ey=m.y+p.dy+0.5;
+      const ddx=pr.x-ex, ddy=(pr.y-0.5)-ey, d=Math.hypot(ddx,ddy)||1;
+      gx=ddx/d; gy=ddy/d;
+    } else {
+      const t=now*0.001*spec.saccade+spec.blinkPhase;
+      gx=Math.cos(t)*0.66+m.dir*0.30; gy=Math.sin(t*0.73)*0.46;
+    }
+    // The iris is a circle in a socket that may be far wider than it is tall, so
+    // it is sized off the SHORT axis and its travel is whatever room is left on
+    // each axis separately. A flat socket therefore glances left and right freely
+    // and barely at all up and down — which is how a slot-shaped eye should move,
+    // and it is the only way the pupil can never bulge outside its own outline.
+    const irR=Math.max(1.2, Math.min(rx,ry)*spec.irisR*1.15);
+    const ox=gx*Math.max(0,rx-irR)*0.92, oy=gy*Math.max(0,ry-irR)*0.92;
+    ctx.fillStyle=enraged ? mixHexColor(spec.iris,'#ff2a1c',0.55) : spec.iris;
+    ctx.beginPath(); ctx.arc(ox,oy,irR,0,Math.PI*2); ctx.fill();
+    // pupils — 1..3 lobes of one glyph, spread across the iris but never past it
+    const puR=Math.max(1, irR*spec.pupilR);
+    ctx.fillStyle=enraged?'#3a0000':'#0b0a0c';
+    for(let l=0;l<spec.lobes;l++){
+      const room=Math.max(0,(irR-puR)*2)/Math.max(1,spec.lobes-1);
+      const spread=spec.lobes>1 ? (l-(spec.lobes-1)/2)*Math.min(irR*0.92, room) : 0;
+      const px=ox+spread, py=oy;
+      if(spec.pupil==='slit'){ ctx.fillRect(px-puR*0.42,py-irR*0.86,puR*0.84,irR*1.72); }
+      else if(spec.pupil==='hslit'){ ctx.fillRect(px-irR*0.86,py-puR*0.40,irR*1.72,puR*0.80); }
+      else if(spec.pupil==='cross'){
+        ctx.fillRect(px-puR*0.30,py-irR*0.78,puR*0.60,irR*1.56);
+        ctx.fillRect(px-irR*0.78,py-puR*0.30,irR*1.56,puR*0.60);
+      } else if(spec.pupil==='star'){
+        ctx.beginPath();
+        for(let k=0;k<8;k++){
+          const a=(k/8)*Math.PI*2, rr=(k%2===0)?puR*1.5:puR*0.6;
+          const sxp=px+Math.cos(a)*rr, syp=py+Math.sin(a)*rr;
+          if(k===0) ctx.moveTo(sxp,syp); else ctx.lineTo(sxp,syp);
+        }
+        ctx.closePath(); ctx.fill();
+      } else if(spec.pupil==='ring'){
+        ctx.beginPath(); ctx.arc(px,py,puR*1.15,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=spec.iris;
+        ctx.beginPath(); ctx.arc(px,py,puR*0.52,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=enraged?'#3a0000':'#0b0a0c';
+      } else { ctx.beginPath(); ctx.arc(px,py,puR,0,Math.PI*2); ctx.fill(); }
+    }
+    // vessels: a resting count from the spec, more as the eye takes damage
+    const veins=Math.min(5,(spec.veins|0)+Math.round(dmgF*3));
+    if(veins>0){
+      ctx.strokeStyle='rgba(190,40,36,'+(0.30+dmgF*0.5).toFixed(2)+')'; ctx.lineWidth=1;
+      ctx.beginPath();
+      for(let v=0;v<veins;v++){
+        const a=spec.blinkPhase+v*2.399;
+        const c1=Math.cos(a), s1=Math.sin(a);
+        ctx.moveTo(c1*rx*0.97, s1*ry*0.97);
+        ctx.lineTo(c1*rx*0.34+ox*0.4, s1*ry*0.34+oy*0.4);
+      }
+      ctx.stroke();
+    }
+    // specular: a hard corner glint, the cue that says "wet and alive"
+    ctx.fillStyle='rgba(255,255,255,0.72)';
+    ctx.fillRect(ox-irR*0.62, oy-irR*0.66, Math.max(1,irR*0.34), Math.max(1,irR*0.24));
+    if(spec.lidTop>0){                            // a heavy brow, cast as shadow
+      ctx.fillStyle='rgba(0,0,0,0.34)';
+      ctx.fillRect(-rx, -ry-1, rx*2, Math.max(1,ry*spec.lidTop*1.4));
+    }
+    ctx.restore();
+    // a lit eye is a real light — same queue as the heart, so night cannot dim it
+    const lit=spec.glow>0 || enraged;
+    if(lit){
+      const E=emissiveApi();
+      if(E) E.addEmissive({x:cx, y:cy, r:TILE*(0.55+spec.glow*0.75+(enraged?0.5:0)),
+                           color:enraged?'#ff3524':spec.iris,
+                           a:0.16+spec.glow*0.26+(enraged?0.20:0)});
+    }
+  }
   function drawHeartItem(ctx,TILE,m,now,canDrawTile){
     const h=m && m.heartItem;
     if(!h || !tileVisible(canDrawTile,h.x,h.y)) return;
@@ -1680,12 +2012,22 @@ window.MM = window.MM || {};
     const pulse=0.5+0.5*Math.sin(now*(0.020+agonyF*0.032));
     const impact=h.impactT>0 ? Math.min(1,h.impactT/0.18) : 0;
     const size=TILE*(0.62+0.08*pulse);
+    // A dying heart is at full temperature: it goes to the emissive queue (bloom
+    // amplifies, plain glow still lights it) and throws embers in world space,
+    // OUTSIDE the rotate below — a spinning heart must not spin its own updraft.
+    const E=emissiveApi();
+    if(E) E.addEmissive({x:h.x*TILE, y:h.y*TILE, r:TILE*(1.5+agonyF*1.9+pulse*0.3),
+                         color:'#ff5a48', a:0.34+agonyF*0.36+pulse*0.08});
+    drawHeartEmbers(ctx,TILE,h.x*TILE,h.y*TILE,0.62+agonyF*0.38,now,(m.id||0)*0.31);
     ctx.save();
     ctx.translate(h.x*TILE,h.y*TILE);
     ctx.rotate(h.rot||0);
-    const glow=ctx.createRadialGradient(0,0,1,0,0,TILE*(1.0+0.75*agonyF+0.18*pulse));
-    glow.addColorStop(0,'rgba(255,92,112,'+(0.62+0.24*pulse).toFixed(3)+')');
-    glow.addColorStop(0.42,'rgba(255,198,72,'+(0.16+0.42*agonyF).toFixed(3)+')');
+    // White-hot centre bleeding through amber to blood red: the colour ramp of
+    // something genuinely radiating, not just a red circle turned up.
+    const glow=ctx.createRadialGradient(0,0,1,0,0,TILE*(1.0+0.95*agonyF+0.18*pulse));
+    glow.addColorStop(0,'rgba(255,'+(214+Math.round(agonyF*36))+','+(178+Math.round(agonyF*60))+','+(0.55+0.34*agonyF).toFixed(3)+')');
+    glow.addColorStop(0.20,'rgba(255,132,96,'+(0.60+0.26*pulse).toFixed(3)+')');
+    glow.addColorStop(0.48,'rgba(255,198,72,'+(0.16+0.46*agonyF).toFixed(3)+')');
     glow.addColorStop(1,'rgba(255,52,80,0)');
     ctx.fillStyle=glow;
     ctx.fillRect(-TILE*1.8,-TILE*1.8,TILE*3.6,TILE*3.6);
@@ -1759,6 +2101,7 @@ window.MM = window.MM || {};
       const wob=(m.archetype==='floater'||m.archetype==='swimmer')? Math.sin(now*0.002+m.bobP)*2 : 0;
       const healthRatio=coreHealthRatio(m);
       const enraged=healthRatio<0.5;
+      const heat=heartHeat(m);   // one number drives glow, conduction and embers
       const occ=m.occ;   // occupancy lattice kept fresh by refreshStructure()
       // feeding cue: pulse the morsel being eaten (world space, untilted)
       if(m.state==='feed' && m.feed && tileVisible(canDrawTile,m.feed.tx,m.feed.ty)){
@@ -1778,23 +2121,35 @@ window.MM = window.MM || {};
         if(p.role==='core'){
           const agonyF=m.dying ? clamp((m.agonyT||0)/Math.max(0.001,m.agonyMax||1),0,1) : 0;
           const pulse=m.dying ? 0.5+0.5*Math.sin(now*(0.020+agonyF*0.030)) : 0.5+0.5*Math.sin(now*0.006);
-          const g=ctx.createRadialGradient(X+TILE/2,Y+TILE/2,1,X+TILE/2,Y+TILE/2,TILE*(1.1+pulse*0.5+agonyF*0.75));
-          g.addColorStop(0,'rgba(255,70,100,'+(0.5+pulse*0.3)+')');
-          if(m.dying) g.addColorStop(0.45,'rgba(255,216,94,'+(0.18+agonyF*0.45).toFixed(3)+')');
+          const g=ctx.createRadialGradient(X+TILE/2,Y+TILE/2,1,X+TILE/2,Y+TILE/2,TILE*(1.1+pulse*0.5+agonyF*0.75+heat*0.9));
+          // the hotter it runs, the further the ramp climbs toward white before
+          // it falls away through amber — a sealed heart only smoulders
+          g.addColorStop(0,'rgba(255,'+(70+Math.round(heat*150))+','+(100+Math.round(heat*104))+','+(0.5+pulse*0.3).toFixed(3)+')');
+          g.addColorStop(0.30,'rgba(255,124,88,'+(0.20+heat*0.34).toFixed(3)+')');
+          if(m.dying) g.addColorStop(0.55,'rgba(255,216,94,'+(0.18+agonyF*0.45).toFixed(3)+')');
           g.addColorStop(1,'rgba(255,70,100,0)');
           ctx.fillStyle=g; ctx.fillRect(X-TILE,Y-TILE,TILE*3,TILE*3);
           ctx.fillStyle=m.dying ? (pulse>0.72 ? '#fff0a0' : '#ff1840') : (enraged? '#ff1840':'#ff3b5c');
-        } else if(p.role==='eye'){
-          ctx.fillStyle='#fff';
-        } else ctx.fillStyle=p.color;
-        // full-tile fill so adjacent blocks fuse into one body (no spacing gaps)
-        ctx.fillRect(X,Y,TILE,TILE);
+        } else if(p.role!=='eye') ctx.fillStyle=p.color;
+        // full-tile fill so adjacent blocks fuse into one body (no spacing gaps).
+        // The eye owns its whole tile and paints its own socket.
+        if(p.role==='eye') drawBossEye(ctx,TILE,m,p,X,Y,now,enraged);
+        else ctx.fillRect(X,Y,TILE,TILE);
         if(p.role!=='core' && p.role!=='eye'){
           // block shading like the world tiles: top highlight, bottom shadow
           ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(X,Y,TILE,Math.max(2,TILE*0.22));
           ctx.fillStyle='rgba(0,0,0,0.16)'; ctx.fillRect(X,Y+TILE-Math.max(2,TILE*0.18),TILE,Math.max(2,TILE*0.18));
+          // heat conducts out of the heart into the plates that touch it, so a
+          // beast with its armour carved open glows along the breach
+          if(heat>0.2 && m.core && Math.abs(p.dx-m.core.dx)<=1 && Math.abs(p.dy-m.core.dy)<=1){
+            ctx.fillStyle='rgba(255,'+(96+Math.round(heat*90))+',64,'+(heat*0.30).toFixed(3)+')';
+            ctx.fillRect(X,Y,TILE,TILE);
+          }
         }
-        if(p.role==='eye'){ ctx.fillStyle=enraged?'#f00':'#111'; ctx.fillRect(X+TILE/2-2+m.dir*3, Y+TILE/2-2, 5, 5); }
+        if(m.absorbT>0){  // the swallow: a violet flush travelling over the whole body
+          ctx.fillStyle='rgba(186,142,255,'+(Math.min(0.5,m.absorbT)*0.5).toFixed(3)+')';
+          ctx.fillRect(X,Y,TILE,TILE);
+        }
         if(p.hitT>0){ ctx.fillStyle='rgba(255,255,255,'+(p.hitT*3).toFixed(2)+')'; ctx.fillRect(X,Y,TILE,TILE); }
         if(p.healT>0){ ctx.fillStyle='rgba(110,255,140,'+(p.healT*0.9).toFixed(2)+')'; ctx.fillRect(X,Y,TILE,TILE); } // knitting flesh glows green
         if(dmgF>0.25){ // cracks deepen as the part weakens
@@ -1818,7 +2173,15 @@ window.MM = window.MM || {};
         if(!occ.has((p.dx+1)+','+p.dy)){ ctx.moveTo(X+TILE-0.5,Y); ctx.lineTo(X+TILE-0.5,Y+TILE); }
       }
       ctx.stroke();
+      // embers ride the tilt with the body, so they belong inside the transform
+      if(!m.dying && m.core && heat>0.33){
+        const off=limbOffset(m,m.core,now);
+        drawHeartEmbers(ctx,TILE,(bx+m.core.dx+0.5)*TILE+off.ox,(by+m.core.dy)*TILE+wob+off.oy,heat,now,(m.id||0)*0.31);
+      }
       ctx.restore();
+      // registered OUTSIDE the tilt: post_fx draws the halo later under the plain
+      // world matrix, so the anchor is rotated by hand instead
+      registerHeartLight(m,TILE,now,bx,by,wob,pivX,pivY);
       drawHeartItem(ctx,TILE,m,now,canDrawTile);
       // The monster dies when its heart reaches zero. Body blocks are destructible
       // armor, so the visible boss bar tracks heart HP instead of total body HP.
@@ -1835,14 +2198,20 @@ window.MM = window.MM || {};
       // a sated, growing beast shows a green feeding pip on its bar
       if(m.state==='feed'){ ctx.fillStyle='#9fe85a'; ctx.fillRect(barX-5,barY-1,4,6); }
     }
-    // hurled blocks: spinning tiles of the material that was ripped out
+    // Hurled blocks: spinning tiles of the material that was ripped out. A block
+    // in flight is the SAME SIZE as the block it was — it was drawn at 0.7 of a
+    // tile, which read as a pebble beside the crater it left and beside its own
+    // hit radius. Full tile, with the world-tile highlight/shadow bands so it is
+    // recognisably the material that vanished from the terrain.
     for(const pr of projectiles){
       if(!tileVisible(canDrawTile,pr.x,pr.y)) continue;
       ctx.save();
       ctx.translate(pr.x*TILE, pr.y*TILE); ctx.rotate(pr.spin);
-      const s=TILE*0.7;
+      const s=TILE;
       ctx.fillStyle=pr.color; ctx.fillRect(-s/2,-s/2,s,s);
-      ctx.strokeStyle='rgba(0,0,0,0.4)'; ctx.lineWidth=1; ctx.strokeRect(-s/2,-s/2,s,s);
+      ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(-s/2,-s/2,s,Math.max(2,s*0.22));
+      ctx.fillStyle='rgba(0,0,0,0.16)'; ctx.fillRect(-s/2,s/2-Math.max(2,s*0.18),s,Math.max(2,s*0.18));
+      ctx.strokeStyle='rgba(0,0,0,0.42)'; ctx.lineWidth=1; ctx.strokeRect(-s/2+0.5,-s/2+0.5,s-1,s-1);
       ctx.restore();
     }
     for(const b of fallingBodyBlocks){
@@ -1926,7 +2295,7 @@ window.MM = window.MM || {};
   function _debug(){ return {monsters, debris, fallingBodyBlocks, blasts, projectiles, spawnTimer, lastIsDay}; }
 
   MM.bosses={update, draw, drawHUD, attackAt, mineAt, mineTarget, damageAt, partAt, resolvePartTarget, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
-             nearestForAbduction, nearestForTurret, targetsForTurret, abduct, setCycleOverride, config:CFG, _debug};
+             nearestForAbduction, nearestForTurret, targetsForTurret, abduct, setCycleOverride, heatSources, config:CFG, _debug};
   // weakened-matrix registry adapter (shared boss_status helper): splats and
   // streams reach roaming bosses through MM.bossStatus.applyRadius
   try{

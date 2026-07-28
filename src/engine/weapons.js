@@ -2796,6 +2796,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       spit,
       cause,
       x:a.x,y:a.y,vx:a.vx,vy:a.vy,tier:a.tier,pierceLeft:a.pierceLeft||0,
+      // A hurled world block carries its material identity through to the target:
+      // the block boss is BUILT of blocks, so it eats this one instead of taking
+      // the hit, and it needs to know which tile it just swallowed. Plain fields,
+      // never a cause string — combatElementFromOpts classifies causes by substring.
+      grav:!!a.grav, gravTid:a.gravTid|0,
       fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike
     };
   }
@@ -3431,6 +3436,14 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         if(!a.coopOwner && creatureGate && !beforeRoamingBoss && MM.bosses && MM.bosses.damageAt){
           roamingBossResult=MM.bosses.damageAt(tx,ty,hitDmg,targetArrowOpts);
         }
+        // The block boss ATE the block. No damage landed, so this must skip the
+        // whole creature-hit chain: no ult charge, no status burst, and above all
+        // no resolveGravityImpactOnCreature — that pays the tile's mining drops,
+        // and a block that became boss flesh must not also become loot.
+        if(roamingBossResult==='absorbed'){
+          arrows.splice(i,1);
+          break;
+        }
         // Irydium treats a boss body tile exactly like a pierceable world block:
         // remove it, spend one penetration, lose momentum, and keep flying.
         if(roamingBossResult==='pierced' && finishIridiumPierce(a,tx,ty)){
@@ -3914,10 +3927,14 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           // A flying BLOCK: a tumbling tile-colored square. The spin rate rides
           // speed, so a heavy lob turns lazily and a flat shot whirls — the
           // rotation is the readout of the momentum the impact will spend.
+          // Size is NOT a style choice here: this is the tile that vanished from
+          // the world and the tile that will settle back out of the air, so it
+          // flies at exactly one tile. At 0.62 it read as a pebble carrying a
+          // boulder's damage.
           const px=a.x*TILE, py=a.y*TILE;
           const speed=Math.hypot(a.vx||0,a.vy||0);
           a.ang=(a.ang||0)+speed*0.011;
-          const s=TILE*0.62;
+          const s=TILE;
           ctx.save();
           ctx.translate(px,py);
           ctx.rotate(a.ang);
@@ -4646,13 +4663,18 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         ctx.beginPath(); ctx.arc(facing===1?2.6:-2.6,-2.6,3.1,-0.7,0.7); ctx.stroke();
         if(grav.heldTid){
           const info=INFO[grav.heldTid]||{};
-          const s=TILE*0.5;
+          // The held block is the same block it will be in flight and the same
+          // block it was in the ground — one tile, all the way through. The stand-
+          // off is measured from the hero, not scaled off s, or a full-size block
+          // would drift a tile and a half out of the hand.
+          const s=TILE;
+          const off=TILE*0.9;
           const hover=Math.sin(nowMs()*0.004)*1.4;
           ctx.save();
-          ctx.translate(facing===1?(s+9):-(s+9), -3+hover);
+          ctx.translate(facing===1?off:-off, -3+hover);
           ctx.rotate(nowMs()*0.0011*facing);
           ctx.fillStyle='rgba(180,140,255,0.22)';
-          ctx.beginPath(); ctx.arc(0,0,s*0.95,0,Math.PI*2); ctx.fill();
+          ctx.beginPath(); ctx.arc(0,0,s*0.62,0,Math.PI*2); ctx.fill();
           ctx.fillStyle=info.color||'#9aa0a8';
           ctx.fillRect(-s/2,-s/2,s,s);
           ctx.strokeStyle='rgba(255,255,255,0.4)'; ctx.lineWidth=1;

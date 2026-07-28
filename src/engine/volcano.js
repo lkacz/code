@@ -597,10 +597,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         ctx.save();
         ctx.translate(r.x*TILE,r.y*TILE);
         ctx.rotate(r.rot||0);
+        // A volcanic bomb is a chunk of the mountain, and it hurts like one: the
+        // hero hit test is a ~0.8-tile radius, so at 0.48 of a tile the sprite was
+        // less than a third of the thing that actually strikes you. Full tile.
         ctx.fillStyle='#7a7770';
-        ctx.fillRect(-TILE*0.24,-TILE*0.21,TILE*0.48,TILE*0.42);
+        ctx.fillRect(-TILE*0.5,-TILE*0.44,TILE,TILE*0.88);
         ctx.fillStyle='rgba(255,255,255,0.18)';
-        ctx.fillRect(-TILE*0.18,-TILE*0.17,TILE*0.18,TILE*0.08);
+        ctx.fillRect(-TILE*0.38,-TILE*0.36,TILE*0.38,TILE*0.17);
+        ctx.fillStyle='rgba(0,0,0,0.22)';
+        ctx.fillRect(-TILE*0.5,TILE*0.26,TILE,TILE*0.18);
         ctx.restore();
       }
       ctx.restore();

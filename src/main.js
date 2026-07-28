@@ -16285,7 +16285,7 @@ function draw(){ // Background first
  // sparks) is drawn on top of it, undistorted. A flame sprite already bends and
  // flickers on its own; running it through the plume too doubled the motion and
  // read as an artefact rather than as heat.
- if(gfxUltraOn('heatShimmer') && POST_FX.drawHeatShimmerPass){ const heatR=Math.ceil(viewX*0.6)+4; POST_FX.drawHeatShimmerPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),pools:(GEOTHERMAL && GEOTHERMAL.poolsNear)?GEOTHERMAL.poolsNear(player.x,heatR):null,burning:(FIRE && FIRE.burningNear)?FIRE.burningNear(player.x,heatR):null,frameMs:lastFrameMs}); }
+ if(gfxUltraOn('heatShimmer') && POST_FX.drawHeatShimmerPass){ const heatR=Math.ceil(viewX*0.6)+4; POST_FX.drawHeatShimmerPass(ctx,{TILE,sx,sy,viewX,viewY,getTile,visibleAt:worldFxVisible,poweredAt:(x,y)=>furnishingPoweredAt(x,y),pools:(GEOTHERMAL && GEOTHERMAL.poolsNear)?GEOTHERMAL.poolsNear(player.x,heatR):null,burning:(FIRE && FIRE.burningNear)?FIRE.burningNear(player.x,heatR):null,emitters:(BOSSES && BOSSES.heatSources)?BOSSES.heatSources(player.x,heatR):null,frameMs:lastFrameMs}); }
  // burning tiles + lava glow (flames over terrain, under mobs so creatures stay readable)
  if(FIRE && FIRE.draw) FIRE.draw(ctx,TILE,sx,sy,viewX,viewY,getTile,worldFxVisibility());
  // volcano hazards and story-item effects (over terrain, under creatures)

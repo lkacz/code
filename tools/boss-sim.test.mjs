@@ -7,7 +7,9 @@
 // feeding/growth/balance, and the hardening regressions: growth never sinks below
 // the feet line (and grounding survives growth), floaters bounce off tall cliffs
 // instead of embedding, sealed-column spawns are rejected, hunger accrues even
-// while a nearby hero suppresses feeding.
+// while a nearby hero suppresses feeding. Also: hurled blocks are FOOD, not damage
+// (the gravity gun mends or grows this beast instead of hurting it), the eye is one
+// part wearing a seeded face, the heart's heat feed, and full-tile in-flight blocks.
 // Run: node tools/boss-sim.test.mjs
 import { strict as assert } from 'assert';
 import { readFile } from 'node:fs/promises';
@@ -645,5 +647,125 @@ for(let i=0;i<10;i++) bosses.update(getTile,setTile,0.1);
 assert.ok(dbg.projectiles.length && dbg.projectiles[0].vx>0.5, 'wind bends boss-thrown light blocks');
 assert.ok(dbg.debris.length && dbg.debris[0].vx>0.5, 'wind carries boss debris particles');
 delete globalThis.MM.wind;
+
+// --- 30. Gravity-gun blocks are FOOD, not damage --------------------------------
+// The beast is built of blocks, so a hurled block is masonry: it mends the plate
+// it struck, or bolts on as new mass of the very material thrown. Nothing else
+// about the damage chain may change — a plain arrow still bounces off the shell.
+resetWorld();
+const mAb = bosses.forceSpawn(getTile, {x:400, seed:8123, freeze:true});
+const gravOpts = (tid)=>({kind:'arrow', tier:'gravity', source:'hero', grav:true, gravTid:tid});
+const shellAb = mAb.parts.find(p=>p.role!=='core' && p.role!=='eye' && p.dy<0);
+assert.ok(shellAb, 'found a shell plate to feed');
+const abX = Math.round(mAb.x)+shellAb.dx, abY = Math.round(mAb.y)+shellAb.dy;
+const partsBeforeAb = mAb.parts.length, hpBeforeAb = shellAb.hp, coreMaxBefore = mAb.core.maxHp;
+assert.equal(bosses.damageAt(abX, abY, 999, gravOpts(T.DIAMOND)), 'absorbed',
+  'a thrown block is absorbed, never blocked and never damaging');
+assert.equal(shellAb.hp, hpBeforeAb, 'an absorbed block takes no HP off the plate it hit');
+assert.equal(mAb.parts.length, partsBeforeAb+1, 'a healthy beast turns the block into new body mass');
+const grownPart = mAb.parts[mAb.parts.length-1];
+assert.equal(grownPart.blockType, T.DIAMOND, 'the new mass is made of the material that was thrown');
+assert.ok(mAb.core.maxHp > coreMaxBefore, 'growing on thrown blocks toughens the heart');
+assert.ok(mAb.absorbed===1 && mAb.absorbT>0, 'the swallow is counted and flashes');
+// a WOUNDED plate is mended instead — the block plugs the hole it landed in
+shellAb.hp = shellAb.maxHp*0.4;
+const partsBeforeHeal = mAb.parts.length;
+assert.equal(bosses.damageAt(abX, abY, 999, gravOpts(T.STONE)), 'absorbed', 'a wounded plate still absorbs');
+assert.ok(shellAb.hp > shellAb.maxHp*0.4, 'the block mends the plate it struck');
+assert.equal(mAb.parts.length, partsBeforeHeal, 'mending spends the block instead of growing');
+// only the gravity marker unlocks this: every other projectile keeps its behaviour
+assert.equal(bosses.damageAt(abX, abY, 5, {kind:'arrow', tier:'wood', source:'hero'}), 'blocked',
+  'an ordinary arrow still stops dead on the shell');
+assert.equal(bosses.damageAt(abX, abY, 5, {kind:'arrow', tier:'gravity', source:'hero'}), 'blocked',
+  'tier alone never feeds the beast — the grav/gravTid pair is the marker');
+assert.equal(bosses.damageAt(abX, abY, 5, gravOpts(0)), 'blocked', 'a block with no tile id is not food');
+// the sealed heart column swallows too, rather than "glancing off"
+const sealedM = bosses.forceSpawn(getTile, {x:520, seed:4242, freeze:true});
+assert.ok(sealedM, 'second beast spawned');
+const cx0 = Math.round(sealedM.x)+sealedM.core.dx, cy0 = Math.round(sealedM.y)+sealedM.core.dy;
+assert.equal(bosses.damageAt(cx0, cy0, 999, gravOpts(T.STONE)), 'absorbed',
+  'a block aimed at the sealed heart is eaten by the plating, not shrugged off');
+// growth cap still bounds it: feeding can never grow a beast without limit
+const mCap = bosses.forceSpawn(getTile, {x:640, seed:77, freeze:true});
+const capShell = mCap.parts.find(p=>p.role!=='core' && p.role!=='eye' && p.dy<0);
+for(let i=0;i<CFG.GROWTH_CAP+12;i++){
+  bosses.damageAt(Math.round(mCap.x)+capShell.dx, Math.round(mCap.y)+capShell.dy, 999, gravOpts(T.STONE));
+}
+assert.ok(mCap.grown <= CFG.GROWTH_CAP, `fed growth respects GROWTH_CAP (${mCap.grown})`);
+assert.ok(mCap.parts.every(p=>p.dy<=0), 'fed growth never sinks a part below the feet line either');
+
+// --- 31. The eye: one part, a seeded face ---------------------------------------
+// Variety lives in a SPEC, never in extra parts — turrets, status damage and the
+// blinding rule all assume exactly one part carries role 'eye'.
+resetWorld();
+const mEyeA = bosses.forceSpawn(getTile, {x:200, seed:1234, freeze:true});
+const mEyeB = bosses.forceSpawn(getTile, {x:260, seed:1234, freeze:true});
+const mEyeC = bosses.forceSpawn(getTile, {x:320, seed:9999, freeze:true});
+assert.equal(mEyeA.parts.filter(p=>p.role==='eye').length, 1, 'exactly one part is the eye');
+assert.ok(mEyeA.eyeSpec, 'the generator rolls an eye spec');
+assert.deepEqual(mEyeA.eyeSpec, mEyeB.eyeSpec, 'the same seed always grows the same face');
+assert.notDeepEqual(mEyeA.eyeSpec, mEyeC.eyeSpec, 'a different seed grows a different face');
+const EYE_SOCKET_NAMES = ['round','almond','hex','upright','wide'];
+const EYE_PUPIL_NAMES = ['round','slit','hslit','cross','star','ring'];
+for(const seed of [1,2,3,17,64,777,4242,90210]){
+  const me = bosses.forceSpawn(getTile, {x:900+seed%40, seed, freeze:true});
+  if(!me) continue;
+  const s = me.eyeSpec;
+  assert.ok(EYE_SOCKET_NAMES.includes(s.socket), 'socket comes from the known vocabulary: '+s.socket);
+  assert.ok(EYE_PUPIL_NAMES.includes(s.pupil), 'pupil comes from the known vocabulary: '+s.pupil);
+  assert.ok(s.lobes>=1 && s.lobes<=3, 'a compound eye stays within 1-3 pupils');
+  assert.ok(s.pupil!=='slit' || s.lobes===1, 'a slit pupil never splits into lobes');
+  assert.ok(/^#[0-9a-f]{6}$/i.test(s.iris), 'the iris is a hex colour the emissive queue can parse: '+s.iris);
+  assert.ok(/^#[0-9a-f]{6}$/i.test(s.sclera) && /^#[0-9a-f]{6}$/i.test(s.rim), 'sclera and rim are hex too');
+  assert.ok(s.size>0.55 && s.size<=0.92, 'the socket fits inside its tile');
+  assert.ok(s.blinkEvery>=2.6 && s.blinkEvery<=6.9, 'each beast owns its own blink clock');
+  assert.equal(me.parts.filter(p=>p.role==='eye').length, 1, 'every seed still yields exactly one eye part');
+}
+// blinding still works with the new face
+resetWorld();
+const mBlind = bosses.forceSpawn(getTile, {x:300, seed:1234, freeze:true});
+const blindEye = mBlind.parts.find(p=>p.role==='eye');
+assert.ok(bosses.damageAt(Math.round(mBlind.x)+blindEye.dx, Math.round(mBlind.y)+blindEye.dy, 999, {kind:'melee',source:'hero'}),
+  'the procedural eye is still a strikeable weak point');
+assert.ok(!mBlind.hasEye, 'striking it out still blinds the beast');
+// ...but it is NOT a way past the absorb rule: a thrown block feeds the eye too
+resetWorld();
+const mEyeFeed = bosses.forceSpawn(getTile, {x:300, seed:1234, freeze:true});
+const feedEye = mEyeFeed.parts.find(p=>p.role==='eye');
+assert.equal(bosses.damageAt(Math.round(mEyeFeed.x)+feedEye.dx, Math.round(mEyeFeed.y)+feedEye.dy, 999, gravOpts(T.STONE)),
+  'absorbed', 'the gun cannot pop the eye either — the beast eats that block as well');
+assert.ok(mEyeFeed.hasEye, 'the eye survives a thrown block');
+
+// --- 32. Heart heat: the shimmer feed only fires on a hot heart -------------------
+// heatSources() is read by main.js BEFORE the boss draws, so it must come from
+// state. A sealed, healthy heart is warm; a breached or dying one shimmers.
+resetWorld();
+const mHeat = bosses.forceSpawn(getTile, {x:300, seed:1234, freeze:true});
+assert.deepEqual(bosses.heatSources(mHeat.x, 60), [], 'a sealed, healthy heart raises no heat haze');
+// carve one armour neighbour away: the heart is exposed and starts radiating
+const ring = mHeat.parts.find(p=>Math.abs(p.dx-mHeat.core.dx)+Math.abs(p.dy-mHeat.core.dy)===1);
+bosses.damageAt(Math.round(mHeat.x)+ring.dx, Math.round(mHeat.y)+ring.dy, 999, {kind:'pickaxe',breakTerrain:true,source:'hero'});
+const hot = bosses.heatSources(mHeat.x, 60);
+assert.equal(hot.length, 1, 'a breached heart becomes a live heat emitter');
+assert.ok(hot[0].strength>0.4 && hot[0].strength<=1, 'the emitter carries its own strength: '+hot[0].strength);
+assert.ok(Math.abs(hot[0].x-(mHeat.x+mHeat.core.dx+0.5))<0.01, 'the emitter sits on the heart, in tile coords');
+assert.deepEqual(bosses.heatSources(mHeat.x+400, 60), [], 'emitters are x-culled by the caller radius');
+assert.ok(bosses.heatSources(mHeat.x, 60) === hot, 'the emitter list is pooled scratch, not a fresh array per frame');
+
+// --- 33. In-flight blocks draw at full tile size ---------------------------------
+// A block in the air is the same block it was in the ground. The renderer proves
+// it by emitting a fill exactly TILE wide for a hurled block.
+resetWorld();
+const TILEpx = globalThis.MM.TILE;
+const flightDbg = bosses._debug();
+flightDbg.projectiles.push({x:10,y:30,vx:0,vy:0,t:0,max:2,tile:T.STONE,color:'#888a90',spin:0,dmg:1});
+const flightCtx = recordingCtx();
+bosses.draw(flightCtx, TILEpx, ()=>true);
+const fullBlock = flightCtx.calls.find(c=>c.style==='#888a90' && c.w===TILEpx && c.h===TILEpx);
+assert.ok(fullBlock, 'a hurled block renders at the full tile size it was ripped from');
+assert.ok(Math.abs(fullBlock.x+TILEpx/2)<0.001 && Math.abs(fullBlock.y+TILEpx/2)<0.001,
+  'the hurled block is centred on its own position');
+assert.ok(!flightCtx.calls.some(c=>c.style==='#888a90' && Math.abs(c.w-TILEpx*0.7)<0.001),
+  'the old 0.7-tile pebble draw is gone');
 
 console.log('OK: all boss monster simulation tests passed');

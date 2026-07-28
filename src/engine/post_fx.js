@@ -2492,8 +2492,12 @@ const api = {
 		// Cut to the visible rows (+3: the tallest plume is 2.5 tiles).
 		const yMin = Number.isFinite(opts.sy) ? Math.floor(opts.sy) - 1 : -Infinity;
 		const yMax = (Number.isFinite(opts.sy) && Number.isFinite(opts.viewY)) ? Math.ceil(opts.sy + opts.viewY) + 3 : Infinity;
-		for(let li = 0; li < 2; li++){
-			const list = li === 0 ? opts.pools : opts.burning;
+		// A third feed: live EMITTERS that are not tiles at all — a boss's exposed
+		// heart radiates with no hot block anywhere under it. These carry their own
+		// strength (an agonising heart shimmers harder than a sealed one) while the
+		// two tile feeds keep their fixed pool/fire values.
+		for(let li = 0; li < 3; li++){
+			const list = li === 0 ? opts.pools : (li === 1 ? opts.burning : opts.emitters);
 			const strength = li === 0 ? 0.5 : 0.8;
 			if(!Array.isArray(list)) continue;
 			for(let i = 0; i < list.length; i++){
@@ -2504,7 +2508,8 @@ const api = {
 				if(getTile(Math.round(s.x), ry - 1) !== T.AIR) continue;
 				if(typeof opts.visibleAt === 'function' && !opts.visibleAt(Math.round(s.x), ry)) continue;
 				const p = heatSrcPool[sources.length] || (heatSrcPool[sources.length] = { x: 0, y: 0, strength: 0 });
-				p.x = s.x; p.y = s.y; p.strength = strength;
+				p.x = s.x; p.y = s.y;
+				p.strength = li === 2 ? Math.max(0.2, Math.min(1, Number(s.strength) || 0.7)) : strength;
 				sources.push(p);
 			}
 		}
