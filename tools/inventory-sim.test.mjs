@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 
 globalThis.window = globalThis;
 const { T, INFO } = await import('../src/constants.js');
+await import('../src/engine/cape_fabrics.js'); // syncCustomization resolves cape fabric through MM.capeFabrics
 await import('../src/inventory.js');
 const INV = globalThis.MM.inventory;
 const { chests } = await import('../src/engine/chests.js');
@@ -569,7 +570,11 @@ assert.equal(INV.restore({
     { id: 'restore_magnet_off', kind: 'charm', name: 'Magnet Off', lootMagnetLevel: -4 },
     { id: 'restore_compass_cap', kind: 'charm', name: 'Compass Cap', treasureSenseLevel: 999 },
     { id: 'restore_thermal_cap', kind: 'eyes', name: 'Thermal Cap', specialVisionLevel: 999, visionMode: 'thermal' },
-    { id: 'restore_fake_vision', kind: 'eyes', name: 'Fake Vision', specialVisionLevel: 2, visionMode: 'xray' }
+    { id: 'restore_fake_vision', kind: 'eyes', name: 'Fake Vision', specialVisionLevel: 2, visionMode: 'xray' },
+    { id: 'restore_fab_ok',    kind: 'cape',   name: 'Fab OK',    fabric: 'ember' },
+    { id: 'restore_fab_frost', kind: 'cape',   name: 'Fab Frost', fabric: 'frost' },
+    { id: 'restore_fab_bad',   kind: 'cape',   name: 'Fab Bad',   fabric: 'kevlar' },
+    { id: 'restore_fab_wrong', kind: 'weapon', name: 'Fab Wrong', fabric: 'silk', attackDamage: 3 }
   ],
   discarded: ['discarded_ok'],
   shortcutOff: ['bow_wood'],
@@ -586,6 +591,10 @@ assert.equal(INV.getItem('restore_compass_cap').treasureSenseLevel, 4, 'corrupt 
 assert.equal(INV.getItem('restore_thermal_cap').specialVisionLevel, 4, 'corrupt special-vision level is clamped to the fourth tier');
 assert.equal(INV.getItem('restore_thermal_cap').visionMode, 'thermal', 'valid thermal mode survives restore');
 assert.equal(INV.getItem('restore_fake_vision').visionMode, 'night', 'unknown x-ray-like mode fails closed to ordinary night vision');
+assert.equal(INV.getItem('restore_fab_ok').fabric, 'ember', 'a whitelisted cape fabric survives sanitize on restore');
+assert.equal(INV.getItem('restore_fab_frost').fabric, 'frost', 'every whitelisted fabric id round-trips, not just the first');
+assert.equal(INV.getItem('restore_fab_bad').fabric, undefined, 'an unlisted fabric id is dropped on ingest');
+assert.equal(INV.getItem('restore_fab_wrong').fabric, undefined, 'fabric never rides a non-cape item');
 assert.equal(INV.isNew('restore_ok'), true, 'new marker for existing restored loot is kept');
 assert.equal(INV.isNew('missing_item'), false, 'new marker for absent loot is dropped');
 assert.deepEqual(INV.snapshot().shortcutSelection, {}, 'invalid or wrong-category shortcut selections are discarded on restore');
@@ -637,6 +646,26 @@ assert.equal(INV.enhancementInfo('stone_blade').level, 3, 'enhancement level sur
 assert.equal(INV.getItem('stone_blade').attackDamage, stoneBase + 3, 'enhanced stat survives save/restore without double application');
 INV.restore(beforeJewels, { persist: false, silent: true });
 INV._debugEnhancement.setRandom(null);
+
+// --- cape fabric bridge: the equipped ITEM reaches the renderer -------------
+// syncCustomization is the ONLY writer of MM.customization.capeFabric /
+// capeIrid, which cape.js and inventory_ui.js read to pick physics + paint.
+// Without these pins the whole item→fabric resolution could be deleted and
+// every loot cape would silently fall back to plain cloth.
+const CUST = globalThis.MM.customization;
+INV.equip('royal');
+assert.equal(CUST.capeFabric, 'silk', 'builtin cape id resolves its fabric into customization');
+INV.registerItem({ id: 'cape_fur_test', kind: 'cape', name: 'Peleryna yeti' });
+INV.equip('cape_fur_test');
+assert.equal(CUST.capeFabric, 'fur', 'loot cape name keyword-scans into customization');
+INV.registerItem({ id: 'cape_irid_test', kind: 'cape', name: 'Łuska zorzy' });
+INV.equip('cape_irid_test');
+assert.equal(CUST.capeFabric, 'scale', 'aurora loot cape resolves to scale');
+assert.equal(CUST.capeIrid, true, 'iridescence rides the same bridge as the fabric id');
+INV.registerItem({ id: 'cape_expl_test', kind: 'cape', name: 'Peleryna yeti', fabric: 'gilded' });
+INV.equip('cape_expl_test');
+assert.equal(CUST.capeFabric, 'gilded', 'explicit item.fabric field outranks the name scan');
+INV.equip('classic');
 
 console.log('inventory-sim: all assertions passed (avg Moc common/uncommon/rare/epic/legendary: '
   + [(sums.common / counts.common).toFixed(1), (sums.uncommon / counts.uncommon).toFixed(1), (sums.rare / counts.rare).toFixed(1), (sums.epic / counts.epic).toFixed(1), (sums.legendary / counts.legendary).toFixed(1)].join('/') + ')');

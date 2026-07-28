@@ -371,7 +371,9 @@ for(const tileId of Object.keys(TILE_HEAT)){
 // terrain where sea level sits at row ~62 and peaks reach row ~10
 export const SNOW_LINE = 30;
 export const MOVE = {ACC:32,FRICTION:28,MAX:6,JUMP:-9,GRAV:20};
-export const CAPE = {SEGMENTS:12,ANCHOR_FRAC:0.5};
+// ANCHOR_FRAC: cape collar height as a fraction of body height from the top
+// (0.30 ≈ the shoulder line; 0.5 was the navel and read as a belt-cape).
+export const CAPE = {SEGMENTS:12,ANCHOR_FRAC:0.30};
 export const BLINK_DUR = 160;
 
 export const isSolid = t => t !== T.AIR && !INFO[t].passable;

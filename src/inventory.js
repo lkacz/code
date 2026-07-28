@@ -531,7 +531,12 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
   // fields on ingest so tampered/corrupt entries can't smuggle objects or markup
   // into stat math and innerHTML-based displays downstream.
   const ITEM_NUM_FIELDS=['airJumps','visionRadius','specialVisionLevel','treasureSenseLevel','moveSpeedMult','jumpPowerMult','mineSpeedMult','waterMoveSpeedMult','attackDamage','fireDps','fireRange','fireCooldown','energyCost','energyCapacityBonus','lootMagnetLevel','crushResistBonus','damageReductionBonus'];
-  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode','antennaActive','pickPerk','mergePerk','bouncyKind'];
+  const ITEM_STR_FIELDS=['name','tier','desc','unique','weaponType','meleeEffect','aquaticStyle','visionMode','antennaActive','pickPerk','mergePerk','bouncyKind','fabric'];
+  // Fabric identity of a cape (cape_fabrics.js FABRICS holds the physics and
+  // paint — nothing numeric ever rides the item). Same contract as meleeEffect:
+  // an id not listed here is dropped on ingest and the cape falls back to the
+  // name-keyword resolver. Mirrored from cape_fabrics.js FABRIC_IDS (pinned).
+  const CAPE_FABRIC_IDS=new Set(['cloth','silk','leather','fur','feather','scale','ember','spectral','frost','gilded']);
   // Material identity of a crafted hand weapon (weapons.js MELEE_EFFECTS holds
   // the numbers) — anything else smuggled into meleeEffect is dropped on ingest.
   const MELEE_EFFECT_LABELS={bleed:'Krwawienie', stun:'Ogłuszenie', panic:'Panika', sunder:'Rozłupanie pancerza'};
@@ -561,6 +566,7 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     ITEM_NUM_FIELDS.forEach(f=>{ const v=raw[f]; if(typeof v==='number' && isFinite(v)) it[f]=v; });
     ITEM_STR_FIELDS.forEach(f=>{ const v=raw[f]; const max=f==='desc'?180:80; if(typeof v==='string' && v.length<=max) it[f]=v; });
     if(Number.isFinite(raw.enhancement)) it.enhancement=Math.max(-99,Math.min(99,Math.trunc(raw.enhancement)));
+    if(it.fabric && (kind!=='cape' || !CAPE_FABRIC_IDS.has(it.fabric))) delete it.fabric;
     if(it.meleeEffect && (kind!=='weapon' || (it.weaponType||'melee')!=='melee' || !MELEE_EFFECT_LABELS[it.meleeEffect])) delete it.meleeEffect;
     if(it.antennaActive && (kind!=='antenna' || !ANTENNA_ACTIVE_LABELS[it.antennaActive])) delete it.antennaActive;
     if(it.pickPerk && (kind!=='pickaxe' || !PICK_PERK_LABELS[it.pickPerk])) delete it.pickPerk;
@@ -690,6 +696,16 @@ import { FURNISHING_RESOURCES } from './engine/furnishings.js';
     c.outfitStyle=state.equipped.outfit||'default';
     c.capeColor=state.colors.cape;
     c.outfitColor=state.colors.outfit;
+    // Fabric identity of the equipped cape ITEM (explicit field or resolved
+    // from its Polish name/tier) — the renderer keys physics + paint off this,
+    // which is what gives the 30+ loot capes a look beyond 'classic red'.
+    try{
+      const capeItem=findItem(state.equipped.cape);
+      const FZ=(typeof window!=='undefined' && window.MM && MM.capeFabrics) || null;
+      const r=FZ ? FZ.resolve(capeItem||{id:state.equipped.cape}) : null;
+      c.capeFabric=r ? r.fabric : 'cloth';
+      c.capeIrid=r ? !!r.irid : false;
+    }catch(e){ c.capeFabric='cloth'; c.capeIrid=false; }
   }
   // Legacy code paths may write MM.customization directly; adopt those writes.
   function adoptCustomizationWrites(){

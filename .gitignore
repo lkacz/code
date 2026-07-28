@@ -51,6 +51,7 @@ coverage/
 tools/*-qa*.png
 *-qa-*.png
 mob-gallery/
+cape-gallery/
 
 # Credentials / Local overrides
 .git-credentials

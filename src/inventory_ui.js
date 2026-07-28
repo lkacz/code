@@ -855,32 +855,20 @@ import './inventory.js';
       else { ctx.fillStyle='#fff'; ctx.fillRect(cx-eyeW/2, eyeY-eyeH/2, eyeW, eyeH); ctx.fillStyle='#111'; ctx.fillRect(cx-eyeW/2+1, eyeY-1, 2, 2); }
     });
   }
-  // Static cape thumbnail matching the engine's edge styles
-  function drawCapeMini(ctx, styleId){
-    const st=(MM.cape && MM.cape.getStyle)? MM.cape.getStyle(styleId): {wTop:0.1,wBot:0.24,edge:'straight',shiny:false};
+  // Static cape thumbnail: rendered by the ENGINE's preview path so fabric
+  // looks (fold shading, sheen, scale plates, fur pile…) can never drift from
+  // the world renderer. Takes the full item — fabric resolves from it.
+  function drawCapeMini(ctx, item){
     const col=INV.getColors().cape||'#b91818';
-    const topY=12, botY=64; const W=110;
-    const wTop=Math.max(5, st.wTop*W/2), wBot=Math.max(7, st.wBot*W/2);
-    const cx=40;
     ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(cx-wTop, topY);
-    if(st.edge==='wave'){
-      for(let i=1;i<=4;i++){ const t=i/4; const y=topY+(botY-topY)*t; const w=wTop+(wBot-wTop)*t; ctx.quadraticCurveTo(cx-w-4*Math.sin(t*Math.PI*2+1), y-(botY-topY)/8, cx-w, y); }
-    } else ctx.lineTo(cx-wBot, botY);
-    if(st.edge==='point'){ ctx.lineTo(cx, botY+10); ctx.lineTo(cx+wBot, botY); }
-    else if(st.edge==='scallop'){ const n=4; for(let i=1;i<=n;i++){ const x0=cx-wBot+((2*wBot)/n)*(i-1); const x1=cx-wBot+((2*wBot)/n)*i; ctx.quadraticCurveTo((x0+x1)/2, botY+8, x1, botY); } }
-    else if(st.edge==='ragged'){ const n=6; for(let i=1;i<=n;i++){ const x=cx-wBot+((2*wBot)/n)*i; ctx.lineTo(x-((2*wBot)/n)/2, botY+(i%2?7:1)); ctx.lineTo(x, botY); } }
-    else { ctx.lineTo(cx+wBot, botY); }
-    if(st.edge==='wave'){
-      for(let i=3;i>=0;i--){ const t=i/4; const y=topY+(botY-topY)*t; const w=wTop+(wBot-wTop)*t; ctx.quadraticCurveTo(cx+w+4*Math.sin(t*Math.PI*2+1), y+(botY-topY)/8, cx+w, y); }
-    } else ctx.lineTo(cx+wTop, topY);
-    ctx.closePath();
-    if(st.shiny){ const g=ctx.createLinearGradient(0,topY,0,botY); g.addColorStop(0,col); g.addColorStop(0.55,shadeHex(col,40)); g.addColorStop(1,shadeHex(col,-20)); ctx.fillStyle=g; }
-    else ctx.fillStyle = styleId==='shadow' ? shadeHex(col,-60) : col;
-    ctx.fill();
-    ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1; ctx.stroke();
-    ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.fillRect(cx-wTop-4, topY-3, wTop*2+8, 2);
+    if(MM.cape && MM.cape.drawPreviewCape){
+      // Anchor sits right-of-centre: the ribbon streams BACK from it, so a
+      // centred anchor leaves the whole right half of the card empty.
+      MM.cape.drawPreviewCape(ctx,{item, styleId:item&&item.id, color:col, x:52/58, y:8/58, TILE:58, t:0.9, facing:1});
+    } else {
+      ctx.fillStyle=col; ctx.fillRect(30,12,20,52);
+    }
+    ctx.fillStyle='rgba(255,255,255,0.35)'; ctx.fillRect(40, 7, 24, 2);
     ctx.restore();
   }
   function drawWeaponMini(ctx,item){
@@ -1052,7 +1040,7 @@ import './inventory.js';
   function drawItemThumb(ctx,item){
     ctx.clearRect(0,0,80,80);
     const c=MM.customization||{};
-    if(item.kind==='cape'){ drawCapeMini(ctx,item.id); }
+    if(item.kind==='cape'){ drawCapeMini(ctx,item); }
     else if(item.kind==='eyes'){
       ctx.fillStyle='#222'; ctx.fillRect(10,22,60,36); ctx.fillStyle='#f4c05a'; ctx.fillRect(25,28,30,30);
       if(item.id==='glow'){ ctx.fillStyle='rgba(139,249,255,0.25)'; ctx.fillRect(28,38,12,12); ctx.fillRect(40,38,12,12); ctx.fillStyle='#8bf9ff'; ctx.fillRect(30,40,8,8); ctx.fillRect(42,40,8,8); }
@@ -1089,53 +1077,28 @@ import './inventory.js';
   }
 
   // --- Animated character preview (cape sim + outfit + eyes + weapon) ---
-  const miniCape=[]; const MINI_SEGS=10; for(let i=0;i<MINI_SEGS;i++) miniCape.push({x:0,y:0});
-  let miniFacing=1, lastTime=performance.now(), faceTimer=0, faceDir=1;
-  function stepMiniCape(styleId,dt){
-    const st=(MM.cape && MM.cape.getStyle)? MM.cape.getStyle(styleId): {wTop:0.1,wBot:0.24,flare:1};
-    faceTimer+=dt; if(faceTimer>2.2){ faceTimer=0; faceDir*=-1; }
-    miniFacing=faceDir;
-    const targetFlare=(0.18+0.55)*st.flare;
-    const segLen=0.5; miniCape[0].x=0; miniCape[0].y=0;
-    for(let i=1;i<MINI_SEGS;i++){
-      const prev=miniCape[i-1]; const seg=miniCape[i]; const t=i/(MINI_SEGS-1);
-      const backDirX=-miniFacing;
-      const wind=Math.sin(performance.now()/300 + i*0.8)*0.04 + Math.sin(performance.now()/1200 + i)*0.02;
-      const desiredX=prev.x + backDirX*t*targetFlare + wind*(st.wind||1);
-      const desiredY=prev.y + 0.18 + t*0.62;
-      seg.x += (desiredX - seg.x)*Math.min(1,dt*9);
-      seg.y += (desiredY - seg.y)*Math.min(1,dt*9);
-    }
-    for(let it=0; it<2; it++){
-      for(let i=1;i<MINI_SEGS;i++){
-        const a=miniCape[i-1], b=miniCape[i];
-        let dx=b.x-a.x, dy=b.y-a.y; let d=Math.hypot(dx,dy)||0.0001;
-        const excess=d-segLen;
-        if(Math.abs(excess)>0.001){ const k=excess/d; b.x -= dx*k; b.y -= dy*k; }
-      }
-    }
-  }
+  // The cape itself renders through the ENGINE's preview path (same paint core
+  // as the world), so every fabric look shows here identically.
+  let miniFacing=1, lastTime=performance.now(), faceTimer=0, faceDir=1, miniT=0;
   function drawCapeAnimated(ctx, styleId, bw, bh){
     const now=performance.now(); const dt=Math.min(0.05,(now-lastTime)/1000); lastTime=now;
-    stepMiniCape(styleId,dt);
-    ctx.save();
-    const anchorX = miniFacing===1 ? 1.5 : bw-1.5;
-    const anchorY = bh*0.30;
-    ctx.translate(anchorX, anchorY);
-    const st=(MM.cape && MM.cape.getStyle)? MM.cape.getStyle(styleId): {wTop:0.1,wBot:0.24};
-    const WIDTH_SCALE=40;
-    const wTop=st.wTop*WIDTH_SCALE, wBot=st.wBot*WIDTH_SCALE;
-    ctx.beginPath();
-    for(let i=0;i<MINI_SEGS;i++){ const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const w=wTop+(wBot-wTop)*t; const nx=(miniFacing===1? -seg.x: seg.x); const ny=seg.y; if(i===0){ ctx.moveTo(nx - w, ny); } ctx.lineTo(nx - w, ny); }
-    for(let i=MINI_SEGS-1;i>=0;i--){ const seg=miniCape[i]; const t=i/(MINI_SEGS-1); const w=wTop+(wBot-wTop)*t; const nx=(miniFacing===1? -seg.x: seg.x); const ny=seg.y; ctx.lineTo(nx + w, ny); }
-    ctx.closePath();
+    faceTimer+=dt; if(faceTimer>2.2){ faceTimer=0; faceDir*=-1; }
+    miniFacing=faceDir;
+    miniT+=dt;
+    const c=MM.customization||{};
     const capeCol=INV.getColors().cape||'#b91818';
-    if(st.shiny){
-      const g=ctx.createLinearGradient(0,0,0,miniCape[MINI_SEGS-1].y);
-      g.addColorStop(0, capeCol); g.addColorStop(0.55, shadeHex(capeCol,40)); g.addColorStop(1, shadeHex(capeCol,-20));
-      ctx.fillStyle=g;
-    } else ctx.fillStyle=capeCol;
-    ctx.fill(); ctx.restore();
+    ctx.save();
+    if(MM.cape && MM.cape.drawPreviewCape){
+      const anchorX = miniFacing===1 ? bw*0.42 : bw*0.58;
+      MM.cape.drawPreviewCape(ctx,{
+        styleId:styleId, item:INV.equippedItem?INV.equippedItem('cape'):null,
+        fabricId:c.capeFabric, irid:c.capeIrid, color:capeCol,
+        x:anchorX/22, y:bh*0.28/22, TILE:22, t:miniT, facing:miniFacing
+      });
+    } else {
+      ctx.fillStyle=capeCol; ctx.fillRect(miniFacing===1?0:bw-4, bh*0.3, 4, bh*0.6);
+    }
+    ctx.restore();
     // Single rAF chain: without the guard every equip click while open would
     // stack one more redraw-per-frame loop onto the preview
     if(!drawCapeAnimated._pending){
@@ -1212,7 +1175,10 @@ import './inventory.js';
     const SCALE=4.6; ctx.scale(SCALE,SCALE);
     const c=MM.customization; const bw=14, bh=20;
     const areaW=previewCanvas.width/SCALE, areaH=previewCanvas.height/SCALE;
-    ctx.translate((areaW-bw)/2, (areaH-bh)/2);
+    // Lift: the cape hangs fab.lengthTiles (up to 1.20) below a SHOULDER
+    // anchor, i.e. past the feet — body-centred framing put the longest
+    // fabrics' hem past the canvas bottom. Headroom above is free.
+    ctx.translate((areaW-bw)/2, (areaH-bh)/2 - 2.6);
     ctx.fillStyle='rgba(0,0,0,0.30)'; ctx.beginPath(); ctx.ellipse(bw/2, bh+2.5, bw*0.62, 2.2, 0, 0, Math.PI*2); ctx.fill();
     drawCapeAnimated(ctx, c.capeStyle, bw, bh);
     MM.drawOutfit(ctx, 0, 0, bw, bh, c.outfitStyle, c);
