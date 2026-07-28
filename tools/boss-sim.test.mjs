@@ -705,22 +705,43 @@ assert.equal(mEyeA.parts.filter(p=>p.role==='eye').length, 1, 'exactly one part 
 assert.ok(mEyeA.eyeSpec, 'the generator rolls an eye spec');
 assert.deepEqual(mEyeA.eyeSpec, mEyeB.eyeSpec, 'the same seed always grows the same face');
 assert.notDeepEqual(mEyeA.eyeSpec, mEyeC.eyeSpec, 'a different seed grows a different face');
-const EYE_SOCKET_NAMES = ['round','almond','hex','upright','wide'];
-const EYE_PUPIL_NAMES = ['round','slit','hslit','cross','star','ring'];
+const EYE_SOCKET_NAMES = ['round','almond','wide'];
+const EYE_PUPIL_NAMES = ['round','slit','cross','ring'];
 for(const seed of [1,2,3,17,64,777,4242,90210]){
   const me = bosses.forceSpawn(getTile, {x:900+seed%40, seed, freeze:true});
   if(!me) continue;
   const s = me.eyeSpec;
   assert.ok(EYE_SOCKET_NAMES.includes(s.socket), 'socket comes from the known vocabulary: '+s.socket);
   assert.ok(EYE_PUPIL_NAMES.includes(s.pupil), 'pupil comes from the known vocabulary: '+s.pupil);
-  assert.ok(s.lobes>=1 && s.lobes<=3, 'a compound eye stays within 1-3 pupils');
-  assert.ok(s.pupil!=='slit' || s.lobes===1, 'a slit pupil never splits into lobes');
+  assert.ok(s.lobes>=1 && s.lobes<=2, 'a compound eye stays within 1-2 pupils — three is mush at 20 px');
+  assert.ok((s.pupil!=='slit' && s.pupil!=='ring') || s.lobes===1, 'a slit or ring pupil never splits into lobes');
   assert.ok(/^#[0-9a-f]{6}$/i.test(s.iris), 'the iris is a hex colour the emissive queue can parse: '+s.iris);
   assert.ok(/^#[0-9a-f]{6}$/i.test(s.sclera) && /^#[0-9a-f]{6}$/i.test(s.rim), 'sclera and rim are hex too');
-  assert.ok(s.size>0.55 && s.size<=0.92, 'the socket fits inside its tile');
+  assert.ok(s.size>0.65 && s.size<=0.89, 'the socket fits inside its tile');
+  assert.ok(s.squash>=0.80 && s.squash<=1.20, 'no beast gets a socket so flat the iris turns into a speck');
   assert.ok(s.blinkEvery>=2.6 && s.blinkEvery<=6.9, 'each beast owns its own blink clock');
   assert.equal(me.parts.filter(p=>p.role==='eye').length, 1, 'every seed still yields exactly one eye part');
 }
+// The face is AXIS-ALIGNED and centred on its own tile. An earlier cut rotated
+// the socket while the gaze stayed a world-space direction, so the iris slid off
+// the white it lives in; a brow was faked by shifting the whole eye down, which
+// pulled it off the rim. Both are pinned dead.
+const bossEyeSrc = await readFile(new URL('../src/engine/bosses.js', import.meta.url), 'utf8');
+const iEyeFn = bossEyeSrc.indexOf('function drawBossEye(');
+const eyeBody = bossEyeSrc.slice(iEyeFn, bossEyeSrc.indexOf('\n  }', iEyeFn));
+assert.ok(iEyeFn > 0 && eyeBody.length > 400, 'the eye renderer was located');
+assert.ok(!/ctx\.rotate\(/.test(eyeBody), 'the eye socket is never rotated — the gaze is a world-space direction');
+assert.match(eyeBody, /ctx\.translate\(cx,cy\);/, 'the socket is centred on its own tile, with no brow offset');
+assert.ok(!/tiltA|lidTop/.test(bossEyeSrc), 'the canted socket and the shifted brow stay dead');
+// The heart's aura must never be clipped into a box: every radial gradient in
+// the boss renderer paints a rect derived from its OWN radius. A fixed 3-tile
+// box around a radius that grew past it cut the glow off square.
+assert.match(bossEyeSrc, /ctx\.fillStyle=g; ctx\.fillRect\(gcx-gR,gcy-gR,gR\*2,gR\*2\);/,
+  'the attached heart paints its glow into a box sized from the gradient radius');
+assert.match(bossEyeSrc, /ctx\.fillRect\(-hR,-hR,hR\*2,hR\*2\);/,
+  'the detached heart does the same');
+assert.ok(!/fillRect\(X-TILE,Y-TILE,TILE\*3,TILE\*3\)/.test(bossEyeSrc), 'the clipped 3x3 aura box is gone');
+assert.ok(!/fillRect\(-TILE\*1\.8,-TILE\*1\.8,TILE\*3\.6,TILE\*3\.6\)/.test(bossEyeSrc), 'so is its detached twin');
 // blinding still works with the new face
 resetWorld();
 const mBlind = bosses.forceSpawn(getTile, {x:300, seed:1234, freeze:true});
@@ -767,5 +788,103 @@ assert.ok(Math.abs(fullBlock.x+TILEpx/2)<0.001 && Math.abs(fullBlock.y+TILEpx/2)
   'the hurled block is centred on its own position');
 assert.ok(!flightCtx.calls.some(c=>c.style==='#888a90' && Math.abs(c.w-TILEpx*0.7)<0.001),
   'the old 0.7-tile pebble draw is gone');
+
+// --- 34. A LEANING beast is hit and stood on where it is DRAWN -------------------
+// The lean used to live only in the renderer: at a normal maimed lean (~0.26 rad)
+// a 6-tall beast's head was painted 1.6 tiles from the lattice the game actually
+// hit-tested, so you struck the block behind the one you could see and a rider
+// stood in mid-air. Every hero-facing query now maps through the same transform
+// the renderer rotates by. These assertions are the contract.
+resetWorld();
+const mTilt = bosses.forceSpawn(getTile, {x:300, seed:1234, freeze:true, archetype:'walker'});
+assert.ok(mTilt, 'tilt-case beast spawned');
+step(20);                                   // settle it onto the ground
+// upright first: the transform must be EXACTLY identity, or every other pin lies
+mTilt.tilt = 0; mTilt.tiltV = 0;
+const uprightPart = mTilt.parts.find(p=>p.dy<=-2 && p.role!=='core') || mTilt.parts[0];
+const upTgt = bosses.resolvePartTarget({boss:mTilt, part:uprightPart});
+assert.ok(Math.abs(upTgt.x-(mTilt.x+uprightPart.dx+0.5))<1e-12
+       && Math.abs(upTgt.y-(mTilt.y+uprightPart.dy+0.5))<1e-12,
+  'an upright beast reports its raw lattice position, bit for bit');
+// now lean it the way a maimed beast leans
+mTilt.tilt = 0.26; mTilt.tiltV = 0;
+const leanTgt = bosses.resolvePartTarget({boss:mTilt, part:uprightPart});
+const latticeX = mTilt.x+uprightPart.dx+0.5, latticeY = mTilt.y+uprightPart.dy+0.5;
+const drift = Math.hypot(leanTgt.x-latticeX, leanTgt.y-latticeY);
+assert.ok(drift > 0.35, `the lean genuinely moves a high part (${drift.toFixed(2)} tiles)`);
+// A census over the WHOLE body, which is the honest form of this claim: click
+// where each part is drawn and you must hit that part. A rotated body quantised
+// onto a tile grid legitimately lets a few land on an immediate lattice
+// neighbour, but none may miss the beast altogether.
+let hitExact=0, hitNear=0, hitBoss=0, hitTotal=0;
+for(const p of mTilt.parts){
+  if(!(p.hp>0)) continue;
+  hitTotal++;
+  const at = bosses.resolvePartTarget({boss:mTilt, part:p});
+  const hit = bosses.partAt(Math.floor(at.x), Math.floor(at.y));
+  if(!hit) continue;
+  if(hit.boss===mTilt) hitBoss++;
+  if(hit.part===p) hitExact++;
+  else if(Math.abs(hit.part.dx-p.dx)+Math.abs(hit.part.dy-p.dy)<=1) hitNear++;
+}
+assert.ok(hitTotal>20, 'the census covered a real body');
+assert.equal(hitBoss, hitTotal, 'every drawn part tile belongs to the beast — no clicks fall through it');
+assert.ok(hitExact >= hitTotal*0.85,
+  `clicking a leaning beast where it is drawn hits that very block (${hitExact}/${hitTotal} exact)`);
+assert.equal(hitExact+hitNear, hitTotal,
+  'and the remainder land on an immediate lattice neighbour, never somewhere else');
+// The regression this replaces: on the untilted lattice most of those probes
+// answered for the wrong block. If this ever climbs back up, the lean has been
+// dropped out of the hit test again.
+let latticeHits=0;
+for(const p of mTilt.parts){
+  if(!(p.hp>0)) continue;
+  const hit = bosses.partAt(Math.floor(mTilt.x+p.dx+0.5), Math.floor(mTilt.y+p.dy+0.5));
+  if(hit && hit.part===p) latticeHits++;
+}
+assert.ok(latticeHits < hitTotal*0.3,
+  `the untilted lattice no longer answers for a leaning body (${latticeHits}/${hitTotal} still coincide)`);
+// a weapon resolves through the same lean the cursor does
+const hpBeforeLean = mTilt.parts.reduce((s,p)=>s+p.hp,0);
+bosses.damageAt(Math.floor(leanTgt.x), Math.floor(leanTgt.y), 2, {kind:'pickaxe', source:'hero'});
+assert.ok(mTilt.parts.reduce((s,p)=>s+p.hp,0) < hpBeforeLean,
+  'damageAt resolves through the same lean as partAt');
+// the foot is never drawn below the ground its lattice rests on: the lean is
+// taken about the feet AND lifted by the sagitta, so the body stands on its
+// down-slope leg instead of sinking that leg into the terrain
+for(const p of mTilt.parts){
+  if(p.dy!==0) continue;
+  const foot = bosses.resolvePartTarget({boss:mTilt, part:p});
+  if(!foot) continue;
+  assert.ok(foot.y <= mTilt.y+0.5+1e-9,
+    `a leaning beast never buries a foot below its own feet line (${foot.y.toFixed(3)} vs ${(mTilt.y+0.5).toFixed(3)})`);
+}
+// the hero lands on the LEANING surface. Drop him over the drawn position of a
+// top part and he must come to rest on it.
+const crown = mTilt.parts.reduce((a,b)=> (b.dy<a.dy? b:a), mTilt.parts[0]);
+const crownAt = bosses.resolvePartTarget({boss:mTilt, part:crown});
+const rider = {x:crownAt.x, y:crownAt.y-3, vx:0, vy:0, w:0.7, h:0.95, onGround:false, jumpCount:0, hp:100, maxHp:100, hpInvul:99};
+let landedOn=false;
+for(let s=0;s<90 && !landedOn;s++){
+  rider.vy += 22/60; rider.y += rider.vy/60;
+  if(bosses.collideHero(rider, 1/60)) landedOn=true;
+}
+assert.ok(landedOn, 'the hero lands on a leaning beast at all');
+const crownNow = bosses.resolvePartTarget({boss:mTilt, part:crown});
+// He rests one part-half plus one hero-half below the DRAWN crown centre — the
+// same relationship an upright beast gives. The tolerance is tight on purpose:
+// landing on the untilted lattice instead puts this figure near 0 rather than 1,
+// so a regression that drops the transform out of collideHero fails loudly here.
+const restGap = crownNow.y - rider.y;
+assert.ok(Math.abs(restGap-0.99) < 0.12,
+  `the hero rests ON the drawn crown (gap ${restGap.toFixed(3)}, expected ~0.99)`);
+const untiltedCrownY = mTilt.y+crown.dy+0.5;
+assert.ok(Math.abs(crownNow.y-untiltedCrownY) > 0.5,
+  `and the drawn crown is a genuinely different place from the lattice crown (${Math.abs(crownNow.y-untiltedCrownY).toFixed(2)} tiles apart)`);
+assert.ok(Math.abs(rider.y-(untiltedCrownY-0.5-0.475)) > 0.5,
+  'the hero is NOT standing where the untilted lattice would have put him');
+// the whole thing is reversible: what goes out through the lean comes back in
+const probe = bosses.partAt(Math.floor(crownNow.x), Math.floor(crownNow.y));
+assert.ok(probe && probe.boss===mTilt, 'the forward and inverse maps agree on a leaning body');
 
 console.log('OK: all boss monster simulation tests passed');

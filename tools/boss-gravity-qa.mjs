@@ -12,7 +12,9 @@
 //   4. a wounded plate is MENDED instead, and an ordinary arrow still wounds
 //   5. breaching the armour ring turns the heart into a live heat emitter that
 //      reaches post_fx's shimmer feed, and registers on the emissive (bloom) queue
-//   6. the boss draw pass survives a real canvas with the new eye + heart art
+//   6. a LEANING beast is clicked and stood on where it is DRAWN, not where its
+//      untilted lattice sits (the census + the rider gap)
+//   7. the boss draw pass survives a real canvas with the new eye + heart art
 // Traps inherited from gravity-gun-qa (paid for in real debugging hours):
 //   * keep-front pump — an occluded headless tab throttles rAF AND timers
 //   * pinned seed: a random world fails a different way every run
@@ -62,7 +64,7 @@ const SCENARIO = `(async()=>{
   if(!a1 || !a2) return fail('boss-spawn');
   const spec=a1.eyeSpec;
   if(!spec) return fail('no-eyeSpec');
-  const SOCKETS=['round','almond','hex','upright','wide'], PUPILS=['round','slit','hslit','cross','star','ring'];
+  const SOCKETS=['round','almond','wide'], PUPILS=['round','slit','cross','ring'];
   if(!SOCKETS.includes(spec.socket)) return fail('socket:'+spec.socket);
   if(!PUPILS.includes(spec.pupil)) return fail('pupil:'+spec.pupil);
   if(!/^#[0-9a-f]{6}$/i.test(spec.iris)) return fail('iris-not-hex:'+spec.iris);
@@ -127,6 +129,44 @@ const SCENARIO = `(async()=>{
   if(!(hot[0].strength>0.4)) return fail('weak-emitter '+hot[0].strength);
   notes.push('breached heart emits heat @'+hot[0].strength.toFixed(2));
 
+  // ---- 5b. a LEANING beast is hit and stood on where it is DRAWN ---------
+  MM.bosses.clearAll();
+  const ml=MM.bosses.forceSpawn((x,y)=>W.getTile(x,y),{x:bx, seed:1234, force:true, freeze:true});
+  if(!ml) return fail('lean-boss-spawn');
+  for(let i=0;i<20;i++) await sleep(16);
+  ml.tilt=0; ml.tiltV=0;
+  const anyPart=ml.parts.find(q=>q.dy<=-2 && q.role!=='core')||ml.parts[0];
+  const up=MM.bosses.resolvePartTarget({boss:ml,part:anyPart});
+  if(Math.abs(up.x-(ml.x+anyPart.dx+0.5))>1e-9) return fail('upright-not-identity');
+  ml.tilt=0.26;
+  let exact=0, onBoss=0, tot=0, lattice=0;
+  for(const q of ml.parts){
+    if(!(q.hp>0)) continue;
+    tot++;
+    const at=MM.bosses.resolvePartTarget({boss:ml,part:q});
+    const h=MM.bosses.partAt(Math.floor(at.x), Math.floor(at.y));
+    if(h && h.boss===ml) onBoss++;
+    if(h && h.part===q) exact++;
+    const hl=MM.bosses.partAt(Math.floor(ml.x+q.dx+0.5), Math.floor(ml.y+q.dy+0.5));
+    if(hl && hl.part===q) lattice++;
+  }
+  if(onBoss!==tot) return fail('lean clicks fall through the beast '+onBoss+'/'+tot);
+  if(exact < tot*0.85) return fail('lean hit accuracy '+exact+'/'+tot);
+  if(lattice >= tot*0.3) return fail('untilted lattice still answers '+lattice+'/'+tot);
+  const crownL=ml.parts.reduce((a,b)=> (b.dy<a.dy? b:a), ml.parts[0]);
+  const cAt=MM.bosses.resolvePartTarget({boss:ml,part:crownL});
+  const rider={x:cAt.x, y:cAt.y-3, vx:0, vy:0, w:0.7, h:0.95, onGround:false, jumpCount:0, hp:100, maxHp:100, hpInvul:99};
+  let rode=false;
+  for(let s=0;s<90 && !rode;s++){ rider.vy+=22/60; rider.y+=rider.vy/60; if(MM.bosses.collideHero(rider,1/60)) rode=true; }
+  if(!rode) return fail('hero never landed on the leaning beast');
+  const gap=MM.bosses.resolvePartTarget({boss:ml,part:crownL}).y - rider.y;
+  if(Math.abs(gap-0.99)>0.12) return fail('rider not on the drawn crown, gap '+gap.toFixed(3));
+  notes.push('lean 0.26: '+exact+'/'+tot+' clicks exact (lattice '+lattice+'), rider gap '+gap.toFixed(2));
+  MM.bosses.clearAll();
+  const m2=MM.bosses.forceSpawn((x,y)=>W.getTile(x,y),{x:bx, seed:20260728, force:true, freeze:true});
+  if(m2){ const r2=m2.parts.find(q=>Math.abs(q.dx-m2.core.dx)+Math.abs(q.dy-m2.core.dy)===1);
+    if(r2) MM.bosses.damageAt(Math.round(m2.x)+r2.dx, Math.round(m2.y)+r2.dy, 999, {kind:'pickaxe',breakTerrain:true,source:'hero'}); }
+
   // the emissive (bloom) queue actually receives the heart while drawing
   let emissives=0;
   const realAdd=MM.postFx && MM.postFx.addEmissive;
@@ -134,11 +174,12 @@ const SCENARIO = `(async()=>{
     MM.postFx.addEmissive=function(s){ emissives++; return realAdd.call(MM.postFx,s); };
   }
   // ---- 6. a real canvas survives the new art -----------------------------
-  const cv=document.createElement('canvas'); cv.width=900; cv.height=600;
+  const cv=document.createElement("canvas"); cv.width=900; cv.height=600;
   const c2=cv.getContext('2d');
   const dbg=MM.bosses._debug();
-  dbg.projectiles.push({x:m.x, y:m.y-4, vx:0, vy:0, t:0, max:9, tile:T.STONE, color:'#888a90', spin:0.3, dmg:1});
-  c2.save(); c2.translate(-(m.x-12)*20, -(m.y-14)*20);
+  const mDraw=m2||m;
+  dbg.projectiles.push({x:mDraw.x, y:mDraw.y-4, vx:0, vy:0, t:0, max:9, tile:T.STONE, color:'#888a90', spin:0.3, dmg:1});
+  c2.save(); c2.translate(-(mDraw.x-12)*20, -(mDraw.y-14)*20);
   MM.bosses.draw(c2, 20, ()=>true);
   c2.restore();
   if(realAdd) MM.postFx.addEmissive=realAdd;

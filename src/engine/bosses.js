@@ -304,15 +304,20 @@ window.MM = window.MM || {};
     for(let i=0;i<n;i++){ const a=(i/n)*Math.PI*2; out.push([Math.cos(a)*sx, Math.sin(a)*sy]); }
     return Object.freeze(out);
   }
+  // Three socket silhouettes and four pupils, all symmetric about both axes and
+  // all centred on (0,0). Symmetry is not decoration: the socket is never rotated
+  // (an earlier cant rotated the white while the gaze stayed in world space, so
+  // the iris slid off its own eye), and a shape centred on the tile centre is the
+  // only one that lines up with the rim it sits in. The vocabulary was cut from
+  // 5x6x3 to 3x4x2 because at 20 px the extra permutations read as noise, not
+  // as individuality — the colours and the gaze carry the character.
   const EYE_RINGS=Object.freeze({
     round:  ringPoly(10,1,1),
     almond: Object.freeze([[-1,0],[-0.55,-0.60],[0,-0.76],[0.55,-0.60],[1,0],[0.55,0.60],[0,0.76],[-0.55,0.60]]),
-    hex:    Object.freeze([[-1,-0.34],[-0.48,-0.92],[0.48,-0.92],[1,-0.34],[0.48,0.92],[-0.48,0.92]]),
-    upright:Object.freeze([[-0.52,-1],[0.18,-0.90],[0.56,0],[0.18,0.90],[-0.52,1],[-0.74,0]]),
     wide:   Object.freeze([[-1,-0.40],[-0.34,-0.66],[0.34,-0.66],[1,-0.40],[1,0.40],[0.34,0.66],[-0.34,0.66],[-1,0.40]]),
   });
-  const EYE_SOCKETS=Object.freeze(['round','almond','hex','upright','wide']);
-  const EYE_PUPILS=Object.freeze(['round','slit','hslit','cross','star','ring']);
+  const EYE_SOCKETS=Object.freeze(['round','almond','wide']);
+  const EYE_PUPILS=Object.freeze(['round','slit','cross','ring']);
   const EYE_SCLERA=Object.freeze(['#f7f3e7','#e6f2ff','#fff3d9','#e7ffe9','#f1e7ff','#ffeae6']);
   // The iris borrows the world's own hue wheel; the threat accent (cold blue /
   // hot amber, already on the monster) pulls it toward the region's temperament
@@ -322,9 +327,10 @@ window.MM = window.MM || {};
     const o=opts||{};
     const socket=EYE_SOCKETS[Math.floor(r()*EYE_SOCKETS.length)];
     const pupil=EYE_PUPILS[Math.floor(r()*EYE_PUPILS.length)];
-    // a compound eye splits into 2-3 pupils inside the one socket; a slit never
-    // does (two vertical slits read as a smear rather than as two eyes)
-    const lobes=(pupil==='slit'||pupil==='ring') ? 1 : (r()<0.26 ? (r()<0.4?3:2) : 1);
+    // a compound eye splits into two pupils inside the one socket; a slit or a
+    // ring never does (they read as a smear rather than as two eyes), and three
+    // lobes never fit legibly in a 20 px tile
+    const lobes=(pupil==='slit'||pupil==='ring') ? 1 : (r()<0.24 ? 2 : 1);
     // Always hex, never the hsl() string: mixHexColor and the emissive queue both
     // want something they can parse, and the same rolls must be drawn whether or
     // not the region carries a threat accent (or the seed stops being stable).
@@ -337,12 +343,11 @@ window.MM = window.MM || {};
       sclera: o.aquatic ? '#dff0ff' : EYE_SCLERA[Math.floor(r()*EYE_SCLERA.length)],
       iris,
       rim: shade(o.aquatic?'#26323c':'#241f1c', Math.round(r()*18-9)),
-      size: 0.60+r()*0.30,                 // socket span as a share of the tile
-      squash: 0.72+r()*0.46,               // >1 = a tall eye, <1 = a slot
-      irisR: 0.40+r()*0.20,                // share of the socket
-      pupilR: 0.34+r()*0.26,               // share of the iris
-      tiltA: (r()-0.5)*0.7,                // socket cant, radians
-      lidTop: r()<0.45 ? 0.10+r()*0.22 : 0,// a heavy brow on some beasts
+      size: 0.68+r()*0.20,                 // socket span as a share of the tile
+      squash: 0.80+r()*0.40,               // >1 = a tall eye, <1 = a slot
+      irisR: 0.44+r()*0.18,                // share of the socket's short axis
+      pupilR: 0.36+r()*0.24,               // share of the iris
+      brow: r()<0.42 ? 0.12+r()*0.16 : 0,  // a heavy lid over the top of the socket
       blinkEvery: 2.6+r()*4.2,             // per-beast blink clock (seconds)
       blinkPhase: r()*7,
       saccade: 0.45+r()*1.15,              // idle drift rate when not hunting
@@ -486,16 +491,75 @@ window.MM = window.MM || {};
   // Recompute silhouette bounds, the occupancy lattice ("dx,dy" → part exists)
   // that grounding, growth and outline rendering share, and whether the beast still
   // has its eye (a blind beast cannot track the hero). Call after any part change.
+  // ---------------- The lean, as ONE transform ----------------
+  // A body leans about its feet (updateBalance). That lean used to exist only
+  // inside draw(), so the beast was PAINTED in one place and hit-tested in
+  // another: at a normal maimed lean (~0.26 rad) a 6-tall beast's head is drawn
+  // 1.6 tiles from its lattice, and a gargantuan's 4.4 — you clicked the head
+  // you could see and struck the block behind it, and a rider stood in mid-air.
+  //
+  // These two functions are now the single definition of that lean. The renderer
+  // rotates about this pivot, and every hero-facing query (footing, mining
+  // cursor, weapon strike, turret aim, heart position) maps through the inverse
+  // first. Both are EXACTLY identity when m.tilt is 0, so an upright beast — and
+  // every test that spawns one — is unchanged to the bit.
+  //
+  // The lift is the other half of honesty: rotating about the bbox centre swings
+  // the down-slope foot BELOW the feet line, drawing it buried in ground the
+  // lattice says it is standing on. Raising the body by the sagitta puts the
+  // lowest corner back on the feet line, so a leaning beast stands on its
+  // down-slope leg with the other one lifted — which is what leaning is.
+  function bodyPivotOffset(m){ return (((m.minDx||0)+(m.maxDx||0))/2)+0.5; }
+  function bodyPivotX(m){ return m.x+bodyPivotOffset(m); }
+  function bodyPivotY(m){ return m.y+1; }
+  // Exactly enough lift to put the lowest FOOT corner back on the feet line —
+  // measured from the feet row, not from the body hull. A beast is usually wider
+  // at the shoulders than at the legs, and lifting by the hull left it hovering.
+  // footMinDx/footMaxDx are cached by refreshStructure (they change only when
+  // parts do), so this stays a couple of multiplies per query.
+  function bodyTiltLift(m){
+    if(!m.tilt) return 0;
+    const pc=bodyPivotOffset(m), s=Math.sin(m.tilt);
+    const lo=(Number.isFinite(m.footMinDx)? m.footMinDx : (m.minDx||0))-pc;
+    const hi=(Number.isFinite(m.footMaxDx)? m.footMaxDx : (m.maxDx||0)+1)-pc;
+    return Math.max(0, lo*s, hi*s);
+  }
+  const B2W={x:0,y:0}, W2B={x:0,y:0};
+  function bodyToWorld(m,lx,ly,out){
+    const o=out||B2W;
+    if(!m || !m.tilt){ o.x=lx; o.y=ly; return o; }
+    const pxv=bodyPivotX(m), pyv=bodyPivotY(m);
+    const c=Math.cos(m.tilt), s=Math.sin(m.tilt), dx=lx-pxv, dy=ly-pyv;
+    o.x=pxv+dx*c-dy*s;
+    o.y=pyv+dx*s+dy*c-bodyTiltLift(m);
+    return o;
+  }
+  function worldToBody(m,wx,wy,out){
+    const o=out||W2B;
+    if(!m || !m.tilt){ o.x=wx; o.y=wy; return o; }
+    const pxv=bodyPivotX(m), pyv=bodyPivotY(m);
+    const c=Math.cos(m.tilt), s=Math.sin(m.tilt);
+    const dx=wx-pxv, dy=wy+bodyTiltLift(m)-pyv;
+    o.x=pxv+dx*c+dy*s;
+    o.y=pyv-dx*s+dy*c;
+    return o;
+  }
   function refreshStructure(m){
     let minDx=99,maxDx=-99,topDy=99,hasEye=false;
+    let footMin=Infinity, footMax=-Infinity;
     const occ = m.occ instanceof Set ? m.occ : (m.occ=new Set());
     occ.clear();
     for(const p of m.parts){
       if(p.dx<minDx)minDx=p.dx; if(p.dx>maxDx)maxDx=p.dx; if(p.dy<topDy)topDy=p.dy;
       if(p.role==='eye') hasEye=true;
+      // the bottom corners of the feet row: the span the lean actually pivots on
+      if(p.dy===0){ if(p.dx<footMin) footMin=p.dx; if(p.dx+1>footMax) footMax=p.dx+1; }
       occ.add(p.dx+','+p.dy);
     }
     m.minDx=minDx; m.maxDx=maxDx; m.height=-topDy+1; m.hasEye=hasEye;
+    // a body with nothing on the feet row (a hovering floater) leans about its hull
+    m.footMinDx = footMin<=footMax ? footMin : minDx;
+    m.footMaxDx = footMin<=footMax ? footMax : maxDx+1;
   }
 
   // ---------------- Spawning ----------------
@@ -787,36 +851,49 @@ window.MM = window.MM || {};
     let standing=false;
     for(const m of monsters){
       if(!m || m.dying || m.dead) continue;
-      if(p.x+hw<=m.x+m.minDx || p.x-hw>=m.x+m.maxDx+1) continue;
-      if(p.y+hh<=m.y-m.height+1 || p.y-hh>=m.y+1) continue;
+      // Solve the whole contact in the beast's OWN upright frame: the hero's
+      // centre goes in through the inverse lean, every face below stays a plain
+      // axis-aligned lattice cell, and the correction comes back out through the
+      // forward lean. Without this the hero stood on a level surface the leaning
+      // beast was no longer drawn under. (The hero's box is treated as aligned
+      // with the beast rather than re-cornered — at the ~0.26 rad a maimed body
+      // actually reaches that is a couple of pixels, and it keeps this loop
+      // exactly as cheap and exactly as identical-at-zero-tilt as it was.)
+      const hb=worldToBody(m,p.x,p.y,QRY);
+      let hx=hb.x, hy=hb.y;
+      if(hx+hw<=m.x+m.minDx || hx-hw>=m.x+m.maxDx+1) continue;
+      if(hy+hh<=m.y-m.height+1 || hy-hh>=m.y+1) continue;
       let best=null,bx=0,by=0,bestOv=0;
       for(const part of m.parts){
         const px=m.x+part.dx, py=m.y+part.dy;
-        const ox=Math.min(px+1,p.x+hw)-Math.max(px,p.x-hw);
-        const oy=Math.min(py+1,p.y+hh)-Math.max(py,p.y-hh);
+        const ox=Math.min(px+1,hx+hw)-Math.max(px,hx-hw);
+        const oy=Math.min(py+1,hy+hh)-Math.max(py,hy-hh);
         if(ox<=0||oy<=0) continue;
         const ov=ox*oy;
         if(ov>bestOv){ bestOv=ov; best=part; bx=ox; by=oy; }
       }
       if(!best) continue;
       const px=m.x+best.dx, py=m.y+best.dy;
-      if(by<=bx && p.y<py+0.5){
+      let landed=false;
+      if(by<=bx && hy<py+0.5){
         // feet on the beast's back: stand, ride its motion, fall with its hops
-        p.y=py-hh-0.001;
+        hy=py-hh-0.001;
         if((p.vy||0)>0) p.vy=0;
         if(m.vy<0) p.vy=Math.min(p.vy||0, m.vy);
         p.onGround=true; if(typeof p.jumpCount==='number') p.jumpCount=0;
-        if(dt) p.x+=m.vx*dt;
-        m.heroOnTop=true; standing=true;
+        m.heroOnTop=true; standing=true; landed=true;
       } else if(by<=bx){
-        p.y=py+1+hh+0.001; if((p.vy||0)<0) p.vy=0;   // bumped its belly from below
-      } else if(p.x<px+0.5){
-        p.x=px-hw-0.001; if((p.vx||0)>0) p.vx=0;     // shoved off the left flank
+        hy=py+1+hh+0.001; if((p.vy||0)<0) p.vy=0;    // bumped its belly from below
+      } else if(hx<px+0.5){
+        hx=px-hw-0.001; if((p.vx||0)>0) p.vx=0;      // shoved off the left flank
         if(m.vx<0) p.vx=Math.min(p.vx||0, m.vx);
       } else {
-        p.x=px+1+hw+0.001; if((p.vx||0)<0) p.vx=0;   // shoved off the right flank
+        hx=px+1+hw+0.001; if((p.vx||0)<0) p.vx=0;    // shoved off the right flank
         if(m.vx>0) p.vx=Math.max(p.vx||0, m.vx);
       }
+      const hw2=bodyToWorld(m,hx,hy,QRY);
+      p.x=hw2.x; p.y=hw2.y;
+      if(landed && dt) p.x+=m.vx*dt;   // carried along the ground, not along the lean
     }
     return standing;
   }
@@ -1106,12 +1183,18 @@ window.MM = window.MM || {};
   }
 
   // ---------------- Damage / structure ----------------
+  const POSW={x:0,y:0};
+  // World position of a part's centre AS DRAWN — the lean applied. Everything a
+  // part throws off (debris, a falling body block, the detached heart) leaves
+  // from here, so wreckage departs the block the player was looking at.
+  function partWorldPos(m,p,out){ return bodyToWorld(m,m.x+p.dx+0.5,m.y+p.dy+0.5,out||POSW); }
   function spawnDebris(m,p,count){
     const TILE=MM.TILE||20;
+    const at=partWorldPos(m,p,POSW);
     for(let i=0;i<count;i++){
       if(debris.length>=CFG.DEBRIS_CAP) break;
       debris.push({
-        x:(m.x+p.dx+0.5)*TILE, y:(m.y+p.dy+0.5)*TILE,
+        x:at.x*TILE, y:at.y*TILE,
         vx:(Math.random()-0.5)*120, vy:-40-Math.random()*90,
         c:p.color, t:0, max:0.8+Math.random()*0.9, s:3+Math.random()*5,
       });
@@ -1121,9 +1204,10 @@ window.MM = window.MM || {};
     if(!m || !p || p.role==='core' || !p.blockType) return false;
     while(fallingBodyBlocks.length>=CFG.BODY_FALL_CAP) fallingBodyBlocks.shift();
     const shove=Number(power)||1;
+    const at=partWorldPos(m,p,POSW);
     fallingBodyBlocks.push({
-      x:m.x+p.dx+0.5,
-      y:m.y+p.dy+0.5,
+      x:at.x,
+      y:at.y,
       vx:(Math.random()-0.5)*(2.4+shove*1.2),
       vy:-3.0-Math.random()*(3.5+shove),
       tile:p.blockType,
@@ -1141,9 +1225,10 @@ window.MM = window.MM || {};
     const c=m.core;
     const inheritedVx=Number.isFinite(m.vx) ? m.vx*0.28 : 0;
     const inheritedVy=Number.isFinite(m.vy) ? m.vy*0.18 : 0;
+    const at=partWorldPos(m,c,POSW);
     m.heartItem={
-      x:m.x+c.dx+0.5,
-      y:m.y+c.dy+0.5,
+      x:at.x,
+      y:at.y,
       vx:inheritedVx+(Math.random()-0.5)*2.2,
       vy:Math.min(-2.2,inheritedVy-2.6-Math.random()*1.2),
       rot:(Math.random()-0.5)*0.35,
@@ -1431,7 +1516,10 @@ window.MM = window.MM || {};
         // ordinary body blocks that their projectiles cannot mine.
         if(p.role!=='eye' && p.role!=='core') continue;
         if(p===m.core && sealed) continue;
-        const x=m.x+p.dx+0.5, y=m.y+p.dy+0.5;
+        // a turret shoots at the weak point it can SEE, so the lean applies here
+        // too — otherwise its line of sight is traced to a phantom
+        const at=partWorldPos(m,p,POSW);
+        const x=at.x, y=at.y;
         const dx=x-sx, dy=y-sy, d2=dx*dx+dy*dy;
         if(d2>r2) continue;
         targets.push({kind:'boss',boss:m,part:p,x,y,tx:Math.floor(x),ty:Math.floor(y),hp:p.hp,d2});
@@ -1472,8 +1560,7 @@ window.MM = window.MM || {};
   function heartWorldPos(m,out){
     const c=m && m.core; if(!c){ out.x=0; out.y=0; return out; }
     if(m.dying && m.heartItem){ out.x=m.heartItem.x; out.y=m.heartItem.y; return out; }
-    out.x=m.x+c.dx+0.5; out.y=m.y+c.dy+0.5;
-    return out;
+    return bodyToWorld(m,m.x+c.dx+0.5,m.y+c.dy+0.5,out);
   }
   // Live heat-haze emitters for post_fx's shimmer pass. main.js hands this to
   // drawHeatShimmerPass BEFORE bosses draw, so it must come from state, not from
@@ -1501,17 +1588,25 @@ window.MM = window.MM || {};
   }
   // Dynamic boss tiles participate in the ordinary mining cursor even though they
   // are not stored in the world array. Their generated material supplies hardness.
+  // The clicked tile is mapped INTO the beast's own upright frame before the
+  // lattice test, so the block the cursor lands on is the block that was drawn
+  // under it. Rotating the query is what lets the whole overlap test below stay
+  // axis-aligned — and at tilt 0 the query comes back untouched, so the bbox
+  // reject and the overlap arithmetic are bit-identical to the upright case.
+  const QRY={x:0,y:0};
   function partAt(tx,ty){
     if(!Number.isFinite(tx) || !Number.isFinite(ty)) return null;
     let best=null, bestOv=0;
     for(const m of monsters){
       if(!m || m.dead || m.dying) continue;
-      if(tx<m.x+m.minDx-1 || tx>m.x+m.maxDx+1 || ty<m.y-m.height || ty>m.y+2) continue;
+      const q=worldToBody(m,tx+0.5,ty+0.5,QRY);
+      const qx=q.x-0.5, qy=q.y-0.5;
+      if(qx<m.x+m.minDx-1 || qx>m.x+m.maxDx+1 || qy<m.y-m.height || qy>m.y+2) continue;
       for(const p of m.parts){
         if(!p || !(p.hp>0)) continue;
         const px=m.x+p.dx, py=m.y+p.dy;
-        const ox=Math.min(px+1,tx+1)-Math.max(px,tx);
-        const oy=Math.min(py+1,ty+1)-Math.max(py,ty);
+        const ox=Math.min(px+1,qx+1)-Math.max(px,qx);
+        const oy=Math.min(py+1,qy+1)-Math.max(py,qy);
         const ov=ox>0 && oy>0 ? ox*oy : 0;
         if(ov>bestOv){
           bestOv=ov;
@@ -1527,7 +1622,10 @@ window.MM = window.MM || {};
     const m=target && target.boss, p=target && target.part;
     if(!m || !p || m.dead || m.dying || !(p.hp>0)
       || monsters.indexOf(m)<0 || m.parts.indexOf(p)<0) return null;
-    const x=m.x+p.dx+0.5, y=m.y+p.dy+0.5;
+    // the held mining beam tracks the block WHERE IT IS DRAWN, so a leaning
+    // beast does not walk its own selection off the cursor
+    const at=partWorldPos(m,p,POSW);
+    const x=at.x, y=at.y;
     return {boss:m,part:p,x,y,tx:Math.floor(x),ty:Math.floor(y),
             tile:p.blockType || T.STONE,role:p.role,protected:p===m.core && coreProtected(m)};
   }
@@ -1669,15 +1767,19 @@ window.MM = window.MM || {};
   function strikeAt(tx,ty,dmg,opts){
     if(typeof tx!=='number' || typeof ty!=='number' || !isFinite(tx) || !isFinite(ty)) return false;
     for(const m of monsters){
-      if(tx<m.x+m.minDx-1 || tx>m.x+m.maxDx+1 || ty<m.y-m.height || ty>m.y+2) continue;
+      // same inverse map as partAt: a weapon must strike the block the player
+      // saw, not the one the untilted lattice happens to hold at that tile
+      const q=worldToBody(m,tx+0.5,ty+0.5,QRY);
+      const qx=q.x-0.5, qy=q.y-0.5;
+      if(qx<m.x+m.minDx-1 || qx>m.x+m.maxDx+1 || qy<m.y-m.height || qy>m.y+2) continue;
       // the body sits at a fractional position, so a clicked tile can overlap up to
       // four parts — strike the one covering most of the tile (matches the visuals)
       const sealed=coreProtected(m);
       let best=null, bestOv=0, coreOv=0;
       for(const p of m.parts){
         const px=m.x+p.dx, py=m.y+p.dy;
-        const ox=Math.min(px+1,tx+1)-Math.max(px,tx);
-        const oy=Math.min(py+1,ty+1)-Math.max(py,ty);
+        const ox=Math.min(px+1,qx+1)-Math.max(px,qx);
+        const oy=Math.min(py+1,qy+1)-Math.max(py,qy);
         if(ox<=0 || oy<=0) continue;
         const ov=ox*oy;
         if(p===m.core && sealed){ if(ov>coreOv) coreOv=ov; continue; } // sealed heart: unhittable
@@ -1855,26 +1957,21 @@ window.MM = window.MM || {};
     for(const p of m.parts){ if(tileVisible(canDrawTile,m.x+p.dx,m.y+p.dy)) return true; }
     return false;
   }
-  // The body leans about its feet, and the heart light is registered from OUTSIDE
-  // that transform (post_fx draws it far later, under the plain world matrix), so
-  // the anchor point has to be rotated by hand or the halo hangs off a tilted beast.
-  const TILT_PT={x:0,y:0};
-  function tiltPoint(px,py,pivX,pivY,tilt,out){
-    if(!tilt){ out.x=px; out.y=py; return out; }
-    const c=Math.cos(tilt), s=Math.sin(tilt), dx=px-pivX, dy=py-pivY;
-    out.x=pivX+dx*c-dy*s; out.y=pivY+dx*s+dy*c;
-    return out;
-  }
   const HEART_LIGHT='#ff4a5e';
+  const HEART_PT={x:0,y:0};
   // Hand the attached heart to the shared emissive queue: 'bloom' amplifies it,
   // plain glow still lights it, and __mmNoPostFX silences it — one call, all three.
-  function registerHeartLight(m,TILE,now,bx,by,wob,pivX,pivY){
+  // The halo is registered from OUTSIDE the renderer's transform (post_fx draws it
+  // far later, under the plain world matrix), so it goes through the same
+  // bodyToWorld the physics uses — one lean, one definition, no drift.
+  function registerHeartLight(m,TILE,now,shakeDx,wob){
     const E=emissiveApi(); if(!E) return false;
     const c=m && m.core; if(!c || m.dying) return false;
     const heat=heartHeat(m);
     const pulse=0.5+0.5*Math.sin(now*0.006+(m.bobP||0));
-    const pt=tiltPoint((bx+c.dx+0.5)*TILE,(by+c.dy+0.5)*TILE+wob,pivX,pivY,m.tilt,TILT_PT);
-    return E.addEmissive({x:pt.x, y:pt.y, r:TILE*(1.05+heat*1.55+pulse*0.20),
+    const pt=bodyToWorld(m,m.x+c.dx+0.5,m.y+c.dy+0.5,HEART_PT);
+    return E.addEmissive({x:(pt.x+shakeDx)*TILE, y:pt.y*TILE+wob,
+                          r:TILE*(1.05+heat*1.55+pulse*0.20),
                           color:HEART_LIGHT, a:0.17+heat*0.44+pulse*0.07});
   }
   // Ember motes rising off a hot heart. Stateless on purpose — the phase comes
@@ -1893,9 +1990,10 @@ window.MM = window.MM || {};
     }
   }
   // A boss eye. One part, but never the same face twice: the socket outline, the
-  // pupil glyph, how many pupils, the tints, the cant, the brow, the blink clock
-  // and the idle drift all come from the seeded spec rolled at generation. It
-  // tracks the hero while hunting and wanders when it has not found one yet.
+  // pupil glyph, how many pupils, the tints, the brow, the blink clock and the
+  // idle drift all come from the seeded spec rolled at generation. It tracks the
+  // hero while hunting and wanders when it has not found one yet. Everything is
+  // axis-aligned and centred on the tile — see the socket note below for why.
   function drawBossEye(ctx,TILE,m,p,X,Y,now,enraged){
     const spec=m.eyeSpec;
     const cx=X+TILE/2, cy=Y+TILE/2;
@@ -1913,11 +2011,13 @@ window.MM = window.MM || {};
     const blink=bt<0.17 ? 1-Math.abs(bt/0.085-1) : 0;
     const open=1-blink*0.94;
     if(open<=0.06) return;                        // eye shut: nothing else to draw
+    // The socket sits dead centre in its own tile and is NEVER rotated: the gaze
+    // below is a world-space direction, and a canted socket would send the iris
+    // sliding along a different pair of axes than the white it lives in.
     const rx=TILE*spec.size*0.5;
-    const ry=rx*spec.squash*open*(1-spec.lidTop*0.5);
+    const ry=rx*spec.squash*open;
     ctx.save();
-    ctx.translate(cx,cy+TILE*spec.lidTop*0.22);
-    ctx.rotate(spec.tiltA*m.dir);
+    ctx.translate(cx,cy);
     const ring=EYE_RINGS[spec.socket]||EYE_RINGS.round;
     ctx.beginPath();
     for(let i=0;i<ring.length;i++){
@@ -1932,8 +2032,8 @@ window.MM = window.MM || {};
     let gx=m.dir, gy=0;
     const pr=playerRef();
     if(m.state==='hunt' && m.hasEye && pr && Number.isFinite(pr.x)){
-      const ex=m.x+p.dx+0.5, ey=m.y+p.dy+0.5;
-      const ddx=pr.x-ex, ddy=(pr.y-0.5)-ey, d=Math.hypot(ddx,ddy)||1;
+      const at=partWorldPos(m,p,POSW);   // where the eye IS, lean included
+      const ddx=pr.x-at.x, ddy=(pr.y-0.5)-at.y, d=Math.hypot(ddx,ddy)||1;
       gx=ddx/d; gy=ddy/d;
     } else {
       const t=now*0.001*spec.saccade+spec.blinkPhase;
@@ -1948,31 +2048,23 @@ window.MM = window.MM || {};
     const ox=gx*Math.max(0,rx-irR)*0.92, oy=gy*Math.max(0,ry-irR)*0.92;
     ctx.fillStyle=enraged ? mixHexColor(spec.iris,'#ff2a1c',0.55) : spec.iris;
     ctx.beginPath(); ctx.arc(ox,oy,irR,0,Math.PI*2); ctx.fill();
-    // pupils — 1..3 lobes of one glyph, spread across the iris but never past it
+    // pupils — one or two lobes of one glyph, spread across the iris but never
+    // past it. Every glyph is drawn about (px,py) and bounded by the iris radius.
     const puR=Math.max(1, irR*spec.pupilR);
-    ctx.fillStyle=enraged?'#3a0000':'#0b0a0c';
+    const pupilInk=enraged?'#3a0000':'#0b0a0c';
+    ctx.fillStyle=pupilInk;
     for(let l=0;l<spec.lobes;l++){
-      const room=Math.max(0,(irR-puR)*2)/Math.max(1,spec.lobes-1);
-      const spread=spec.lobes>1 ? (l-(spec.lobes-1)/2)*Math.min(irR*0.92, room) : 0;
+      const spread=spec.lobes>1 ? (l===0?-1:1)*Math.min(irR*0.46, Math.max(0,irR-puR)) : 0;
       const px=ox+spread, py=oy;
-      if(spec.pupil==='slit'){ ctx.fillRect(px-puR*0.42,py-irR*0.86,puR*0.84,irR*1.72); }
-      else if(spec.pupil==='hslit'){ ctx.fillRect(px-irR*0.86,py-puR*0.40,irR*1.72,puR*0.80); }
+      if(spec.pupil==='slit'){ ctx.fillRect(px-puR*0.42,py-irR*0.84,puR*0.84,irR*1.68); }
       else if(spec.pupil==='cross'){
-        ctx.fillRect(px-puR*0.30,py-irR*0.78,puR*0.60,irR*1.56);
-        ctx.fillRect(px-irR*0.78,py-puR*0.30,irR*1.56,puR*0.60);
-      } else if(spec.pupil==='star'){
-        ctx.beginPath();
-        for(let k=0;k<8;k++){
-          const a=(k/8)*Math.PI*2, rr=(k%2===0)?puR*1.5:puR*0.6;
-          const sxp=px+Math.cos(a)*rr, syp=py+Math.sin(a)*rr;
-          if(k===0) ctx.moveTo(sxp,syp); else ctx.lineTo(sxp,syp);
-        }
-        ctx.closePath(); ctx.fill();
+        ctx.fillRect(px-puR*0.30,py-irR*0.76,puR*0.60,irR*1.52);
+        ctx.fillRect(px-irR*0.76,py-puR*0.30,irR*1.52,puR*0.60);
       } else if(spec.pupil==='ring'){
-        ctx.beginPath(); ctx.arc(px,py,puR*1.15,0,Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(px,py,puR*1.12,0,Math.PI*2); ctx.fill();
         ctx.fillStyle=spec.iris;
-        ctx.beginPath(); ctx.arc(px,py,puR*0.52,0,Math.PI*2); ctx.fill();
-        ctx.fillStyle=enraged?'#3a0000':'#0b0a0c';
+        ctx.beginPath(); ctx.arc(px,py,puR*0.50,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=pupilInk;
       } else { ctx.beginPath(); ctx.arc(px,py,puR,0,Math.PI*2); ctx.fill(); }
     }
     // vessels: a resting count from the spec, more as the eye takes damage
@@ -1991,9 +2083,12 @@ window.MM = window.MM || {};
     // specular: a hard corner glint, the cue that says "wet and alive"
     ctx.fillStyle='rgba(255,255,255,0.72)';
     ctx.fillRect(ox-irR*0.62, oy-irR*0.66, Math.max(1,irR*0.34), Math.max(1,irR*0.24));
-    if(spec.lidTop>0){                            // a heavy brow, cast as shadow
+    // a heavy lid, laid over the TOP of the socket without moving its centre —
+    // shifting the whole eye down to fake a brow is what pulled the white off
+    // the tile it lives in
+    if(spec.brow>0){
       ctx.fillStyle='rgba(0,0,0,0.34)';
-      ctx.fillRect(-rx, -ry-1, rx*2, Math.max(1,ry*spec.lidTop*1.4));
+      ctx.fillRect(-rx, -ry, rx*2, Math.max(1, ry*2*spec.brow));
     }
     ctx.restore();
     // a lit eye is a real light — same queue as the heart, so night cannot dim it
@@ -2019,18 +2114,22 @@ window.MM = window.MM || {};
     if(E) E.addEmissive({x:h.x*TILE, y:h.y*TILE, r:TILE*(1.5+agonyF*1.9+pulse*0.3),
                          color:'#ff5a48', a:0.34+agonyF*0.36+pulse*0.08});
     drawHeartEmbers(ctx,TILE,h.x*TILE,h.y*TILE,0.62+agonyF*0.38,now,(m.id||0)*0.31);
+    // The glow is painted BEFORE the spin and sized from its own radius. Inside
+    // ctx.rotate() a fixed box turns with the heart, so a clipped corner would
+    // visibly rotate around a light that should be perfectly round.
+    const hR=TILE*(0.95+0.55*agonyF+0.16*pulse);
     ctx.save();
     ctx.translate(h.x*TILE,h.y*TILE);
-    ctx.rotate(h.rot||0);
     // White-hot centre bleeding through amber to blood red: the colour ramp of
     // something genuinely radiating, not just a red circle turned up.
-    const glow=ctx.createRadialGradient(0,0,1,0,0,TILE*(1.0+0.95*agonyF+0.18*pulse));
-    glow.addColorStop(0,'rgba(255,'+(214+Math.round(agonyF*36))+','+(178+Math.round(agonyF*60))+','+(0.55+0.34*agonyF).toFixed(3)+')');
-    glow.addColorStop(0.20,'rgba(255,132,96,'+(0.60+0.26*pulse).toFixed(3)+')');
-    glow.addColorStop(0.48,'rgba(255,198,72,'+(0.16+0.46*agonyF).toFixed(3)+')');
+    const glow=ctx.createRadialGradient(0,0,1,0,0,hR);
+    glow.addColorStop(0,'rgba(255,'+(214+Math.round(agonyF*36))+','+(178+Math.round(agonyF*60))+','+(0.50+0.30*agonyF).toFixed(3)+')');
+    glow.addColorStop(0.24,'rgba(255,132,96,'+(0.46+0.22*pulse).toFixed(3)+')');
+    glow.addColorStop(0.55,'rgba(255,198,72,'+(0.13+0.36*agonyF).toFixed(3)+')');
     glow.addColorStop(1,'rgba(255,52,80,0)');
     ctx.fillStyle=glow;
-    ctx.fillRect(-TILE*1.8,-TILE*1.8,TILE*3.6,TILE*3.6);
+    ctx.fillRect(-hR,-hR,hR*2,hR*2);
+    ctx.rotate(h.rot||0);
     const sy=1-impact*0.16;
     ctx.fillStyle=pulse>0.72 ? '#fff0a0' : '#ff244d';
     ctx.beginPath();
@@ -2109,10 +2208,19 @@ window.MM = window.MM || {};
         ctx.strokeStyle='rgba(255,255,255,'+pul.toFixed(2)+')'; ctx.lineWidth=2;
         ctx.strokeRect(fx+1,fy+1,TILE-2,TILE-2);
       }
-      // lean the whole beast about its feet according to its balance
+      // Lean the whole beast about its feet according to its balance. The pivot
+      // and the lift come from bodyPivot*/bodyTiltLift — the SAME functions the
+      // hero's footing and every hit test map through — so the picture and the
+      // physics cannot drift apart. (The shake judder is folded into bx as a
+      // rigid translation, which commutes with the rotation, so it needs no seat
+      // in the transform; it is a deliberate visual-only "get off my back".)
       ctx.save();
-      const pivX=(bx+(m.minDx+m.maxDx)/2+0.5)*TILE, pivY=(by+1)*TILE+wob;
-      if(m.tilt){ ctx.translate(pivX,pivY); ctx.rotate(m.tilt); ctx.translate(-pivX,-pivY); }
+      const shakeDx=bx-m.x;
+      const pivX=(bodyPivotX(m)+shakeDx)*TILE, pivY=bodyPivotY(m)*TILE+wob;
+      if(m.tilt){
+        ctx.translate(pivX,pivY); ctx.rotate(m.tilt); ctx.translate(-pivX,-pivY);
+        ctx.translate(0,-bodyTiltLift(m)*TILE);   // stand on the down-slope leg
+      }
       for(const p of m.parts){
         if(m.dying && m.heartItem && p===m.core) continue;
         const off=limbOffset(m,p,now);
@@ -2121,14 +2229,22 @@ window.MM = window.MM || {};
         if(p.role==='core'){
           const agonyF=m.dying ? clamp((m.agonyT||0)/Math.max(0.001,m.agonyMax||1),0,1) : 0;
           const pulse=m.dying ? 0.5+0.5*Math.sin(now*(0.020+agonyF*0.030)) : 0.5+0.5*Math.sin(now*0.006);
-          const g=ctx.createRadialGradient(X+TILE/2,Y+TILE/2,1,X+TILE/2,Y+TILE/2,TILE*(1.1+pulse*0.5+agonyF*0.75+heat*0.9));
+          // The local gradient is only the CORE — a tight, softly-falling ember.
+          // The wide halo is the emissive queue's job (round, unclipped, and it
+          // is what 'bloom' amplifies). The rect is derived from the radius so
+          // the falloff always reaches transparent INSIDE the painted box: a
+          // fixed 3-tile box around a radius that grew to 3.25 tiles cut the
+          // aura off square, and a square is exactly what a glow must not be.
+          const gR=TILE*(0.95+pulse*0.20+agonyF*0.45+heat*0.35);
+          const gcx=X+TILE/2, gcy=Y+TILE/2;
+          const g=ctx.createRadialGradient(gcx,gcy,1,gcx,gcy,gR);
           // the hotter it runs, the further the ramp climbs toward white before
           // it falls away through amber — a sealed heart only smoulders
-          g.addColorStop(0,'rgba(255,'+(70+Math.round(heat*150))+','+(100+Math.round(heat*104))+','+(0.5+pulse*0.3).toFixed(3)+')');
-          g.addColorStop(0.30,'rgba(255,124,88,'+(0.20+heat*0.34).toFixed(3)+')');
-          if(m.dying) g.addColorStop(0.55,'rgba(255,216,94,'+(0.18+agonyF*0.45).toFixed(3)+')');
+          g.addColorStop(0,'rgba(255,'+(70+Math.round(heat*150))+','+(100+Math.round(heat*104))+','+(0.42+pulse*0.22).toFixed(3)+')');
+          g.addColorStop(0.34,'rgba(255,124,88,'+(0.15+heat*0.26).toFixed(3)+')');
+          if(m.dying) g.addColorStop(0.60,'rgba(255,216,94,'+(0.14+agonyF*0.34).toFixed(3)+')');
           g.addColorStop(1,'rgba(255,70,100,0)');
-          ctx.fillStyle=g; ctx.fillRect(X-TILE,Y-TILE,TILE*3,TILE*3);
+          ctx.fillStyle=g; ctx.fillRect(gcx-gR,gcy-gR,gR*2,gR*2);
           ctx.fillStyle=m.dying ? (pulse>0.72 ? '#fff0a0' : '#ff1840') : (enraged? '#ff1840':'#ff3b5c');
         } else if(p.role!=='eye') ctx.fillStyle=p.color;
         // full-tile fill so adjacent blocks fuse into one body (no spacing gaps).
@@ -2181,7 +2297,7 @@ window.MM = window.MM || {};
       ctx.restore();
       // registered OUTSIDE the tilt: post_fx draws the halo later under the plain
       // world matrix, so the anchor is rotated by hand instead
-      registerHeartLight(m,TILE,now,bx,by,wob,pivX,pivY);
+      registerHeartLight(m,TILE,now,shakeDx,wob);
       drawHeartItem(ctx,TILE,m,now,canDrawTile);
       // The monster dies when its heart reaches zero. Body blocks are destructible
       // armor, so the visible boss bar tracks heart HP instead of total body HP.
