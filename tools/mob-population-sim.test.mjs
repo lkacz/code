@@ -130,6 +130,50 @@ try{
   assert.equal(mobs.damageAt(1,29,0.5,{source:'hero',onTarget:m=>{ callbackTarget=m; }}), true, 'projectile callback accompanies a normal mob hit');
   assert.equal(callbackTarget,callbackMob, 'damage callback returns the exact mob entity that was hit');
 
+  const previousTeleporters=MM.teleporters;
+  try{
+    let portalAlive=true;
+    let portalHits=0;
+    let portalHp=200;
+    callbackMob.dmgMult=1.5;
+    const expectedStrike=(speciesDebug[callbackMob.id].dmg||0)*callbackMob.dmgMult;
+    const expectedHits=Math.ceil(200/expectedStrike);
+    const portalX=2, portalY=29;
+    const portalGetTile=(x,y)=>{
+      if(portalAlive && Math.floor(x)===portalX && Math.floor(y)===portalY) return T.TELEPORTER;
+      return getTile(x,y);
+    };
+    const portalSetTile=(x,y,t)=>{
+      if(Math.floor(x)===portalX && Math.floor(y)===portalY && t===T.AIR) portalAlive=false;
+    };
+    MM.teleporters={
+      damageAt(x,y,amount,_get,_set){
+        assert.deepEqual({x,y,amount},{x:portalX,y:portalY,amount:expectedStrike},'retaliating creatures deal their species damage including their strength multiplier');
+        portalHits++;
+        portalHp=Math.max(0,portalHp-amount);
+        if(portalHp<=0){
+          portalSetTile(x,y,T.AIR);
+          return {hit:true,destroyed:true,remaining:0};
+        }
+        return {hit:true,destroyed:false,remaining:portalHp};
+      }
+    };
+    assert.equal(mobs.damageAt(1,29,0.5,{source:'hero',kind:'arrow',teleporterExitX:portalX,teleporterExitY:portalY}),true,'a portal-emerged projectile still damages its creature target');
+    let retaliation=mobs._debugCombat().teleporterRetaliations.find(row=>row.id===callbackMob.id);
+    assert.deepEqual(retaliation && {x:retaliation.x,y:retaliation.y},{x:portalX,y:portalY},'the struck animal targets the portal exit instead of the distant shooter');
+    const maxTicks=expectedHits*18+100;
+    for(let i=0;i<maxTicks && portalAlive;i++){
+      simNow+=50;
+      mobs.update(0.05,player,portalGetTile,portalSetTile);
+    }
+    assert.equal(portalHits,expectedHits,'the animal keeps attacking until its accumulated damage reaches 200 HP');
+    assert.equal(portalAlive,false,'the animal can destroy its retaliatory portal target');
+    retaliation=mobs._debugCombat().teleporterRetaliations.find(row=>row.id===callbackMob.id);
+    assert.equal(retaliation,undefined,'the animal drops the structure target after destroying it');
+  } finally {
+    MM.teleporters=previousTeleporters;
+  }
+
   mobs.clearAll();
   mobs.deserialize({
     v:4,

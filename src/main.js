@@ -2222,13 +2222,17 @@ function cycleHotbar(idx,opts){
 }
 const DYNAMO_ORIENTATION_KEY='mm_dynamo_orientation_v1';
 const PUMP_ORIENTATION_KEY='mm_pump_orientation_v1';
+const TELEPORTER_ORIENTATION_KEY='mm_teleporter_orientation_v1';
 let dynamoOrientation='horizontal';
 let pumpOrientation='east';
+let teleporterOrientation='east';
 try{
 	const savedDynamoOrientation=localStorage.getItem(DYNAMO_ORIENTATION_KEY);
 	if(savedDynamoOrientation==='vertical') dynamoOrientation='vertical';
 	const savedPumpOrientation=localStorage.getItem(PUMP_ORIENTATION_KEY);
 	if(['east','south','west','north'].includes(savedPumpOrientation)) pumpOrientation=savedPumpOrientation;
+	const savedTeleporterOrientation=localStorage.getItem(TELEPORTER_ORIENTATION_KEY);
+	if(['east','south','west','north'].includes(savedTeleporterOrientation)) teleporterOrientation=savedTeleporterOrientation;
 }catch(e){}
 function dynamoOrientationLabel(){ return dynamoOrientation==='vertical' ? 'pionowo' : 'poziomo'; }
 function toggleDynamoOrientation(){
@@ -2245,6 +2249,16 @@ function togglePumpOrientation(){
 	pumpOrientation=(PUMPS && PUMPS.rotateDir) ? PUMPS.rotateDir(pumpOrientation) : (pumpOrientation==='east'?'south':pumpOrientation==='south'?'west':pumpOrientation==='west'?'north':'east');
 	try{ localStorage.setItem(PUMP_ORIENTATION_KEY,pumpOrientation); }catch(e){}
 	msg('Pompa: '+pumpOrientationLabel()+' (R obraca przed postawieniem)');
+}
+function teleporterOrientationLabel(dir=teleporterOrientation){
+	return dir==='east' ? 'otwarcie w prawo'
+		: (dir==='west' ? 'otwarcie w lewo'
+		: (dir==='south' ? 'otwarcie w dół' : 'otwarcie w górę'));
+}
+function toggleTeleporterOrientation(){
+	teleporterOrientation=(TELEPORTERS && TELEPORTERS.rotateDir) ? TELEPORTERS.rotateDir(teleporterOrientation) : (teleporterOrientation==='east'?'south':teleporterOrientation==='south'?'west':teleporterOrientation==='west'?'north':'east');
+	try{ localStorage.setItem(TELEPORTER_ORIENTATION_KEY,teleporterOrientation); }catch(e){}
+	msg('Teleporter: '+teleporterOrientationLabel()+' (R obraca przed postawieniem)');
 }
 function toggleBackgroundBuildMode(){
 	const id=selectedTileId();
@@ -5746,7 +5760,7 @@ const RECIPES=[
 	{id:'steam_boiler', name:'Kociol parowy', cost:{steel:4, copperWire:2, brick:2}, make(){ inv.steamBoiler+=1; msg('Kociol parowy +1 - pije wode, grzeje sie energia lub zarem i robi pare'); }},
 	{id:'steam_jet', name:'Dysza parowa', cost:{steel:3, brick:1, transistor:1}, make(){ inv.steamJet+=1; msg('Dysza parowa +1 - kolumna pary unosi; rzad dysz pod kadlubem to naped latajacego mecha'); }},
 	{id:'vending_machine', name:'Automat vendingowy', cost:{steel:4, glass:2, copperWire:3, waterPipe:1, transistor:2}, make(){ inv.vendingMachine+=1; msg('Automat vendingowy +1 - podlacz do zasilania i licz na szczescie'); }},
-	{id:'teleporter', name:'Teleporter', cost:{steel:6, copperWire:6, transistor:2, diamond:1, dynamo:1}, make(){ inv.teleporter+=1; msg('Teleporter +1 - wejdz w lewo/prawo, aby skoczyc do kolejnego'); }},
+	{id:'teleporter', name:'Teleporter', cost:{steel:6, copperWire:6, transistor:2, diamond:1, dynamo:1}, make(){ inv.teleporter+=1; msg('Teleporter +1 - R ustawia otwarcie, PPM obraca; zachowuje ped'); }},
 	{id:'antigravity_beacon', name:'Beacon antygrawitacyjny', cost:{antimatter:1, iridium:2, meteoricIron:4, copperWire:4, transistor:1}, make(){ inv.antigravityBeacon+=1; msg('Beacon antygrawitacyjny +1 - wewnetrzny generator antymaterii dziala bez sieci'); }},
 	{id:'meteor_siren', name:'Syrena meteorytowa', cost:{meteoricIron:2, copperWire:3, transistor:1, coal:1}, make(){ inv.meteorSiren+=1; msg('Syrena meteorytowa +1 - ostrzega przed meteorytami w okolicy'); }},
 	{id:'crater_scanner', name:'Skaner kraterow', cost:{meteoricIron:2, copperWire:1, transistor:1, iridium:1}, make(){ inv.craterScanner+=1; msg('Skaner kraterow +1 - analizuje najblizszy krater meteorytowy'); }},
@@ -5903,7 +5917,7 @@ const CRAFT_RECIPE_META={
 	steam_boiler:{group:'machines',icon:'♨️',out:'steamBoiler',amount:1,desc:'Zamienia wode i cieplo (energia albo zar lawy) w pare pod cisnieniem; nadmiar wypuszcza jako prawdziwa pare.'},
 	steam_jet:{group:'machines',icon:'💨',out:'steamJet',amount:1,desc:'Zasilana para dysza: na ziemi winda z pary, pod kadlubem mecha - naped lotu (W wznosi).'},
 	vending_machine:{group:'machines',icon:'🎰',out:'vendingMachine',amount:1,desc:'Losowy automat do baz: cenny lup albo kompletne rozczarowanie.'},
-	teleporter:{group:'machines',icon:'🌌',out:'teleporter',amount:1,desc:'Paruje odlegle punkty podrozy.'},
+	teleporter:{group:'machines',icon:'🌌',out:'teleporter',amount:1,desc:'Paruje najbliższe punkty i przenosi pełny pęd.'},
 	antigravity_beacon:{group:'machines',icon:'🛸',out:'antigravityBeacon',amount:1,desc:'Niezawodna ochrona przed meteorytami; hermetyczny generator antymaterii nie wymaga sieci.'},
 	meteor_siren:{group:'machines',icon:'📢',out:'meteorSiren',amount:1,desc:'Ostrzega przed zagrozeniem z nieba.'},
 	crater_scanner:{group:'machines',icon:'📡',out:'craterScanner',amount:1,desc:'Wykrywa i opisuje okoliczne kratery.'},
@@ -12233,6 +12247,7 @@ function buildHotbarTip(i){
 	const id=T[name];
 	if(id===T.DYNAMO) frag.appendChild(hudTipNode('tipHint','R obraca dynamo ('+dynamoOrientationLabel()+')'));
 	else if(id===T.WATER_PUMP) frag.appendChild(hudTipNode('tipHint','R obraca przed postawieniem · PPM na pompie obraca ją w świecie ('+pumpOrientationLabel()+')'));
+	else if(id===T.TELEPORTER) frag.appendChild(hudTipNode('tipHint','R obraca otwarcie · PPM na teleporterze obraca je w świecie ('+teleporterOrientationLabel()+') · pęd jest zachowany'));
 	else if(id===T.WATER_PIPE) frag.appendChild(hudTipNode('tipHint','PPM na istniejącej rurze: zwykła ↔ wlot wody · nieoznaczone końcówki też łapią wodę'));
 	else if(id===T.RADIO) frag.appendChild(hudTipNode('tipHint','Postaw w domu · podejdź i naciśnij E lub kliknij, aby wybrać stację'));
 	else if(isBackgroundBuildTileId(id)) frag.appendChild(hudTipNode('tipHint','R przełącza budowanie w tle'));
@@ -12380,6 +12395,7 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(k==='t'&&!keysOnce.has('t')){ toggleCraftPanel(); keysOnce.add('t'); }
 	if(k==='r'&&!keysOnce.has('r') && selectedTileId()===T.DYNAMO){ toggleDynamoOrientation(); keysOnce.add('r'); e.preventDefault(); }
 	if(k==='r'&&!keysOnce.has('r') && selectedTileId()===T.WATER_PUMP){ togglePumpOrientation(); keysOnce.add('r'); e.preventDefault(); }
+	if(k==='r'&&!keysOnce.has('r') && selectedTileId()===T.TELEPORTER){ toggleTeleporterOrientation(); keysOnce.add('r'); e.preventDefault(); }
 	if(k==='r'&&!keysOnce.has('r') && isBackgroundBuildTileId(selectedTileId())){ toggleBackgroundBuildMode(); keysOnce.add('r'); e.preventDefault(); }
 	if(k==='.'&&!keysOnce.has('.')){
 		keysOnce.add('.');
@@ -15272,6 +15288,31 @@ function tryRotateWaterPumpAt(tx,ty){
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 	return true;
 }
+function tryRotateTeleporterAt(tx,ty){
+	if(getTile(tx,ty)!==T.TELEPORTER) return false;
+	if(!godMode && !withinReach(tx,ty,PLACE_REACH)){ msg('Za daleko'); return true; }
+	const blocked=blockedTargetReason(tx,ty);
+	if(blocked){ msg(blocked); return true; }
+	if(MM.ghostHeroIntents){ msg('Kierunek teleportera może zmieniać host'); return true; }
+	if(!TELEPORTERS || !TELEPORTERS.orientationAt || !TELEPORTERS.rotateDir || !TELEPORTERS.setOrientationAt){
+		msg('Teleporter nie odpowiada');
+		return true;
+	}
+	const previous=TELEPORTERS.orientationAt(tx,ty,getTile);
+	const next=TELEPORTERS.rotateDir(previous);
+	if(!TELEPORTERS.setOrientationAt(tx,ty,next,getTile)){
+		msg('Nie udało się obrócić teleportera');
+		return true;
+	}
+	teleporterOrientation=next;
+	try{ localStorage.setItem(TELEPORTER_ORIENTATION_KEY,teleporterOrientation); }catch(e){}
+	markChunkRenderDirty(Math.floor(tx/CHUNK_W),ty,1);
+	noteSaveActivity();
+	saveState();
+	msg('Teleporter obrócony: '+teleporterOrientationLabel(next));
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+	return true;
+}
 function tryToggleFluidPipeModeAt(tx,ty){
 	if(!hasInfrastructureTile(tx,ty,T.WATER_PIPE) && getFluidNetworkTile(tx,ty)!==T.WATER_PIPE) return false;
 	if(!godMode && !withinReach(tx,ty,PLACE_REACH)){ msg('Za daleko'); return true; }
@@ -15287,6 +15328,7 @@ function tryToggleFluidPipeModeAt(tx,ty){
 	return true;
 }
 function useToolSecondaryAt(tx,ty){
+	if(tryRotateTeleporterAt(tx,ty)) return true;
 	if(tryRotateWaterPumpAt(tx,ty)) return true;
 	if(tryToggleFluidPipeModeAt(tx,ty)) return true;
 	if(tryEatWorldFoodAt(tx,ty)) return true;
@@ -15729,7 +15771,8 @@ function tryPlace(tx,ty){
 	if(MM.ghostHeroIntents){
 		if(v.chest || v.boat || v.structure==='dynamo'){ msg('Ta konstrukcja nie jest jeszcze dostępna w trybie gościa'); return false; }
 		const layer=v.overlay?'overlay':(v.background?'background':'fg');
-		if(!MM.ghostHeroIntents.place(tx,ty,v.id,layer)) return false;
+		const machineDir=v.id===T.TELEPORTER ? teleporterOrientation : undefined;
+		if(!MM.ghostHeroIntents.place(tx,ty,v.id,layer,machineDir)) return false;
 		consumeFor(v.id); updateInventory(); updateHotbarCounts();
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		return true;
@@ -15797,6 +15840,7 @@ function tryPlace(tx,ty){
 	pushUndo(tx,ty,undoPrev,id,'place');
 	if(COMPANIONS && COMPANIONS.onTileChanged) COMPANIONS.onTileChanged(tx,ty,prev,id,getTile,setTile);
 	if(id===T.WATER_PUMP && PUMPS && PUMPS.setOrientationAt) PUMPS.setOrientationAt(tx,ty,pumpOrientation,getTile);
+	if(id===T.TELEPORTER && TELEPORTERS && TELEPORTERS.setOrientationAt) TELEPORTERS.setOrientationAt(tx,ty,teleporterOrientation,getTile);
 	if(VOLCANO && VOLCANO.onTileChanged) VOLCANO.onTileChanged(tx,ty,id,getTile,setTile);
 	consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
@@ -16229,8 +16273,9 @@ canvas.addEventListener('pointerdown',e=>{
 	} else if(e.button===2){
 		e.preventDefault();
 		lastRightPlaceT=performance.now();
-		// A pump under the cursor owns RMB even while a weapon is equipped; otherwise
-		// the weapon's alternate action would make an installed pump seem unresponsive.
+		// Directional machines under the cursor own RMB even while a weapon is
+		// equipped; otherwise the alternate action would make them unresponsive.
+		if(tryRotateTeleporterAt(tx,ty)) return;
 		if(tryRotateWaterPumpAt(tx,ty)) return;
 		if(tryToggleFluidPipeModeAt(tx,ty)) return;
 		if(COMPANIONS && COMPANIONS.commandAt && COMPANIONS.commandAt(tx,ty,player)){
@@ -20560,6 +20605,8 @@ MM.ghostBridge={
 	restoreMechs:(d)=>{ try{ if(MECHS&&MECHS.restore) MECHS.restore(d,getTile); }catch(e){} },
 	snapshotInfra:()=>((WORLD&&WORLD.snapshotInfrastructure)?WORLD.snapshotInfrastructure():null),
 	restoreInfra:(d)=>{ try{ if(WORLD&&WORLD.restoreInfrastructure) WORLD.restoreInfrastructure(d); }catch(e){} },
+	snapshotTeleporters:()=>((TELEPORTERS&&TELEPORTERS.snapshot)?TELEPORTERS.snapshot():null),
+	restoreTeleporters:(d)=>{ try{ if(TELEPORTERS&&TELEPORTERS.restore) TELEPORTERS.restore(d,getTile); }catch(e){} },
 	snapshotConstructionBackground:()=>((WORLD&&WORLD.snapshotConstructionBackground)?WORLD.snapshotConstructionBackground():null),
 	restoreConstructionBackground:(d)=>{ try{ if(WORLD&&WORLD.restoreConstructionBackground) WORLD.restoreConstructionBackground(d); }catch(e){} },
 	// Watcher powers land on CREATURES ONLY — a spectator can never edit a tile,
@@ -20944,9 +20991,9 @@ MM.ghostBridge={
 	// HOST-side: a hero guest's teleporter jump — tryTeleport is driver-agnostic
 	// (it mutates the passed body), the pad's own energy accounting and cooldowns
 	// apply; heroEnergy is withheld so a guest can never drain the HOST's pool
-	ghostHeroTeleport:(body,dir)=>{
+	ghostHeroTeleport:(body)=>{
 		if(!TELEPORTERS || !TELEPORTERS.tryTeleport) return {ok:false};
-		const proxy={x:body.x, y:body.y, vx:(dir<0?-1:1)*2, vy:0, w:body.w||HERO_BODY_W, h:body.h||HERO_BODY_H};
+		const proxy={x:body.x, y:body.y, vx:Number(body.vx)||0, vy:Number(body.vy)||0, w:body.w||HERO_BODY_W, h:body.h||HERO_BODY_H};
 		// Base-tile reader + STORED-energy-only opts: passing the dynamo network into
 		// the jump made connectedDynamoEnergy traverse raw tiles and quietly refuse
 		// the whole teleport. A guest jumps on the pad's OWN stored charge (and any
@@ -20955,7 +21002,7 @@ MM.ghostBridge={
 		// limitation: a pad fed ONLY live through a wire, with zero stored charge,
 		// won't carry a guest until it banks a little.
 		const ok=TELEPORTERS.tryTeleport(proxy,getTile,{});
-		return ok ? {ok:true, x:proxy.x, y:proxy.y} : {ok:false};
+		return ok ? {ok:true, x:proxy.x, y:proxy.y, vx:proxy.vx, vy:proxy.vy} : {ok:false};
 	},
 	// HOST-side: mech boarding for hero guests — the guest may take any pilotless,
 	// unridden hull within the module's own board radius of its tracked body;
@@ -21040,7 +21087,7 @@ MM.ghostBridge={
 	},
 	// Hero-mode placement: ghost_host already debited its host-authoritative
 	// resource escrow; this seam validates world legality on the requested layer.
-	ghostHeroPlaceAt:(tx,ty,tid,layer,body)=>{
+	ghostHeroPlaceAt:(tx,ty,tid,layer,body,dir)=>{
 		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
 		const id=Number(tid)|0;
 		const def=RESOURCE_DEFS.find(r=>r.tile && T[r.tile]===id);
@@ -21080,6 +21127,7 @@ MM.ghostBridge={
 			if(!displaced) return {ok:false, reason:'water'};
 		}
 		if(!setForegroundConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
+		if(id===T.TELEPORTER && TELEPORTERS && TELEPORTERS.setOrientationAt) TELEPORTERS.setOrientationAt(tx,ty,dir,getTile);
 		if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(tx,ty);
 		if(WATER && id===T.WATER) WATER.addSource(tx,ty,getTile,setTile);
 		if(COMPANIONS && COMPANIONS.onTileChanged) COMPANIONS.onTileChanged(tx,ty,cur,id,getTile,setTile);
@@ -21207,7 +21255,7 @@ function runGameStep(dt,ts){
 			: touchActionWeaponHeld ? touchActionWeaponAim() : touchQuickWeaponAim();
 		if(WEAPONS.fireHeld(player, aim.x, aim.y, dt)) notifyInvasionWeaponUse(heldWeapon,{held:true});
 	}
-	if(WEAPONS && WEAPONS.update) WEAPONS.update(dt, getTile, setTile);
+	if(WEAPONS && WEAPONS.update) WEAPONS.update(dt, getTile, setTile, {teleporters:TELEPORTERS,getElectricNetworkTile,dynamo:DYNAMO,heroEnergy:MM.heroEnergy,player});
 	if(GENERATED_NPCS && GENERATED_NPCS.update) GENERATED_NPCS.update(dt, player, getTile, setTile, tutorialNpcCtx);
 	if(NPCS && NPCS.update) NPCS.update(dt, player, getTile, setTile, tutorialNpcCtx);
 	if(FISHING && FISHING.update) FISHING.update(dt, player, getTile);
@@ -21286,13 +21334,13 @@ function runHeroStep(dt,ts){
 		return;
 	}
 	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
-	// teleporters: walking onto a pad works exactly like solo — the JUMP resolves
-	// on the host (the pad's energy, its cooldowns), the landing is ours (ack)
-	if(TELEPORTERS && TELEPORTERS.teleporterUnderPlayer && Math.abs(player.vx||0)>0.18){
+	// Teleporters use the same directional opening predicate as solo. The host
+	// resolves energy, landing and rotated momentum; the ack applies all three.
+	if(TELEPORTERS && TELEPORTERS.canEnterTeleporter && Math.hypot(player.vx||0,player.vy||0)>0.18){
 		const tpNow=performance.now();
-		if(!(MM.ghostHeroIntents._tpAt>tpNow-1300) && TELEPORTERS.teleporterUnderPlayer(player,getTile)){
+		if(!(MM.ghostHeroIntents._tpAt>tpNow-1300) && TELEPORTERS.canEnterTeleporter(player,getTile)){
 			MM.ghostHeroIntents._tpAt=tpNow;
-			MM.ghostHeroIntents.tp(player.vx<0?-1:1);
+			MM.ghostHeroIntents.tp();
 		}
 	}
 	const heldWeapon=activeWeaponItem();

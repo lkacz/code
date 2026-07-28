@@ -57,6 +57,8 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   setTile(-2,10,T.COPPER_WIRE);
   setTile(-1,10,T.COPPER_WIRE);
   chargeDynamo(-4,10);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'east',getTile);
   assert.ok(teleporters.connectedDynamosAt(0,10,getTile).length===1,'teleporter network exposes connected dynamo slots for future devices');
   assert.ok(teleporters.availableNetworkEnergyAt(0,10,getTile,dynamo)>0,'teleporter network exposes available dynamo energy');
   const beforeDynamo=dynamo.metrics().storedEnergy;
@@ -80,6 +82,131 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   player.vx=-3;
   tick(0.05,player);
   assert.ok(player.x<0.5,'entering a teleporter while moving left jumps to the closest teleporter on the left');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'north',getTile);
+  teleporters.setOrientationAt(12,10,'north',getTile);
+  teleporters._debug.debugCharge(0,10,teleporters._debug.TRAVEL_COST,getTile);
+  const player={x:0.5,y:10.5,w:0.7,h:0.95,vx:0,vy:13,energy:0,maxEnergy:80};
+  const speedBefore=Math.hypot(player.vx,player.vy);
+  tick(0.01,player);
+  assert.ok(player.x>12 && player.y<10,'falling into an upward-facing teleporter exits above its upward-facing pair');
+  assert.ok(Math.abs(player.vx)<1e-9 && Math.abs(player.vy+13)<1e-9,'a downward fall becomes an equally fast upward launch');
+  assert.ok(Math.abs(Math.hypot(player.vx,player.vy)-speedBefore)<1e-9,'teleportation preserves the full velocity magnitude');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'north',getTile);
+  teleporters._debug.debugCharge(0,10,teleporters._debug.TRAVEL_COST,getTile);
+  const player={x:0.5,y:10.5,w:0.7,h:0.95,vx:8,vy:3,energy:0,maxEnergy:80};
+  tick(0.01,player);
+  assert.deepEqual({vx:player.vx,vy:player.vy},{vx:3,vy:-8},'the complete velocity vector rotates from the entrance normal to the exit normal');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'north',getTile);
+  teleporters._debug.debugCharge(0,10,teleporters._debug.TRAVEL_COST,getTile);
+  const player={x:0.5,y:10.5,w:0.7,h:0.95,vx:8,vy:0,energy:0,maxEnergy:80};
+  tick(0.01,player);
+  assert.equal(player.x,0.5,'a body moving across, rather than into, the configured opening does not teleport');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'north',getTile);
+  teleporters._debug.debugCharge(0,10,teleporters._debug.PROJECTILE_TRAVEL_COST,getTile);
+  const shot={x:0.5,y:10.5,vx:8,vy:3,life:2};
+  assert.equal(teleporters.tryTeleportProjectile(shot,getTile,{}),true,'a physical hero projectile can enter a directional teleporter');
+  assert.ok(shot.x>12 && shot.y<10,'the projectile emerges just outside the configured destination opening');
+  assert.deepEqual({vx:shot.vx,vy:shot.vy},{vx:3,vy:-8},'projectile momentum rotates exactly like hero momentum');
+  assert.deepEqual({x:shot._teleporterExitX,y:shot._teleporterExitY},{x:12,y:10},'a teleported projectile remembers the exit that nearby creatures can retaliate against');
+  assert.equal(teleporters.metrics().storedEnergy,0,'one ordinary projectile spends the configured teleporter projectile cost');
+  assert.equal(teleporters.metrics().projectileTeleports,1,'projectile portal transfers are observable in runtime metrics');
+}
+
+{
+  reset();
+  setTile(4,8,T.TELEPORTER);
+  for(let hit=0; hit<4; hit++){
+    const result=teleporters.damageAt(4,8,4,getTile,setTile,{source:'mob'});
+    assert.equal(result.hit,true,'a weak mob strike lands on the teleporter');
+    assert.equal(result.destroyed,false,'four weak strikes do not destroy the 200 HP teleporter');
+  }
+  assert.equal(teleporters._debug.machines.get('4,8').hp,184,'teleporter health falls by the actual summed damage, not by hit count');
+  const heavyHit=teleporters.damageAt(4,8,183,getTile,setTile,{source:'mob'});
+  assert.equal(heavyHit.destroyed,false,'a teleporter survives while even one HP remains');
+  assert.equal(heavyHit.remaining,1,'damage reports exact remaining teleporter HP');
+  const finalHit=teleporters.damageAt(4,8,1,getTile,setTile,{source:'mob'});
+  assert.equal(finalHit.destroyed,true,'damage totaling 200 HP destroys the teleporter');
+  assert.equal(getTile(4,8),T.AIR,'a destroyed teleporter is removed from the world');
+  assert.equal(teleporters.metrics().machines,0,'destroying a teleporter also clears its machine state');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'east',getTile);
+  const hero={energy:20};
+  const shot={x:0.5,y:10.5,vx:8,vy:0,life:2};
+  assert.equal(teleporters.tryTeleportProjectile(shot,getTile,{heroEnergy:null,player:hero}),true,'an unpowered projectile portal falls back to hero energy');
+  assert.equal(hero.energy,20-teleporters._debug.PROJECTILE_TRAVEL_COST,'hero fallback pays exactly one projectile transfer cost');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'east',getTile);
+  placeDynamo(-4,10);
+  setTile(-2,10,T.COPPER_WIRE);
+  setTile(-1,10,T.COPPER_WIRE);
+  chargeDynamo(-4,10);
+  const before=dynamo.metrics().storedEnergy;
+  const shot={x:0.5,y:10.5,vx:8,vy:0,life:2};
+  assert.equal(teleporters.tryTeleportProjectile(shot,getTile,{dynamo,heroEnergy:null,player:{energy:0}}),true,'a projectile can teleport directly from a connected live power source');
+  assert.ok(dynamo.metrics().storedEnergy<before,'a live-source projectile transfer drains real dynamo energy');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'east',getTile);
+  const shot={x:0.5,y:10.5,vx:8,vy:0,life:2};
+  assert.equal(teleporters.tryTeleportProjectile(shot,getTile,{heroEnergy:null,player:{energy:0}}),false,'a projectile passes normally when neither portal nor hero can pay');
+  assert.deepEqual({x:shot.x,y:shot.y,vx:shot.vx,vy:shot.vy},{x:0.5,y:10.5,vx:8,vy:0},'a refused projectile transfer does not mutate its pose or momentum');
+}
+
+{
+  reset();
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'east',getTile);
+  teleporters._debug.debugCharge(0,10,teleporters._debug.STREAM_TRAVEL_COST*2,getTile);
+  for(let i=0;i<2;i++){
+    const puff={x:0.5,y:10.5,vx:8,vy:0,life:1,source:'hero'};
+    assert.equal(teleporters.tryTeleportProjectile(puff,getTile,{stream:true}),true,'each physical stream particle can traverse the portal');
+  }
+  assert.ok(teleporters.metrics().storedEnergy<0.001,'stream particles pay their smaller per-particle energy cost');
 }
 
 {
@@ -294,6 +421,8 @@ function rangeFairnessSample(playerX){
   reset();
   setTile(30,10,T.TELEPORTER);
   setTile(40,10,T.TELEPORTER);
+  teleporters.setOrientationAt(30,10,'west',getTile);
+  teleporters.setOrientationAt(40,10,'east',getTile);
   const player={x:30.5,y:10.5,w:0.7,h:0.95,vx:3,vy:0,energy:80,maxEnergy:80};
   tick(0.05,player);
   assert.ok(player.x>40,'teleporter can fall back to hero energy when no device battery or dynamo is available');
@@ -305,6 +434,8 @@ function rangeFairnessSample(playerX){
   assert.ok(WORLD_MIN_Y<0 && WORLD_MAX_Y>WORLD_H,'teleporter tests cover extended vertical sections');
   setTile(30,-24,T.TELEPORTER);
   setTile(42,-18,T.TELEPORTER);
+  teleporters.setOrientationAt(30,-24,'west',getTile);
+  teleporters.setOrientationAt(42,-18,'east',getTile);
   const player={x:30.5,y:-23.5,w:0.7,h:0.95,vx:3,vy:0,energy:80,maxEnergy:80};
   tick(0.05,player);
   assert.ok(player.x>42,'sky-layer teleporter can jump to a target on the right');
@@ -322,6 +453,7 @@ function rangeFairnessSample(playerX){
   reset();
   setTile(0,10,T.TELEPORTER);
   setTile(8,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
   const player={x:0.5,y:10.5,w:0.7,h:0.95,vx:3,vy:0,energy:0,maxEnergy:80};
   tick(0.05,player);
   assert.ok(Math.abs(player.x-0.5)<0.001,'drained teleporter refuses travel if the hero has no energy');
@@ -331,6 +463,8 @@ function rangeFairnessSample(playerX){
   reset();
   setTile(0,10,T.TELEPORTER);
   setTile(8,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(8,10,'east',getTile);
   for(let dx=-3; dx<=3; dx++){
     setTile(dx,8,T.UFO_CONCRETE);
     setTile(dx,12,T.UFO_CONCRETE);
@@ -520,14 +654,21 @@ function runMixedFairness(order){
 {
   reset();
   setTile(2,8,T.TELEPORTER);
+  teleporters.setOrientationAt(2,8,'north',getTile);
   teleporters._debug.debugCharge(2,8,77,getTile);
+  teleporters.damageAt(2,8,25,getTile,setTile,{source:'mob'});
   const snap=teleporters.snapshot();
-  assert.deepEqual(Object.keys(snap.list[0]).sort(),['energy','x','y'],'teleporter snapshots exclude transient cadence and network-cache bookkeeping');
+  assert.deepEqual(Object.keys(snap.list[0]).sort(),['dir','energy','hp','x','y'],'teleporter snapshots persist orientation and structural HP but exclude transient cadence and network-cache bookkeeping');
+  assert.equal(snap.list[0].hp,175,'partial mob damage is persisted as exact HP');
   teleporters.reset();
   assert.equal(teleporters.metrics().machines,0,'reset clears teleporter battery state');
   teleporters.restore(snap,getTile);
   assert.equal(teleporters.metrics().machines,1,'restore rehydrates teleporter battery state');
   assert.equal(Math.round(teleporters.metrics().storedEnergy),77,'restore preserves stored teleporter energy');
+  assert.equal(teleporters.orientationAt(2,8,getTile),'north','restore preserves teleporter opening orientation');
+  assert.equal(teleporters._debug.machines.get('2,8').hp,175,'restore preserves partial mob damage');
+  teleporters.restore({v:3,list:[{x:2,y:8,dir:'north',energy:77,integrity:3}]},getTile);
+  assert.equal(teleporters._debug.machines.get('2,8').hp,150,'legacy four-hit integrity migrates to the equivalent 200 HP ratio');
 }
 
 {
@@ -560,6 +701,12 @@ assert.match(mainSrc, /TELEPORTERS\.update\(dt, player, getElectricNetworkTile, 
 assert.match(mainSrc, /TELEPORTERS\.beginPowerFrame\(\)/, 'main opens one shared fair-allocation frame before any electrical consumers update');
 assert.match(mainSrc, /TELEPORTERS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisible,getElectricNetworkTile\)/, 'main draws teleporter energy overlays through infrastructure overlays');
 assert.match(mainSrc, /TELEPORTERS\.cableConnections\(wx,y,peek\)/, 'main uses smart copper cable layouts without forcing neighbor chunks to generate');
+assert.match(mainSrc, /const TELEPORTER_ORIENTATION_KEY='mm_teleporter_orientation_v1'/, 'main remembers the preferred teleporter opening for future placements');
+assert.match(mainSrc, /function tryRotateTeleporterAt\(tx,ty\)[\s\S]*?TELEPORTERS\.orientationAt\(tx,ty,getTile\)[\s\S]*?TELEPORTERS\.rotateDir\(previous\)[\s\S]*?TELEPORTERS\.setOrientationAt\(tx,ty,next,getTile\)/, 'right-click rotates a placed teleporter through its persisted cardinal openings');
+assert.match(mainSrc, /id===T\.TELEPORTER && TELEPORTERS && TELEPORTERS\.setOrientationAt\) TELEPORTERS\.setOrientationAt\(tx,ty,teleporterOrientation,getTile\)/, 'new teleporters inherit the cardinal opening selected before placement');
+assert.match(mainSrc, /selectedTileId\(\)===T\.TELEPORTER\)\{ toggleTeleporterOrientation\(\)/, 'R rotates the selected teleporter before placement');
+assert.match(mainSrc, /TELEPORTERS\.canEnterTeleporter\(player,getTile\)/, 'co-op teleport requests use the same directional entrance predicate as solo play');
+assert.match(mainSrc, /WEAPONS\.update\(dt, getTile, setTile, \{teleporters:TELEPORTERS,getElectricNetworkTile,dynamo:DYNAMO,heroEnergy:MM\.heroEnergy,player\}\)/, 'weapon simulation receives the powered directional teleporter context');
 assert.match(mainSrc, /function placeDebugTeleporterPair\(\)/, 'main exposes a debug action that places a powered teleporter pair');
 assert.match(mainSrc, /function placeDebugTeleporterOne\(\)/, 'main exposes a debug action that places one teleporter');
 assert.match(mainSrc, /function jumpDebugTeleporterLeft\(\)/, 'main exposes a debug action that jumps to the nearest left teleporter');

@@ -42,6 +42,9 @@ const mobs = (function(){
   const mobs = []; // entities
   const speciesAggro = {}; // speciesId -> expiry timestamp (ms)
   const HERO_FOCUS_MS = 12000;
+  const TELEPORTER_RETALIATION_MS = 600000;
+  const TELEPORTER_ATTACK_INTERVAL_MS = 820;
+  const TELEPORTER_ATTACK_RANGE = 1.35;
   const speciesCounts = {}; // live counts for quick spawn capping
   const ECO_LOCAL_RADIUS = 92;
   const ECO_INNER_RADIUS = 18;
@@ -6484,6 +6487,90 @@ const mobs = (function(){
     if(opts && opts.hostileOnly && !isMobHostile(m)) return false;
     return true;
   }
+  function teleporterExitFromOpts(opts){
+    if(!opts || typeof opts!=='object') return null;
+    if(!finiteCoord(opts.teleporterExitX) || !finiteCoord(opts.teleporterExitY)) return null;
+    return {x:Math.floor(opts.teleporterExitX),y:Math.floor(opts.teleporterExitY)};
+  }
+  function provokeTeleporterRetaliation(m,opts){
+    if(!m || m.hp<=0) return false;
+    const target=teleporterExitFromOpts(opts);
+    if(!target) return false;
+    const now=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
+    m._teleporterTargetX=target.x;
+    m._teleporterTargetY=target.y;
+    m._teleporterTargetUntil=now+TELEPORTER_RETALIATION_MS;
+    m._teleporterAttackAt=Math.min(Number(m._teleporterAttackAt)||now,now+180);
+    m._noticed=true;
+    m.state='portal_hunt';
+    return true;
+  }
+  function activeTeleporterRetaliation(m,getTile,now){
+    if(!m || !finiteCoord(m._teleporterTargetX) || !finiteCoord(m._teleporterTargetY)) return null;
+    if(!(m._teleporterTargetUntil>now) || getTile(Math.floor(m._teleporterTargetX),Math.floor(m._teleporterTargetY))!==T.TELEPORTER){
+      delete m._teleporterTargetX;
+      delete m._teleporterTargetY;
+      delete m._teleporterTargetUntil;
+      delete m._teleporterAttackAt;
+      return null;
+    }
+    const x=Math.floor(m._teleporterTargetX), y=Math.floor(m._teleporterTargetY);
+    return {x:x+0.5,y:y+0.5,tx:x,ty:y,kind:'teleporter'};
+  }
+  function markTeleporterAttack(m,target,now){
+    m._attackKind='slam';
+    m._attackAt=now;
+    m._attackFlashUntil=now+MOB_ATTACK_STRIKE_MS;
+    m._attackRecoverUntil=now+MOB_ATTACK_RECOVER_MS;
+    m._attackTelegraphUntil=Math.max(m._attackTelegraphUntil||0,now+120);
+    m._attackPower=1;
+    faceAttackTarget(m,target);
+    m._attackTargetX=target.x;
+    m._attackTargetY=target.y;
+    m.shake=Math.max(m.shake||0,0.42);
+  }
+  function updateTeleporterRetaliation(m,spec,target,dt,now,getTile,setTile){
+    if(!target) return false;
+    const dx=target.x-m.x, dy=target.y-m.y;
+    const dist=Math.hypot(dx,dy)||0.001;
+    const reach=TELEPORTER_ATTACK_RANGE+Math.max(0,((spec.body&&spec.body.w)||0.8)-0.8)*0.3;
+    const speed=Math.max(0.8,(spec.speed||1)*(m.speedMul||1));
+    m.facing=dx>=0?1:-1;
+    if(dist>reach){
+      m.state='portal_hunt';
+      if(spec.flying || spec.aquatic){
+        m.vx+=(dx/dist)*speed*dt*5;
+        m.vy+=(dy/dist)*speed*dt*4;
+      }else{
+        m.vx=Math.sign(dx||m.facing)*speed*0.9;
+        if(m.onGround && dy<-0.8) m.vy=(spec.move&&spec.move.jumpVel)||-4.2;
+      }
+      return true;
+    }
+    m.state='portal_attack';
+    m.vx*=0.35;
+    if(spec.flying || spec.aquatic) m.vy*=0.45;
+    if(now<(Number(m._teleporterAttackAt)||0)) return true;
+    m._teleporterAttackAt=now+TELEPORTER_ATTACK_INTERVAL_MS*Math.max(0.65,Math.min(1.4,m.attackCdMult||1));
+    markTeleporterAttack(m,target,now);
+    const api=MM.teleporters;
+    if(!api || typeof api.damageAt!=='function') return true;
+    const damageMult=Number.isFinite(Number(m.dmgMult)) ? Math.max(0,Number(m.dmgMult)) : 1;
+    const strikeDamage=Math.max(0,(Number(spec.dmg)||0)*damageMult);
+    if(!(strikeDamage>0)) return true;
+    let result=null;
+    try{
+      result=api.damageAt(target.tx,target.ty,strikeDamage,getTile,setTile,{source:'mob',mob:m,species:spec});
+    }catch(e){}
+    if(result && result.destroyed){
+      delete m._teleporterTargetX;
+      delete m._teleporterTargetY;
+      delete m._teleporterTargetUntil;
+      delete m._teleporterAttackAt;
+      m.state='idle';
+    }
+    return true;
+  }
   function noteDamageSource(m,opts){
     if(!m) return;
     const heroHit=sourceIsHero(opts);
@@ -6498,6 +6585,7 @@ const mobs = (function(){
     m._lastHeroHitSpecial=heroHit ? !!(opts && typeof opts==='object' && opts.specialAttack) : false;
     m._lastHeroHitLucky=heroHit ? !!(opts && typeof opts==='object' && opts.luckyStrike) : false;
     m._lastHeroHitElement=heroHit ? combatElementFromOpts(opts) : '';
+    provokeTeleporterRetaliation(m,opts);
     if(heroHit){
       markHeroAttack(m);
       try{
@@ -7845,7 +7933,8 @@ const mobs = (function(){
   const quietSight = (typeof MM!=='undefined' && MM.noise && MM.noise.sightMult) ? MM.noise.sightMult(heroForMob) : 1;
   const sight = (typeof spec.sightRange==='number'? spec.sightRange : 16) * fogSight * quietSight;
   const pursue = ((typeof spec.pursueRange==='number'? spec.pursueRange : ((typeof spec.sightRange==='number'? spec.sightRange : 16)+6))) * fogSight;
-  const combatTarget = combatTargetForMob(m,heroForMob,aggressive,Math.max(sight,pursue));
+  const teleporterTarget=activeTeleporterRetaliation(m,getTile,now);
+  const combatTarget = teleporterTarget || combatTargetForMob(m,heroForMob,aggressive,Math.max(sight,pursue));
   const aimTarget = combatTarget && combatTarget.kind==='companion' ? companionTargetPoint(combatTarget) : combatTarget;
   const distToPlayer = (aimTarget && aimTarget!==heroForMob) ? Math.hypot(aimTarget.x-m.x, aimTarget.y-m.y) : distToHero;
   const canSee = distToPlayer <= sight;
@@ -7872,9 +7961,10 @@ const mobs = (function(){
   // PERCEPTION, tracked apart from hostility: a peaceful, pacified or spooked
   // creature still notices you — hostility only weaponizes the same awareness.
   m._noticed = spotted || (shouldPursue && !!m._noticed);
-  const aggroNow = aggressive && m._noticed;
+  if(teleporterTarget) m._noticed=true;
+  const aggroNow = !!teleporterTarget || (aggressive && m._noticed);
   m._aggro = aggroNow;
-  const fleeTarget=m._progressionOutmatched ? {x:m.x+(m.x>=player.x?10000:-10000),y:m.y} : null;
+  const fleeTarget=!teleporterTarget && m._progressionOutmatched ? {x:m.x+(m.x>=player.x?10000:-10000),y:m.y} : null;
   m._combatTarget=fleeTarget || (aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : heroForMob);
   // Blinded (sand in the eyes): the AI perceives its target impossibly far away,
   // so even species with proximity-hunt fallbacks (wolf adx<8 …) stop closing in.
@@ -7887,7 +7977,8 @@ const mobs = (function(){
   // the NOISE and aggressive still false: the creature walks over to look, it does
   // not charge. That is what turns a thrown stone into a decoy.
   const investigateAt = (!aggroNow && !blindMob && m._investigate) ? m._investigate : null;
-  updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : m._combatTarget), getTile, setTile, distToPlayer:(blindMob || m._progressionOutmatched ? 10000 : distToPlayer)});
+  if(teleporterTarget) updateTeleporterRetaliation(m,spec,teleporterTarget,dt,now,getTile,setTile);
+  else updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : m._combatTarget), getTile, setTile, distToPlayer:(blindMob || m._progressionOutmatched ? 10000 : distToPlayer)});
   _mobTargetBody=null;
   // Investigating a sound is a pure STEERING nudge applied AFTER the species AI —
   // it must NEVER become the AI's notion of "the player". Species attacks are
@@ -7905,7 +7996,7 @@ const mobs = (function(){
   }
       // This runs after every species-specific AI, overriding proximity shortcuts
       // that used to make weak wolves, vultures, worms, etc. lunge anyway.
-      applyProgressionFlee(m,spec,player,challenge,dt);
+      if(!teleporterTarget) applyProgressionFlee(m,spec,player,challenge,dt);
       if(isGroundMob){
         // Interpret AI changes: any upward impulse (vy<-1) becomes a jump intent
         if(m.vy < -1){ m._wantJump=true; }
@@ -11115,6 +11206,7 @@ const mobs = (function(){
   function applyStatus(m,id,opts){
     const def=STATUS[id]; if(!def) return false;
     if(!mobAllowedByOpts(m,opts)) return false;
+    provokeTeleporterRetaliation(m,opts);
     const spec=SPECIES[m.id];
     if(def.organicOnly && (!spec || spec.organic===false)) return false;
     if(statusReaction(m,id,opts)) return true; // the application became a reaction
@@ -12087,7 +12179,8 @@ const mobs = (function(){
       return {
         projectiles:mobProjectiles.map(p=>({x:p.x,y:p.y,vx:p.vx,vy:p.vy,dmg:p.dmg,lead:p.lead||0,type:p.type||'bone',cause:p.cause||'mob_projectile',ownerId:p.ownerId||'',aimX:p.aimX,aimY:p.aimY})),
         lasers:mobLasers.map(l=>({x1:l.x1,y1:l.y1,x2:l.x2,y2:l.y2,dmg:l.dmg||0,hit:!!l.hit,blocked:!!l.blocked})),
-        sentinelCharges:mobs.filter(m=>m&&m.id==='STRAZNIK'&&m.sentinelCharge).map(m=>({x:m.x,y:m.y,t:m.sentinelCharge.t,duration:m.sentinelCharge.duration,aimX:m.sentinelCharge.aimX,aimY:m.sentinelCharge.aimY}))
+        sentinelCharges:mobs.filter(m=>m&&m.id==='STRAZNIK'&&m.sentinelCharge).map(m=>({x:m.x,y:m.y,t:m.sentinelCharge.t,duration:m.sentinelCharge.duration,aimX:m.sentinelCharge.aimX,aimY:m.sentinelCharge.aimY})),
+        teleporterRetaliations:mobs.filter(m=>m&&finiteCoord(m._teleporterTargetX)&&finiteCoord(m._teleporterTargetY)).map(m=>({id:m.id,x:m._teleporterTargetX,y:m._teleporterTargetY,until:m._teleporterTargetUntil||0,state:m.state||''}))
       };
     }
   const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, thermalTargets, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, forEachLive, natureMetrics:()=>({...natureStats}), _debugNature:{naturePass, natureDriveStep, natureStormOmen, natureWaterNear, natureColdSnap, forcePass:()=>{ natureAt=0; }}, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), goldGuardAreaState:()=>Object.assign(goldGuardDaySnapshot(),{liveDwarfs:countSpecies('GOLD_DWARF_GUARD'),liveDragons:countSpecies('GOLD_DRAGON'),maxLiveDwarfs:GOLD_DWARF_MAX_LIVE}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugPiranhas:()=>({coastProfile:piranhaCoastProfile,coastalRange:PIRANHA_COASTAL_RANGE,coastalCore:PIRANHA_COASTAL_CORE,offshoreDensity:PIRANHA_OFFSHORE_DENSITY}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,

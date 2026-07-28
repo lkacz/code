@@ -123,6 +123,33 @@ fire.update(getTile,setTile,NaN);
 assert.equal(weapons.metrics().puffs, 0, 'invalid stream ticks do not create or corrupt puffs');
 assert.equal(weapons.metrics().arrows, 0, 'invalid stream ticks do not create or corrupt arrows');
 
+// Every physical hero-shot family shares the teleporter seam: arrows, rubber
+// balls and spit live in the projectile array; elemental streams use hero puffs.
+{
+  const portalKinds=[];
+  const portalStub={
+    tryTeleportProjectile(p,_get,opts){
+      if((p._teleporterCooldown||0)>0) return false;
+      portalKinds.push({bouncy:!!p.bouncy,spit:!!p.spitDroplet,stream:!!(opts&&opts.stream),source:p.source||''});
+      p.x+=10;
+      p._teleporterCooldown=0.12;
+      return true;
+    }
+  };
+  for(const flags of [{},{bouncy:true,bounces:6},{spitDroplet:true,splat:'spit'}]){
+    weapons._debug.arrows.push(Object.assign({x:0.5,y:0.5,vx:8,vy:0,dmg:1,life:2,stuck:false,stuckT:4,travel:0,maxTravel:20},flags));
+  }
+  weapons._debug.puffs.push({kind:'hose',x:0.5,y:0.5,vx:8,vy:0,life:2,total:2,dps:1,source:'hero'});
+  weapons._debug.puffs.push({kind:'steam',x:0.5,y:0.5,vx:1,vy:0,life:2,total:2,dps:0});
+  weapons.update(1/60,getTile,setTile,{teleporters:portalStub,player});
+  assert.ok(portalKinds.some(k=>!k.bouncy&&!k.spit&&!k.stream),'ordinary arrows use the shared physical-shot teleporter seam');
+  assert.ok(portalKinds.some(k=>k.bouncy),'rubber balls use the shared physical-shot teleporter seam');
+  assert.ok(portalKinds.some(k=>k.spit),'spit droplets use the shared physical-shot teleporter seam');
+  assert.ok(portalKinds.some(k=>k.stream&&k.source==='hero'),'hero flame/hose/gas particles use the stream teleporter cost path');
+  assert.equal(portalKinds.some(k=>k.source===''&&k.stream),false,'ambient cosmetic puffs never consume portal energy');
+  weapons.reset();
+}
+
 // Every player weapon family routes a chest impact through the shared opener.
 tiles=new Map(); weapons.reset(); chestHits.length=0; chestEntities.length=0;
 spawnChestEntity(1,0,'common');

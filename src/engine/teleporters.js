@@ -40,7 +40,19 @@ import { isHeroPassableTile } from './material_physics.js';
   // the mirrored lower-right track, so stacked networks never paint as one line.
   const CABLE_RENDER_OFFSET = -0.12;
   const TELEPORT_COOLDOWN = 0.72;
+  const PROJECTILE_TELEPORT_COOLDOWN = 0.12;
+  const PROJECTILE_TRAVEL_COST = 6;
+  const STREAM_TRAVEL_COST = 0.6;
+  const TELEPORTER_MAX_HP = 200;
   const BUNKER_FAILSAFE_CONCRETE_MIN = 10;
+  const ENTRY_SPEED_MIN = 0.18;
+  const DIR_ORDER = ['east','south','west','north'];
+  const DIR_VEC = Object.freeze({
+    east:Object.freeze({x:1,y:0,label:'prawo'}),
+    south:Object.freeze({x:0,y:1,label:'dol'}),
+    west:Object.freeze({x:-1,y:0,label:'lewo'}),
+    north:Object.freeze({x:0,y:-1,label:'gora'})
+  });
   // Discovery-only cadence: placements register instantly via onTileChanged and
   // stepping on a teleporter registers via tryTeleport, so this sweep only picks
   // up worldgen/chunk-load machines. At 0.45s it burned ~70k tile lookups per
@@ -67,6 +79,7 @@ import { isHeroPassableTile } from './material_physics.js';
   const copperHeatBuffers = new Map();
   let copperHeatCursor = 0;
   let copperHeatEvents = 0;
+  let projectileTeleports = 0;
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
@@ -81,6 +94,12 @@ import { isHeroPassableTile } from './material_physics.js';
     return Number.isFinite(value) && value>=0 ? value : fallback;
   }
   function isTeleporter(t){ return t===T.TELEPORTER; }
+  function normalizeDir(dir){ return DIR_VEC[dir] ? dir : 'east'; }
+  function rotateDir(dir){
+    const i=DIR_ORDER.indexOf(normalizeDir(dir));
+    return DIR_ORDER[(i+1+DIR_ORDER.length)%DIR_ORDER.length];
+  }
+  function dirVec(dir){ return DIR_VEC[normalizeDir(dir)] || DIR_VEC.east; }
   function isCable(t){ return !!(INFO[t] && INFO[t].powerCable); }
   function isDynamoTile(t){ return t===T.DYNAMO || t===T.DYNAMO_SLOT; }
   function isSolarTile(t){ return !!(MM.solar && MM.solar.isSourceTile && MM.solar.isSourceTile(t)); }
@@ -116,15 +135,38 @@ import { isHeroPassableTile } from './material_physics.js';
     const k=key(x,y);
     let m=machines.get(k);
     if(!m){
-      m={x,y,energy:0,pulse:0,cooldown:0,lastUse:0};
+      m={x,y,dir:'east',energy:0,pulse:0,cooldown:0,lastUse:0,hp:TELEPORTER_MAX_HP};
       m.locallyIsolated=!hasMachineNetworkNeighbor(x,y,getTile);
       if(m.locallyIsolated) m.sourceLessRev=networkRev;
       machines.set(k,m);
     }
     m.x=x; m.y=y;
+    m.dir=normalizeDir(m.dir);
+    if(!Number.isFinite(m.hp)) m.hp=TELEPORTER_MAX_HP;
+    m.hp=Math.max(0,Math.min(TELEPORTER_MAX_HP,m.hp));
     m.energy=clampEnergy(m.energy);
     m.pulse=Math.max(0,Math.min(1,Number(m.pulse)||0));
     return m;
+  }
+  function orientationAt(x,y,getTile){
+    const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
+    return m ? normalizeDir(m.dir) : 'east';
+  }
+  function setOrientationAt(x,y,dir,getTile){
+    const m=ensureMachine(x,y,getTile || (MM.world && MM.world.getTile));
+    if(!m) return false;
+    const next=normalizeDir(dir);
+    if(m.dir!==next){
+      m.dir=next;
+      // Orientation is sparse machine metadata, not a tile mutation. Reuse the
+      // render-change seam so the host's infrastructure plane knows that remote
+      // replicas need a fresh teleporter snapshot.
+      try{
+        if(typeof MM.onTileRenderChanged==='function') MM.onTileRenderChanged(m.x,m.y,T.TELEPORTER,T.TELEPORTER);
+      }catch(e){}
+    }
+    m.pulse=1;
+    return true;
   }
   function cableConnections(x,y,getTile){
     x=Math.floor(x); y=Math.floor(y);
@@ -995,15 +1037,17 @@ import { isHeroPassableTile } from './material_physics.js';
     }
     return false;
   }
-  function spendTravelEnergy(m,getTile,opts,player){
+  function spendTeleportEnergy(m,getTile,opts,player,cost){
     opts=opts||{};
     const D=opts.dynamo || MM.dynamo;
-    const heroEnergy=opts.heroEnergy || (MM && MM.heroEnergy);
+    const heroEnergy=Object.prototype.hasOwnProperty.call(opts,'heroEnergy') ? opts.heroEnergy : (MM && MM.heroEnergy);
+    const required=Math.max(0,Number(cost)||0);
+    if(!(required>0)) return {storage:0,dynamo:0,hero:0};
     const storage=Math.max(0,m.energy||0);
     const dyn=connectedDynamoEnergy(m,getTile,D);
     const hero=heroAvailable(heroEnergy,player);
-    if(storage+dyn+hero+1e-6<TRAVEL_COST) return null;
-    let remaining=TRAVEL_COST;
+    if(storage+dyn+hero+1e-6<required) return null;
+    let remaining=required;
     const spent={storage:0,dynamo:0,hero:0};
     const fromStorage=Math.min(storage,remaining);
     if(fromStorage>0){
@@ -1025,6 +1069,9 @@ import { isHeroPassableTile } from './material_physics.js';
     }
     m.pulse=1;
     return spent;
+  }
+  function spendTravelEnergy(m,getTile,opts,player){
+    return spendTeleportEnergy(m,getTile,opts,player,TRAVEL_COST);
   }
   function chargeFromNetwork(m,dt,getTile,dynamo,net,demandRegistered){
     if(!m || !(dt>0)) return 0;
@@ -1107,6 +1154,21 @@ import { isHeroPassableTile } from './material_physics.js';
     }
     return best;
   }
+  function pairedTeleporter(tx,ty,getTile){
+    const list=listLoadedTeleporters(getTile,tx);
+    let best=null, bestScore=Infinity;
+    for(const p of list){
+      if(p.x===tx && p.y===ty) continue;
+      if(getSafe(getTile,p.x,p.y,T.AIR)!==T.TELEPORTER) continue;
+      const dx=p.x-tx, dy=p.y-ty;
+      const score=dx*dx+dy*dy;
+      if(score<bestScore || (score===bestScore && best && ((p.x<best.x) || (p.x===best.x && p.y<best.y)))){
+        bestScore=score;
+        best=p;
+      }
+    }
+    return best;
+  }
   function passableForPlayer(t){
     return isHeroPassableTile(t);
   }
@@ -1147,16 +1209,22 @@ import { isHeroPassableTile } from './material_physics.js';
     return true;
   }
   function exitPosition(target,dir,player,getTile){
+    const d=dirVec(dir);
+    const tangent={x:-d.y,y:d.x};
     const cx=target.x+0.5, cy=target.y+0.5;
+    const w=Math.max(0.5,Number(player && player.w)||0.7);
+    const h=Math.max(0.7,Number(player && player.h)||0.95);
+    const halfExtent=Math.abs(d.x)*w*0.5+Math.abs(d.y)*h*0.5;
+    const offset=0.5+halfExtent+0.08;
     const tries=[
-      {x:cx+dir*0.92,y:cy},
-      {x:cx,y:cy},
-      {x:cx+dir*0.92,y:cy-1},
-      {x:cx,y:cy-1},
-      {x:cx+dir*0.92,y:cy+1}
+      {x:cx+d.x*offset,y:cy+d.y*offset},
+      {x:cx+d.x*offset+tangent.x,y:cy+d.y*offset+tangent.y},
+      {x:cx+d.x*offset-tangent.x,y:cy+d.y*offset-tangent.y},
+      {x:cx+d.x*(offset+1),y:cy+d.y*(offset+1)},
+      {x:cx,y:cy}
     ];
     for(const p of tries) if(canStandAt(player,p.x,p.y,getTile)) return p;
-    return {x:cx,y:cy};
+    return tries[0];
   }
   function teleporterUnderPlayer(player,getTile){
     if(!player) return null;
@@ -1174,10 +1242,123 @@ import { isHeroPassableTile } from './material_physics.js';
     }
     return best;
   }
-  function movementDir(player){
+  function entryVelocity(player,dir){
+    const d=dirVec(dir);
     const vx=Number(player && player.vx)||0;
-    if(Math.abs(vx)<0.18) return 0;
-    return vx<0 ? -1 : 1;
+    const vy=Number(player && player.vy)||0;
+    return -(vx*d.x+vy*d.y);
+  }
+  function canEnterTeleporter(player,getTile){
+    const hit=teleporterUnderPlayer(player,getTile);
+    if(!hit) return null;
+    const m=ensureMachine(hit.x,hit.y,getTile);
+    if(!m || entryVelocity(player,m.dir)<ENTRY_SPEED_MIN) return null;
+    return {x:hit.x,y:hit.y,dir:normalizeDir(m.dir),speed:entryVelocity(player,m.dir)};
+  }
+  function transformVelocity(vx,vy,inputDir,outputDir){
+    const opening=dirVec(inputDir);
+    const incoming={x:-opening.x,y:-opening.y};
+    const incomingRight={x:-incoming.y,y:incoming.x};
+    const outgoing=dirVec(outputDir);
+    const outgoingRight={x:-outgoing.y,y:outgoing.x};
+    const forward=(Number(vx)||0)*incoming.x+(Number(vy)||0)*incoming.y;
+    const right=(Number(vx)||0)*incomingRight.x+(Number(vy)||0)*incomingRight.y;
+    return {
+      vx:forward*outgoing.x+right*outgoingRight.x,
+      vy:forward*outgoing.y+right*outgoingRight.y
+    };
+  }
+  function projectileTeleporterAt(projectile,getTile){
+    if(!projectile || !Number.isFinite(projectile.x) || !Number.isFinite(projectile.y)) return null;
+    const x=Math.floor(projectile.x), y=Math.floor(projectile.y);
+    if(getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) return null;
+    const m=ensureMachine(x,y,getTile);
+    if(!m || entryVelocity(projectile,m.dir)<ENTRY_SPEED_MIN) return null;
+    return {x,y,dir:normalizeDir(m.dir)};
+  }
+  function projectileExitPosition(target,dir,projectile){
+    const d=dirVec(dir);
+    const radius=Math.max(0.04,Math.min(0.35,Number(projectile && projectile.portalRadius)||0.08));
+    const offset=0.5+radius+0.06;
+    return {x:target.x+0.5+d.x*offset,y:target.y+0.5+d.y*offset};
+  }
+  function tryTeleportProjectile(projectile,getTile,opts){
+    opts=opts||{};
+    if(!projectile || projectile.stuck || projectile.expiring || projectile.embeddedMob || projectile.ghost) return false;
+    if((Number(projectile._teleporterCooldown)||0)>0) return false;
+    const hit=projectileTeleporterAt(projectile,getTile);
+    if(!hit) return false;
+    const m=ensureMachine(hit.x,hit.y,getTile);
+    if(!m) return false;
+    const target=pairedTeleporter(hit.x,hit.y,getTile);
+    if(!target) return false;
+    const dest=ensureMachine(target.x,target.y,getTile);
+    if(!dest) return false;
+    const outputDir=normalizeDir(dest.dir);
+    const pos=projectileExitPosition(target,outputDir,projectile);
+    const velocity=transformVelocity(projectile.vx,projectile.vy,m.dir,outputDir);
+    const defaultCost=opts.stream ? STREAM_TRAVEL_COST : PROJECTILE_TRAVEL_COST;
+    const cost=Math.max(0.05,Number.isFinite(opts.cost)?Number(opts.cost):defaultCost);
+    const player=projectile.coopOwner ? null : (opts.player || ((typeof window!=='undefined') ? window.player : null));
+    const energyOpts=Object.assign({},opts);
+    if(projectile.coopOwner) energyOpts.heroEnergy=null;
+    const spent=spendTeleportEnergy(m,getTile,energyOpts,player,cost);
+    if(!spent) return false;
+    projectile.x=pos.x;
+    projectile.y=pos.y;
+    projectile.vx=velocity.vx;
+    projectile.vy=velocity.vy;
+    projectile._teleporterCooldown=PROJECTILE_TELEPORT_COOLDOWN;
+    // Damage attribution follows the most recent EXIT. A creature struck after
+    // this jump should retaliate against the apparent source beside it, not the
+    // remote hero or the portal that accepted the shot.
+    projectile._teleporterExitX=target.x;
+    projectile._teleporterExitY=target.y;
+    m.pulse=1;
+    dest.pulse=1;
+    projectileTeleports++;
+    return true;
+  }
+  function damageAt(x,y,amount,getTile,setTile,opts){
+    x=Math.floor(x); y=Math.floor(y);
+    if(!finiteTile(x,y) || getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) return {hit:false,destroyed:false,remaining:0};
+    const m=ensureMachine(x,y,getTile);
+    if(!m) return {hit:false,destroyed:false,remaining:0};
+    const damage=Math.max(0,Math.min(TELEPORTER_MAX_HP,Number(amount)||0));
+    if(!(damage>0)) return {hit:false,destroyed:false,remaining:m.hp,max:TELEPORTER_MAX_HP,damage:0};
+    const before=Number.isFinite(m.hp)?m.hp:TELEPORTER_MAX_HP;
+    m.hp=Math.max(0,before-damage);
+    m.pulse=1;
+    m.hitPulse=1;
+    try{
+      const p=MM.particles, tile=MM.TILE||20;
+      if(p && p.spawnSparks) p.spawnSparks((x+0.5)*tile,(y+0.5)*tile,'common',m.hp<=0?12:5);
+    }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play(m.hp<=0?'break':'dig',{x:x+0.5,y:y+0.5}); }catch(e){}
+    if(m.hp>0){
+      return {hit:true,destroyed:false,remaining:m.hp,max:TELEPORTER_MAX_HP,damage:Math.min(before,damage)};
+    }
+    if(typeof setTile!=='function'){
+      m.hp=0.5;
+      return {hit:true,destroyed:false,remaining:m.hp,max:TELEPORTER_MAX_HP,damage:Math.min(before,damage)};
+    }
+    // Host/world truth owns the tile write. The normal world hook invalidates
+    // network caches; the explicit delete also keeps isolated simulations safe.
+    try{ setTile(x,y,T.AIR); }catch(e){
+      m.hp=0.5;
+      return {hit:true,destroyed:false,remaining:m.hp,max:TELEPORTER_MAX_HP,damage:Math.min(before,damage)};
+    }
+    if(getSafe(getTile,x,y,T.AIR)===T.TELEPORTER){
+      m.hp=0.5;
+      return {hit:true,destroyed:false,remaining:m.hp,max:TELEPORTER_MAX_HP,damage:Math.min(before,damage)};
+    }
+    machines.delete(key(x,y));
+    networkCache.delete(key(x,y));
+    invalidateTeleporterSearch();
+    if(opts && typeof opts.onDestroyed==='function'){
+      try{ opts.onDestroyed(x,y); }catch(e){}
+    }
+    return {hit:true,destroyed:true,remaining:0,max:TELEPORTER_MAX_HP,damage:Math.min(before,damage)};
   }
   function scanNearbyTeleporters(player,getTile){
     if(!player) return;
@@ -1196,24 +1377,25 @@ import { isHeroPassableTile } from './material_physics.js';
     }
   }
   function tryTeleport(player,getTile,opts){
-    const hit=teleporterUnderPlayer(player,getTile);
+    const hit=canEnterTeleporter(player,getTile);
     if(!hit) return false;
-    const dir=movementDir(player);
-    if(!dir) return false;
     if((player._teleporterCooldown||0)>0) return false;
     const m=ensureMachine(hit.x,hit.y,getTile);
     if(!m || (m.cooldown||0)>0) return false;
-    const target=nearestTeleporter(hit.x,hit.y,dir,getTile);
+    const target=pairedTeleporter(hit.x,hit.y,getTile);
     if(!target) return false;
+    const dest=ensureMachine(target.x,target.y,getTile);
+    if(!dest) return false;
+    const outputDir=normalizeDir(dest.dir);
+    const pos=exitPosition(target,outputDir,player,getTile);
+    const velocity=transformVelocity(player.vx,player.vy,m.dir,outputDir);
     let spent=spendTravelEnergy(m,getTile,opts,player);
     if(!spent) spent=bunkerFailsafeSpent(hit,target,getTile);
     if(!spent) return false;
-    const dest=ensureMachine(target.x,target.y,getTile);
-    const pos=exitPosition(target,dir,player,getTile);
     player.x=pos.x;
     player.y=pos.y;
-    player.vx=dir*Math.max(1.6,Math.abs(player.vx||0));
-    player.vy=Math.min(0,Number(player.vy)||0);
+    player.vx=velocity.vx;
+    player.vy=velocity.vy;
     player._teleporterCooldown=TELEPORT_COOLDOWN;
     m.cooldown=TELEPORT_COOLDOWN;
     m.lastUse=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
@@ -1228,7 +1410,7 @@ import { isHeroPassableTile } from './material_physics.js';
         MM.particles.spawnEnergyAbsorb((hit.x+0.5)*TILE,(hit.y+0.5)*TILE,(target.x+0.5)*TILE,(target.y+0.5)*TILE,1.4);
       }
       if(MM.audio && MM.audio.play) MM.audio.play('charge');
-      if(MM.ui && MM.ui.msg) MM.ui.msg(spent.emergency ? 'Awaryjny powrot z bunkra UFO' : 'Teleport '+(dir<0?'w lewo':'w prawo'));
+      if(MM.ui && MM.ui.msg) MM.ui.msg(spent.emergency ? 'Awaryjny powrot z bunkra UFO' : 'Teleport: wyjscie w '+DIR_VEC[outputDir].label);
     }catch(e){}
     return true;
   }
@@ -1285,6 +1467,7 @@ import { isHeroPassableTile } from './material_physics.js';
       // expired while nobody watched has expired by the time anyone returns.
       m.cooldown=Math.max(0,(m.cooldown||0)-step);
       m.pulse=Math.max(0,(m.pulse||0)-dt*2.6);
+      m.hitPulse=Math.max(0,(m.hitPulse||0)-dt*3.8);
       const full=!!(finiteNonNegative(m.energy,0)>=TELEPORTER_CAPACITY-1e-9);
       const knownSourceLess=!!(m.locallyIsolated || m.sourceLessRev===networkRev);
       if(full || knownSourceLess) clearMachinePowerDemand(m);
@@ -1360,7 +1543,9 @@ import { isHeroPassableTile } from './material_physics.js';
       }
     }
   }
-  function drawTeleporterFrame(ctx,TILE,px,py,charge,pulse,phase){
+  function drawTeleporterFrame(ctx,TILE,px,py,dir,charge,pulse,phase,hpRatio){
+    const d=dirVec(dir);
+    const tangent={x:-d.y,y:d.x};
     const glow=0.22+0.32*charge+0.26*Math.max(0,Math.min(1,pulse||0));
     ctx.save();
     ctx.fillStyle='rgba(8,16,30,0.84)';
@@ -1373,6 +1558,26 @@ import { isHeroPassableTile } from './material_physics.js';
     ctx.beginPath();
     ctx.arc(px+TILE*0.5,py+TILE*0.5,TILE*(0.19+0.03*Math.sin(phase)),0,Math.PI*2);
     ctx.stroke();
+    // The bright mouth and arrow expose the configured portal normal even while
+    // the gate is empty. The same side accepts an incoming body and emits it at
+    // the paired endpoint, matching a Portal-style two-sided velocity transform.
+    const cx=px+TILE*0.5, cy=py+TILE*0.5;
+    const mouthX=cx+d.x*TILE*0.34, mouthY=cy+d.y*TILE*0.34;
+    ctx.strokeStyle='rgba(210,255,255,'+(0.72+0.20*glow).toFixed(3)+')';
+    ctx.lineWidth=Math.max(1.2,TILE*0.08);
+    ctx.lineCap='round';
+    ctx.beginPath();
+    ctx.moveTo(mouthX+tangent.x*TILE*0.18,mouthY+tangent.y*TILE*0.18);
+    ctx.lineTo(mouthX-tangent.x*TILE*0.18,mouthY-tangent.y*TILE*0.18);
+    ctx.stroke();
+    const shaft={x:cx+d.x*TILE*0.20,y:cy+d.y*TILE*0.20};
+    ctx.fillStyle='rgba(255,236,148,0.92)';
+    ctx.beginPath();
+    ctx.moveTo(cx+d.x*TILE*0.32,cy+d.y*TILE*0.32);
+    ctx.lineTo(shaft.x+tangent.x*TILE*0.11,shaft.y+tangent.y*TILE*0.11);
+    ctx.lineTo(shaft.x-tangent.x*TILE*0.11,shaft.y-tangent.y*TILE*0.11);
+    ctx.closePath();
+    ctx.fill();
     // A charged gate emits: the glow attribute replaces the per-frame radial
     // gradient this drew for itself, so the halo lands above the darkness overlay
     // and scales with the charge that actually powers the gate.
@@ -1381,6 +1586,14 @@ import { isHeroPassableTile } from './material_physics.js';
       if(P && P.glow) P.glow(px+TILE*0.5, py+TILE*0.5, PORTAL_GLOW, null, TILE);
     }
     drawBatteryLines(ctx,TILE,px,py,charge,pulse);
+    hpRatio=Math.max(0,Math.min(1,Number.isFinite(hpRatio)?hpRatio:1));
+    if(hpRatio<0.999){
+      const barX=px+TILE*0.18, barY=py+TILE*0.87, barW=TILE*0.64, barH=Math.max(2,TILE*0.055);
+      ctx.fillStyle='rgba(18,4,7,0.88)';
+      ctx.fillRect(barX,barY,barW,barH);
+      ctx.fillStyle=hpRatio>0.45?'#ffba5e':'#ff5368';
+      ctx.fillRect(barX,barY,barW*hpRatio,barH);
+    }
     ctx.restore();
   }
   function ensureVisibleMachines(sx,sy,viewX,viewY,getTile){
@@ -1423,7 +1636,7 @@ import { isHeroPassableTile } from './material_physics.js';
       if(getSafe(getTile,m.x,m.y,T.AIR)!==T.TELEPORTER) continue;
       const px=m.x*TILE, py=m.y*TILE;
       const charge=Math.max(0,Math.min(1,(m.energy||0)/TELEPORTER_CAPACITY));
-      drawTeleporterFrame(ctx,TILE,px,py,charge,m.pulse||0,now+m.x*0.2);
+      drawTeleporterFrame(ctx,TILE,px,py,m.dir,charge,m.pulse||0,now+m.x*0.2,(Number(m.hp)||0)/TELEPORTER_MAX_HP);
     }
     ctx.restore();
   }
@@ -1452,8 +1665,8 @@ import { isHeroPassableTile } from './material_physics.js';
       .filter(m=>m && finiteTile(m.x,m.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
       .slice(0,MACHINE_CAP)
-      .map(m=>({x:m.x,y:m.y,energy:+(m.energy||0).toFixed(3)}));
-    return {v:1,list};
+      .map(m=>({x:m.x,y:m.y,dir:normalizeDir(m.dir),energy:+(m.energy||0).toFixed(3),hp:+(Number.isFinite(m.hp)?m.hp:TELEPORTER_MAX_HP).toFixed(3)}));
+    return {v:4,list};
   }
   function restore(data,getTile){
     reset();
@@ -1465,7 +1678,17 @@ import { isHeroPassableTile } from './material_physics.js';
       const x=Math.floor(raw.x), y=Math.floor(raw.y);
       if(getTile && getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) continue;
       const m=ensureMachine(x,y,getTile);
-      if(m) m.energy=clampEnergy(raw.energy);
+      if(m){
+        m.dir=normalizeDir(raw.dir);
+        m.energy=clampEnergy(raw.energy);
+        // v3 used a four-hit integrity counter. Preserve the same damage ratio
+        // when loading it into the 200 HP model.
+        const legacyHp=raw.integrity!=null && Number.isFinite(Number(raw.integrity))
+          ? (Math.max(0,Math.min(4,Number(raw.integrity)))/4)*TELEPORTER_MAX_HP
+          : TELEPORTER_MAX_HP;
+        const savedHp=raw.hp!=null && Number.isFinite(Number(raw.hp)) ? Number(raw.hp) : legacyHp;
+        m.hp=Math.max(0.5,Math.min(TELEPORTER_MAX_HP,savedHp));
+      }
     }
   }
   function reset(){
@@ -1480,6 +1703,7 @@ import { isHeroPassableTile } from './material_physics.js';
     copperHeatBuffers.clear();
     copperHeatCursor=0;
     copperHeatEvents=0;
+    projectileTeleports=0;
     networkRev++;
     invalidateTeleporterSearch();
     scanT=0;
@@ -1494,7 +1718,7 @@ import { isHeroPassableTile } from './material_physics.js';
     }
     let copperHeatBuffer=0;
     for(const value of copperHeatBuffers.values()) copperHeatBuffer+=Math.max(0,Number(value)||0);
-    return {machines:machines.size, charged, storedEnergy:+storedEnergy.toFixed(2), poweredWires:wireActivity.size,
+    return {machines:machines.size, charged, storedEnergy:+storedEnergy.toFixed(2), poweredWires:wireActivity.size,projectileTeleports,
       fairNetworks:fairDemandRegistry.size,powerFrameId,networkRev,copperHeatEvents,copperHeatBuffer:+copperHeatBuffer.toFixed(2),copperHeatNetworks:copperHeatBuffers.size};
   }
   function receiveElectricChargeAt(x,y,amount,getTile){
@@ -1522,6 +1746,12 @@ import { isHeroPassableTile } from './material_physics.js';
     cableConnections,
     drawCableTile,
     nearestTeleporter,
+    pairedTeleporter,
+    teleporterUnderPlayer,
+    canEnterTeleporter,
+    orientationAt,
+    setOrientationAt,
+    rotateDir,
     networkFor,
     connectedDynamosAt,
     availableNetworkEnergyAt,
@@ -1530,6 +1760,9 @@ import { isHeroPassableTile } from './material_physics.js';
     registerPowerDemandAt,
     receiveElectricChargeAt,
     beginPowerFrame,
+    tryTeleport,
+    tryTeleportProjectile,
+    damageAt,
     update,
     catchUp,
     draw,
@@ -1538,7 +1771,7 @@ import { isHeroPassableTile } from './material_physics.js';
     restore,
     reset,
     metrics,
-    _debug:{machines,networkCache,wireActivity,fairDemandRegistry,fairFrameAllocations,copperHeatBuffers,TELEPORTER_CAPACITY,MACHINE_CAP,NETWORK_CAP,NETWORK_ENDPOINT_CAP,TRAVEL_COST,CHARGE_RATE,CATCHUP_MAX_SECONDS,WAKE_MAX_SECONDS,COPPER_DELIVERY_EFFICIENCY,SILVER_DELIVERY_EFFICIENCY,COPPER_HEAT_THRESHOLD,debugCharge,debugSetEnergy,ensureMachine,listLoadedTeleporters,nearestTeleporter,teleporterUnderPlayer,tryTeleport,networkFor,networkDeliveryEfficiency,sourceRouteInfo,isAlienBunkerTeleporter,maxMinAlloc,maxMinAllocWeighted,networkIdentity}
+    _debug:{machines,networkCache,wireActivity,fairDemandRegistry,fairFrameAllocations,copperHeatBuffers,TELEPORTER_CAPACITY,TELEPORTER_MAX_HP,MACHINE_CAP,NETWORK_CAP,NETWORK_ENDPOINT_CAP,TRAVEL_COST,PROJECTILE_TRAVEL_COST,STREAM_TRAVEL_COST,PROJECTILE_TELEPORT_COOLDOWN,CHARGE_RATE,CATCHUP_MAX_SECONDS,WAKE_MAX_SECONDS,COPPER_DELIVERY_EFFICIENCY,SILVER_DELIVERY_EFFICIENCY,COPPER_HEAT_THRESHOLD,ENTRY_SPEED_MIN,debugCharge,debugSetEnergy,ensureMachine,listLoadedTeleporters,nearestTeleporter,pairedTeleporter,teleporterUnderPlayer,canEnterTeleporter,projectileTeleporterAt,projectileExitPosition,transformVelocity,tryTeleport,tryTeleportProjectile,damageAt,networkFor,networkDeliveryEfficiency,sourceRouteInfo,isAlienBunkerTeleporter,maxMinAlloc,maxMinAllocWeighted,networkIdentity}
   };
   MM.teleporters=api;
 })();

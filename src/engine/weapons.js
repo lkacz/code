@@ -1401,8 +1401,18 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(extra && typeof extra==='object') Object.assign(opts,extra);
     return opts;
   }
+  function projectilePortalAttribution(entity){
+    if(!entity || !Number.isFinite(entity._teleporterExitX) || !Number.isFinite(entity._teleporterExitY)) return {};
+    return {
+      teleporterExitX:Math.floor(entity._teleporterExitX),
+      teleporterExitY:Math.floor(entity._teleporterExitY)
+    };
+  }
+  function projectileEffectOpts(entity,opts){
+    return Object.assign({},opts||{},projectilePortalAttribution(entity));
+  }
   function puffStreamDamageOpts(kind,p,extra){
-    const meta={};
+    const meta=projectilePortalAttribution(p);
     if(p && p.source) meta.source=p.source;
     if(p && p.cause) meta.cause=p.cause;
     if(p && p.ownerId) {
@@ -2561,8 +2571,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   function splatToxicSnowball(a){
     try{
       if(MM.mobs){
-        if(MM.mobs.poisonRadius) MM.mobs.poisonRadius(a.x,a.y,SNOWBALL_SPLAT.radius,{dur:SNOWBALL_SPLAT.poisonDur,dps:SNOWBALL_SPLAT.poisonDps,source:'hero',cause:'toxic_snowball'});
-        if(MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,SNOWBALL_SPLAT.radius,{dur:SNOWBALL_SPLAT.chillDur,source:'hero',cause:'toxic_snowball'});
+        if(MM.mobs.poisonRadius) MM.mobs.poisonRadius(a.x,a.y,SNOWBALL_SPLAT.radius,projectileEffectOpts(a,{dur:SNOWBALL_SPLAT.poisonDur,dps:SNOWBALL_SPLAT.poisonDps,source:'hero',cause:'toxic_snowball'}));
+        if(MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,SNOWBALL_SPLAT.radius,projectileEffectOpts(a,{dur:SNOWBALL_SPLAT.chillDur,source:'hero',cause:'toxic_snowball'}));
       }
     }catch(e){}
     try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,SNOWBALL_SPLAT.radius,'chill',{dur:SNOWBALL_SPLAT.chillDur,source:'hero',cause:'toxic_snowball'}); }catch(e){}
@@ -2585,7 +2595,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const tile=MM.TILE||20;
     if(a.splat==='snow'){
       // plain snowball: a face full of snow — brief slow, no lasting damage cloud
-      try{ if(MM.mobs && MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,1.1,{dur:1.4,source:'hero',cause:'snowball_chill'}); }catch(e){}
+      try{ if(MM.mobs && MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,1.1,projectileEffectOpts(a,{dur:1.4,source:'hero',cause:'snowball_chill'})); }catch(e){}
       try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.1,'chill',{dur:1.4,source:'hero',cause:'snowball_chill'}); }catch(e){}
       try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.7,element:'chill_splat'}); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
@@ -2595,7 +2605,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       // A frost flask: a wide, lasting chill cloud — the reliable setup half of
       // the wet+chill -> frozen-solid reaction. Creature-only, so guest-safe (and
       // the coop guard above already blocks a network-owned frost splat).
-      try{ if(MM.mobs && MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,1.8,{dur:3.2,source:'hero',cause:'frost_flask'}); }catch(e){}
+      try{ if(MM.mobs && MM.mobs.chillRadius) MM.mobs.chillRadius(a.x,a.y,1.8,projectileEffectOpts(a,{dur:3.2,source:'hero',cause:'frost_flask'})); }catch(e){}
       try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.8,'chill',{dur:3.2,source:'hero',cause:'frost_flask'}); }catch(e){}
       try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.9,element:'chill_splat'}); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('splash',{x:a.x,y:a.y}); }catch(e){}
@@ -2626,8 +2636,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       try{
         let affected=0;
         if(MM.mobs && MM.mobs.statusRadius){
-          affected+=MM.mobs.statusRadius(a.x,a.y,1.05,'blind',{dur:SAND_BLIND_DUR,source:'hero',cause:'sand_blind'})||0;
-          affected+=MM.mobs.statusRadius(a.x,a.y,1.05,'stun',{dur:SAND_SHOCK_DUR,source:'hero',cause:'sand_shock'})||0;
+          affected+=MM.mobs.statusRadius(a.x,a.y,1.05,'blind',projectileEffectOpts(a,{dur:SAND_BLIND_DUR,source:'hero',cause:'sand_blind'}))||0;
+          affected+=MM.mobs.statusRadius(a.x,a.y,1.05,'stun',projectileEffectOpts(a,{dur:SAND_SHOCK_DUR,source:'hero',cause:'sand_shock'}))||0;
         }
         if(affected>0){
           try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('sand_blind','Piasek w oczy: wróg jest oślepiony i oszołomiony!'); }catch(e2){}
@@ -2640,11 +2650,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(a.splat==='spit'){
       // Normal saliva is just a small wet splat. The thrown-weapon ult marks its
       // droplets toxic, matching their vivid green projectile treatment.
-      try{ if(MM.mobs && MM.mobs.wetRadius) MM.mobs.wetRadius(a.x,a.y,0.9,{dur:3,source:'hero',cause:'spit'}); }catch(e){}
+      try{ if(MM.mobs && MM.mobs.wetRadius) MM.mobs.wetRadius(a.x,a.y,0.9,projectileEffectOpts(a,{dur:3,source:'hero',cause:'spit'})); }catch(e){}
       if(a.toxicSpit){
         try{
           if(MM.mobs && MM.mobs.poisonRadius
-             && MM.mobs.poisonRadius(a.x,a.y,1.1,{dur:5,dps:1.5,source:'hero',cause:'toxic_spit_ult'})>0){
+             && MM.mobs.poisonRadius(a.x,a.y,1.1,projectileEffectOpts(a,{dur:5,dps:1.5,source:'hero',cause:'toxic_spit_ult'}))>0){
             try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('spit_toxic','Toksyczna zielona ślina zatruwa trafione cele!'); }catch(e2){}
           }
         }catch(e){}
@@ -2660,7 +2670,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       const wetSource=a.coopOwner?'coop':'hero';
       try{
         if(MM.mobs){
-          if(MM.mobs.wetRadius) MM.mobs.wetRadius(a.x,a.y,1.8,{dur:8,source:wetSource,cause:'water_balloon'});
+          if(MM.mobs.wetRadius) MM.mobs.wetRadius(a.x,a.y,1.8,projectileEffectOpts(a,{dur:8,source:wetSource,cause:'water_balloon'}));
           if(MM.mobs.douseRadius) MM.mobs.douseRadius(a.x,a.y,1.8);
         }
       }catch(e){}
@@ -2699,7 +2709,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       // Molotov: burns creatures in the splash AND sets flammable terrain alight.
       // World-writing (tile ignite) — never for a guest projectile.
       if(a.coopOwner) return;
-      try{ if(MM.mobs && MM.mobs.statusRadius) MM.mobs.statusRadius(a.x,a.y,1.6,'burn',{dur:4,dps:2,source:'hero',cause:'molotov'}); }catch(e){}
+      try{ if(MM.mobs && MM.mobs.statusRadius) MM.mobs.statusRadius(a.x,a.y,1.6,'burn',projectileEffectOpts(a,{dur:4,dps:2,source:'hero',cause:'molotov'})); }catch(e){}
       try{ if(MM.bossStatus && MM.bossStatus.applyRadius) MM.bossStatus.applyRadius(a.x,a.y,1.6,'burn',{dur:4,dps:2,source:'hero',cause:'molotov'}); }catch(e){}
       try{
         const gt=(typeof getTile==='function') ? getTile : lastGetTile;
@@ -2785,7 +2795,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     else if(spit) cause='spit';
     else if(a.splat==='gascloud') cause='gas_grenade';
     else if(a.splat==='bomb') cause='sticky_bomb';
-    return {
+    return Object.assign({
       source:a.coopOwner?'coop':'hero',
       // 'bouncy' carries no elemental keyword by design (combatElementFromOpts
       // classifies from these strings) — a rubber ball is pure kinetic damage.
@@ -2802,7 +2812,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       // never a cause string — combatElementFromOpts classifies causes by substring.
       grav:!!a.grav, gravTid:a.gravTid|0,
       fire:!!a.fire,specialAttack:!!a.specialAttack,luckyStrike:!!a.luckyStrike
-    };
+    },projectilePortalAttribution(a));
   }
   function fireThrown(player, aimX, aimY, w){
     if(throwCd>0) return false;
@@ -3265,10 +3275,25 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   }
 
   // ---- Simulation ----
-  function update(dt, getTile, setTile){
+  function teleportPhysicalShot(entity,getTile,opts,stream){
+    if(!entity || entity.ghost) return false;
+    const portals=opts && opts.teleporters;
+    if(!portals || typeof portals.tryTeleportProjectile!=='function') return false;
+    const portalGet=(opts && typeof opts.getElectricNetworkTile==='function') ? opts.getElectricNetworkTile : getTile;
+    const portalOpts={
+      stream:!!stream,
+      dynamo:opts && opts.dynamo,
+      player:opts && opts.player
+    };
+    if(opts && Object.prototype.hasOwnProperty.call(opts,'heroEnergy')) portalOpts.heroEnergy=opts.heroEnergy;
+    return !!portals.tryTeleportProjectile(entity,portalGet,portalOpts);
+  }
+
+  function update(dt, getTile, setTile, opts){
     if(typeof getTile==='function') lastGetTile=getTile;
     if(typeof setTile==='function') lastSetTile=setTile;
     if(!(dt>0) || !isFinite(dt)) return;
+    opts=opts||{};
     gravityHoldTick(dt);
     ultCharge=Math.min(1, ultCharge + dt/ULT_CHARGE_TIME);
     if(bowCd>0) bowCd-=dt;
@@ -3329,6 +3354,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         }
         continue;
       }
+      a._teleporterCooldown=Math.max(0,(Number(a._teleporterCooldown)||0)-dt);
       a.inWater=false;
       a.life-=dt;
       if(a.life<=0){
@@ -3358,9 +3384,13 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       const steps=Math.max(1, Math.ceil(Math.max(Math.abs(a.vx),Math.abs(a.vy))*dt/0.35));
       const sdt=dt/steps;
       for(let s=0;s<steps;s++){
-        const dx=(a.vx||0)*sdt, dy=(a.vy||0)*sdt;
+        let dx=(a.vx||0)*sdt, dy=(a.vy||0)*sdt;
         a.x+=dx; a.y+=dy;
         a.travel=(Number(a.travel)||0)+Math.hypot(dx,dy);
+        if(teleportPhysicalShot(a,getTile,opts,false)){
+          dx=(a.vx||0)*sdt;
+          dy=(a.vy||0)*sdt;
+        }
         const tx=Math.floor(a.x), ty=Math.floor(a.y);
         // an arrow flying through open flame or over lava catches fire — but never a
         // coop (guest) arrow: a fire arrow ignites terrain on impact, and a guest
@@ -3642,10 +3672,16 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         else if(p.kind==='gas' && Math.random()<0.28) addWorldGas('poison',p.x,p.y,{power:0.25,cells:1,getTile,setTile});
         puffs.splice(i,1); continue;
       }
-      const px0=p.x, py0=p.y;
+      let px0=p.x, py0=p.y;
       const cfg=STREAMS[p.kind]||STREAMS.flame;
+      p._teleporterCooldown=Math.max(0,(Number(p._teleporterCooldown)||0)-dt);
       applyWindToPuff(p,dt,getTile);
       p.x+=p.vx*dt; p.y+=p.vy*dt;
+      if(p.source==='hero' && teleportPhysicalShot(p,getTile,opts,true)){
+        // Wall reactions after a teleport belong at the exit, not at the
+        // puff's pre-portal position.
+        px0=p.x; py0=p.y;
+      }
       p.vy+=cfg.grav*dt;
       p.vx*=1-Math.min(1,dt*0.9); p.vy*=1-Math.min(1,dt*(p.kind==='hose'?0.5:0.9));
       const tx=Math.floor(p.x), ty=Math.floor(p.y);

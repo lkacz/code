@@ -1136,10 +1136,20 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	// the bridge seams re-validate world truth with solo-grade rules
 	assert.ok(/ghostHeroMineAt:\(tx,ty\)=>\{/.test(mainSrc) && /info\.chestTier \|\| info\.cache\) return \{ok:false, reason:'chest'\}/.test(mainSrc),
 		'hero mining spans the three solo layers but chests stay host economy');
-	assert.ok(/ghostHeroPlaceAt:\(tx,ty,tid,layer,body\)=>\{/.test(mainSrc) && /canPlaceInfrastructureAt\(tx,ty,id,\{body\}\)/.test(mainSrc)
+	assert.ok(/ghostHeroPlaceAt:\(tx,ty,tid,layer,body,dir\)=>\{/.test(mainSrc) && /canPlaceInfrastructureAt\(tx,ty,id,\{body\}\)/.test(mainSrc)
 		&& /canPlaceConstructionBackgroundAt\(tx,ty,id,\{body\}\)/.test(mainSrc)
 		&& /const actorBlocked=remotePlacementActorBlockedReason\(body,tx,ty\)/.test(mainSrc),
 		'hero placement re-validates every layer against the authenticated guest body');
+	assert.ok(/const dir = \['east','south','west','north'\]\.includes\(pl\.d\) \? pl\.d : 'east';/.test(hostSrc)
+		&& /id===T\.TELEPORTER && TELEPORTERS && TELEPORTERS\.setOrientationAt/.test(mainSrc),
+		'hero teleporter placement carries only a host-whitelisted cardinal opening into persisted machine state');
+	assert.ok(/ghostHeroTeleport\(\{ x: b\.x, y: b\.y, vx: b\.vx, vy: b\.vy/.test(hostSrc)
+		&& /a: 'tp', ok: true,[^\n]*vx: \+b\.vx\.toFixed\(2\), vy: \+b\.vy\.toFixed\(2\)/.test(hostSrc)
+		&& /p\.vx = Number\.isFinite\(pl\.vx\) \? \+pl\.vx : 0;[\s\S]{0,80}p\.vy = Number\.isFinite\(pl\.vy\) \? \+pl\.vy : 0;/.test(clientSrc),
+		'hero teleport acknowledgements preserve host-derived velocity on the guest');
+	assert.ok(/return \{ t: 'infra', data, bg, tp \};/.test(hostSrc)
+		&& /bridge\.restoreTeleporters\(pl\.tp\)/.test(clientSrc),
+		'teleporter orientation metadata stays synchronized on the infrastructure plane');
 	assert.ok(/function remotePlacementActorBlockedReason\(body,tx,ty,infrastructureId\)/.test(mainSrc)
 		&& /infrastructureTargetBlockedReasonFrom\(body\.x,body\.y,tx,ty,infrastructureId\)/.test(mainSrc)
 		&& /const remoteBody=remoteActor && remoteContext \? remoteContext\.body : null/.test(mainSrc)
@@ -1150,7 +1160,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	// the write chokepoints: the guest's real mining/building routes through intents
 	assert.ok(/if\(MM\.ghostHeroIntents\) return MM\.ghostHeroIntents\.mineBreak\(mineTx,mineTy\);/.test(mainSrc),
 		'breakMinedTile defers to the intent chokepoint for hero guests');
-	assert.ok(/if\(!MM\.ghostHeroIntents\.place\(tx,ty,v\.id,layer\)\) return false;/.test(mainSrc),
+	assert.ok(/const machineDir=v\.id===T\.TELEPORTER \? teleporterOrientation : undefined;[\s\S]{0,120}if\(!MM\.ghostHeroIntents\.place\(tx,ty,v\.id,layer,machineDir\)\) return false;/.test(mainSrc),
 		'tryPlace defers to the intent chokepoint for hero guests');
 	// the hero frame: world systems stay OFF on the guest (streamed), hero systems run
 	assert.ok(/function runHeroStep\(dt,ts\)/.test(mainSrc) && !/runHeroStep[\s\S]{0,900}MOBS\.update/.test(mainSrc)

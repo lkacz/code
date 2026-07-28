@@ -385,9 +385,11 @@ const ghostClient = (function(){
 			if(state === 'live' && conn) conn.send({ t: 'hact', a: 'gvt', ax: +Number(ax).toFixed(3), ay: +Number(ay).toFixed(3) });
 			return true;
 		},
-		place(tx, ty, tid, layer){
+		place(tx, ty, tid, layer, dir){
 			if(state !== 'live' || !conn) return false;
-			conn.send({ t: 'hact', a: 'place', x: tx, y: ty, tid: Number(tid) | 0, l: layer });
+			const packet={ t: 'hact', a: 'place', x: tx, y: ty, tid: Number(tid) | 0, l: layer };
+			if(['east','south','west','north'].includes(dir)) packet.d=dir;
+			conn.send(packet);
 			return true;
 		},
 		pickup(wx, wy){
@@ -417,9 +419,9 @@ const ghostClient = (function(){
 			conn.send({ t: 'hact', a: 'board' });
 			return true;
 		},
-		tp(dir){
+		tp(){
 			if(state !== 'live' || !conn) return false;
-			conn.send({ t: 'hact', a: 'tp', d: dir < 0 ? -1 : 1 });
+			conn.send({ t: 'hact', a: 'tp' });
 			return true;
 		},
 		unboard(){
@@ -1056,7 +1058,9 @@ const ghostClient = (function(){
 				}
 				else if(pl.a === 'tp' && pl.ok && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
 					const p = bridge.player;
-					p.x = +pl.x; p.y = +pl.y; p.vy = 0;
+					p.x = +pl.x; p.y = +pl.y;
+					p.vx = Number.isFinite(pl.vx) ? +pl.vx : 0;
+					p.vy = Number.isFinite(pl.vy) ? +pl.vy : 0;
 					poseLog.length = 0;
 					bridge.snapCameraToPlayer();
 					bridge.msg('🌀 Teleport!');
@@ -1595,6 +1599,7 @@ const ghostClient = (function(){
 					// infrastructure that has since been completely removed.
 					if(Object.prototype.hasOwnProperty.call(pl, 'data') && bridge.restoreInfra) bridge.restoreInfra(pl.data);
 					if(Object.prototype.hasOwnProperty.call(pl, 'bg') && bridge.restoreConstructionBackground) bridge.restoreConstructionBackground(pl.bg);
+					if(Object.prototype.hasOwnProperty.call(pl, 'tp') && bridge.restoreTeleporters) bridge.restoreTeleporters(pl.tp);
 				} else if(pl.t === 'ghosts' && Array.isArray(pl.list)){
 					// the host self-reports a backgrounded tab (sim frozen, pump-only
 					// stream): show the "host inactive" banner instead of a frozen world

@@ -1025,10 +1025,11 @@ const ghostHost = (function(){
 	function buildInfraPacket(){
 		const data = bridge.snapshotInfra ? bridge.snapshotInfra() : null;
 		const bg = bridge.snapshotConstructionBackground ? bridge.snapshotConstructionBackground() : null;
+		const tp = bridge.snapshotTeleporters ? bridge.snapshotTeleporters() : null;
 		// World snapshot caps report truncation explicitly. Never stream that prefix
 		// as authoritative truth: the client would clear its complete replica first.
 		if((data && data.complete === false) || (bg && bg.complete === false)) throw new Error('incomplete infrastructure plane');
-		return { t: 'infra', data, bg };
+		return { t: 'infra', data, bg, tp };
 	}
 	function infraTick(s, t){
 		s.last.infra = t;
@@ -1955,10 +1956,10 @@ const ghostHost = (function(){
 			if(t - (b.lastHeroTpAt || 0) < NET.HERO_RULES.TP_MS) return;
 			b.lastHeroTpAt = t;
 			let res = null;
-			try{ res = bridge.ghostHeroTeleport ? bridge.ghostHeroTeleport({ x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }, pl.d < 0 ? -1 : 1) : null; }catch(e){ res = null; }
+			try{ res = bridge.ghostHeroTeleport ? bridge.ghostHeroTeleport({ x: b.x, y: b.y, vx: b.vx, vy: b.vy, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }) : null; }catch(e){ res = null; }
 			if(res && res.ok){
-				b.x = res.x; b.y = res.y; // the body lands with the guest — claims will match
-				entry.peer.send({ t: 'hact', a: 'tp', ok: true, x: +res.x.toFixed(2), y: +res.y.toFixed(2) });
+				b.x = res.x; b.y = res.y; b.vx = Number(res.vx) || 0; b.vy = Number(res.vy) || 0;
+				entry.peer.send({ t: 'hact', a: 'tp', ok: true, x: +res.x.toFixed(2), y: +res.y.toFixed(2), vx: +b.vx.toFixed(2), vy: +b.vy.toFixed(2) });
 			} else {
 				entry.peer.send({ t: 'hact', a: 'tp', ok: false }); // an honest refusal beats silence
 			}
@@ -2184,7 +2185,8 @@ const ghostHost = (function(){
 				return;
 			}
 			let res = null;
-			try{ res = bridge.ghostHeroPlaceAt ? bridge.ghostHeroPlaceAt(tx, ty, tid, layer, { x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
+			const dir = ['east','south','west','north'].includes(pl.d) ? pl.d : 'east';
+			try{ res = bridge.ghostHeroPlaceAt ? bridge.ghostHeroPlaceAt(tx, ty, tid, layer, { x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }, dir) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
 			if(res && res.ok) s.stats.heroPlaces = (s.stats.heroPlaces || 0) + 1;
 			else NET.pouchAdd(b.pouch, key, 1);
 			keepBody(entry); // persist the debit or its exact refund before the result ack
