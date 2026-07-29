@@ -465,8 +465,10 @@ assert.match(mainSrc, /function tryRotateWaterPumpAt\(tx,ty\)[\s\S]*?PUMPS\.orie
 assert.match(mainSrc, /function tryToggleFluidPipeModeAt\(tx,ty\)[\s\S]*?PUMPS\.togglePipeModeAt\(tx,ty,getFluidNetworkTile\)/, 'main toggles ordinary and water-intake pipe modes with the persisted pump API');
 assert.match(mainSrc, /function useToolSecondaryAt\(tx,ty\)\{\s*if\(tryRotateTeleporterAt\(tx,ty\)\) return true;\s*if\(tryRotateWaterPumpAt\(tx,ty\)\) return true;/, 'right-click tool interaction gives directional machine rotation priority over placement');
 assert.match(mainSrc, /else if\(e\.button===2\)[\s\S]*?if\(tryRotateTeleporterAt\(tx,ty\)\) return;[\s\S]*?if\(tryRotateWaterPumpAt\(tx,ty\)\) return;[\s\S]*?if\(weaponMode\)/, 'right-click rotates a targeted teleporter or pump even while a weapon is equipped');
+assert.match(mainSrc, /if\(e\.pointerType==='touch'\)\{\s*if\(tryRotateTeleporterAt\(tx,ty\) \|\| tryRotateWaterPumpAt\(tx,ty\)\)\{\s*touchHaptic\(8,65\);\s*return;/, 'one deliberate touch rotates a directional machine before mining or weapon handling');
+assert.match(mainSrc, /Kierunek pompy może zmieniać host/, 'a hero guest cannot mutate the streamed pump direction locally');
 assert.match(mainSrc, /if\(tryToggleFluidPipeModeAt\(tx,ty\)\) return;[\s\S]*?if\(weaponMode\)/, 'right-click toggles a targeted pipe even while a weapon is equipped');
-assert.match(mainSrc, /PPM na pompie obraca ją w świecie/, 'pump hotbar help documents right-click rotation');
+assert.match(mainSrc, /PPM lub stuknięcie pompy obraca ją w świecie/, 'pump hotbar help documents mouse and touch rotation');
 assert.match(mainSrc, /function placeDebugPumpRig\(\)/, 'main exposes a complete pump debug rig');
 assert.match(mainSrc, /MM\.ui\.injectPumpDebugPanel/, 'main injects the pump debug panel');
 

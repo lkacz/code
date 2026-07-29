@@ -1521,7 +1521,8 @@ assert.ok(/inp\.select\(\);[\s\S]{0,450}inp\.blur\(\);/.test(hostSrc),
 
 // --- entry point: a first-class HUD icon, not a row in the ≡ menu ------------------------------------
 assert.ok(/id="ghostBtn"/.test(html) && /id="ghostBtnCount"/.test(html), 'index.html carries the 👁 viewers button with its live count');
-assert.ok(/<div id="menuWrap">[\s\S]{0,400}id="ghostBtn"/.test(html), 'the viewers button sits in the top bar next to the menu');
+assert.ok(/<div id="menuWrap">[\s\S]{0,800}id="heroCenterBtn"[\s\S]{0,400}id="ghostBtn"/.test(html),
+	'the hero-center and viewers buttons both sit in the top system bar');
 assert.ok(/function mountEntryPoint\(\)/.test(hostSrc) && /document\.getElementById\('ghostBtn'\)/.test(hostSrc),
 	'the host binds the HUD button (the panel is no longer buried in the debug menu)');
 assert.ok(!/getElementById\('menuPanel'\)/.test(hostSrc), 'no menu-panel injection survives');

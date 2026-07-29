@@ -528,14 +528,17 @@ function draw(ctx,o){
 		ctx.strokeStyle='rgba(246,201,69,'+(0.55+0.35*pul).toFixed(3)+')';
 		ctx.lineWidth=1; ctx.stroke();
 		textShadowed(ctx,label,pxr+9,pyr+14,'#ffd968');
-		// keycap hint: press E to spend
+		// keycap hint follows the rebindable hero-center shortcut
+		const inventoryKey=(MM.keybinds && MM.keybinds.keyFor)
+			? (MM.keybinds.displayKey ? MM.keybinds.displayKey(MM.keybinds.keyFor('inventory')) : String(MM.keybinds.keyFor('inventory')||'i').toUpperCase())
+			: 'I';
 		roundedPath(ctx,pxr+lw+14,pyr+4,12,12,3);
 		ctx.fillStyle='rgba(255,217,104,0.18)'; ctx.fill();
 		ctx.strokeStyle='rgba(255,217,104,0.6)'; ctx.lineWidth=1;
 		roundedPath(ctx,pxr+lw+14.5,pyr+4.5,11,11,3); ctx.stroke();
 		ctx.font='700 8px '+FONT;
 		ctx.fillStyle='#ffd968';
-		ctx.fillText('E',pxr+lw+17.5,pyr+12.5);
+		ctx.fillText(inventoryKey,pxr+lw+17.5,pyr+12.5);
 	}
 	if(s.buffs.length){
 		let cx0=px;

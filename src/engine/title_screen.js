@@ -151,7 +151,7 @@ const titleScreen = (function(){
   }
 
   // Capture-phase: the title owns the keyboard while open, so gameplay
-  // handlers (movement, inventory E, pause B…) never fire under the menu.
+  // handlers (movement, hero center I, pause B…) never fire under the menu.
   // Browser/system combos (F-keys, Ctrl/Meta chords) pass through untouched.
   function focusableButtons(){
     if(!state.el) return [];

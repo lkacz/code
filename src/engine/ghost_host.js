@@ -2178,11 +2178,22 @@ const ghostHost = (function(){
 			try{ res = bridge.ghostHeroMineAt ? bridge.ghostHeroMineAt(tx, ty) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
 			if(res && res.ok){
 				s.stats.heroMines = (s.stats.heroMines || 0) + 1;
-				let key = null;
-				try{ key = bridge.ghostHeroPlacementKey ? bridge.ghostHeroPlacementKey(res.tid) : null; }catch(e){ key = null; }
-				if(typeof key === 'string' && key){ NET.pouchAdd(b.pouch, key, 1); keepBody(entry); }
+				const loot=Array.isArray(res.loot) ? res.loot.slice(0,8).map(row=>({
+					key:row && typeof row.key==='string' ? row.key.slice(0,24) : '',
+					n:Math.max(1,Math.min(99,Number(row && row.n)|0))
+				})).filter(row=>row.key) : null;
+				if(loot){
+					for(const row of loot) NET.pouchAdd(b.pouch,row.key,row.n);
+					if(loot.length) keepBody(entry);
+				}else{
+					let key = null;
+					try{ key = bridge.ghostHeroPlacementKey ? bridge.ghostHeroPlacementKey(res.tid) : null; }catch(e){ key = null; }
+					if(typeof key === 'string' && key){ NET.pouchAdd(b.pouch, key, 1); keepBody(entry); }
+				}
+				res._wireLoot=loot;
 			}
-			entry.peer.send({ t: 'hact', a: 'mine', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid: (res && res.tid) || 0 });
+			entry.peer.send({ t: 'hact', a: 'mine', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid: (res && res.tid) || 0,
+				loot:(res && res._wireLoot) || null });
 		} else if(pl.a === 'place'){
 			if(t - (b.lastHeroPlaceAt || 0) < NET.HERO_RULES.PLACE_MS) return;
 			b.lastHeroPlaceAt = t;

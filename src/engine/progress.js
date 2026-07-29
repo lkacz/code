@@ -395,7 +395,7 @@ window.MM = window.MM || {};
     if(L>state.lastLevel){
       const gained=Math.max(1,L-state.lastLevel);
       state.lastLevel=L; save();
-      say('⬆ Poziom '+L+'! Punkt umiejętności do wydania (E → Rozwój)');
+      say('⬆ Poziom '+L+'! Punkt umiejętności do wydania (I → Bohater)');
       try{ if(MM.audio && MM.audio.play) MM.audio.play('levelup'); }catch(e){}
       try{ window.dispatchEvent(new CustomEvent('mm-skill-point-gained',{detail:{level:L,points:points(),gained}})); }catch(e){}
       notify();

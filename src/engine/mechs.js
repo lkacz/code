@@ -2078,9 +2078,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
     return null;
   }
   // True when the interaction key (E) should go to the mech system instead of
-  // other E-bound UI: while riding, next to a boardable hull, or standing on a
+  // other E-bound world actions: while riding, next to a boardable hull, or standing on a
   // chair that actually crowns a valid machine. A plain furniture chair (in a
-  // house, at a campfire) never claims E — the wardrobe keeps working there.
+  // house, at a campfire) never claims E from other contextual world actions.
   function wantsInteractKey(player){
     player=player || root.player;
     if(!player) return false;

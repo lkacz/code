@@ -28,6 +28,37 @@ export function foldText(s){
   return String(s||'').toLowerCase().replace(/[ąćęłńóśźż]/g,ch=>FOLD_MAP[ch]||ch);
 }
 
+// Keep the picker on the useful side of its slot. Desktop slots live at the
+// bottom, so "above" remains the natural default; touch slots move to the top
+// and need the catalogue below them. The pure helper keeps the viewport maths
+// regression-testable without a browser DOM.
+export function hotPickerPlacement(rect,viewport,touch){
+  rect=rect||{};
+  viewport=viewport||{};
+  const vw=Math.max(320,Number(viewport.width)||320);
+  const vh=Math.max(240,Number(viewport.height)||240);
+  const left=Number(rect.left)||0;
+  const top=Number(rect.top)||0;
+  const width=Math.max(0,Number(rect.width)||0);
+  const height=Math.max(0,Number(rect.height)||0);
+  const bottom=Number.isFinite(Number(rect.bottom))?Number(rect.bottom):top+height;
+  const gap=8, edge=8;
+  const availableAbove=Math.max(0,top-gap-edge);
+  const availableBelow=Math.max(0,vh-bottom-gap-edge);
+  const below=!!touch ? (availableBelow>=96 || availableBelow>=availableAbove) : (availableAbove<220 && availableBelow>availableAbove);
+  const available=below?availableBelow:availableAbove;
+  const pickerWidth=Math.min(520,vw-edge*2);
+  const center=Math.max(pickerWidth/2+edge,Math.min(vw-pickerWidth/2-edge,left+width/2));
+  return {
+    placement:below?'below':'above',
+    width:pickerWidth,
+    left:center,
+    top:below?bottom+gap:top-gap,
+    maxHeight:Math.max(48,Math.min(vh-edge*2,available)),
+    transform:below?'translate(-50%,0)':'translate(-50%,-100%)'
+  };
+}
+
 // score: 3 = label prefix, 2 = word start, 1 = substring (label or internal key)
 function matchScore(item,q){
   if(!q) return 1;
@@ -457,15 +488,15 @@ export function createHotPicker(deps){
 
   function position(anchor){
     const rect=anchor&&anchor.getBoundingClientRect?anchor.getBoundingClientRect():{left:innerWidth/2,top:innerHeight-90,width:0};
-    const vw=Math.max(320,innerWidth||320);
-    const width=Math.min(520,vw-16);
-    menu.style.width=width+'px';
-    menu.style.maxWidth=width+'px';
-    const cx=Math.max(width/2+8,Math.min(vw-width/2-8,rect.left+rect.width/2));
+    const place=hotPickerPlacement(rect,{width:innerWidth,height:innerHeight},isTouch());
+    menu.style.width=place.width+'px';
+    menu.style.maxWidth=place.width+'px';
+    menu.style.maxHeight=place.maxHeight+'px';
     menu.style.display='flex';
-    menu.style.left=cx+'px';
-    menu.style.top=(rect.top-8)+'px';
-    menu.style.transform='translate(-50%,-100%)';
+    menu.style.left=place.left+'px';
+    menu.style.top=place.top+'px';
+    menu.style.transform=place.transform;
+    menu.dataset.placement=place.placement;
   }
 
   function open(slot,anchor){
@@ -495,8 +526,14 @@ export function createHotPicker(deps){
     if(searchInput&&document.activeElement===searchInput) searchInput.blur();
   }
 
+  if(typeof window!=='undefined'){
+    const reposition=()=>{ if(state.open) position(state.anchor); };
+    window.addEventListener('resize',reposition,{passive:true});
+    window.addEventListener('orientationchange',reposition,{passive:true});
+    if(window.visualViewport) window.visualViewport.addEventListener('resize',reposition,{passive:true});
+  }
   return { open, close, isOpen:()=>state.open, model };
 }
 
-const hotPicker={ createHotPickerModel, createHotPicker, foldText };
+const hotPicker={ createHotPickerModel, createHotPicker, foldText, hotPickerPlacement };
 export default hotPicker;

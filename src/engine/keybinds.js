@@ -1,6 +1,6 @@
 // Rebindable keyboard actions. The model is a pure key→key permutation layered
 // UNDER the existing input code: every gameplay read site keeps checking the
-// DEFAULT key ('e' opens the wardrobe, 'b' pauses…), and the keydown/keyup
+// DEFAULT key ('e' interacts, 'i' opens the hero center, 'b' pauses…), and the keydown/keyup
 // listeners run each physical key through translate() first. Rebinding an
 // action therefore never touches a consumer — it only changes which physical
 // key produces the logical one.
@@ -32,7 +32,7 @@ window.MM = window.MM || {};
     {id:'right',      group:'ruch',  def:'d', label:'W prawo',                   aliases:['arrowright']},
     {id:'jump',       group:'ruch',  def:'w', label:'Skok / w górę',             aliases:[' ','arrowup']},
     {id:'down',       group:'ruch',  def:'s', label:'W dół / zejście',           aliases:['arrowdown']},
-    {id:'interact',   group:'akcja', def:'e', label:'Interakcja / podnieś / ekwipunek'},
+    {id:'interact',   group:'akcja', def:'e', label:'Interakcja / podnieś'},
     {id:'craft',      group:'akcja', def:'t', label:'Receptury (rzemiosło)'},
     {id:'fish',       group:'akcja', def:'f', label:'Wędkowanie'},
     {id:'rotate',     group:'akcja', def:'r', label:'Obrót / tryb tła'},
@@ -45,6 +45,7 @@ window.MM = window.MM || {};
     // vision landed on the previously free 'y' — read sites track the defaults.
     {id:'antenna',    group:'akcja', def:'q', label:'Moc antenki'},
     {id:'vision',     group:'widok', def:'y', label:'Noktowizja / termowizja'},
+    {id:'inventory',  group:'widok', def:'i', label:'Centrum bohatera / ekwipunek'},
     {id:'pause',      group:'widok', def:'b', label:'Pauza i ustawienia'},
     {id:'fullscreen', group:'widok', def:'u', label:'Pełny ekran'},
     {id:'map',        group:'debug', def:'m', label:'Odsłoń całą mapę'},
@@ -52,7 +53,7 @@ window.MM = window.MM || {};
     {id:'center',     group:'widok', def:'c', label:'Wyśrodkuj kamerę'},
     {id:'help',       group:'widok', def:'h', label:'Pomoc'},
     {id:'god',        group:'debug', def:'g', label:'Tryb boga'},
-    {id:'immunity',   group:'debug', def:'i', label:'Nieśmiertelność'},
+    {id:'immunity',   group:'debug', def:';', label:'Nieśmiertelność'},
     {id:'mobDebug',   group:'debug', def:'v', label:'Debug mobów'},
     {id:'chestDebug', group:'debug', def:'p', label:'Podświetl skrzynie'},
     {id:'chestCount', group:'debug', def:'j', label:'Policz skrzynie'},

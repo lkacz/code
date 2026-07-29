@@ -1016,7 +1016,12 @@ const ghostClient = (function(){
 			// hero-mode ack: a validated break awards THIS side's own drop logic,
 			// a refused placement refunds the locally spent block
 			if(hero.on){
-				if(pl.a === 'mine' && pl.ok && pl.tid){ try{ if(bridge.ghostHeroAward) bridge.ghostHeroAward(pl.tid); }catch(e){ /* fine */ } }
+				if(pl.a === 'mine' && pl.ok && Array.isArray(pl.loot)){
+					for(const row of pl.loot.slice(0,8)){
+						if(row && typeof row.key==='string'){ try{ if(bridge.ghostHeroGain) bridge.ghostHeroGain(row.key,row.n||1); }catch(e){ /* fine */ } }
+					}
+				}
+				else if(pl.a === 'mine' && pl.ok && pl.tid){ try{ if(bridge.ghostHeroAward) bridge.ghostHeroAward(pl.tid); }catch(e){ /* fine */ } }
 				else if(pl.a === 'gvx'){
 					// the held block is guest DISPLAY truth confirmed by the host's ack
 					try{ if(bridge.ghostHeroGravHeld) bridge.ghostHeroGravHeld(pl.ok ? (pl.tid | 0) : 0); }catch(e){ /* fine */ }

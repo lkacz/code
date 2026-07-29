@@ -66,10 +66,11 @@ assert.match(mainSource, /chair_steel/, 'steel chair recipe exists');
 const invSource=readFileSync(new URL('../src/inventory.js', import.meta.url),'utf8');
 assert.match(invSource, /chairWood/, 'chair resources ride the shared resource registry');
 const invUiSource=readFileSync(new URL('../src/inventory_ui.js', import.meta.url),'utf8');
-assert.match(invUiSource, /wantsInteractKey/, 'E prefers mech boarding/seating over the wardrobe panel near machines');
+assert.doesNotMatch(invUiSource, /wantsInteractKey|E_HOLD_MS/, 'the hero center no longer competes with contextual E interactions');
+assert.match(invUiSource, /logicalKey\(e\)==='i'/, 'I opens the hero center independently of nearby machines');
 
-// wantsInteractKey: E belongs to the mech system exactly when the chair crowns
-// a valid machine — a plain furniture chair leaves E to the wardrobe panel.
+// wantsInteractKey: the mech system claims contextual E exactly when the chair
+// crowns a valid machine; plain furniture leaves E to other world actions.
 {
   const wiTiles=new Map();
   const wiSet=(x,y,t)=>wiTiles.set(x+','+y,t);
@@ -77,7 +78,7 @@ assert.match(invUiSource, /wantsInteractKey/, 'E prefers mech boarding/seating o
   mechs.reset();
   const wiPlayer={x:50.5,y:16.3,w:0.7,h:0.95,onGround:true};
   mechs.update(1/60,wiPlayer,wiGet,()=>{},{}); // remember world fns
-  assert.equal(mechs.wantsInteractKey(wiPlayer), false, 'away from chairs and hulls E stays with the inventory panel');
+  assert.equal(mechs.wantsInteractKey(wiPlayer), false, 'away from chairs and hulls the mech system does not claim E');
   wiSet(50,16,T.CHAIR_WOOD);
   assert.equal(mechs.wantsInteractKey(wiPlayer), false, 'a lone furniture chair does not claim the E key');
   wiSet(50,17,T.TRACK);
@@ -560,7 +561,7 @@ assert.ok(countTileNear(T.CHAIR_STEEL,dCx,dCy)>=1, 'destroyed built mech drops i
 
 // --- Scenario 9: furniture contract ------------------------------------------
 // A chair inside a wooden house is silent furniture — it never assembles the
-// building, never nags about a missing chassis, and leaves E to the wardrobe.
+// building, never nags about a missing chassis, and leaves E to other world actions.
 // (Its healing-comfort role is pinned in house-healing-sim.)
 mechs.reset();
 for(let x=330;x<=336;x++){ setTile(x,14,T.WOOD); setTile(x,19,T.WOOD); }
@@ -574,7 +575,7 @@ assert.equal(getTile(331,18),T.CHAIR_WOOD, 'the chair stays placed as furniture'
 assert.equal(getTile(330,16),T.WOOD, 'house walls are untouched');
 const hintsAfter=events.filter(e=>e.type==='msg' && /podwozia|za duza/.test((e.detail && e.detail.text) || '')).length;
 assert.equal(hintsAfter,hintsBefore, 'furniture chairs never nag about missing mech parts (no tracks = no mech intent)');
-assert.equal(mechs.wantsInteractKey(globalThis.player), false, 'E over a furniture chair stays with the wardrobe panel');
+assert.equal(mechs.wantsInteractKey(globalThis.player), false, 'E over a furniture chair stays available to other world actions');
 
 // --- Scenario 10: diamond boring rig + optional ladder module ----------------
 mechs.reset();

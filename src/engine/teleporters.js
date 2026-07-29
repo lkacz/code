@@ -17,6 +17,13 @@ import { isHeroPassableTile } from './material_physics.js';
   const fairDemandRegistry = new Map(); // network id -> device demand remembered across frames
   const fairFrameAllocations = new Map(); // network id -> max-min allocation for this frame
   const TELEPORTER_CAPACITY = 160;
+  const TELEPORTER_RECIPE_COST = Object.freeze({
+    steel:6,
+    copperWire:6,
+    transistor:2,
+    diamond:1,
+    dynamo:1
+  });
   const MACHINE_CAP = 1200;
   const TRAVEL_COST = 35;
   const CHARGE_RATE = 28;
@@ -1360,6 +1367,48 @@ import { isHeroPassableTile } from './material_physics.js';
     }
     return {hit:true,destroyed:true,remaining:0,max:TELEPORTER_MAX_HP,damage:Math.min(before,damage)};
   }
+  function salvageComponentsForHealth(hp){
+    const ratio=Math.max(0,Math.min(1,(Number(hp)||0)/TELEPORTER_MAX_HP));
+    if(ratio>=1) return [{key:'teleporter',n:1}];
+    const rows=Object.entries(TELEPORTER_RECIPE_COST).map(([key,n],order)=>{
+      const scaled=n*ratio;
+      return {key,n:Math.floor(scaled),fraction:scaled-Math.floor(scaled),order};
+    });
+    const target=Math.floor(Object.values(TELEPORTER_RECIPE_COST).reduce((sum,n)=>sum+n,0)*ratio);
+    let assigned=rows.reduce((sum,row)=>sum+row.n,0);
+    rows.slice().sort((a,b)=>(b.fraction-a.fraction)||(a.order-b.order)).forEach(row=>{
+      if(assigned>=target || !(row.fraction>0)) return;
+      row.n++;
+      assigned++;
+    });
+    return rows.filter(row=>row.n>0).map(row=>({key:row.key,n:row.n}));
+  }
+  function dismantlePlanAt(x,y,getTile){
+    x=Math.floor(x); y=Math.floor(y);
+    if(!finiteTile(x,y) || getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) return null;
+    const m=ensureMachine(x,y,getTile);
+    if(!m) return null;
+    const hp=Math.max(0.5,Math.min(TELEPORTER_MAX_HP,Number(m.hp)||TELEPORTER_MAX_HP));
+    return {
+      damaged:hp<TELEPORTER_MAX_HP,
+      hp,
+      maxHp:TELEPORTER_MAX_HP,
+      drops:salvageComponentsForHealth(hp),
+      state:{dir:normalizeDir(m.dir),energy:clampEnergy(m.energy),hp}
+    };
+  }
+  function restoreMachineStateAt(x,y,state,getTile){
+    x=Math.floor(x); y=Math.floor(y);
+    if(!state || !finiteTile(x,y) || getSafe(getTile,x,y,T.AIR)!==T.TELEPORTER) return false;
+    const m=ensureMachine(x,y,getTile);
+    if(!m) return false;
+    m.dir=normalizeDir(state.dir);
+    m.energy=clampEnergy(state.energy);
+    m.hp=Math.max(0.5,Math.min(TELEPORTER_MAX_HP,Number(state.hp)||TELEPORTER_MAX_HP));
+    m.pulse=0;
+    m.hitPulse=0;
+    return true;
+  }
   function scanNearbyTeleporters(player,getTile){
     if(!player) return;
     // Raw world reads: the caller hands us the electric-network accessor (three
@@ -1763,6 +1812,9 @@ import { isHeroPassableTile } from './material_physics.js';
     tryTeleport,
     tryTeleportProjectile,
     damageAt,
+    dismantlePlanAt,
+    restoreMachineStateAt,
+    RECIPE_COST:TELEPORTER_RECIPE_COST,
     update,
     catchUp,
     draw,
@@ -1771,7 +1823,7 @@ import { isHeroPassableTile } from './material_physics.js';
     restore,
     reset,
     metrics,
-    _debug:{machines,networkCache,wireActivity,fairDemandRegistry,fairFrameAllocations,copperHeatBuffers,TELEPORTER_CAPACITY,TELEPORTER_MAX_HP,MACHINE_CAP,NETWORK_CAP,NETWORK_ENDPOINT_CAP,TRAVEL_COST,PROJECTILE_TRAVEL_COST,STREAM_TRAVEL_COST,PROJECTILE_TELEPORT_COOLDOWN,CHARGE_RATE,CATCHUP_MAX_SECONDS,WAKE_MAX_SECONDS,COPPER_DELIVERY_EFFICIENCY,SILVER_DELIVERY_EFFICIENCY,COPPER_HEAT_THRESHOLD,ENTRY_SPEED_MIN,debugCharge,debugSetEnergy,ensureMachine,listLoadedTeleporters,nearestTeleporter,pairedTeleporter,teleporterUnderPlayer,canEnterTeleporter,projectileTeleporterAt,projectileExitPosition,transformVelocity,tryTeleport,tryTeleportProjectile,damageAt,networkFor,networkDeliveryEfficiency,sourceRouteInfo,isAlienBunkerTeleporter,maxMinAlloc,maxMinAllocWeighted,networkIdentity}
+    _debug:{machines,networkCache,wireActivity,fairDemandRegistry,fairFrameAllocations,copperHeatBuffers,TELEPORTER_CAPACITY,TELEPORTER_MAX_HP,TELEPORTER_RECIPE_COST,MACHINE_CAP,NETWORK_CAP,NETWORK_ENDPOINT_CAP,TRAVEL_COST,PROJECTILE_TRAVEL_COST,STREAM_TRAVEL_COST,PROJECTILE_TELEPORT_COOLDOWN,CHARGE_RATE,CATCHUP_MAX_SECONDS,WAKE_MAX_SECONDS,COPPER_DELIVERY_EFFICIENCY,SILVER_DELIVERY_EFFICIENCY,COPPER_HEAT_THRESHOLD,ENTRY_SPEED_MIN,debugCharge,debugSetEnergy,ensureMachine,listLoadedTeleporters,nearestTeleporter,pairedTeleporter,teleporterUnderPlayer,canEnterTeleporter,projectileTeleporterAt,projectileExitPosition,transformVelocity,tryTeleport,tryTeleportProjectile,damageAt,dismantlePlanAt,restoreMachineStateAt,salvageComponentsForHealth,networkFor,networkDeliveryEfficiency,sourceRouteInfo,isAlienBunkerTeleporter,maxMinAlloc,maxMinAllocWeighted,networkIdentity}
   };
   MM.teleporters=api;
 })();

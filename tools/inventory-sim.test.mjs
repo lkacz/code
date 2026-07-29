@@ -16,6 +16,8 @@ const { chests } = await import('../src/engine/chests.js');
 const indexHtml = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const mainSrc = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const weaponsSrc = readFileSync(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
+const inventoryUiSrc = readFileSync(new URL('../src/inventory_ui.js', import.meta.url), 'utf8');
+const uiSrc = readFileSync(new URL('../src/engine/ui.js', import.meta.url), 'utf8');
 assert.equal(T.BEDROCK_LADDER,95,'bedrock ladder appends a save-stable tile id');
 assert.match(indexHtml, /id="hotSelectMenu"[^>]*max-height:min\(78vh,calc\(100vh - 86px\)\)[^>]*overflow:hidden/, 'hotbar picker is height-bounded instead of growing behind the viewport');
 assert.match(indexHtml, /id="hotSelectOptions"[^>]*flex:1 1 auto[^>]*min-height:0[^>]*overflow-y:auto/, 'hotbar picker options list owns vertical scrolling');
@@ -24,6 +26,17 @@ assert.match(indexHtml, /#craftSearch\{[^}]*width:100%/, 'crafting recipe book e
 assert.match(indexHtml, /#craft \.craftTabs\{[^}]*overflow-x:auto/, 'crafting recipe groups scroll horizontally when needed');
 assert.match(indexHtml, /#craft \.craftContent\{[^}]*grid-template-columns:minmax\(210px,1fr\) minmax\(190px,\.9fr\)/, 'crafting recipe book has a recipe list plus detail panel');
 assert.match(indexHtml, /#craft \.craftList\{[^}]*overflow-y:auto/, 'crafting recipe list owns vertical scrolling');
+assert.match(inventoryUiSrc, /const MODAL_LAYER_BASE=2000/, 'modal windows share one high dynamic layer range');
+assert.match(inventoryUiSrc, /function raise\(id,el\)[\s\S]*layerOrder\.push\(id\);\s*restack\(\)/, 'opening an existing or new window moves it to the top of the modal order');
+assert.match(inventoryUiSrc, /MM\.modalInput\.push\('inventory',overlay\)/, 'the hero center registers its concrete overlay with the modal stack');
+assert.match(mainSrc, /document\.body\.appendChild\(pausePanel\)[\s\S]*document\.body\.appendChild\(keybindPanel\)[\s\S]*document\.body\.appendChild\(radioPanel\)/, 'game dialogs share the body stacking context instead of being trapped inside #ui');
+assert.match(mainSrc, /MM\.modalInput\.raise\('pause',panel\)/, 'the pause window enters the opening-order stack');
+assert.match(mainSrc, /MM\.modalInput\.raise\('keybind',panel\)/, 'the keybind window rises above the pause window that opened it');
+assert.match(uiSrc, /MM\.modalInput\.raise\('world-settings',wsOverlay\)/, 'world settings rise above the previously opened pause window');
+assert.match(indexHtml, /@media \(orientation:landscape\) and \(min-width:521px\) and \(max-height:620px\)\{[\s\S]*?#equipmentView\{[^}]*flex-direction:row[^}]*overflow:hidden/, 'landscape inventory keeps equipment slots beside the scrollable item area');
+assert.match(indexHtml, /@media \(orientation:landscape\) and \(min-width:521px\) and \(max-height:620px\)\{[\s\S]*?\.heroColumns\{[^}]*grid-template-columns:minmax\(0,1\.35fr\) minmax\(215px,\.65fr\)/, 'landscape hero development retains an informative two-column dashboard');
+assert.match(indexHtml, /@media \(orientation:portrait\) and \(max-width:820px\)\{[\s\S]*?#weaponBar\{[^}]*top:calc\(var\(--safe-top\) \+ 176px\)[\s\S]*?#hotbarWrap\{[^}]*top:calc\(var\(--safe-top\) \+ 246px\)/, 'portrait touch bars remain below the top HUD and away from both thumb zones');
+assert.match(indexHtml, /@media \(orientation:landscape\) and \(max-height:560px\)\{[\s\S]*?#hotbarWrap\{[^}]*left:calc\(var\(--safe-left\) \+ var\(--stick-zone\) \+ 24px\)[\s\S]*?#weaponBar\{[^}]*right:calc\(var\(--safe-right\) \+ var\(--action-selector-size\) \+ 24px\)/, 'landscape touch bars occupy the safe band between the two thumb controls');
 
 // --- resource registry: city salvage materials are tracked and placeable where intended ---
 const res = key => INV.RESOURCES.find(r => r.key === key);

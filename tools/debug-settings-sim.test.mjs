@@ -44,7 +44,7 @@ assert.match(htmlSrc, /:root:not\(\[data-dev-tools='1'\]\) \.devOnly\{ display:n
 assert.match(mainSrc, /import \{ applyDevToolsFlag, debugShortcutsEnabled \} from '\.\/engine\/debug_shortcuts\.js'/, 'main uses the shared debug-shortcut predicate');
 assert.match(mainSrc, /applyDevToolsFlag\(\);\nconst menuPanel=document\.getElementById\('menuPanel'\);/, 'boot publishes the dev-tools flag before wiring the toolbox');
 assert.match(mainSrc, /const debugKeysEnabled=debugShortcutsEnabled\(\);/, 'the keydown event takes one toolbox state snapshot');
-for(const key of ['f3','g','i','p','j','k','l','m','v','o']){
+for(const key of ['f3','g',';','p','j','k','l','m','v','o']){
 	assert.match(mainSrc, new RegExp("if\\(debugKeysEnabled && k==='"+key+"'"), 'debug shortcut '+key.toUpperCase()+' is toolbox-gated');
 }
 for(const key of ['c','t','e','h','x','f','b','n','u']){
@@ -53,7 +53,7 @@ for(const key of ['c','t','e','h','x','f','b','n','u']){
 assert.match(mainSrc, /if\(k==='r'&&/, 'normal rotation shortcut stays available outside debug');
 assert.match(mainSrc, /godBtn\.addEventListener\('click',toggleGod\)/, 'developer toolbox buttons remain directly operable');
 assert.match(htmlSrc, /Debug \(tylko przy otwartym panelu\):/, 'the toolbox explains when its keyboard shortcuts are armed');
-assert.match(mainSrc, /F3\/M\/G\/I i pozostałe skróty testowe działają wyłącznie przy otwartym panelu deweloperskim/, 'legacy help no longer advertises active cheats outside the toolbox');
+assert.match(mainSrc, /F3\/M\/G\/; i pozostałe skróty testowe działają wyłącznie przy otwartym panelu deweloperskim/, 'legacy help no longer advertises active cheats outside the toolbox');
 
 assert.match(uiSrc, /const DEBUG_SETTINGS_KEY='mm_debug_menu_settings_v1'/, 'debug menu settings use one stable localStorage key');
 assert.match(uiSrc, /simulation:\{speed:1\}/, 'global simulation pace has a stable real-time default');

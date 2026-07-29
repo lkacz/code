@@ -52,27 +52,29 @@ assert.ok(KB && MM.keybinds === KB, 'module installs itself on MM');
   assert.equal(KB.translate('E'), 'e', 'translate lowercases');
   assert.equal(KB.translate('escape'), 'escape', 'non-action keys pass through');
   assert.equal(KB.keyFor('interact'), 'e', 'keyFor reports the default');
+  assert.equal(KB.keyFor('inventory'), 'i', 'hero center has its own default key');
+  assert.equal(KB.keyFor('immunity'), ';', 'debug immunity no longer claims the inventory key');
   assert.equal(KB.isCustomized(), false, 'fresh state has no customizations');
 }
 
 // ---------------- rebinding + dead keys --------------------------------------
 {
-  const r = KB.setBinding('interact', ';');
+  const r = KB.setBinding('interact', ',');
   assert.ok(r.ok && !r.swapped, 'binding to a free key needs no swap');
-  assert.equal(KB.keyFor('interact'), ';');
-  assert.equal(KB.translate(';'), 'e', 'the new physical key produces the logical default');
+  assert.equal(KB.keyFor('interact'), ',');
+  assert.equal(KB.translate(','), 'e', 'the new physical key produces the logical default');
   assert.equal(KB.translate('e'), '§e', 'the orphaned default goes dead (matches no read site)');
   assert.equal(KB.isCustomized(), true);
-  assert.equal(JSON.parse(store['mm_keybinds_v1']).interact, ';', 'only the non-default binding persists');
+  assert.equal(JSON.parse(store['mm_keybinds_v1']).interact, ',', 'only the non-default binding persists');
 }
 
 // ---------------- conflict swap ----------------------------------------------
 {
-  const r = KB.setBinding('craft', ';'); // ';' is interact's key now
+  const r = KB.setBinding('craft', ','); // ',' is interact's key now
   assert.ok(r.ok && r.swapped && r.swapped.id === 'interact', 'conflicts swap with the holder');
-  assert.equal(KB.keyFor('craft'), ';');
+  assert.equal(KB.keyFor('craft'), ',');
   assert.equal(KB.keyFor('interact'), 't', 'the holder receives the requester’s previous key');
-  assert.equal(KB.translate(';'), 't', 'pressing ; now crafts');
+  assert.equal(KB.translate(','), 't', 'pressing , now crafts');
   assert.equal(KB.translate('t'), 'e', 'pressing t now interacts');
   assert.equal(KB.translate('e'), '§e', 'e stays dead — no key was lost, none aliased');
   const seen = new Set();
@@ -102,12 +104,12 @@ assert.ok(KB && MM.keybinds === KB, 'module installs itself on MM');
 
 // ---------------- persistence round-trip -------------------------------------
 {
-  store['mm_keybinds_v1'] = JSON.stringify({ interact: ',', pause: ';' });
+  store['mm_keybinds_v1'] = JSON.stringify({ interact: '`', pause: ',' });
   const { keybinds: KB2 } = await import('../src/engine/keybinds.js?phase=reload');
-  assert.equal(KB2.keyFor('interact'), ',', 'bindings survive a reload');
-  assert.equal(KB2.keyFor('pause'), ';');
-  assert.equal(KB2.translate(','), 'e');
-  assert.equal(KB2.translate(';'), 'b');
+  assert.equal(KB2.keyFor('interact'), '`', 'bindings survive a reload');
+  assert.equal(KB2.keyFor('pause'), ',');
+  assert.equal(KB2.translate('`'), 'e');
+  assert.equal(KB2.translate(','), 'b');
 }
 {
   // tampered blob aliasing two actions onto one key resets to defaults
@@ -139,6 +141,7 @@ const mainSrc = fs.readFileSync(path.join(SRC, 'main.js'), 'utf8');
   assert.match(mainSrc, /k==='u'&&!keysOnce\.has\('u'\)\)\{ toggleFullscreen\(\)/, 'fullscreen key branch (default U)');
   assert.match(mainSrc, /k==='q'&&!keysOnce\.has\('q'\)\)\{ activateAntennaPower\(\)/, 'Q fires the antenna active power (2026-07 antenna wave)');
   assert.match(mainSrc, /k==='y'&&!keysOnce\.has\('y'\)\)\{ toggleSpecialVision\(\)/, 'Y toggles equipment-powered night or thermal vision');
+  assert.match(mainSrc, /k===';'&&!keysOnce\.has\(';'\)\)\{ toggleImmunity\(\)/, 'debug immunity moved away from the player-facing I key');
   assert.match(mainSrc, /\['fullscreenchange','webkitfullscreenchange'\]/, 'standard and WebKit fullscreen changes synchronize the UI');
   assert.match(mainSrc, /document\.fullscreenElement \|\| document\.webkitFullscreenElement/, 'fullscreen state supports standard and WebKit browsers');
   assert.match(mainSrc, /root\.requestFullscreen \|\| root\.webkitRequestFullscreen/, 'fullscreen entry supports standard and WebKit browsers');
@@ -154,14 +157,16 @@ const mainSrc = fs.readFileSync(path.join(SRC, 'main.js'), 'utf8');
 }
 {
   const invSrc = fs.readFileSync(path.join(SRC, 'inventory_ui.js'), 'utf8');
-  const hits = invSrc.match(/logicalKey\(e\)==='e'/g) || [];
-  assert.ok(hits.length >= 3, 'inventory_ui compares the logical interact key everywhere (got ' + hits.length + ')');
+  const hits = invSrc.match(/logicalKey\(e\)==='i'/g) || [];
+  assert.ok(hits.length >= 2, 'inventory_ui uses the dedicated logical inventory key for open and close (got ' + hits.length + ')');
   assert.match(invSrc, /MM\.keybinds\.translate/, 'inventory_ui consults the shared translation');
+  assert.doesNotMatch(invSrc, /E_HOLD_MS|drops\.wantsInteractKey|mechs\.wantsInteractKey/, 'inventory opening no longer competes with frequent E interactions');
 }
 {
   const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
   assert.match(html, /#keybindPanel\{/, 'index.html styles the keybind panel');
   assert.match(html, /id="fullscreenBtn"[^>]*aria-pressed="false"/, 'the HUD exposes an accessible fullscreen button');
+  assert.match(html, /id="heroCenterBtn"[^>]*aria-controls="invOverlay"[^>]*Centrum bohatera \(I\)/, 'the HUD exposes an accessible hero-center shortcut');
   assert.match(html, /#menuWrap #fullscreenBtn\[aria-pressed="true"\]/, 'active fullscreen mode has a distinct HUD state');
 }
 

@@ -101,7 +101,8 @@ assert.match(src, /const defended=applyHeroDefense\(amount,opts,now\);[\s\S]*def
 assert.match(progressSrc, /TOUGHNESS_DAMAGE_REDUCTION_PER_POINT=0\.03/, 'each Twardość point grants 3% passive defense');
 assert.match(progressSrc, /TOUGHNESS_DAMAGE_REDUCTION_MAX=0\.45/, 'Twardość passive defense stays below immunity');
 assert.match(inventorySrc, /damageReductionBonus:'sum'/, 'the modifier engine merges passive defense contributions');
-assert.match(inventoryUiSrc, /'hard','Twardość', '\+1\.5 udźwigu \/ -3% obrażeń, maks\. 45%'/, 'the development panel explains both Twardość effects and its defense cap');
+assert.match(inventoryUiSrc, /key:'hard'[\s\S]*label:'Twardość'[\s\S]*Zmniejsza otrzymywane obrażenia[\s\S]*zawały[\s\S]*ciśnienie głębokiej wody/, 'the development card explains where Twardość matters in the world');
+assert.match(inventoryUiSrc, /Math\.min\(\.45,\(st\.hard\|\|0\)\*\.03\)[\s\S]*\+1,5 udźwigu[\s\S]*-3% obrażeń/, 'the development card explains both Twardość effects and its 45% defense cap');
 assert.match(src, /function applyHeroToughness\(amount,opts\)\{[\s\S]*heroDefenseCanAbsorb\(opts\)[\s\S]*amount:Math\.max\(0,amount-absorbed\)/, 'Twardość reduces the same blockable damage family as active defense');
 assert.match(src, /const toughened=applyHeroToughness\(amount,opts\);[\s\S]*const defended=applyHeroDefense\(amount,opts,now\);/, 'passive Twardość and active defense combine before HP loss');
 assert.match(src, /const dealt=toughened\.reduction>0 \? Math\.max\(0\.01,Math\.round\(amount\*100\)\/100\) : Math\.round\(amount\);/, 'Twardość keeps fractional HP damage so small bonuses are not lost to integer rounding');
@@ -115,7 +116,7 @@ assert.match(src, /function heroDefendFaceT\(\)\{[\s\S]*heroDefending\(now\)[\s\
 assert.match(src, /function drawDefendEyeTension\(bodyX,bw,eyeY,eyeOffsetX,eyeW\)\{[\s\S]*ctx\.moveTo\(left-eyeW\*0\.75[\s\S]*ctx\.lineTo\(right\+eyeW\*0\.75/, 'defense feedback draws native eye tension instead of a separate shield marker');
 assert.ok(!src.includes('ctx.ellipse(cx,cy,TILE*(0.48+0.04*pulse),TILE*(0.72+0.04*pulse)'), 'defense no longer draws the blue ellipse shield around the hero');
 assert.match(src, /immunityBtn.*addEventListener\('click',toggleImmunity\)/, 'immunity button is wired to the toggle');
-assert.match(src, /k==='i'&&!keysOnce\.has\('i'\)/, 'I hotkey toggles immunity');
+assert.match(src, /k===';'&&!keysOnce\.has\(';'\)/, 'debug immunity uses semicolon so player-facing I stays free for the hero center');
 assert.match(src, /function restoreInventory\(src\)/, 'load code defines an inventory restore helper');
 assert.match(src, /function snapshotHotbar\(\)/, 'save code defines a hotbar snapshot helper');
 assert.match(src, /function restoreHotbar\(src\)/, 'load code defines a hotbar restore helper');

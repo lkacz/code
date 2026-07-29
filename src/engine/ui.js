@@ -110,6 +110,7 @@ MM.ui = (function(){
     worldSettingsLastFocus=document.activeElement && document.activeElement!==document.body ? document.activeElement : null;
     wsOverlay.style.display='block';
     wsOverlay.setAttribute('aria-hidden','false');
+    if(window.MM && MM.modalInput && MM.modalInput.raise) MM.modalInput.raise('world-settings',wsOverlay);
     const pause=document.getElementById('pausePanel');
     if(pause && !pause.hidden){ pause.setAttribute('aria-hidden','true'); wsOverlay.dataset.pauseWasModal='1'; }
     try{ api.closeMenu(); }catch(e){}
@@ -121,6 +122,7 @@ MM.ui = (function(){
     if(!wsOverlay) return false;
     wsOverlay.style.display='none';
     wsOverlay.setAttribute('aria-hidden','true');
+    if(window.MM && MM.modalInput && MM.modalInput.lower) MM.modalInput.lower('world-settings');
     if(wsOverlay.dataset.pauseWasModal){
       const pause=document.getElementById('pausePanel');
       if(pause && !pause.hidden) pause.setAttribute('aria-hidden','false');

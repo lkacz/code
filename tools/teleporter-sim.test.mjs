@@ -158,6 +158,31 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
 
 {
   reset();
+  setTile(4,8,T.TELEPORTER);
+  const pristine=teleporters.dismantlePlanAt(4,8,getTile);
+  assert.deepEqual(pristine.drops,[{key:'teleporter',n:1}],'an untouched teleporter can still be picked up as the complete machine');
+  teleporters.setOrientationAt(4,8,'south',getTile);
+  teleporters._debug.debugCharge(4,8,55,getTile);
+  teleporters.damageAt(4,8,100,getTile,setTile,{source:'mob'});
+  const damaged=teleporters.dismantlePlanAt(4,8,getTile);
+  assert.equal(damaged.damaged,true,'any remembered mob damage switches mining to component salvage');
+  assert.deepEqual(damaged.drops,[
+    {key:'steel',n:3},
+    {key:'copperWire',n:3},
+    {key:'transistor',n:1},
+    {key:'diamond',n:1}
+  ],'half-health salvage returns a deterministic proportional share of the crafting recipe');
+  assert.equal(damaged.drops.some(row=>row.key==='teleporter'),false,'a damaged teleporter can never reset itself by dropping a complete teleporter item');
+  setTile(4,8,T.AIR);
+  setTile(4,8,T.TELEPORTER);
+  assert.equal(teleporters.restoreMachineStateAt(4,8,damaged.state,getTile),true,'undo can restore the dismantled machine state');
+  assert.equal(teleporters._debug.machines.get('4,8').hp,100,'undo restoration keeps exact structural damage');
+  assert.equal(teleporters.orientationAt(4,8,getTile),'south','undo restoration also keeps orientation');
+  assert.equal(Math.round(teleporters.metrics().storedEnergy),55,'undo restoration also keeps stored energy');
+}
+
+{
+  reset();
   setTile(0,10,T.TELEPORTER);
   setTile(12,10,T.TELEPORTER);
   teleporters.setOrientationAt(0,10,'west',getTile);
@@ -703,9 +728,15 @@ assert.match(mainSrc, /TELEPORTERS\.draw\(ctx,TILE,sx,sy,viewX,viewY,worldFxVisi
 assert.match(mainSrc, /TELEPORTERS\.cableConnections\(wx,y,peek\)/, 'main uses smart copper cable layouts without forcing neighbor chunks to generate');
 assert.match(mainSrc, /const TELEPORTER_ORIENTATION_KEY='mm_teleporter_orientation_v1'/, 'main remembers the preferred teleporter opening for future placements');
 assert.match(mainSrc, /function tryRotateTeleporterAt\(tx,ty\)[\s\S]*?TELEPORTERS\.orientationAt\(tx,ty,getTile\)[\s\S]*?TELEPORTERS\.rotateDir\(previous\)[\s\S]*?TELEPORTERS\.setOrientationAt\(tx,ty,next,getTile\)/, 'right-click rotates a placed teleporter through its persisted cardinal openings');
+assert.match(mainSrc, /if\(e\.pointerType==='touch'\)\{\s*if\(tryRotateTeleporterAt\(tx,ty\) \|\| tryRotateWaterPumpAt\(tx,ty\)\)/, 'touch taps route to teleporter rotation before tool and weapon actions');
+assert.match(mainSrc, /Teleporter · stuknij, aby zmienić kierunek/, 'touch hover feedback explains the teleporter gesture');
 assert.match(mainSrc, /id===T\.TELEPORTER && TELEPORTERS && TELEPORTERS\.setOrientationAt\) TELEPORTERS\.setOrientationAt\(tx,ty,teleporterOrientation,getTile\)/, 'new teleporters inherit the cardinal opening selected before placement');
 assert.match(mainSrc, /selectedTileId\(\)===T\.TELEPORTER\)\{ toggleTeleporterOrientation\(\)/, 'R rotates the selected teleporter before placement');
 assert.match(mainSrc, /TELEPORTERS\.canEnterTeleporter\(player,getTile\)/, 'co-op teleport requests use the same directional entrance predicate as solo play');
+assert.match(mainSrc, /id:'teleporter', name:'Teleporter', cost:TELEPORTERS\.RECIPE_COST/, 'crafting and damaged-machine salvage share one teleporter recipe definition');
+assert.match(mainSrc, /function dismantleTeleporterAt\(tx,ty\)[\s\S]*?TELEPORTERS\.dismantlePlanAt\(tx,ty,getTile\)[\s\S]*?teleporterState:plan\.state/, 'solo mining converts a damaged teleporter into its planned component salvage and remembers undo state');
+assert.match(mainSrc, /e\.oldId===T\.TELEPORTER && e\.teleporterState[\s\S]*?TELEPORTERS\.restoreMachineStateAt/, 'undo restores the teleporter damage instead of silently rebuilding it at full health');
+assert.match(mainSrc, /ghostHeroMineAt:\(tx,ty\)=>\{[\s\S]*?const teleporterPlan=tId===T\.TELEPORTER[\s\S]*?loot:teleporterPlan \? teleporterPlan\.drops : null/, 'host-authoritative hero mining computes teleporter salvage before removing machine state');
 assert.match(mainSrc, /WEAPONS\.update\(dt, getTile, setTile, \{teleporters:TELEPORTERS,getElectricNetworkTile,dynamo:DYNAMO,heroEnergy:MM\.heroEnergy,player\}\)/, 'weapon simulation receives the powered directional teleporter context');
 assert.match(mainSrc, /function placeDebugTeleporterPair\(\)/, 'main exposes a debug action that places a powered teleporter pair');
 assert.match(mainSrc, /function placeDebugTeleporterOne\(\)/, 'main exposes a debug action that places one teleporter');
@@ -721,5 +752,10 @@ assert.match(uiSrc, /Postaw jeden/, 'teleporter debug panel includes a place-one
 assert.match(uiSrc, /Skocz w lewo/, 'teleporter debug panel includes a jump-left button');
 assert.match(uiSrc, /Skocz w prawo/, 'teleporter debug panel includes a jump-right button');
 assert.match(uiSrc, /Przewod \+20/, 'teleporter debug panel includes a copper-wire grant button');
+
+const ghostHostSrc = await readFile(new URL('../src/engine/ghost_host.js', import.meta.url), 'utf8');
+const ghostClientSrc = await readFile(new URL('../src/engine/ghost_client.js', import.meta.url), 'utf8');
+assert.match(ghostHostSrc, /const loot=Array\.isArray\(res\.loot\)[\s\S]*?NET\.pouchAdd\(b\.pouch,row\.key,row\.n\)/, 'co-op host credits the exact validated salvage rows to the remote hero pouch');
+assert.match(ghostClientSrc, /pl\.a === 'mine' && pl\.ok && Array\.isArray\(pl\.loot\)[\s\S]*?bridge\.ghostHeroGain\(row\.key,row\.n\|\|1\)/, 'co-op client applies explicit teleporter salvage instead of rerunning the complete-tile drop');
 
 console.log('teleporter-sim: all assertions passed');

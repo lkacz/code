@@ -2,9 +2,9 @@
 // Headless-Edge live QA for the Ekwipunek overlay (inventory_ui.js): boots the
 // real game over CDP, seeds a spread of loot (tiers, NEW items, weapons across
 // categories), opens the panel and captures the states that matter:
-//   tools/inv-ui-qa.png    default tab (capes) + equipment rail + preview
-//   tools/inv-ui-qa-b.png  weapons tab: category sections, NEW/upgrade badges
-//   tools/inv-ui-qa-c.png  charms + NEW review banner + skill points to spend
+//   tools/inv-ui-qa.png    character development: attributes + resulting stats
+//   tools/inv-ui-qa-b.png  equipment weapons: categories, NEW/upgrade badges
+//   tools/inv-ui-qa-c.png  equipment charms + NEW review banner
 //   tools/inv-ui-qa-d.png  resources tab
 // Usage: node tools/inv-ui-qa.mjs [--url=http://127.0.0.1:8123/index.html] [--size=1600x900]
 import { spawn, execFile } from 'node:child_process';
@@ -23,7 +23,8 @@ const outA = opt('out', 'tools/inv-ui-qa.png');
 const outB = outA.replace(/\.png$/, '-b.png');
 const outC = outA.replace(/\.png$/, '-c.png');
 const outD = outA.replace(/\.png$/, '-d.png');
-const CLIP = { x: (winW - 1060) / 2, y: 30, width: 1060, height: 840, scale: 1.15 };
+const clipW=Math.min(winW,1220), clipH=Math.min(winH,870);
+const CLIP = { x: Math.max(0,(winW-clipW)/2), y: Math.max(0,(winH-clipH)/2), width:clipW, height:clipH, scale:1 };
 
 const EDGE_CANDIDATES = [
 	'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -67,10 +68,15 @@ const STAGE_A = `(async()=>{ ${HELPERS}
 	player.xp=Math.max(player.xp,420); // a few levels → skill points to spend
 	MM.inventoryUI.open();
 	await sleep(400);
-	return ['A ok','tab=peleryny',gridInfo()].join(' :: ');
+	const hero=document.getElementById('heroView');
+	const attrs=document.querySelectorAll('.heroAttribute').length;
+	const stats=document.querySelectorAll('.heroStatRow').length;
+	const points=MM.progress.points();
+	return ['A ok','hero='+(hero&&!hero.hidden),'attrs='+attrs,'stats='+stats,'points='+points].join(' :: ');
 })()`;
 
 const STAGE_B = `(async()=>{ ${HELPERS}
+	document.getElementById('invEquipmentNav').click();
 	clickTab('Bronie');
 	await sleep(250);
 	return ['B ok',gridInfo()].join(' :: ');

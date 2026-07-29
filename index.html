@@ -84,7 +84,9 @@
      accent blue, transmission live = green via the #ghostBtn.live rule below). */
   #menuWrap .topbtn, #menuBtn, #debugMenuBtn{ background:rgba(8,12,20,.66); color:#e8eef8; border:1px solid rgba(255,255,255,.14); border-radius:11px; height:34px; min-height:0; padding:0 12px; font-weight:600; font-size:14px; box-shadow:0 2px 10px rgba(0,0,0,.28); cursor:pointer; transition:background .12s ease,border-color .12s ease; }
   #menuWrap .topbtn:hover, #menuBtn:hover, #debugMenuBtn:hover{ background:rgba(34,46,66,.82); border-color:rgba(255,255,255,.28); }
-  #fullscreenBtn, #menuBtn, #debugMenuBtn{ min-width:40px; }
+  #heroCenterBtn, #fullscreenBtn, #menuBtn, #debugMenuBtn{ min-width:40px; }
+  #heroCenterBtn{ position:relative; width:40px; padding:0 !important; font-size:17px !important; line-height:1; }
+  #menuWrap #heroCenterBtn[aria-expanded="true"]{ background:linear-gradient(180deg,rgba(53,133,235,.55),rgba(38,92,175,.7)); border-color:rgba(125,200,255,.65); box-shadow:0 0 15px rgba(57,151,255,.28),inset 0 1px rgba(255,255,255,.18); }
   #fullscreenBtn{ width:40px; padding:0 !important; font-size:18px !important; line-height:1; }
   #menuWrap #fullscreenBtn[aria-pressed="true"]{ background:linear-gradient(180deg,rgba(76,169,255,.52),rgba(35,102,177,.76)); border-color:rgba(145,214,255,.72); box-shadow:0 0 15px rgba(67,168,255,.34),inset 0 1px 0 rgba(255,255,255,.20); }
   #debugMenuBtn{ color:#b8c2cf; font-size:15px; }
@@ -584,7 +586,7 @@
       :root[data-input-mode='pc'] #messages{ top:calc(var(--safe-top) + 112px); bottom:auto; max-width:calc(100vw - 24px); }
     }
     /* Short landscape screens keep every target at least 48px. */
-    @media (max-height:560px){
+    @media (orientation:landscape) and (max-height:560px){
       :root{ --stick-zone:132px; --stick-size:100px; --stick-knob:56px; --touch-button:50px; }
       :root[data-input-mode='touch'] #hud #fpsPanel{ display:none; }
       :root[data-input-mode='touch'] #craft{ left:calc(210px + var(--safe-left)); }
@@ -601,12 +603,36 @@
     #errorBox{ position:absolute; left:8px; right:8px; top:50%; transform:translateY(-50%); background:#2b1e1e; color:#ffd7d7; border:1px solid #402b2b; border-radius:10px; padding:10px 12px; display:none; white-space:pre-wrap; font-family:ui-monospace,monospace; }
     #messages{ position:absolute; left:50%; top:calc(8px + var(--safe-top)); transform:translateX(-50%); z-index:6; max-width:min(60vw,520px); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; line-height:22px; color:#f2f7ff; background:rgba(8,12,20,.78); border:1px solid rgba(255,255,255,.14); box-shadow:0 2px 10px rgba(0,0,0,.28); padding:5px 14px; border-radius:999px; pointer-events:none; }
     #messages:empty{ display:none; }
+    #inventoryFeed{ position:absolute; left:50%; top:calc(var(--safe-top) + 52px); z-index:44; width:min(440px,calc(100vw - var(--safe-left) - var(--safe-right) - 24px)); min-height:54px; transform:translateX(-50%); display:grid; place-items:start center; pointer-events:none; }
+    #inventoryFeed:empty{ display:none; }
+    .inventoryFeedEntry{ --inventory-feed-accent:#9fb8d1; display:grid; grid-template-columns:42px minmax(0,1fr) auto; align-items:center; gap:9px; max-width:100%; min-width:min(286px,100%); box-sizing:border-box; padding:6px 12px 6px 7px; overflow:hidden; color:#f4f8ff; background:linear-gradient(100deg,color-mix(in srgb,var(--inventory-feed-accent) 18%,rgba(8,12,20,.96)),rgba(8,12,20,.96) 64%); border:1px solid color-mix(in srgb,var(--inventory-feed-accent) 60%,rgba(255,255,255,.12)); border-radius:12px; box-shadow:0 7px 20px rgba(0,0,0,.42),inset 3px 0 0 var(--inventory-feed-accent); opacity:0; transform:translateY(-8px) scale(.97); transition:opacity .18s ease,transform .22s cubic-bezier(.2,.9,.3,1.1); contain:layout paint; }
+    .inventoryFeedEntry.show{ opacity:1; transform:none; }
+    .inventoryFeedEntry.leaving{ opacity:0; transform:translateY(-5px) scale(.98); }
+    .inventoryFeedEntry[data-direction='gain']{ --inventory-feed-sign:#8ee6ae; }
+    .inventoryFeedEntry[data-direction='loss']{ --inventory-feed-sign:#ff9b8a; }
+    .inventoryFeedEntry[data-cause='death']{ box-shadow:0 7px 22px rgba(0,0,0,.46),0 0 14px rgba(224,70,64,.15),inset 3px 0 0 var(--inventory-feed-accent); }
+    .inventoryFeedThumb{ width:40px; height:40px; display:block; border-radius:9px; background:color-mix(in srgb,var(--inventory-feed-accent) 14%,rgba(3,7,13,.72)); border:1px solid color-mix(in srgb,var(--inventory-feed-accent) 45%,rgba(255,255,255,.12)); box-shadow:inset 0 0 9px rgba(0,0,0,.24); image-rendering:pixelated; }
+    .inventoryFeedAmount{ min-width:34px; color:var(--inventory-feed-sign); font-size:17px; font-weight:850; font-variant-numeric:tabular-nums; line-height:1; text-align:right; }
+    .inventoryFeedCopy{ min-width:0; display:flex; flex-direction:column; gap:4px; }
+    .inventoryFeedName{ overflow:hidden; color:#f4f8ff; font-size:13px; font-weight:780; line-height:1.15; text-overflow:ellipsis; white-space:nowrap; }
+    .inventoryFeedMeta{ display:flex; align-items:center; gap:5px; overflow:hidden; color:#92a3b6; font-size:8px; font-weight:800; letter-spacing:.055em; line-height:1.2; text-transform:uppercase; white-space:nowrap; }
+    .inventoryFeedVerb{ flex:none; padding:2px 5px; color:#07140d; background:var(--inventory-feed-sign); border-radius:999px; font:inherit; }
+    .inventoryFeedContext::before,.inventoryFeedQueued::before{ content:"•"; margin-right:5px; color:rgba(255,255,255,.38); }
+    .inventoryFeedQueued{ overflow:hidden; color:#b5c1ce; text-overflow:ellipsis; }
+    .inventoryFeedEntry[data-direction='loss'] .inventoryFeedContext{ color:#e1aaa4; }
+    @media (min-width:860px){ #inventoryFeed{ left:calc(var(--safe-left) + 600px); right:calc(var(--safe-right) + 12px); width:auto; transform:none; place-items:start; } }
+    @media (max-width:760px){ #inventoryFeed{ top:calc(var(--safe-top) + 96px); } }
+    @media (orientation:portrait) and (max-width:560px){ :root[data-input-mode='pc'] #inventoryFeed{ top:calc(var(--safe-top) + 154px); } }
+    @media (orientation:portrait) and (max-width:820px){ :root[data-input-mode='touch'] #inventoryFeed{ top:auto; bottom:calc(var(--safe-bottom) + var(--stick-zone) + 120px); } }
+    @media (orientation:landscape) and (max-height:560px){ :root[data-input-mode='touch'] #inventoryFeed{ top:calc(var(--safe-top) + 166px); bottom:auto; } }
+    @media (prefers-reduced-motion:reduce){ .inventoryFeedEntry{ transition:none; } }
   #hoverInfo{ position:absolute; left:50%; bottom:128px; transform:translateX(-50%); pointer-events:none; opacity:0; transition:opacity .12s ease; display:flex; align-items:center; gap:6px; max-width:min(280px,70vw); padding:4px 9px; border-radius:999px; border:1px solid rgba(255,255,255,.16); background:rgba(4,9,16,.62); color:#f4f8ff; box-shadow:0 2px 10px rgba(0,0,0,.35); backdrop-filter:blur(4px); font-size:11px; line-height:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #hoverInfo::before{ content:""; width:8px; height:8px; flex:none; border-radius:2px; background:var(--hover-color,#9fb8d1); border:1px solid rgba(255,255,255,.35); box-shadow:0 0 8px var(--hover-glow,rgba(159,184,209,.35)); }
   #hoverInfo.show{ opacity:.92; }
+  :root[data-input-mode='touch'] #hoverInfo{ bottom:calc(var(--safe-bottom) + var(--stick-zone) + 56px); max-width:calc(100vw - var(--safe-left) - var(--safe-right) - 28px); }
   /* Corner-card column: right of the top bar, left of the minimap (W-232..W-12
      @ y 44..140) and the craft tracker (right:8 top:54) — the only top corner no
-     persistent UI claims. Hosts the drop hover preview + stacked upgrade notices. */
+     persistent UI claims. Hosts the drop preview + one queued upgrade decision. */
   #cornerCards{ position:absolute; right:244px; top:calc(var(--safe-top) + 46px); display:flex; flex-direction:column; align-items:flex-end; gap:6px; pointer-events:none; }
   @media (max-width:760px){ #cornerCards{ right:8px; top:calc(var(--safe-top) + 150px); } }
   #houseComfortHud{
@@ -740,12 +766,11 @@
   #dropPreview .dpChip{ border:1px solid rgba(255,255,255,.14); border-radius:999px; background:rgba(255,255,255,.07); padding:1px 6px; font-size:10px; white-space:nowrap; }
   #dropPreview .dpDesc{ font-size:10px; font-style:italic; opacity:.75; }
   #dropPreview .dpHint{ font-size:10px; color:#9fb2c6; }
-  /* Upgrade notices stack until each find is handled. The host scrolls when a
-     long loot burst would otherwise run below the viewport. */
-  #upgradeNotice{ pointer-events:none; display:none; flex-direction:column; align-items:flex-end; gap:6px; max-height:calc(100vh - 64px); overflow-y:auto; overscroll-behavior:contain; padding:0 3px 8px 0; }
-  #upgradeNotice.show{ display:flex; }
+  /* At most one upgrade decision is visible. Additional finds wait in data,
+     represented by the compact queue counter inside the active card. */
+  #upgradeNotice{ pointer-events:none; display:none; padding:0 3px 8px 0; }
+  #upgradeNotice.show{ display:block; }
   #upgradeNotice .upgradeNotice{ pointer-events:auto; display:flex; flex:none; flex-direction:column; gap:6px; width:max-content; max-width:min(270px,64vw); padding:10px 12px; border-radius:12px; border:1px solid var(--up-tier,#4ade80); background:rgba(8,14,22,.95); color:#eef4fb; font-size:11px; line-height:1.35; box-shadow:0 8px 24px rgba(0,0,0,.55), 0 0 18px -6px var(--up-tier,#4ade80); backdrop-filter:blur(6px); animation:upgradeIn .28s cubic-bezier(.2,.9,.3,1.08); }
-  @media (max-width:760px){ #upgradeNotice{ max-height:calc(100vh - 168px); } }
   @keyframes upgradeIn{ from{ opacity:0; transform:translateY(-8px) scale(.96); } to{ opacity:1; transform:none; } }
   #upgradeNotice .upKicker{ font-size:9px; font-weight:900; letter-spacing:.14em; text-transform:uppercase; color:#4ade80; }
   #upgradeNotice .upTitle{ font-size:13px; font-weight:800; color:var(--up-tier,#eef4fb); }
@@ -753,6 +778,8 @@
   #upgradeNotice .upDelta{ font-size:11px; font-weight:700; color:#4ade80; }
   #upgradeNotice .upChips{ display:flex; flex-wrap:wrap; gap:4px; }
   #upgradeNotice .upChip{ border:1px solid rgba(255,255,255,.14); border-radius:999px; background:rgba(255,255,255,.07); padding:1px 6px; font-size:10px; white-space:nowrap; }
+  #upgradeNotice .upQueue{ padding-top:5px; border-top:1px solid rgba(255,255,255,.11); color:#a9b9ca; font-size:9px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; }
+  #upgradeNotice .upQueue[hidden]{ display:none; }
   #upgradeNotice .upBtns{ display:flex; gap:6px; margin-top:2px; }
   #upgradeNotice .upBtns button{ flex:1; border:none; border-radius:9px; padding:6px 10px; font-size:11px; font-weight:700; cursor:pointer; }
   #upgradeNotice .upEquip{ background:#2c7ef8; color:#fff; box-shadow:0 3px 10px rgba(44,126,248,.4); }
@@ -1080,6 +1107,7 @@
       <div id="menuWrap">
   <button id="lampBtn" class="topbtn" type="button" aria-pressed="false" aria-label="Włącz lampę w oczach" title="Włącz lampę w oczach">&#128294;</button>
   <button id="visionBtn" class="topbtn" type="button" aria-pressed="false" aria-label="Załóż noktowizor lub termowizor" title="Załóż noktowizor lub termowizor">🌙</button>
+  <button id="heroCenterBtn" class="topbtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="invOverlay" title="Centrum bohatera (I)" aria-label="Otwórz centrum bohatera">🎒</button>
   <button id="ghostBtn" class="topbtn" aria-haspopup="dialog" aria-expanded="false" title="Obserwatorzy — zaproś widzów do swojej warstwy" aria-label="Obserwatorzy">👁<span id="ghostBtnCount"></span></button>
   <button id="fullscreenBtn" class="topbtn" type="button" aria-pressed="false" title="Włącz pełny ekran (U)" aria-label="Włącz pełny ekran">&#x26F6;</button>
   <button id="menuBtn" class="topbtn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="pausePanel" title="Menu gry" aria-label="Otwórz menu gry">≡</button>
@@ -1088,7 +1116,7 @@
           <div class="group">
             <button id="mapBtn" class="topbtn" role="menuitem" title="Pokaż całą mapę">Mapa: OFF</button>
             <button id="godBtn" class="topbtn" role="menuitem" title="Tryb boga (G)">Bóg: OFF</button>
-            <button id="immunityBtn" class="topbtn" role="menuitem" title="Immunity / unlimited health (I)">Immune: OFF</button>
+            <button id="immunityBtn" class="topbtn" role="menuitem" title="Immunity / unlimited health (;)">Immune: OFF</button>
             <button id="centerBtn" class="topbtn" role="menuitem" title="Wyśrodkuj kamerę">Centruj</button>
             <button id="helpBtn" class="topbtn" role="menuitem" aria-controls="help" aria-expanded="false">Pomoc</button>
             <button id="radarMenuBtn" class="topbtn" role="menuitem" title="Radar diamentów">Radar 💎</button>
@@ -1102,7 +1130,7 @@
             <div class="hint">Nadpisuje wyposażenie i przyciąga łupy testowo. W zwykłej grze zasięg zapewniają stroje i wisiorki.</div>
           </div>
           <div class="group seedRow"><label for="seedInput">Ziarno:</label><input id="seedInput" value="auto" /><button id="regenBtn" class="topbtn">Nowy świat</button><button id="openWorldSettingsBtn" class="topbtn">Ustawienia świata…</button></div>
-          <div class="hint">Debug (tylko przy otwartym panelu): F3=wydajność, G=Bóg, I=Immune, M=pełna mapa, P/J/K/L=skrzynie, V=moby, O=erupcja. C, T i H pozostają zwykłymi skrótami gry.</div>
+          <div class="hint">Debug (tylko przy otwartym panelu): F3=wydajność, G=Bóg, ;=Immune, M=pełna mapa, P/J/K/L=skrzynie, V=moby, O=erupcja. C, T, H oraz I pozostają zwykłymi skrótami gry.</div>
           <div class="group" style="flex-direction:column; align-items:stretch; margin-top:4px;">
             <label style="font-size:12px; display:flex; justify-content:space-between; gap:8px; align-items:center;">Szybkość gracza <span id="playerSpeedLabel">x2</span></label>
             <select id="playerSpeedDropdown" style="width:100%; background:rgba(20,20,25,.7); color:#e8e8e8; border:1px solid rgba(255,255,255,.18); border-radius:8px; padding:4px 6px; font-size:12px;">
@@ -1130,8 +1158,8 @@
             <div class="hint">Mnożnik wysokości pojedynczych źdźbeł.</div>
           </div>
           <div class="group" style="flex-direction:column; align-items:stretch; margin-top:6px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px;">
-            <button id="openInv" class="topbtn" role="menuitem" title="Ekwipunek (przytrzymaj E)">Ekwipunek…</button>
-            <div class="hint">Sprzęt, bronie, talizmany i surowce (przytrzymaj E; krótkie E zbiera łupy z ziemi).</div>
+            <button id="openInv" class="topbtn" role="menuitem" title="Centrum bohatera (I)">Centrum bohatera…</button>
+            <div class="hint">Rozwój postaci i wyposażenie otwiera I. Klawisz E pozostaje interakcją ze światem i podnoszeniem łupów.</div>
             <!-- revealed by finale.js once the Guardian Macierzysty has fallen -->
             <button id="openFinale" class="topbtn" role="menuitem" hidden title="Raport zamknięcia warstwy">🎬 Zakończenie…</button>
           </div>
@@ -1149,7 +1177,8 @@
   <!-- topButtons replaced by dropdown menu; old markup removed -->
     <!-- Crafting panel is built dynamically from the RECIPES table in main.js -->
     <div id="craft"><strong>Rzemiosło</strong></div>
-    <div id="help"><div class="touchHelp touchUi"><b>Dotyk:</b> lewy joystick prowadzi głównie w lewo/prawo; wychylenie w górę skacze, a przycisk ↑ pozwala szybko wykonywać kolejne skoki w powietrzu. Prawy joystick kopie w 8 kierunkach albo celuje aktualną bronią. Możesz też stuknąć bezpośrednio przeciwnika, łup, obiekt lub blok. 🧱 włącza jawny tryb stawiania bloków dotknięciem i przeciąganiem.</div><b id="helpDiscoveries"></b>Sterowanie: A/D lub ←/→ ruch, W / ↑ / Spacja skok. LPM kopie klikniętą kratkę (zasięg 3) – przytrzymaj i przeciągaj, aby kopać dalej. Przycisk ⛏️ kopie w wybranym kierunku (przytrzymaj = kopanie ciągłe). PPM stawia blok (zasięg 5; wybór 5–9, 0 lub klik w pasek; drugi klik w wybrany slot zmienia typ). Kopanie wody zbiera ją do ekwipunku. Skróty broni: 1 = kilof/budowanie (kolejne wciśnięcia przełączają kilofy po craftingu), 2 = broń biała, 3 = DYSTANSOWE: łuki oraz rzuty z ręki (śnieżki, toksyczne śnieżki, kamienie, balony wodne, granaty gazowe, lepkie bomby) — kolejne wciśnięcia rotują, a klawisz pamięta ostatnio używaną broń, 4 = miotacze (ogień/woda/gaz/grawitacja — działko grawitacyjne: przytrzymaj LPM na bloku, by go wyrwać, PPM ciska nim; materiał decyduje o obrażeniach i skutkach) — kolejne wciśnięcia przełączają bronie w kategorii; w Ekwipunku przyciskiem „Skrót" wybierasz, które bronie biorą udział w przełączaniu. MATRYCA ŻYWIOŁÓW: MOKRY wróg (pływanie, deszcz, wąż, balon wodny) mocniej przewodzi prąd (a porażenie SKACZE łańcuchem po innych mokrych!) i ZAMARZA W BRYŁĘ od mrozu (np. śnieżek); ogień na zmrożonym = szok termiczny, ogień + trucizna = toksyczny zapłon, na mokrym ogień syczy i gaśnie, a wiązka elektryczna trafiając wodę elektryzuje CAŁĄ taflę. RODZAJE STRZAŁ mają charaktery: drewniane pękają najczęściej (80%), a irydowe najrzadziej (20%); ocalałe strzały można odzyskać. Kamienne ogłuszają, obsydianowe płoną przy pełnym naciągu, diamentowe przeszywają kilku wrogów, irydowe przebijają bloki (pip w pasku broni przypina typ). Trafienia i reakcje żywiołów ładują ULT szybciej; PPM tuż przed pociskiem wroga = PERFEKCYJNA PARADA (odbija pocisk!). Przy naciąganiu łuku strzałka nad głową pokazuje WIATR — znosi strzały. Z cofa zmianę. PRZYTRZYMAJ E, aby otworzyć Ekwipunek (sprzęt, bronie, talizmany, surowce) — krótkie E zbiera leżące łupy w zasięgu i obsługuje mecha. Najedź kursorem na leżący przedmiot: w lewym górnym rogu pojawi się podgląd (nazwa, rzadkość, statystyki), a LPM podnosi dokładnie ten jeden (zasięg 3). T zwija/rozwija panel Rzemiosła, X używa skanera kraterów. Po wybraniu broni (2/3/4) LPM używa jej w kierunku kursora, a PPM odpala naładowany ult: broń biała tnie, łuk strzela strzałami (strzała przelatująca przez ogień płonie!), miotacz ognia podpala stwory i roślinność (ogień rozprzestrzenia się po trawie, drewnie i liściach; woda gasi). Żywioły: ogień gotuje wodę w parę zasilającą chmury, topi kamień w lawę i roztapia śnieg/lód w wodę; lawa PŁYNIE (wolniej niż woda, wyrównuje poziom), parzy i podpala, a osiadła na wolnym powietrzu z czasem zastyga w obsydian; wąż wodny gasi pożary, hartuje lawę w obsydian, rozmiękcza piasek w błoto (błoto spowalnia wszystkich o połowę) i podlewa rośliny; trujący gaz zabija organizmy, a w kontakcie z ogniem lub lawą EKSPLODUJE jak TNT (płonąca strzała też detonuje chmurę). WĘDKOWANIE: wytwórz wędkę (drewno + trawa), stań nad wodą i naciśnij F — gdy spławik drgnie (❗), F podcina; duże ryby szarpią 2–3 razy (F tylko przy ❗, za wczesne szarpnięcie płoszy!). Ryby = zupa rybna (+30 HP), złota rybka = Eliksir głębin; handlarz skupuje połów. Rośliny (słoneczniki, krzewy jagodowe, trzciny, paprocie, kaktusy) kiełkują przy wodzie, piją z sąsiednich kafli wody (czasem wchłaniając cały kafel!), z deszczu i z węża; rosną etapami, usychają bez wody i obumierają ze starości. Klik na dojrzały krzew jagodowy = +6 HP. M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę. H pomoc. Zdobywasz XP i poziomy — punkty umiejętności wydasz w Ekwipunku (Rozwój); osiągnięcia nagradzają XP i skrzyniami. Rzemiosło: kilofy, pochodnie (światło nocą), miecz obsydianowy, talizman, totem odrodzenia (punkt respawnu), eliksiry (życie natychmiast; szybkość/siła to buffy 60 s widoczne przy pasku XP) i Róg przyzwania (wzywa bossa — drogo!). W panelu Rzemiosła gwiazdka ★ przypina ulubione receptury na górze, przycisk 📌 „Śledź" zawiesza licznik składników wybranej receptury na ekranie (powiadomi, gdy wszystko zbierzesz), filtr „Dostępne" pokazuje tylko to, co możesz wytworzyć teraz, a przy brakującym surowcu zobaczysz podpowiedź, gdzie go szukać. RECEPTURY ODKRYWASZ STOPNIOWO: przepis pojawia się w panelu, gdy zdobędziesz choć po sztuce każdego potrzebnego surowca (toast „🔓 Odblokowany przepis") albo podpatrzysz gotowy przedmiot stojący w świecie — np. drabinę czy pochodnię w domku NPC (toast „🔍 Podpatrzony przepis"); licznik „do odkrycia" mówi, ile przepisów jeszcze przed tobą, a pasek szybkiego wyboru bloków pokazuje tylko surowce, które kiedykolwiek miałeś. Odkrywasz też CAŁE KATEGORIE: pierwsza odblokowana receptura z działu (Narzędzia, Maszyny…) i pierwszy blok z grupy (Skały i rudy, Budulce…) dodają zakładkę/kategorię ORAZ wpis w Dzienniku Odkryć (+40 XP). SKRZYNIE mają pięć rzadkości (zwykła, niezwykła, rzadka, epicka, legendarna — po kolorze poznasz z daleka) i po otwarciu WYRZUCAJĄ łup fizycznie na ziemię — podnieś go jak inne dropy (E / klik). Gdy podniesiesz przedmiot lepszy od założonego, w prawym górnym rogu pojawi się karta „Znaleziono lepszy przedmiot" z przyciskiem Załóż; słabsze znaleziska trafiają po cichu do torby — obejrzysz je w Ekwipunku (pasek „✨ Nowe przedmioty"). OBSERWATORZY: przycisk 👁 na górnym pasku otwiera panel transmisji — rozpocznij ją, wyślij link znajomym, a oni dołączą jako DUCHY (oglądają twoją grę na żywo, nie zmienią świata). Aktywni widzowie wzmacniają bohatera (+10% XP, +1% szybkości/skoku/obrażeń za każdego), płoszą stwory samą obecnością, a za aktywność ładują moce (popłoch/mróz/grom). W panelu 👁 nadajesz każdemu widzowi uprawnienia (tylko ogląda / +czat / +wpływ), możesz go zbanować albo mianować ASYSTENTEM (może być ich kilku!) — asystent widzi twoje receptury z podziałem na działy, ekwipunek i zasoby, więc craftuje i zarządza sprzętem jak ty; gdy dwóch rywalizuje o te same surowce, wygrywa szybszy. Jeśli wolisz mieć kontrolę, włącz ZATWIERDZANIE: propozycje asystentów (np. „Wytwórz: Strzały irydowe ×5") czekają w panelu 👁, aż klikniesz Zatwierdź albo Odrzuć (niezatwierdzone wygasają po 3 min). Każdy widz ma też WŁASNĄ karierę ducha: za aktywną obserwację, doping, moce, płoszenie stworów i pracę asystenta zdobywa XP, poziomy, rangi (Gapiowicz → … → Strażnik Warstwy) i osiągnięcia — jego postępy zapisują się w jego przeglądarce, więc czekają na niego przy następnym linku (w twoim panelu widzisz przy nim odznakę „Poz. N"; to tylko wyróżnienie, nie daje mu żadnych dodatkowych uprawnień). ROZMOWA I WIDOCZNOŚĆ: Enter otwiera szybki czat gospodarza — twoje słowa lecą dymkiem nad bohaterem (u ciebie i u widzów), wiadomości duchów wiszą dymkami nad ich awatarami, a duch może wskazać miejsce 📍 (klawisz P) pulsującym znacznikiem widocznym dla wszystkich. Duchy unoszą się ZA bohaterem, a zaparkowane na nim — nad jego głową, więc nigdy nie zasłaniają akcji; doping, moce i praca asystentów zostawiają widoczny ślad w świecie (pierścienie, unoszące się napisy). W panelu 👁 przełączniki „duchy/dymki/działania" chowają awatary, teksty i efekty, a 👁/🙈 przy konkretnym widzu wycisza tylko jego — wyłącznie na twoim ekranie, jego wpływ na grę zostaje. Nocą i w głębi czyhają też szkielety-łucznicy (kościane pociski!), a w jaskiniach pełzacze. Jaskinie są CIEMNE — światło dociera tylko z powierzchni, pochodni, lawy i ognia; pełzacze lęgną się wyłącznie w mroku, więc oświetlona pochodniami galeria jest bezpieczna. Podziemia dziedziczą charakter biomu: w śnieżnych krainach jaskinie szronieją lodem i soplami, a w lasach i na bagnach komory jaskiniowe porastają ŚWIECĄCE GRZYBY — zbieraj je (zupa grzybowa +25 HP) albo zostaw jako naturalne latarnie. Co 2–3 dni na powierzchni rozbija kram WĘDROWNY HANDLARZ (szukaj pasiastej markizy i lśniącego 💎): kliknij kram, by kupować pochodnie, strzały, mikstury i epicką skrzynię oraz sprzedawać nadmiar surowców — walutą jest diament. Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać. Nocą wychodzą upiory i nietoperze (o świcie płoną); szukaj też ruin na lądzie i wraków na dnie mórz. Drobne kamienne rumowiska, pieńki filarów lub resztki łuku na powierzchni zdradzają ZAKOPANE RUINY — kop pod nimi! Czasem to ciasna krypta ze skrzynią (albo sarkofag czy zawalisko), czasem piwnice, otwarta studnia lub bliźniacze komory, a czasem głęboka świątynia z krętym szybem, galeriami i jednym z trzech skarbców: obsydianowym sejfem, ołtarzem nad fosą lawy albo zatopionym relikwiarzem. Ruiny przejmują materiał biomu (lodowe ściany, piaskowiec, zalane podłogi). UWAGA: starożytni zostawili PUŁAPKI — uważny gracz wypatrzy lśniącą linkę w korytarzu (strzałki!), pulsujący runiczny krąg na płycie (mina!), zielone smużki nad skrzynią (grobowy gaz!), żar lub kapiącą wodę między blokami (zbrojny zwornik — wykop go, a lawa zaleje skarbiec!) i włosowate pęknięcia podłogi (zapadnia — na dnie lawa… albo bonusowa skrzynia). A jeśli znajdziesz samotny OBSYDIANOWY MONOLIT — kop wytrwale: głęboko przy dnie świata (1% ruin) czeka ZAKOPANE MIASTO — rozświetlona pochodniami kawerna z wieżami, mostem, fosą lawy, ogrodem kryształów i obsydianowym ziguratem kryjącym dwie epickie skrzynie. Na powierzchni trafisz też na obsydianowy OŁTARZ PRZYZWANIA (dwie pochodnie, żarzy się nocą): kliknij go z ofiarą 3 diamentów i 3 obsydianu, a przybędzie GARGANTUICZNY boss — pokonany zostawia stos epickich skrzyń (jeden rytuał na ołtarz dziennie). Mniej więcej co 7 dni gry świat przemierza ZŁOTY SPRINTER (ptak, biegacz albo ryjący kret) — lśniący, błyskawiczny i trudny do ubicia; znika po pół minuty, ale pokonany zostawia epicką skrzynię i diamenty. Co 2–3 dni nadlatuje też UFO: skanuje okolicę i próbuje porwać wiązką coś żywego — zwierzę, CIEBIE, a nawet bossa! Tarcza spodka pochłania ciosy, ale opada, gdy wiązka jest włączona — to moment na atak (łuk!). Zestrzelony zostawia ANTYMATERIĘ (receptura: Mikstura antygrawitacji) i czasem artefakt Obcych; porwany bohater zostaje wywieziony i wyrzucony daleko — chyba że w locie sam zestrzeli spodek. Zielony duch bloku = można postawić, czerwony = nie można. Na ekranie dotykowym szczypnięcie zmienia zoom. Ekwipunek i pasek szybkiego wyboru są zapisywane automatycznie.</div>
+    <div id="inventoryFeed" role="status" aria-live="polite" aria-atomic="true" aria-label="Zmiany ekwipunku"></div>
+    <div id="help"><div class="touchHelp touchUi"><b>Dotyk:</b> lewy joystick prowadzi głównie w lewo/prawo; wychylenie w górę skacze, a przycisk ↑ pozwala szybko wykonywać kolejne skoki w powietrzu. Prawy joystick kopie w 8 kierunkach albo celuje aktualną bronią. Możesz też stuknąć bezpośrednio przeciwnika, łup, obiekt lub blok. 🧱 włącza jawny tryb stawiania bloków dotknięciem i przeciąganiem.</div><b id="helpDiscoveries"></b>Sterowanie: A/D lub ←/→ ruch, W / ↑ / Spacja skok. LPM kopie klikniętą kratkę (zasięg 3) – przytrzymaj i przeciągaj, aby kopać dalej. Przycisk ⛏️ kopie w wybranym kierunku (przytrzymaj = kopanie ciągłe). PPM stawia blok (zasięg 5; wybór 5–9, 0 lub klik w pasek; drugi klik w wybrany slot zmienia typ). Kopanie wody zbiera ją do ekwipunku. Skróty broni: 1 = kilof/budowanie (kolejne wciśnięcia przełączają kilofy po craftingu), 2 = broń biała, 3 = DYSTANSOWE: łuki oraz rzuty z ręki (śnieżki, toksyczne śnieżki, kamienie, balony wodne, granaty gazowe, lepkie bomby) — kolejne wciśnięcia rotują, a klawisz pamięta ostatnio używaną broń, 4 = miotacze (ogień/woda/gaz/grawitacja — działko grawitacyjne: przytrzymaj LPM na bloku, by go wyrwać, PPM ciska nim; materiał decyduje o obrażeniach i skutkach) — kolejne wciśnięcia przełączają bronie w kategorii; w Ekwipunku przyciskiem „Skrót" wybierasz, które bronie biorą udział w przełączaniu. MATRYCA ŻYWIOŁÓW: MOKRY wróg (pływanie, deszcz, wąż, balon wodny) mocniej przewodzi prąd (a porażenie SKACZE łańcuchem po innych mokrych!) i ZAMARZA W BRYŁĘ od mrozu (np. śnieżek); ogień na zmrożonym = szok termiczny, ogień + trucizna = toksyczny zapłon, na mokrym ogień syczy i gaśnie, a wiązka elektryczna trafiając wodę elektryzuje CAŁĄ taflę. RODZAJE STRZAŁ mają charaktery: drewniane pękają najczęściej (80%), a irydowe najrzadziej (20%); ocalałe strzały można odzyskać. Kamienne ogłuszają, obsydianowe płoną przy pełnym naciągu, diamentowe przeszywają kilku wrogów, irydowe przebijają bloki (pip w pasku broni przypina typ). Trafienia i reakcje żywiołów ładują ULT szybciej; PPM tuż przed pociskiem wroga = PERFEKCYJNA PARADA (odbija pocisk!). Przy naciąganiu łuku strzałka nad głową pokazuje WIATR — znosi strzały. Z cofa zmianę. NACIŚNIJ I, aby otworzyć Centrum bohatera (rozwój, sprzęt, bronie, talizmany i surowce). Klawisz E zbiera leżące łupy w zasięgu, obsługuje mecha i służy do częstych interakcji. Najedź kursorem na leżący przedmiot: w lewym górnym rogu pojawi się podgląd (nazwa, rzadkość, statystyki), a LPM podnosi dokładnie ten jeden (zasięg 3). T zwija/rozwija panel Rzemiosła, X używa skanera kraterów. Po wybraniu broni (2/3/4) LPM używa jej w kierunku kursora, a PPM odpala naładowany ult: broń biała tnie, łuk strzela strzałami (strzała przelatująca przez ogień płonie!), miotacz ognia podpala stwory i roślinność (ogień rozprzestrzenia się po trawie, drewnie i liściach; woda gasi). Żywioły: ogień gotuje wodę w parę zasilającą chmury, topi kamień w lawę i roztapia śnieg/lód w wodę; lawa PŁYNIE (wolniej niż woda, wyrównuje poziom), parzy i podpala, a osiadła na wolnym powietrzu z czasem zastyga w obsydian; wąż wodny gasi pożary, hartuje lawę w obsydian, rozmiękcza piasek w błoto (błoto spowalnia wszystkich o połowę) i podlewa rośliny; trujący gaz zabija organizmy, a w kontakcie z ogniem lub lawą EKSPLODUJE jak TNT (płonąca strzała też detonuje chmurę). WĘDKOWANIE: wytwórz wędkę (drewno + trawa), stań nad wodą i naciśnij F — gdy spławik drgnie (❗), F podcina; duże ryby szarpią 2–3 razy (F tylko przy ❗, za wczesne szarpnięcie płoszy!). Ryby = zupa rybna (+30 HP), złota rybka = Eliksir głębin; handlarz skupuje połów. Rośliny (słoneczniki, krzewy jagodowe, trzciny, paprocie, kaktusy) kiełkują przy wodzie, piją z sąsiednich kafli wody (czasem wchłaniając cały kafel!), z deszczu i z węża; rosną etapami, usychają bez wody i obumierają ze starości. Klik na dojrzały krzew jagodowy = +6 HP. M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę. H pomoc. Zdobywasz XP i poziomy — punkty umiejętności wydasz w Centrum bohatera pod I; osiągnięcia nagradzają XP i skrzyniami. Rzemiosło: kilofy, pochodnie (światło nocą), miecz obsydianowy, talizman, totem odrodzenia (punkt respawnu), eliksiry (życie natychmiast; szybkość/siła to buffy 60 s widoczne przy pasku XP) i Róg przyzwania (wzywa bossa — drogo!). W panelu Rzemiosła gwiazdka ★ przypina ulubione receptury na górze, przycisk 📌 „Śledź" zawiesza licznik składników wybranej receptury na ekranie (powiadomi, gdy wszystko zbierzesz), filtr „Dostępne" pokazuje tylko to, co możesz wytworzyć teraz, a przy brakującym surowcu zobaczysz podpowiedź, gdzie go szukać. RECEPTURY ODKRYWASZ STOPNIOWO: przepis pojawia się w panelu, gdy zdobędziesz choć po sztuce każdego potrzebnego surowca (toast „🔓 Odblokowany przepis") albo podpatrzysz gotowy przedmiot stojący w świecie — np. drabinę czy pochodnię w domku NPC (toast „🔍 Podpatrzony przepis"); licznik „do odkrycia" mówi, ile przepisów jeszcze przed tobą, a pasek szybkiego wyboru bloków pokazuje tylko surowce, które kiedykolwiek miałeś. Odkrywasz też CAŁE KATEGORIE: pierwsza odblokowana receptura z działu (Narzędzia, Maszyny…) i pierwszy blok z grupy (Skały i rudy, Budulce…) dodają zakładkę/kategorię ORAZ wpis w Dzienniku Odkryć (+40 XP). SKRZYNIE mają pięć rzadkości (zwykła, niezwykła, rzadka, epicka, legendarna — po kolorze poznasz z daleka) i po otwarciu WYRZUCAJĄ łup fizycznie na ziemię — podnieś go jak inne dropy (E / klik). Gdy podniesiesz przedmiot lepszy od założonego, w prawym górnym rogu pojawi się karta „Znaleziono lepszy przedmiot" z przyciskiem Załóż; słabsze znaleziska trafiają po cichu do torby — obejrzysz je w Ekwipunku (pasek „✨ Nowe przedmioty"). OBSERWATORZY: przycisk 👁 na górnym pasku otwiera panel transmisji — rozpocznij ją, wyślij link znajomym, a oni dołączą jako DUCHY (oglądają twoją grę na żywo, nie zmienią świata). Aktywni widzowie wzmacniają bohatera (+10% XP, +1% szybkości/skoku/obrażeń za każdego), płoszą stwory samą obecnością, a za aktywność ładują moce (popłoch/mróz/grom). W panelu 👁 nadajesz każdemu widzowi uprawnienia (tylko ogląda / +czat / +wpływ), możesz go zbanować albo mianować ASYSTENTEM (może być ich kilku!) — asystent widzi twoje receptury z podziałem na działy, ekwipunek i zasoby, więc craftuje i zarządza sprzętem jak ty; gdy dwóch rywalizuje o te same surowce, wygrywa szybszy. Jeśli wolisz mieć kontrolę, włącz ZATWIERDZANIE: propozycje asystentów (np. „Wytwórz: Strzały irydowe ×5") czekają w panelu 👁, aż klikniesz Zatwierdź albo Odrzuć (niezatwierdzone wygasają po 3 min). Każdy widz ma też WŁASNĄ karierę ducha: za aktywną obserwację, doping, moce, płoszenie stworów i pracę asystenta zdobywa XP, poziomy, rangi (Gapiowicz → … → Strażnik Warstwy) i osiągnięcia — jego postępy zapisują się w jego przeglądarce, więc czekają na niego przy następnym linku (w twoim panelu widzisz przy nim odznakę „Poz. N"; to tylko wyróżnienie, nie daje mu żadnych dodatkowych uprawnień). ROZMOWA I WIDOCZNOŚĆ: Enter otwiera szybki czat gospodarza — twoje słowa lecą dymkiem nad bohaterem (u ciebie i u widzów), wiadomości duchów wiszą dymkami nad ich awatarami, a duch może wskazać miejsce 📍 (klawisz P) pulsującym znacznikiem widocznym dla wszystkich. Duchy unoszą się ZA bohaterem, a zaparkowane na nim — nad jego głową, więc nigdy nie zasłaniają akcji; doping, moce i praca asystentów zostawiają widoczny ślad w świecie (pierścienie, unoszące się napisy). W panelu 👁 przełączniki „duchy/dymki/działania" chowają awatary, teksty i efekty, a 👁/🙈 przy konkretnym widzu wycisza tylko jego — wyłącznie na twoim ekranie, jego wpływ na grę zostaje. Nocą i w głębi czyhają też szkielety-łucznicy (kościane pociski!), a w jaskiniach pełzacze. Jaskinie są CIEMNE — światło dociera tylko z powierzchni, pochodni, lawy i ognia; pełzacze lęgną się wyłącznie w mroku, więc oświetlona pochodniami galeria jest bezpieczna. Podziemia dziedziczą charakter biomu: w śnieżnych krainach jaskinie szronieją lodem i soplami, a w lasach i na bagnach komory jaskiniowe porastają ŚWIECĄCE GRZYBY — zbieraj je (zupa grzybowa +25 HP) albo zostaw jako naturalne latarnie. Co 2–3 dni na powierzchni rozbija kram WĘDROWNY HANDLARZ (szukaj pasiastej markizy i lśniącego 💎): kliknij kram, by kupować pochodnie, strzały, mikstury i epicką skrzynię oraz sprzedawać nadmiar surowców — walutą jest diament. Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać. Nocą wychodzą upiory i nietoperze (o świcie płoną); szukaj też ruin na lądzie i wraków na dnie mórz. Drobne kamienne rumowiska, pieńki filarów lub resztki łuku na powierzchni zdradzają ZAKOPANE RUINY — kop pod nimi! Czasem to ciasna krypta ze skrzynią (albo sarkofag czy zawalisko), czasem piwnice, otwarta studnia lub bliźniacze komory, a czasem głęboka świątynia z krętym szybem, galeriami i jednym z trzech skarbców: obsydianowym sejfem, ołtarzem nad fosą lawy albo zatopionym relikwiarzem. Ruiny przejmują materiał biomu (lodowe ściany, piaskowiec, zalane podłogi). UWAGA: starożytni zostawili PUŁAPKI — uważny gracz wypatrzy lśniącą linkę w korytarzu (strzałki!), pulsujący runiczny krąg na płycie (mina!), zielone smużki nad skrzynią (grobowy gaz!), żar lub kapiącą wodę między blokami (zbrojny zwornik — wykop go, a lawa zaleje skarbiec!) i włosowate pęknięcia podłogi (zapadnia — na dnie lawa… albo bonusowa skrzynia). A jeśli znajdziesz samotny OBSYDIANOWY MONOLIT — kop wytrwale: głęboko przy dnie świata (1% ruin) czeka ZAKOPANE MIASTO — rozświetlona pochodniami kawerna z wieżami, mostem, fosą lawy, ogrodem kryształów i obsydianowym ziguratem kryjącym dwie epickie skrzynie. Na powierzchni trafisz też na obsydianowy OŁTARZ PRZYZWANIA (dwie pochodnie, żarzy się nocą): kliknij go z ofiarą 3 diamentów i 3 obsydianu, a przybędzie GARGANTUICZNY boss — pokonany zostawia stos epickich skrzyń (jeden rytuał na ołtarz dziennie). Mniej więcej co 7 dni gry świat przemierza ZŁOTY SPRINTER (ptak, biegacz albo ryjący kret) — lśniący, błyskawiczny i trudny do ubicia; znika po pół minuty, ale pokonany zostawia epicką skrzynię i diamenty. Co 2–3 dni nadlatuje też UFO: skanuje okolicę i próbuje porwać wiązką coś żywego — zwierzę, CIEBIE, a nawet bossa! Tarcza spodka pochłania ciosy, ale opada, gdy wiązka jest włączona — to moment na atak (łuk!). Zestrzelony zostawia ANTYMATERIĘ (receptura: Mikstura antygrawitacji) i czasem artefakt Obcych; porwany bohater zostaje wywieziony i wyrzucony daleko — chyba że w locie sam zestrzeli spodek. Zielony duch bloku = można postawić, czerwony = nie można. Na ekranie dotykowym szczypnięcie zmienia zoom. Ekwipunek i pasek szybkiego wyboru są zapisywane automatycznie.</div>
     <div id="controls" class="touchUi" aria-label="Sterowanie ruchem">
       <div class="touchStickZone pad" id="pad" role="group" aria-label="Joystick ruchu: przeciągnij, aby iść; w górę skaczesz, w dół schodzisz">
         <div class="touchStickBase"><div class="touchStickKnob" id="moveStickKnob" aria-hidden="true"></div></div>
@@ -1183,7 +1212,7 @@
         <div id="houseComfortItems" aria-label="Wyposażenie domu"></div>
       </section>
       <div id="dropPreview" aria-live="polite"></div>
-      <div id="upgradeNotice" role="region" aria-label="Lepsze przedmioty" aria-live="polite" aria-atomic="false"></div>
+      <div id="upgradeNotice" role="region" aria-label="Kolejka wartościowych przedmiotów" aria-live="polite" aria-atomic="false"></div>
     </div>
     <div id="weaponBar" role="toolbar" aria-label="Skróty broni (klawisze 1–4)">
       <div class="wepSlot" data-wkey="1"><span class="key">1</span><span class="wcyc"></span><span class="wicon">⛏️</span><span class="wname"></span><span class="wsub"></span><span class="wgauge"><i></i></span></div>
@@ -1219,10 +1248,27 @@
   <!-- Inventory overlay -->
   <style>
     #invOverlay,#invOverlay *{ box-sizing:border-box; }
-    #invOverlay{ position:fixed; inset:0; background:rgba(4,7,13,.72); backdrop-filter:blur(10px); display:none; z-index:60; color:#e8edf6; font-size:13px; }
+    #invOverlay{ position:fixed; inset:0; background:radial-gradient(circle at 50% 20%,rgba(28,47,75,.28),rgba(4,7,13,.82) 62%); backdrop-filter:blur(12px); display:none; z-index:60; color:#e8edf6; font-size:13px; }
     @keyframes invPop{ from{ opacity:0; transform:translate(-50%,-50%) scale(.975); } to{ opacity:1; transform:translate(-50%,-50%) scale(1); } }
-    #invDialog{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:min(1020px,94vw); max-height:86vh; background:linear-gradient(165deg,rgba(22,28,40,.97),rgba(14,18,27,.97)); border:1px solid rgba(255,255,255,.12); border-radius:18px; display:flex; gap:18px; padding:16px 18px 16px; box-shadow:0 24px 64px -12px rgba(0,0,0,.7); animation:invPop .16s ease-out; }
+    #invDialog{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:min(1180px,96vw); height:min(820px,92vh); max-height:92vh; overflow:hidden; background:linear-gradient(155deg,rgba(22,30,44,.985),rgba(10,15,24,.985)); border:1px solid rgba(164,199,238,.2); border-radius:22px; display:flex; flex-direction:column; box-shadow:0 32px 84px -18px rgba(0,0,0,.82),inset 0 1px 0 rgba(255,255,255,.06); animation:invPop .16s ease-out; }
     @media (prefers-reduced-motion:reduce){ #invDialog{ animation:none; } }
+    #invHeader{ flex:none; display:grid; grid-template-columns:minmax(230px,1fr) auto minmax(230px,1fr); align-items:center; gap:20px; padding:16px 18px 14px; border-bottom:1px solid rgba(255,255,255,.09); background:linear-gradient(180deg,rgba(255,255,255,.035),transparent); }
+    .invTitleBlock{ min-width:0; }
+    #invHeader h2{ margin:0; color:#f7fbff; font-size:19px; font-weight:850; letter-spacing:.2px; }
+    #invHeader p{ margin:3px 0 0; overflow:hidden; color:#8fa4ba; font-size:10.5px; line-height:1.25; text-overflow:ellipsis; white-space:nowrap; }
+    #invPrimaryNav{ display:flex; align-items:center; gap:6px; padding:4px; border:1px solid rgba(255,255,255,.1); border-radius:14px; background:rgba(3,8,15,.42); }
+    .invPrimaryBtn{ position:relative; min-width:150px; height:42px; display:flex; align-items:center; justify-content:center; gap:8px; border:1px solid transparent; border-radius:10px; color:#aebed0; background:transparent; font:inherit; font-size:12px; font-weight:800; cursor:pointer; transition:background .14s,border-color .14s,color .14s,box-shadow .14s; }
+    .invPrimaryBtn:hover{ color:#fff; background:rgba(255,255,255,.06); }
+    .invPrimaryBtn.sel{ color:#fff; border-color:rgba(117,189,255,.38); background:linear-gradient(180deg,rgba(53,133,235,.42),rgba(38,92,175,.34)); box-shadow:0 5px 18px rgba(24,94,185,.2),inset 0 1px rgba(255,255,255,.13); }
+    .invPrimaryBtn .navIcon{ font-size:17px; }
+    .invPrimaryBtn .navPoint{ display:none; position:absolute; right:7px; top:6px; min-width:16px; height:16px; place-items:center; padding:0 4px; border-radius:99px; color:#271b00; background:#ffd45f; font-size:9px; font-weight:950; box-shadow:0 0 12px rgba(255,205,77,.45); }
+    .invPrimaryBtn .navPoint.show{ display:grid; }
+    #invClose{ justify-self:end; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.13); color:#dfe8f3; width:38px; height:38px; border-radius:11px; font-size:18px; cursor:pointer; transition:background .12s,border-color .12s; }
+    #invClose:hover{ background:rgba(248,113,113,.25); border-color:rgba(248,113,113,.48); }
+    #invWorkspace{ flex:1; min-height:0; overflow:hidden; }
+    .invPrimaryView{ height:100%; min-height:0; }
+    .invPrimaryView[hidden]{ display:none!important; }
+    #equipmentView{ display:flex; gap:18px; padding:16px 18px 13px; }
     #invLeft{ width:262px; flex:none; display:flex; flex-direction:column; gap:10px; overflow-y:auto; scrollbar-width:thin; padding-right:2px; }
     #invLeft>*{ flex:none; } /* scroll container: children keep natural height (preview must not squash) */
     #invPreviewWrap{ position:relative; background:radial-gradient(120% 90% at 50% 12%,#1c2736 0%,#0c121c 100%); border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:10px; display:flex; align-items:center; justify-content:center; overflow:hidden; }
@@ -1259,7 +1305,68 @@
     .invTabBtn.sel{ background:linear-gradient(180deg,#3486ff,#2668d8); border-color:rgba(150,200,255,.55); color:#fff; box-shadow:0 4px 14px -6px rgba(44,126,248,.9), inset 0 1px 0 rgba(255,255,255,.22); }
     .invTabBtn .cnt{ font-size:10px; font-weight:800; background:rgba(0,0,0,.28); border-radius:8px; padding:1px 6px; color:rgba(255,255,255,.85); }
     .invTabBtn .dotNew{ position:absolute; top:-3px; right:-3px; width:9px; height:9px; border-radius:50%; background:#7df9ff; border:2px solid #10151f; box-shadow:0 0 8px rgba(125,249,255,.9); }
-    #invRight{ flex:1; display:flex; flex-direction:column; min-width:0; gap:9px; }
+    #invRight{ flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; gap:9px; }
+    /* Character development is a primary workspace, never a small inventory card. */
+    #heroView{ overflow:auto; padding:18px; scrollbar-width:thin; }
+    .heroOverview{ position:relative; display:grid; grid-template-columns:180px minmax(0,1fr) auto; align-items:center; gap:20px; min-height:178px; overflow:hidden; margin-bottom:14px; padding:16px 18px; border:1px solid rgba(107,183,255,.2); border-radius:18px; background:radial-gradient(circle at 14% 30%,rgba(40,129,222,.2),transparent 36%),linear-gradient(115deg,rgba(20,35,55,.94),rgba(12,19,31,.76)); box-shadow:inset 0 1px rgba(255,255,255,.05); }
+    .heroOverview::after{ content:""; position:absolute; right:-40px; top:-110px; width:310px; height:310px; border:1px solid rgba(125,249,255,.08); border-radius:50%; box-shadow:0 0 70px rgba(44,126,248,.08),inset 0 0 70px rgba(44,126,248,.06); pointer-events:none; }
+    .heroPortrait{ position:relative; z-index:1; height:146px; display:grid; place-items:center; overflow:hidden; border:1px solid rgba(125,249,255,.17); border-radius:14px; background:radial-gradient(circle at 50% 35%,rgba(67,137,206,.28),rgba(5,11,19,.64) 72%); }
+    #heroPreview{ width:142px; height:142px; image-rendering:pixelated; }
+    #heroSummary{ position:relative; z-index:1; min-width:0; }
+    .heroEyebrow{ margin-bottom:4px; color:#7ed8ff; font-size:9px; font-weight:900; letter-spacing:.15em; text-transform:uppercase; }
+    .heroLevelLine{ display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+    .heroLevelLine h3{ margin:0; color:#fff; font-size:27px; line-height:1; }
+    .heroLevelLine span{ color:#9fb1c5; font-size:11px; }
+    .heroXpMeta{ display:flex; justify-content:space-between; gap:12px; margin-top:13px; color:#a9bbce; font-size:10.5px; }
+    .heroXpTrack{ height:9px; margin-top:6px; overflow:hidden; border:1px solid rgba(255,255,255,.07); border-radius:99px; background:rgba(0,0,0,.35); }
+    .heroXpTrack i{ display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#2877e6,#56c7ff 72%,#93fbff); box-shadow:0 0 13px rgba(78,198,255,.5); transition:width .25s ease; }
+    .heroSummaryHint{ margin:10px 0 0; max-width:600px; color:#8ea1b6; font-size:10.5px; line-height:1.45; }
+    .heroPointBank{ position:relative; z-index:1; min-width:154px; padding:15px 14px; border:1px solid rgba(255,211,90,.26); border-radius:14px; text-align:center; background:linear-gradient(180deg,rgba(255,204,67,.14),rgba(255,204,67,.045)); }
+    .heroPointBank strong{ display:block; color:#ffe178; font-size:34px; line-height:1; font-variant-numeric:tabular-nums; }
+    .heroPointBank span{ display:block; margin-top:6px; color:#f5ddb0; font-size:10px; font-weight:850; letter-spacing:.05em; text-transform:uppercase; }
+    .heroPointBank small{ display:block; margin-top:8px; color:#9e9177; font-size:9.5px; line-height:1.35; }
+    .heroPointBank.empty{ border-color:rgba(255,255,255,.11); background:rgba(255,255,255,.035); }
+    .heroPointBank.empty strong{ color:#8190a1; }
+    .heroPointBank.empty span{ color:#9aa8b7; }
+    .heroColumns{ display:grid; grid-template-columns:minmax(0,1.55fr) minmax(300px,.75fr); gap:14px; align-items:start; }
+    .heroSection{ border:1px solid rgba(255,255,255,.1); border-radius:16px; background:rgba(255,255,255,.025); }
+    .heroSectionHead{ display:flex; justify-content:space-between; align-items:flex-start; gap:16px; padding:14px 15px 10px; }
+    .heroSectionHead h3{ margin:0; color:#f3f7fc; font-size:14px; }
+    .heroSectionHead p{ margin:4px 0 0; color:#8698ab; font-size:10px; line-height:1.35; }
+    .heroPermanent{ flex:none; display:flex; align-items:center; gap:5px; padding:4px 8px; border:1px solid rgba(255,255,255,.11); border-radius:99px; color:#8fa1b4; font-size:9px; white-space:nowrap; }
+    #invProgress{ padding:0 12px 13px; }
+    .heroAttributeGrid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+    .heroAttribute{ --attr:#7cc4ff; position:relative; min-height:166px; display:flex; flex-direction:column; gap:7px; overflow:hidden; padding:12px; border:1px solid color-mix(in srgb,var(--attr) 25%,rgba(255,255,255,.1)); border-radius:13px; background:linear-gradient(145deg,color-mix(in srgb,var(--attr) 7%,rgba(255,255,255,.035)),rgba(255,255,255,.018)); }
+    .heroAttribute::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--attr); opacity:.85; }
+    .heroAttributeTop{ display:grid; grid-template-columns:38px minmax(0,1fr) auto; align-items:center; gap:9px; }
+    .heroAttributeIcon{ width:38px; height:38px; display:grid; place-items:center; border:1px solid color-mix(in srgb,var(--attr) 32%,transparent); border-radius:11px; background:color-mix(in srgb,var(--attr) 10%,rgba(0,0,0,.28)); font-size:19px; }
+    .heroAttributeName strong{ display:block; color:#f4f8fc; font-size:13px; }
+    .heroAttributeName span{ display:block; margin-top:2px; color:#8d9caf; font-size:9px; letter-spacing:.04em; text-transform:uppercase; }
+    .heroAttributeValue{ color:var(--attr); font-size:22px; font-weight:900; font-variant-numeric:tabular-nums; }
+    .heroAttributeDesc{ margin:0; color:#b4c0cf; font-size:10px; line-height:1.42; }
+    .heroAttributeImpact{ display:flex; align-items:flex-start; gap:6px; margin-top:auto; padding-top:7px; border-top:1px dashed rgba(255,255,255,.1); color:#8293a6; font-size:9.5px; line-height:1.35; }
+    .heroAttributeImpact b{ color:#b9c8d8; }
+    .heroAttributeFoot{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .heroAttributeNext{ color:color-mix(in srgb,var(--attr) 75%,#fff); font-size:9.5px; font-weight:750; }
+    .heroAttribute button{ flex:none; min-width:116px; height:31px; border:1px solid color-mix(in srgb,var(--attr) 48%,transparent); border-radius:8px; color:#06111d; background:linear-gradient(180deg,color-mix(in srgb,var(--attr) 88%,#fff),var(--attr)); font:inherit; font-size:9.5px; font-weight:900; cursor:pointer; box-shadow:0 4px 12px color-mix(in srgb,var(--attr) 14%,transparent); }
+    .heroAttribute button:hover:not(:disabled){ filter:brightness(1.1); }
+    .heroAttribute button:disabled{ color:#7f8c9a; border-color:rgba(255,255,255,.1); background:rgba(255,255,255,.055); box-shadow:none; cursor:default; }
+    .heroSide{ display:flex; flex-direction:column; gap:12px; }
+    #invStats{ overflow:hidden; }
+    #invStatsBody{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; padding:0 12px 13px; }
+    .heroStatRow{ min-width:0; padding:9px 10px; border:1px solid rgba(255,255,255,.08); border-radius:10px; background:rgba(3,8,14,.24); }
+    .heroStatHead{ display:flex; flex-direction:column; gap:3px; }
+    .heroStatHead span{ overflow:hidden; color:#7f91a5; font-size:9px; line-height:1.2; text-overflow:ellipsis; white-space:nowrap; }
+    .heroStatHead strong{ color:#edf5fd; font-size:14px; line-height:1.15; font-variant-numeric:tabular-nums; }
+    .heroStatSources{ margin:6px 0 0; padding:6px 0 0; border-top:1px dashed rgba(255,255,255,.09); color:#8595a7; font-size:8.5px; line-height:1.35; list-style:none; }
+    .heroStatSources li+li{ margin-top:2px; }
+    #heroMilestones{ overflow:hidden; }
+    .heroMilestoneBody{ display:flex; flex-direction:column; gap:6px; padding:0 12px 13px; }
+    .heroMilestone{ display:grid; grid-template-columns:22px minmax(0,1fr) auto; align-items:center; gap:7px; padding:7px 8px; border:1px solid rgba(255,255,255,.07); border-radius:9px; background:rgba(3,8,14,.2); }
+    .heroMilestone.done{ opacity:.55; }
+    .heroMilestoneIcon{ display:grid; place-items:center; width:22px; height:22px; border-radius:7px; background:rgba(255,204,83,.1); font-size:11px; }
+    .heroMilestoneText{ min-width:0; color:#aebccc; font-size:9px; line-height:1.3; }
+    .heroMilestoneReward{ color:#ffd96b; font-size:8.5px; font-weight:850; white-space:nowrap; }
     #invToolbar{ display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
     .invSearchWrap{ flex:1 1 190px; min-width:150px; position:relative; }
     .invSearchWrap::before{ content:"🔍"; position:absolute; left:9px; top:50%; transform:translateY(-50%); font-size:11px; opacity:.55; pointer-events:none; }
@@ -1401,26 +1508,38 @@
     #invActions{ display:flex; gap:8px; }
     #invActions button{ flex:1; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.2); color:#fff; border-radius:8px; padding:5px 0; font-size:12px; font-weight:600; cursor:pointer; }
     #invActions button:hover{ background:rgba(255,255,255,.22); }
-    #invHeader{ display:flex; align-items:center; justify-content:space-between; }
-    #invHeader h2{ font-weight:800; letter-spacing:.2px; }
-    #invClose{ background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.14); color:#fff; width:36px; height:36px; border-radius:11px; font-size:17px; cursor:pointer; transition:background .12s,border-color .12s; }
-    #invClose:hover{ background:rgba(248,113,113,.30); border-color:rgba(248,113,113,.55); }
-    #invFooter{ display:flex; justify-content:space-between; align-items:center; font-size:10px; color:rgba(222,232,246,.62); gap:8px; white-space:nowrap; }
+    #invFooter{ flex:none; display:flex; justify-content:space-between; align-items:center; padding:8px 18px 10px; border-top:1px solid rgba(255,255,255,.07); font-size:9.5px; color:rgba(222,232,246,.55); gap:8px; white-space:nowrap; }
     #invFooter kbd{ font:inherit; font-weight:750; color:#cfe0f6; background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18); border-radius:4px; padding:0 4px; }
     @media (max-width:760px),(max-height:620px){
-      #invDialog{ inset:10px; left:10px; top:10px; transform:none; width:auto; height:calc(100vh - 20px); max-height:none; flex-direction:column; gap:10px; padding:12px; overflow:hidden; }
-      #invLeft{ width:auto; max-height:42vh; display:grid; grid-template-columns:minmax(116px,150px) minmax(0,1fr); gap:8px; overflow:auto; }
-      #invHeader{ grid-column:1/-1; }
+      #invDialog{ inset:8px; left:8px; top:8px; transform:none; width:auto; height:calc(100vh - 16px); max-height:none; }
+      #invHeader{ grid-template-columns:minmax(0,1fr) auto; gap:10px; padding:10px 12px; }
+      .invTitleBlock{ display:none; }
+      #invPrimaryNav{ justify-self:start; }
+      .invPrimaryBtn{ min-width:132px; height:38px; }
+      #equipmentView{ padding:10px 12px; flex-direction:column; gap:10px; overflow:auto; }
+      #invLeft{ width:auto; max-height:39vh; display:grid; grid-template-columns:minmax(116px,150px) minmax(0,1fr); gap:8px; overflow:auto; }
       #invPreviewWrap{ padding:8px; min-height:0; }
       #invPreview{ width:116px; height:116px; }
-      #invSlots,#invProgress,#invColors,#invActions,#invFooter,#invStats{ min-width:0; }
+      #invSlots,#invColors,#invActions{ min-width:0; }
       #invRight{ min-height:0; flex:1; }
       #invTabs{ gap:6px; }
       .invTabBtn{ border-radius:8px; padding:6px 10px; }
       #invGrid{ grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); }
+      #heroView{ padding:12px; }
+      .heroOverview{ grid-template-columns:130px minmax(0,1fr) 130px; min-height:146px; gap:13px; padding:12px; }
+      .heroPortrait{ height:120px; }
+      #heroPreview{ width:116px; height:116px; }
+      .heroLevelLine h3{ font-size:22px; }
+      .heroSummaryHint{ display:none; }
+      .heroColumns{ grid-template-columns:1fr; }
+      .heroSide{ display:grid; grid-template-columns:1fr 1fr; align-items:start; }
     }
     @media (max-width:520px){
-      #invDialog{ inset:6px; left:6px; top:6px; height:calc(100vh - 12px); padding:10px; }
+      #invDialog{ inset:4px; left:4px; top:4px; height:calc(100vh - 8px); border-radius:16px; }
+      #invHeader{ padding:7px; }
+      #invPrimaryNav{ width:100%; }
+      .invPrimaryBtn{ flex:1; min-width:0; height:40px; padding:0 8px; }
+      #invClose{ width:38px; height:38px; }
       #invLeft{ display:flex; width:auto; max-height:38vh; }
       #invPreviewWrap{ display:none; }
       #invToolbar{ gap:6px; }
@@ -1433,6 +1552,58 @@
       .invResGrid{ grid-template-columns:repeat(auto-fill,minmax(136px,1fr)); }
       .invJewelForge{ grid-template-columns:1fr; }
       .invJewelForge strong{ grid-column:auto; }
+      #heroView{ padding:8px; }
+      .heroOverview{ grid-template-columns:76px minmax(0,1fr); min-height:116px; margin-bottom:8px; padding:9px; gap:9px; }
+      .heroPortrait{ height:92px; }
+      #heroPreview{ width:88px; height:88px; }
+      .heroPointBank{ grid-column:1/-1; display:grid; grid-template-columns:auto 1fr; align-items:center; min-width:0; padding:8px 11px; text-align:left; }
+      .heroPointBank strong{ grid-row:1/3; margin-right:10px; font-size:28px; }
+      .heroPointBank span,.heroPointBank small{ margin:0; }
+      .heroPointBank small{ margin-top:2px; }
+      .heroLevelLine h3{ font-size:19px; }
+      .heroXpMeta{ margin-top:9px; }
+      .heroColumns{ gap:8px; }
+      .heroSectionHead{ padding:11px 10px 8px; }
+      .heroPermanent{ display:none; }
+      #invProgress{ padding:0 8px 9px; }
+      .heroAttributeGrid{ grid-template-columns:1fr; gap:7px; }
+      .heroAttribute{ min-height:154px; }
+      .heroSide{ display:flex; }
+      #invStatsBody{ grid-template-columns:repeat(2,minmax(0,1fr)); padding:0 8px 9px; }
+      .heroStatRow{ padding:7px 8px; }
+      #invFooter{ display:none; }
+    }
+    /* A phone turned sideways has width for two work areas but very little
+       height. Keep equipment slots beside the item list and retain the wide
+       hero dashboard instead of turning both views into long single columns. */
+    @media (orientation:landscape) and (min-width:521px) and (max-height:620px){
+      #invDialog{ inset:4px; left:4px; top:4px; width:auto; height:calc(100vh - 8px); border-radius:14px; }
+      #invHeader{ gap:7px; padding:6px 8px; }
+      #invPrimaryNav{ gap:4px; padding:3px; }
+      .invPrimaryBtn{ min-width:120px; height:36px; }
+      #invClose{ width:36px; height:36px; }
+      #equipmentView{ flex-direction:row; gap:8px; overflow:hidden; padding:7px 8px; }
+      #invLeft{ display:flex; width:clamp(176px,28vw,232px); max-height:none; overflow-y:auto; gap:7px; }
+      #invPreviewWrap{ display:none; }
+      #invRight{ min-height:0; }
+      #invTabs{ gap:4px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:thin; }
+      .invTabBtn{ flex:none; padding:5px 8px; }
+      #invGrid{ gap:7px; grid-template-columns:repeat(auto-fill,minmax(108px,1fr)); }
+      #heroView{ overflow-y:auto; padding:7px 8px; }
+      .heroOverview{ grid-template-columns:92px minmax(0,1fr) 120px; min-height:104px; gap:9px; margin-bottom:8px; padding:8px 9px; }
+      .heroPortrait{ height:88px; }
+      #heroPreview{ width:86px; height:86px; }
+      .heroLevelLine h3{ font-size:20px; }
+      .heroXpMeta{ margin-top:7px; }
+      .heroPointBank{ min-width:0; padding:9px 8px; }
+      .heroPointBank strong{ font-size:28px; }
+      .heroPointBank small{ display:none; }
+      .heroColumns{ grid-template-columns:minmax(0,1.35fr) minmax(215px,.65fr); gap:8px; }
+      .heroSide{ display:flex; gap:8px; }
+      .heroSectionHead{ padding:10px 10px 7px; }
+      #invProgress{ padding:0 8px 9px; }
+      #invStatsBody{ padding:0 8px 9px; }
+      #invFooter{ display:none; }
     }
   /* World settings overlay (modal) */
   #worldSettingsOverlay{ position:fixed; inset:0; background:rgba(5,8,14,.70); backdrop-filter:blur(10px); display:none; z-index:150; color:#eee; font-size:13px; }
@@ -1443,23 +1614,66 @@
   </style>
   <div id="invOverlay" role="dialog" aria-modal="true" aria-labelledby="invTitle">
     <div id="invDialog">
-      <div id="invLeft">
-        <div id="invHeader"><h2 id="invTitle" style="margin:0;font-size:18px;">Ekwipunek</h2><button id="invClose" aria-label="Zamknij">×</button></div>
-        <div id="invPreviewWrap"><canvas id="invPreview" width="220" height="220"></canvas></div>
-        <div id="invSlots" aria-label="Wyposażenie"></div>
-        <div id="invProgress" aria-label="Rozwój postaci" style="padding:8px 10px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08); border-radius:8px; font-size:11px; line-height:1.4;"></div>
-        <div id="invColors"></div>
-        <div id="invActions"></div>
-        <div id="invFooter"><span id="invSelInfo">—</span><span>Auto‑zapis</span></div>
-        <div id="invStats" style="padding:8px 10px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.08); border-radius:8px; font-size:11px; line-height:1.4; max-height:170px; overflow:auto;">
-          <strong>Aktualne statystyki</strong>
-          <div id="invStatsBody" aria-live="polite"></div>
+      <header id="invHeader">
+        <div class="invTitleBlock">
+          <h2 id="invTitle">Centrum bohatera</h2>
+          <p id="invSubtitle">Rozwijaj własne cechy niezależnie od noszonego sprzętu.</p>
         </div>
+        <nav id="invPrimaryNav" aria-label="Główne obszary centrum bohatera">
+          <button class="invPrimaryBtn sel" id="invHeroNav" data-view="hero" aria-controls="heroView" aria-selected="true">
+            <span class="navIcon" aria-hidden="true">✦</span><span>Bohater</span><i class="navPoint" id="invPointBadge">0</i>
+          </button>
+          <button class="invPrimaryBtn" id="invEquipmentNav" data-view="equipment" aria-controls="equipmentView" aria-selected="false">
+            <span class="navIcon" aria-hidden="true">🎒</span><span>Wyposażenie</span>
+          </button>
+        </nav>
+        <button id="invClose" aria-label="Zamknij centrum bohatera">×</button>
+      </header>
+      <div id="invWorkspace">
+        <section id="heroView" class="invPrimaryView" aria-label="Rozwój bohatera">
+          <div class="heroOverview">
+            <div class="heroPortrait"><canvas id="heroPreview" width="220" height="220" aria-label="Podgląd bohatera"></canvas></div>
+            <div id="heroSummary" aria-live="polite"></div>
+            <div id="heroPointBank" class="heroPointBank"></div>
+          </div>
+          <div class="heroColumns">
+            <section class="heroSection" aria-labelledby="heroAttributesTitle">
+              <div class="heroSectionHead">
+                <div><h3 id="heroAttributesTitle">Atrybuty bohatera</h3><p>To trwały trening postaci. Każdy punkt poziomu wybiera jeden kierunek rozwoju.</p></div>
+                <div class="heroPermanent" title="Przydzielonych punktów nie można obecnie cofnąć">◆ wybór stały</div>
+              </div>
+              <div id="invProgress" aria-label="Atrybuty do rozwinięcia"></div>
+            </section>
+            <aside class="heroSide">
+              <section id="invStats" class="heroSection" aria-labelledby="heroStatsTitle">
+                <div class="heroSectionHead">
+                  <div><h3 id="heroStatsTitle">Wynikowe statystyki</h3><p>Łączny efekt treningu, sprzętu i aktywnych premii.</p></div>
+                </div>
+                <div id="invStatsBody" aria-live="polite"></div>
+              </section>
+              <section id="heroMilestones" class="heroSection" aria-labelledby="heroMilestonesTitle">
+                <div class="heroSectionHead">
+                  <div><h3 id="heroMilestonesTitle">Droga po kolejne poziomy</h3><p>Zdobywaj XP w świecie, aby otrzymywać następne punkty.</p></div>
+                </div>
+                <div id="heroMilestoneBody" class="heroMilestoneBody"></div>
+              </section>
+            </aside>
+          </div>
+        </section>
+        <section id="equipmentView" class="invPrimaryView" aria-label="Wyposażenie" hidden>
+          <div id="invLeft">
+            <div id="invPreviewWrap"><canvas id="invPreview" width="220" height="220" aria-label="Podgląd wyposażenia"></canvas></div>
+            <div id="invSlots" aria-label="Założone wyposażenie"></div>
+            <div id="invColors"></div>
+            <div id="invActions"></div>
+          </div>
+          <div id="invRight">
+            <div id="invTabs" role="tablist" aria-label="Kategorie wyposażenia"></div>
+            <div id="invGrid" aria-label="Lista przedmiotów"></div>
+          </div>
+        </section>
       </div>
-      <div id="invRight">
-        <div id="invTabs" role="tablist"></div>
-        <div id="invGrid" aria-label="Lista przedmiotów"></div>
-      </div>
+      <div id="invFooter"><span id="invSelInfo">—</span><span>Zmiany zapisują się automatycznie</span></div>
     </div>
   </div>
   <!-- World settings overlay -->

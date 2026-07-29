@@ -3,10 +3,10 @@
 //   * pop physics: drops arc, land on solid footing and settle (and resume
 //     falling when the ground under them is mined away)
 //   * manual mode: E collects the nearest drop in reach (wantsInteractKey
-//     claims the interact key from the wardrobe); auto mode vacuums drops
+//     claims the interact key); auto mode vacuums drops
 //   * cursor pickup (PC): hoverAt previews the drop under the pointer (fog-
 //     gated, copies the item), pickupAt click-grabs exactly one within reach;
-//     holding E (E_HOLD_MS) always opens the wardrobe
+//     I opens the hero center independently while E remains the world verb
 //   * resource pickups add to window.inv; gear pickups ride the chest-loot
 //     pipeline (MM.dynamicLoot + MM.onLootGained inbox celebration)
 //   * themed species gear rolls (GEAR_LOOT): kind/weapon class forced through
@@ -709,28 +709,32 @@ assert.match(mobsSrc, /MM\.drops\.rollGearDrop\(m\)/, 'mob deaths roll themed ge
 assert.match(mobsSrc, /MM\.drops\.rollJewelDrop\(m,spec\)/, 'mob deaths roll power-scaled jewels');
 assert.match(mobsSrc, /meatScrapCountFor/, 'meat kills shed size-scaled scrap counts');
 const invUiSrc = readFileSync(new URL('../src/inventory_ui.js', import.meta.url), 'utf8');
-assert.match(invUiSrc, /drops\.wantsInteractKey/, 'wardrobe yields E to a drop in reach');
-assert.match(invUiSrc, /const E_HOLD_MS=\d+/, 'holding E opens the wardrobe past the tap window');
-assert.match(invUiSrc, /!e\.repeat && logicalKey\(e\)==='e'/, 'auto-repeat E never toggles the wardrobe (logicalKey honors rebinds)');
+assert.doesNotMatch(invUiSrc, /drops\.wantsInteractKey|mechs\.wantsInteractKey|E_HOLD_MS/, 'hero center no longer competes with contextual E interactions');
+assert.match(invUiSrc, /!e\.repeat && logicalKey\(e\)==='i'/, 'auto-repeat I never toggles the hero center (logicalKey honors rebinds)');
+assert.match(indexSrc, /id="heroCenterBtn"[^>]*aria-controls="invOverlay"/, 'the permanent HUD icon opens the hero center');
 assert.match(indexSrc, /id="dropPreview"/, 'index.html carries the corner drop-preview card');
 // The modal loot inbox ("Nowe przedmioty") is RETIRED: found gear lands in the bag,
 // the upgrade card is the only interruption, and Ekwipunek reviews the rest. Keep it
 // buried — a reintroduced popup would double up on the inventory panel again.
 assert.ok(!/id="lootPopup"|id="lootInboxBtn"|id="lootDim"/.test(indexSrc), 'no loot inbox popup/button survives in index.html');
 assert.match(indexSrc, /id="upgradeNotice"/, 'the upgrade-notice card is the loot signal');
-assert.match(indexSrc, /id="upgradeNotice"[^>]*role="region"/, 'the upgrade stack is exposed as one accessible live region');
-assert.match(indexSrc, /#upgradeNotice \.upgradeNotice/, 'each pending upgrade has its own styled card');
+assert.match(indexSrc, /id="upgradeNotice"[^>]*role="region"/, 'the upgrade queue is exposed as one accessible live region');
+assert.match(indexSrc, /#upgradeNotice \.upgradeNotice/, 'the active upgrade has a styled decision card');
+assert.match(indexSrc, /#upgradeNotice \.upQueue/, 'the active card communicates how many finds still wait');
 assert.match(mainSrc, /window\.__lootNoticeInit=true;/, 'loot signal block replaced the inbox block');
 assert.ok(!/lootInbox|openInbox|lootPopup/.test(mainSrc), 'main.js keeps no inbox machinery');
 assert.match(mainSrc, /const fresh=ownedGearItems\(items\)\.filter\(it=>!announcedLoot\.has\(it\.id\)\);/, 'each found item is signalled exactly once');
 assert.match(mainSrc, /const upgrades=rows\.filter\(row=>isUpgradeWorthy\(row\.cmp\)\);/, 'every real upgrade in a fresh batch gets selected');
-assert.match(mainSrc, /upgrades\.slice\(\)\.reverse\(\)\.forEach\(row=>\{ if\(showUpgradeNotice\(row\.item,row\.cmp\)\) shown\+\+; \}\);/, 'all selected upgrades are rendered instead of only the best one');
-assert.match(mainSrc, /upgradeNoticeEl\.prepend\(card\);/, 'new upgrade cards join the existing stack at the visible top');
-assert.match(mainSrc, /dismissUpgradeNotice\(card\)/, 'each upgrade action dismisses only its own card');
-assert.match(mainSrc, /function refreshUpgradeNotices\(\)[\s\S]*querySelectorAll\('\.upgradeNotice\[data-item-id\]'\)/, 'pending cards can be re-evaluated after equipment changes');
-assert.match(mainSrc, /addEventListener\('mm-customization-change',refreshUpgradeNotices\)/, 'equipment changes refresh every pending upgrade comparison');
-assert.match(mainSrc, /classList\.toggle\('noLongerUpgrade',!worthy\)/, 'a stale upgrade card remains visible but is no longer labelled as an upgrade');
-assert.ok(!/upgradeNoticeTimer|hideUpgradeNotice|upgradeNoticeEl\.textContent='';/.test(mainSrc), 'pending upgrade cards are neither timed out nor cleared by a newer find');
+assert.match(mainSrc, /upgrades\.forEach\(row=>\{ if\(showUpgradeNotice\(row\.item\)\) shown\+\+; \}\);/, 'all selected upgrades enter the queue instead of only the best one');
+assert.match(mainSrc, /upgradeNoticeQueue\.enqueue\(\{itemId:item\.id\}\)/, 'new finds wait as data instead of stacked DOM cards');
+assert.match(mainSrc, /upgradeNoticeEl\.replaceChildren\(card\)/, 'the queue renders exactly one active decision card');
+assert.match(mainSrc, /function dismissUpgradeNotice\(card\)[\s\S]*showNextUpgradeNotice\(\)/, 'either card action promotes the next queued find');
+assert.match(mainSrc, /function refreshUpgradeNotices\(\)[\s\S]*activeUpgradeNotice\.card/, 'equipment changes re-evaluate only the active card');
+assert.match(mainSrc, /if\(!item\)\{[\s\S]*dismissUpgradeNotice\(card\)/, 'an item removed elsewhere is skipped and cannot block the queue');
+assert.match(mainSrc, /if\(equipped && activeUpgradeNotice && activeUpgradeNotice\.card===card\)[\s\S]*dismissUpgradeNotice\(card\)/, 'equipping the active item elsewhere counts as a decision and advances the queue');
+assert.match(mainSrc, /addEventListener\('mm-customization-change',refreshUpgradeNotices\)/, 'equipment changes refresh the active upgrade comparison');
+assert.match(mainSrc, /classList\.toggle\('noLongerUpgrade',!worthy\)/, 'a stale active card remains visible but is no longer labelled as an upgrade');
+assert.ok(!/upgradeNoticeTimer|hideUpgradeNotice|upgradeNoticeEl\.textContent='';/.test(mainSrc), 'queued upgrades never time out or get replaced by a newer find');
 const craftingSrc = readFileSync(new URL('../src/engine/crafting.js', import.meta.url), 'utf8');
 assert.match(craftingSrc, /meatScrap:/, 'crafting source hints cover meat scraps');
 const lairsSrc = readFileSync(new URL('../src/engine/guardian_lairs.js', import.meta.url), 'utf8');

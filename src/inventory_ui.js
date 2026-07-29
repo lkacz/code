@@ -6,18 +6,52 @@ import './inventory.js';
   window.MM = window.MM || {};
   if(!MM.modalInput){
     const active=new Set();
+    const layerOrder=[];
+    const layerElements=new Map();
+    const MODAL_LAYER_BASE=2000;
     function setModalFlag(){
       if(!document.body) return;
       if(active.size) document.body.dataset.mmModalOpen='true';
       else delete document.body.dataset.mmModalOpen;
     }
+    function restack(){
+      layerOrder.forEach((id,index)=>{
+        const el=layerElements.get(id);
+        if(!el || !el.style) return;
+        el.style.zIndex=String(MODAL_LAYER_BASE+index);
+        el.dataset.mmModalLayer=String(index+1);
+      });
+    }
+    function raise(id,el){
+      if(!id) return;
+      const at=layerOrder.indexOf(id);
+      if(at>=0) layerOrder.splice(at,1);
+      if(el && el.style) layerElements.set(id,el);
+      layerOrder.push(id);
+      restack();
+    }
+    function lower(id){
+      if(!id) return;
+      const at=layerOrder.indexOf(id);
+      if(at>=0) layerOrder.splice(at,1);
+      const el=layerElements.get(id);
+      if(el && el.style){
+        el.style.removeProperty('z-index');
+        delete el.dataset.mmModalLayer;
+      }
+      layerElements.delete(id);
+      restack();
+    }
     function emit(id){
-      try{ window.dispatchEvent(new CustomEvent('mm-modal-input',{detail:{open:active.size>0,id,active:[...active]}})); }catch(e){}
+      try{ window.dispatchEvent(new CustomEvent('mm-modal-input',{detail:{open:active.size>0,id,active:[...active],top:layerOrder[layerOrder.length-1]||null}})); }catch(e){}
     }
     MM.modalInput={
-      push(id){ if(!id) return; const before=active.size; active.add(id); setModalFlag(); if(active.size!==before) emit(id); },
-      pop(id){ if(!id || !active.has(id)) return; active.delete(id); setModalFlag(); emit(id); },
-      isOpen(){ return active.size>0; }
+      push(id,el){ if(!id) return; const before=active.size; active.add(id); raise(id,el); setModalFlag(); if(active.size!==before || layerOrder[layerOrder.length-1]===id) emit(id); },
+      pop(id){ if(!id) return; const had=active.delete(id); lower(id); setModalFlag(); if(had) emit(id); },
+      raise,
+      lower,
+      isOpen(){ return active.size>0; },
+      top(){ return layerOrder[layerOrder.length-1]||null; }
     };
   }
   const INV=MM.inventory;
@@ -25,6 +59,7 @@ import './inventory.js';
 
   // UI refs (markup skeleton lives in index.html)
   const openBtn=document.getElementById('openInv');
+  const hudOpenBtn=document.getElementById('heroCenterBtn');
   const overlay=document.getElementById('invOverlay');
   const closeBtn=document.getElementById('invClose');
   const tabsEl=document.getElementById('invTabs');
@@ -36,8 +71,16 @@ import './inventory.js';
   const statsBox=document.getElementById('invStatsBody');
   const colorsEl=document.getElementById('invColors');
   const actionsEl=document.getElementById('invActions');
+  const heroView=document.getElementById('heroView');
+  const equipmentView=document.getElementById('equipmentView');
+  const heroNav=document.getElementById('invHeroNav');
+  const equipmentNav=document.getElementById('invEquipmentNav');
+  const pointBadge=document.getElementById('invPointBadge');
+  const subtitleEl=document.getElementById('invSubtitle');
+  const heroCanvas=document.getElementById('heroPreview');
   if(!overlay||!tabsEl||!grid||!previewCanvas||!slotsEl) return;
   const pctx=previewCanvas.getContext('2d');
+  const hctx=heroCanvas?heroCanvas.getContext('2d'):null;
 
   const TIER_COLORS=INV.TIER_COLORS||{common:'#b07f2c', rare:'#a74cc9', epic:'#e0b341'};
   const TIER_LABELS={common:'zwykły', uncommon:'niezwykły', rare:'rzadki', epic:'epicki', legendary:'legendarny'};
@@ -97,8 +140,42 @@ import './inventory.js';
   let sortMode='power';
   let selectedJewelKey=null;
   let toolbarEl=null, searchInput=null, tierSelect=null, sortSelect=null, capEl=null, undoBtn=null, newReviewEl=null;
+  let activeView='hero';
 
   function isOpen(){ return overlay.style.display==='block'; }
+  function setPrimaryView(view, focus){
+    activeView=view==='equipment'?'equipment':'hero';
+    const heroActive=activeView==='hero';
+    if(heroView) heroView.hidden=!heroActive;
+    if(equipmentView) equipmentView.hidden=heroActive;
+    [[heroNav,heroActive],[equipmentNav,!heroActive]].forEach(([btn,on])=>{
+      if(!btn) return;
+      btn.classList.toggle('sel',on);
+      btn.setAttribute('aria-selected',on?'true':'false');
+    });
+    if(subtitleEl) subtitleEl.textContent=heroActive
+      ? 'Rozwijaj własne cechy niezależnie od noszonego sprzętu.'
+      : 'Dobieraj przedmioty, wygląd i skróty bez mieszania ich z treningiem postaci.';
+    if(heroActive){
+      buildProgress();
+      updateStats();
+      updatePreview();
+    }else{
+      ensureToolbar();
+      updateToolbar();
+      buildSlots();
+      buildGrid();
+      buildColors();
+      updatePreview();
+    }
+    updateSelInfo();
+    if(focus){
+      const target=heroActive?heroNav:equipmentNav;
+      if(target) target.focus();
+    }
+  }
+  if(heroNav) heroNav.addEventListener('click',()=>setPrimaryView('hero'));
+  if(equipmentNav) equipmentNav.addEventListener('click',()=>setPrimaryView('equipment'));
 
   function setActive(tab){
     activeTab=tab;
@@ -245,7 +322,11 @@ import './inventory.js';
       }
       const go=document.createElement('span'); go.className='invSlotGo'; go.setAttribute('aria-hidden','true'); go.textContent='›';
       box.appendChild(go);
-      function goto(){ const tab=TABS.find(t=>t.kind===slot.accepts); if(tab) setActive(tab); }
+      function goto(){
+        const tab=TABS.find(t=>t.kind===slot.accepts);
+        setPrimaryView('equipment');
+        if(tab) setActive(tab);
+      }
       box.addEventListener('click',goto);
       box.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); goto(); } });
       slotsEl.appendChild(box);
@@ -328,6 +409,7 @@ import './inventory.js';
     sortMode='new';
     searchText='';
     if(searchInput) searchInput.value='';
+    setPrimaryView('equipment');
     setActive(activeTab);
   }
   // One compact, dismissible line — the grid cards carry the per-item badges
@@ -1170,11 +1252,12 @@ import './inventory.js';
     }
     ctx.restore();
   }
-  function drawPlayerPreview(ctx){
-    ctx.save(); ctx.clearRect(0,0,previewCanvas.width,previewCanvas.height);
+  function drawPlayerPreview(ctx,canvas){
+    canvas=canvas||previewCanvas;
+    ctx.save(); ctx.clearRect(0,0,canvas.width,canvas.height);
     const SCALE=4.6; ctx.scale(SCALE,SCALE);
     const c=MM.customization; const bw=14, bh=20;
-    const areaW=previewCanvas.width/SCALE, areaH=previewCanvas.height/SCALE;
+    const areaW=canvas.width/SCALE, areaH=canvas.height/SCALE;
     // Lift: the cape hangs fab.lengthTiles (up to 1.20) below a SHOULDER
     // anchor, i.e. past the feet — body-centred framing put the longest
     // fabrics' hem past the canvas bottom. Headroom above is free.
@@ -1186,18 +1269,22 @@ import './inventory.js';
     drawWeaponInHand(ctx, bw, bh);
     ctx.restore();
   }
-  function updatePreview(){ drawPlayerPreview(pctx); }
+  function updatePreview(){
+    drawPlayerPreview(pctx,previewCanvas);
+    if(hctx && heroCanvas) drawPlayerPreview(hctx,heroCanvas);
+  }
 
   // --- Stats breakdown ---
   function statRow(label,total,lines){
     const wrap=document.createElement('div');
-    const head=document.createElement('div'); head.style.marginTop='4px';
-    const labSpan=document.createElement('span'); labSpan.style.color='#fff'; labSpan.textContent=label+': ';
+    wrap.className='heroStatRow';
+    const head=document.createElement('div'); head.className='heroStatHead';
+    const labSpan=document.createElement('span'); labSpan.textContent=label;
     const strong=document.createElement('strong'); strong.textContent=total;
     head.appendChild(labSpan); head.appendChild(strong); wrap.appendChild(head);
     if(lines && lines.length){
-      const ul=document.createElement('ul'); ul.style.margin='2px 0 4px 12px'; ul.style.padding='0';
-      lines.forEach(l=>{ const li=document.createElement('li'); li.style.listStyle='disc'; li.textContent=l; ul.appendChild(li); });
+      const ul=document.createElement('ul'); ul.className='heroStatSources';
+      lines.forEach(l=>{ const li=document.createElement('li'); li.textContent=l; ul.appendChild(li); });
       wrap.appendChild(ul);
     }
     return wrap;
@@ -1211,9 +1298,14 @@ import './inventory.js';
     statsBox.innerHTML='';
     const m=MM.activeModifiers||{};
     const sel=equippedItems();
+    const trained=(MM.progress && MM.progress.stats)?MM.progress.stats():{vit:0,str:0,agi:0,cap:0,hard:0};
     const label=it=>(it && (it.name||it.id))||'—';
     const dmgLines=[]; sel.forEach(it=>{ if(typeof it.attackDamage==='number' && it.attackDamage) dmgLines.push(label(it)+': +'+it.attackDamage); });
+    if(trained.str) dmgLines.unshift('Trening Siły: +'+trained.str);
     statsBox.appendChild(statRow('Obrażenia', INV.BASE_ATTACK+(m.attackDamage||0)+' (baza '+INV.BASE_ATTACK+')', dmgLines));
+    const maxHp=window.player && Number.isFinite(Number(window.player.maxHp)) ? Math.round(window.player.maxHp) : 100+(trained.vit||0)*10;
+    const hpLines=trained.vit?['Trening Witalności: +'+(trained.vit*10)+' HP']:[];
+    statsBox.appendChild(statRow('Maksymalne zdrowie', maxHp+' HP', hpLines));
     const VB=INV.VISION_BASE||10;
     const visionPct=v=>fmtMult(v/VB);
     const visionLines=[]; sel.forEach(it=>{ if(typeof it.visionRadius==='number' && it.visionRadius!==VB) visionLines.push(label(it)+': '+visionPct(it.visionRadius)); });
@@ -1222,10 +1314,12 @@ import './inventory.js';
     const jumpLines=[]; sel.forEach(it=>{ if(typeof it.airJumps==='number' && it.airJumps!==0) jumpLines.push(label(it)+': +'+it.airJumps+' powietrzny'); });
     statsBox.appendChild(statRow('Całkowite skoki', 1+(m.maxAirJumps||0), jumpLines));
     const moveLines=[]; sel.forEach(it=>{ if(typeof it.moveSpeedMult==='number' && it.moveSpeedMult!==1) moveLines.push(label(it)+': '+fmtMult(it.moveSpeedMult)); });
+    if(trained.agi) moveLines.unshift('Trening Zwinności: +'+(trained.agi*2)+'%');
     statsBox.appendChild(statRow('Prędkość ruchu', fmtMult(m.moveSpeedMult||1), moveLines));
     const waterMoveLines=[]; sel.forEach(it=>{ if(typeof it.waterMoveSpeedMult==='number' && it.waterMoveSpeedMult!==0.5) waterMoveLines.push(label(it)+': '+Math.round(it.waterMoveSpeedMult*100)+'%'); });
     statsBox.appendChild(statRow('Ruch w wodzie', Math.round((m.waterMoveSpeedMult||0.5)*100)+'%', waterMoveLines));
     const jpLines=[]; sel.forEach(it=>{ if(typeof it.jumpPowerMult==='number' && it.jumpPowerMult!==1) jpLines.push(label(it)+': '+fmtMult(it.jumpPowerMult)); });
+    if(trained.agi) jpLines.unshift('Trening Zwinności: +'+(trained.agi*2)+'%');
     statsBox.appendChild(statRow('Moc skoku', fmtMult(m.jumpPowerMult||1), jpLines));
     const mineLines=[]; sel.forEach(it=>{ if(typeof it.mineSpeedMult==='number' && it.mineSpeedMult!==1) mineLines.push(label(it)+': '+fmtMult(it.mineSpeedMult)); });
     statsBox.appendChild(statRow('Szybkość kopania', fmtMult(m.mineSpeedMult||1), mineLines));
@@ -1256,22 +1350,16 @@ import './inventory.js';
     statsBox.appendChild(statRow('Wizja specjalna', specialVisionLabel, specialVisionLines));
     const defensePct=Math.round(Math.max(0,Math.min(0.45,Number(m.damageReductionBonus)||0))*100);
     const defenseLines=[];
-    if(MM.progress && MM.progress.stats){
-      const st=MM.progress.stats();
-      if(st && st.hard){
-        const hardReduction=MM.progress.toughnessDamageReduction ? MM.progress.toughnessDamageReduction(st.hard) : Math.min(0.45,st.hard*0.03);
-        defenseLines.push('Twardość '+st.hard+': -'+Math.round(hardReduction*100)+'% obrażeń');
-      }
+    if(trained.hard){
+      const hardReduction=MM.progress.toughnessDamageReduction ? MM.progress.toughnessDamageReduction(trained.hard) : Math.min(0.45,trained.hard*0.03);
+      defenseLines.push('Trening Twardości: -'+Math.round(hardReduction*100)+'%');
     }
     statsBox.appendChild(statRow('Redukcja obrażeń', defensePct+'%', defenseLines));
     const energyInfo=(MM.heroEnergy && typeof MM.heroEnergy.info==='function') ? MM.heroEnergy.info() : null;
     if(energyInfo){
       const energyLines=[];
       sel.forEach(it=>{ if(typeof it.energyCapacityBonus==='number' && it.energyCapacityBonus) energyLines.push(label(it)+': +'+it.energyCapacityBonus+'E'); });
-      if(MM.progress && MM.progress.stats){
-        const st=MM.progress.stats();
-        if(st && st.cap) energyLines.push('Pojemność: +'+(st.cap*25)+'E');
-      }
+      if(trained.cap) energyLines.push('Trening Pojemności: +'+(trained.cap*25)+' E');
       statsBox.appendChild(statRow('Energia', Math.round(energyInfo.energy)+' / '+Math.round(energyInfo.max), energyLines));
     }
   }
@@ -1279,7 +1367,10 @@ import './inventory.js';
   function updateSelInfo(){
     if(!selInfo) return;
     selInfo.textContent='';
-    [['E','zamknij'],['Ctrl+←/→','karty'],['/','szukaj']].forEach(([k,t],i)=>{
+    const keys=activeView==='hero'
+      ? [['I','zamknij'],['1 / 2','zmień obszar'],['Tab','nawiguj']]
+      : [['I','zamknij'],['1 / 2','zmień obszar'],['Ctrl+←/→','kategorie'],['/','szukaj']];
+    keys.forEach(([k,t],i)=>{
       if(i) selInfo.appendChild(document.createTextNode('  ·  '));
       const kbd=document.createElement('kbd'); kbd.textContent=k;
       selInfo.appendChild(kbd);
@@ -1316,39 +1407,108 @@ import './inventory.js';
     host.innerHTML='';
     const PR=MM.progress; if(!PR) { host.style.display='none'; return; }
     const lv=PR.level(), pts=PR.points(), st=PR.stats();
-    const head=document.createElement('div');
-    head.style.cssText='display:flex; justify-content:space-between; align-items:center; font-weight:650;';
-    const lvSpan=document.createElement('span'); lvSpan.textContent='Poziom '+lv.level;
-    const ptsSpan=document.createElement('span'); ptsSpan.textContent=pts>0? '+'+pts+' pkt do wydania' : 'Punkty: 0';
-    if(pts>0) ptsSpan.style.cssText='color:#ffd968; background:rgba(246,201,69,.14); border:1px solid rgba(246,201,69,.45); border-radius:8px; padding:1px 7px; font-size:10px; font-weight:800;';
-    head.appendChild(lvSpan); head.appendChild(ptsSpan); host.appendChild(head);
-    // XP bar
-    const bar=document.createElement('div'); bar.style.cssText='height:6px; background:rgba(255,255,255,.12); border-radius:4px; margin:5px 0 7px; overflow:hidden;';
-    const fill=document.createElement('div'); fill.style.cssText='height:100%; width:'+Math.round(100*lv.into/lv.need)+'%; background:linear-gradient(90deg,#2c7ef8,#7df9ff); border-radius:4px;';
-    bar.appendChild(fill); host.appendChild(bar);
+    host.style.display='';
+    const xpPct=Math.max(0,Math.min(100,Math.round(100*lv.into/Math.max(1,lv.need))));
+    const summary=document.getElementById('heroSummary');
+    if(summary){
+      summary.innerHTML='';
+      const eyebrow=document.createElement('div'); eyebrow.className='heroEyebrow'; eyebrow.textContent='Rozwój postaci';
+      const levelLine=document.createElement('div'); levelLine.className='heroLevelLine';
+      const title=document.createElement('h3'); title.textContent='Poziom '+lv.level;
+      const levelMeta=document.createElement('span'); levelMeta.textContent='każdy poziom = 1 punkt atrybutu';
+      levelLine.appendChild(title); levelLine.appendChild(levelMeta);
+      const xpMeta=document.createElement('div'); xpMeta.className='heroXpMeta';
+      const xpLabel=document.createElement('span'); xpLabel.textContent='Postęp do poziomu '+Math.min(99,lv.level+1);
+      const xpValue=document.createElement('strong'); xpValue.textContent=Math.max(0,Math.floor(lv.into))+' / '+Math.max(1,Math.floor(lv.need))+' XP';
+      xpMeta.appendChild(xpLabel); xpMeta.appendChild(xpValue);
+      const track=document.createElement('div'); track.className='heroXpTrack'; track.setAttribute('role','progressbar');
+      track.setAttribute('aria-valuemin','0'); track.setAttribute('aria-valuemax',String(Math.max(1,Math.floor(lv.need))));
+      track.setAttribute('aria-valuenow',String(Math.max(0,Math.floor(lv.into))));
+      const fill=document.createElement('i'); fill.style.width=xpPct+'%'; track.appendChild(fill);
+      const hint=document.createElement('p'); hint.className='heroSummaryHint';
+      hint.textContent='XP zdobywasz przez eksplorację, walkę, odkrycia i osiągnięcia. Sprzęt może zmieniać wynikowe statystyki, ale nie zastępuje trwałego treningu poniżej.';
+      summary.appendChild(eyebrow); summary.appendChild(levelLine); summary.appendChild(xpMeta); summary.appendChild(track); summary.appendChild(hint);
+    }
+    const bank=document.getElementById('heroPointBank');
+    if(bank){
+      bank.innerHTML='';
+      bank.classList.toggle('empty',pts<=0);
+      const value=document.createElement('strong'); value.textContent=pts;
+      const label=document.createElement('span'); label.textContent=pts===1?'punkt do wydania':'punkty do wydania';
+      const hint=document.createElement('small'); hint.textContent=pts>0?'Wybierz atrybut poniżej.':'Zdobądź kolejny poziom, aby otrzymać punkt.';
+      bank.appendChild(value); bank.appendChild(label); bank.appendChild(hint);
+    }
+    if(pointBadge){
+      pointBadge.textContent=pts;
+      pointBadge.classList.toggle('show',pts>0);
+    }
     const rows=[
-      ['vit','Witalność', '+10 HP', st.vit],
-      ['str','Siła', '+1 obrażeń', st.str],
-      ['agi','Zwinność', '+2% ruch/skok', st.agi],
-      ['cap','Pojemność', '+25 energii', st.cap||0],
-      ['hard','Twardość', '+1.5 udźwigu / -3% obrażeń, maks. 45%', st.hard||0],
+      {key:'vit',icon:'♥',label:'Witalność',role:'Przetrwanie',color:'#ff7f8d',val:st.vit,
+        desc:'Zwiększa maksymalne zdrowie. Daje większy margines błędu w walce, podczas upadków i w niebezpiecznym środowisku.',
+        current:'Trening: +'+(st.vit*10)+' maks. HP',next:'+10 maks. HP'},
+      {key:'str',icon:'⚔',label:'Siła',role:'Walka',color:'#ffb15c',val:st.str,
+        desc:'Podnosi bazowe obrażenia bohatera. Premia działa razem z noszoną bronią i wzmacnia każde skuteczne trafienie.',
+        current:'Trening: +'+st.str+' obrażeń',next:'+1 do obrażeń'},
+      {key:'agi',icon:'➜',label:'Zwinność',role:'Mobilność',color:'#66e0b1',val:st.agi,
+        desc:'Przyspiesza poruszanie i wzmacnia skok. Ułatwia eksplorację, uniki, pościgi oraz wydostawanie się z zagrożeń.',
+        current:'Trening: +'+(st.agi*2)+'% ruchu i skoku',next:'+2% ruchu i skoku'},
+      {key:'cap',icon:'ϟ',label:'Pojemność',role:'Technika',color:'#70c7ff',val:st.cap||0,
+        desc:'Powiększa zapas energii używanej przez turbo, lampę oczu, wizję specjalną i zaawansowane narzędzia.',
+        current:'Trening: +'+((st.cap||0)*25)+' energii',next:'+25 maks. energii'},
+      {key:'hard',icon:'◆',label:'Twardość',role:'Odporność',color:'#c5a1ff',val:st.hard||0,
+        desc:'Zmniejsza otrzymywane obrażenia i zwiększa odporność na zgniatanie, zawały oraz ciśnienie głębokiej wody.',
+        current:'Trening: -'+Math.round(Math.min(.45,(st.hard||0)*.03)*100)+'% obrażeń · +'+((st.hard||0)*1.5).toFixed(1)+' udźwigu',
+        next:(st.hard||0)>=15?'+1,5 udźwigu (redukcja już maks.)':'-3% obrażeń · +1,5 udźwigu'},
     ];
-    rows.forEach(([key,label,effect,val])=>{
-      const row=document.createElement('div');
-      row.style.cssText='display:flex; align-items:center; gap:6px; font-size:11px; margin:2px 0;';
-      const lab=document.createElement('span'); lab.style.flex='1'; lab.textContent=label+' '+val+' ('+effect+')';
-      const btn=document.createElement('button'); btn.textContent='+'; btn.disabled=pts<=0;
-      btn.title=pts>0? 'Wydaj punkt: '+label : 'Brak punktów — zdobądź poziom';
-      btn.style.cssText='width:26px; height:22px; border-radius:7px; border:none; background:'+(pts>0?'linear-gradient(180deg,#27c274,#1d9d5c)':'rgba(255,255,255,.13)')+'; color:#fff; cursor:'+(pts>0?'pointer':'default')+'; font-weight:800; font-size:13px;';
-      btn.addEventListener('click',()=>{ PR.spend(key); buildProgress(); });
-      row.appendChild(lab); row.appendChild(btn); host.appendChild(row);
+    const attributeGrid=document.createElement('div'); attributeGrid.className='heroAttributeGrid';
+    rows.forEach(info=>{
+      const card=document.createElement('article'); card.className='heroAttribute'; card.style.setProperty('--attr',info.color);
+      const top=document.createElement('div'); top.className='heroAttributeTop';
+      const icon=document.createElement('div'); icon.className='heroAttributeIcon'; icon.setAttribute('aria-hidden','true'); icon.textContent=info.icon;
+      const name=document.createElement('div'); name.className='heroAttributeName';
+      const strong=document.createElement('strong'); strong.textContent=info.label;
+      const role=document.createElement('span'); role.textContent=info.role;
+      name.appendChild(strong); name.appendChild(role);
+      const value=document.createElement('div'); value.className='heroAttributeValue'; value.textContent=info.val;
+      top.appendChild(icon); top.appendChild(name); top.appendChild(value);
+      const desc=document.createElement('p'); desc.className='heroAttributeDesc'; desc.textContent=info.desc;
+      const impact=document.createElement('div'); impact.className='heroAttributeImpact';
+      const impactIcon=document.createElement('span'); impactIcon.textContent='↳';
+      const impactText=document.createElement('b'); impactText.textContent=info.current;
+      impact.appendChild(impactIcon); impact.appendChild(impactText);
+      const foot=document.createElement('div'); foot.className='heroAttributeFoot';
+      const next=document.createElement('span'); next.className='heroAttributeNext'; next.textContent='Następny punkt: '+info.next;
+      const btn=document.createElement('button'); btn.textContent=pts>0?'Rozwiń za 1 pkt':'Brak punktów'; btn.disabled=pts<=0;
+      btn.title=pts>0? 'Trwale rozwiń: '+info.label : 'Zdobądź poziom, aby otrzymać punkt';
+      btn.addEventListener('click',()=>{
+        if(PR.spend(info.key)){
+          buildProgress();
+          updateStats();
+        }
+      });
+      foot.appendChild(next); foot.appendChild(btn);
+      card.appendChild(top); card.appendChild(desc); card.appendChild(impact); card.appendChild(foot);
+      attributeGrid.appendChild(card);
     });
-    // milestones (compact)
+    host.appendChild(attributeGrid);
+
     const ms=PR.milestones();
     const done=ms.filter(m=>m.done).length;
-    const mhead=document.createElement('div'); mhead.style.cssText='margin-top:4px; font-size:10px; opacity:.7;';
-    mhead.textContent='Osiągnięcia: '+done+'/'+ms.length;
-    host.appendChild(mhead);
+    const milestoneBody=document.getElementById('heroMilestoneBody');
+    if(milestoneBody){
+      milestoneBody.innerHTML='';
+      const ordered=ms.filter(m=>!m.done).slice(0,4).concat(ms.filter(m=>m.done).slice(-1));
+      ordered.forEach(m=>{
+        const row=document.createElement('div'); row.className='heroMilestone'+(m.done?' done':'');
+        const icon=document.createElement('div'); icon.className='heroMilestoneIcon'; icon.textContent=m.done?'✓':'◎';
+        const text=document.createElement('div'); text.className='heroMilestoneText'; text.textContent=m.desc;
+        const state=document.createElement('div'); state.className='heroMilestoneReward'; state.textContent=m.done?'UKOŃCZONE':'XP';
+        row.appendChild(icon); row.appendChild(text); row.appendChild(state); milestoneBody.appendChild(row);
+      });
+      const status=document.createElement('div'); status.className='heroMilestoneText';
+      status.textContent='Ukończone osiągnięcia: '+done+' / '+ms.length+'. Walki, odkrycia i eksploracja także zapewniają XP.';
+      milestoneBody.appendChild(status);
+    }
   }
   window.addEventListener('mm-progress-change',()=>{ if(isOpen()){ buildProgress(); updateStats(); } });
 
@@ -1406,7 +1566,10 @@ import './inventory.js';
     requestAnimationFrame(()=>{
       refreshQueued=false;
       if(!isOpen()) return;
-      updateToolbar(); buildSlots(); buildGrid(); buildColors(); updatePreview(); updateStats(); updateSelInfo(); buildProgress();
+      if(activeView==='equipment'){
+        updateToolbar(); buildSlots(); buildGrid(); buildColors();
+      }
+      updatePreview(); updateStats(); updateSelInfo(); buildProgress();
     });
   }
   window.addEventListener('mm-inventory-change',refreshAll);
@@ -1426,46 +1589,34 @@ import './inventory.js';
   function open(){
     if(isOpen()) return;
     overlay.style.display='block'; lastFocus=document.activeElement;
-    if(MM.modalInput) MM.modalInput.push('inventory');
-    ensureToolbar(); updateToolbar(); buildSlots(); buildGrid(); buildColors(); updatePreview(); updateStats(); updateSelInfo(); buildProgress();
-    const firstTab=tabsEl.querySelector('.invTabBtn'); if(firstTab) firstTab.focus();
+    if(hudOpenBtn) hudOpenBtn.setAttribute('aria-expanded','true');
+    if(MM.modalInput) MM.modalInput.push('inventory',overlay);
+    setPrimaryView(activeView);
+    const primary=activeView==='hero'?heroNav:equipmentNav;
+    if(primary) primary.focus();
     document.addEventListener('keydown',trapFocus);
   }
   function close(){
     if(!isOpen()) return;
     overlay.style.display='none';
+    if(hudOpenBtn) hudOpenBtn.setAttribute('aria-expanded','false');
     if(MM.modalInput) MM.modalInput.pop('inventory');
     document.removeEventListener('keydown',trapFocus);
     if(lastFocus && lastFocus.focus) lastFocus.focus();
   }
   function toggle(){ if(isOpen()) close(); else open(); }
   if(openBtn) openBtn.addEventListener('click',open);
+  if(hudOpenBtn) hudOpenBtn.addEventListener('click',open);
   if(closeBtn) closeBtn.addEventListener('click',close);
   overlay.addEventListener('click',e=>{ if(e.target===overlay) close(); });
   function isEditableTarget(t){ if(!t || !t.tagName) return false; const tag=t.tagName; return tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||t.isContentEditable; }
-  // Hold-to-open: a short E tap belongs to the world (ground-drop sweep, mech
-  // boarding — see the precedence probes below), but HOLDING E for a beat
-  // always lands in the wardrobe, so loot underfoot can't lock the player out.
-  const E_HOLD_MS=450;
-  let eHoldTimer=null;
-  function cancelEHold(){ if(eHoldTimer!=null){ clearTimeout(eHoldTimer); eHoldTimer=null; } }
-  function armEHold(){
-    cancelEHold();
-    eHoldTimer=setTimeout(()=>{
-      eHoldTimer=null;
-      // fire only into a free screen: another modal (loot inbox, trader…) wins
-      if(!isOpen() && !(MM.modalInput && MM.modalInput.isOpen())) open();
-    },E_HOLD_MS);
-  }
-  // the interact key is rebindable (keybinds.js): compare against the logical
-  // key so a remapped E follows the player's binding
+  // Inventory is its own rebindable action. E remains a frequent world verb
+  // (pick up, inspect, board); I opens this modal without contextual precedence.
   function logicalKey(e){
     const k=String(e.key||'').toLowerCase();
     try{ if(window.MM && MM.keybinds && MM.keybinds.translate) return MM.keybinds.translate(k); }catch(err){}
     return k;
   }
-  window.addEventListener('keyup',e=>{ if(logicalKey(e)==='e') cancelEHold(); });
-  window.addEventListener('blur',cancelEHold);
   window.addEventListener('keydown',e=>{
     if(isOpen()){
       if(e.key==='Escape'){
@@ -1476,14 +1627,20 @@ import './inventory.js';
         } else close();
         e.stopImmediatePropagation(); return;
       }
-      // !repeat: the still-held E that hold-opened the panel must not close it
-      if(!isEditableTarget(e.target) && !e.repeat && logicalKey(e)==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
+      if(!isEditableTarget(e.target) && !e.repeat && logicalKey(e)==='i' && !e.ctrlKey && !e.metaKey && !e.altKey){ e.preventDefault(); close(); e.stopImmediatePropagation(); return; }
       if(!isEditableTarget(e.target) && e.key==='/'){
+        if(activeView==='equipment'){
+          e.preventDefault();
+          if(searchInput){ searchInput.focus(); searchInput.select(); }
+          e.stopImmediatePropagation(); return;
+        }
+      }
+      if(!isEditableTarget(e.target) && (e.key==='1'||e.key==='2')){
         e.preventDefault();
-        if(searchInput){ searchInput.focus(); searchInput.select(); }
+        setPrimaryView(e.key==='1'?'hero':'equipment',true);
         e.stopImmediatePropagation(); return;
       }
-      if(e.ctrlKey && (e.key==='ArrowRight' || e.key==='ArrowLeft')){
+      if(activeView==='equipment' && e.ctrlKey && (e.key==='ArrowRight' || e.key==='ArrowLeft')){
         e.preventDefault();
         const idx=TABS.indexOf(activeTab);
         let ni=idx + (e.key==='ArrowRight'?1:-1);
@@ -1494,28 +1651,20 @@ import './inventory.js';
       return;
     }
     if(isEditableTarget(e.target)) return;
-    if(!e.repeat && logicalKey(e)==='e' && !e.ctrlKey && !e.metaKey && !e.altKey){
-      armEHold(); // holding past the tap window opens the wardrobe regardless
-      // Machine context wins the interaction key: riding a mech, standing next
-      // to a boardable hull or on a pilot chair routes E to the mech handler
-      // (main.js keydown) — the wardrobe only opens away from machines.
-      try{
-        const mechs=window.MM && MM.mechs;
-        if(mechs && mechs.wantsInteractKey && mechs.wantsInteractKey(window.player)) return;
-        // A ground drop in reach also claims E (manual pickup, drops.js) —
-        // the wardrobe only opens with nothing to grab nearby.
-        const drops=window.MM && MM.drops;
-        if(drops && drops.wantsInteractKey && drops.wantsInteractKey(window.player)) return;
-      }catch(err){ /* mech module absent: plain toggle */ }
-      cancelEHold(); // a plain tap opens right away — no need for the hold
+    if(!e.repeat && logicalKey(e)==='i' && !e.ctrlKey && !e.metaKey && !e.altKey){
+      if(MM.modalInput && MM.modalInput.isOpen()) return;
       toggle();
+      e.preventDefault();
+      e.stopImmediatePropagation();
     }
   });
 
   buildTabs();
   buildColors();
   buildActions();
-  MM.inventoryUI={open, close, toggle, isOpen};
+  // Reuse the exact inventory-card renderer in compact HUD notifications so a
+  // cape, weapon or charm looks identical wherever the player sees it.
+  MM.inventoryUI={open, close, toggle, isOpen, drawItemThumb};
 })();
 // ESM export (progressive migration)
 export const inventoryUI = (typeof window!=='undefined' && window.MM) ? window.MM.inventoryUI : undefined;

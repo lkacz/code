@@ -40,8 +40,10 @@ import { chests as CHESTS } from './engine/chests.js';
 import { gearForge as GEAR_FORGE } from './engine/gear_forge.js';
 import { gravityGun as GRAVITY_GUN } from './engine/gravity_gun.js';
 import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engine/crafting.js';
+import { createInventoryFeedback } from './engine/inventory_feedback.js';
+import { createSingleNoticeQueue } from './engine/single_notice_queue.js';
 import { furnishings as FURNISHINGS } from './engine/furnishings.js';
-import { createHotPickerModel, createHotPicker, foldText } from './engine/hot_picker.js';
+import { createHotPickerModel, createHotPicker, foldText, hotPickerPlacement } from './engine/hot_picker.js';
 import { createCraftDrag } from './engine/craft_drag.js';
 import './inventory.js';
 import { mobs as MOBS } from './engine/mobs.js';
@@ -2202,6 +2204,70 @@ function clearToolFlags(){ SAVE_TOOL_FLAGS.forEach(k=>{ inv.tools[k]=false; }); 
 RESOURCE_KEYS.forEach(k=>{ inv[k]=0; });
 // Expose inventory for cross-module loot insertion
 window.inv = inv;
+const INVENTORY_FEEDBACK_TOOL_DEFS=Object.freeze([
+	{key:'stone',label:'Kilof kamienny',color:'#9ca3af',icon:'⛏'},
+	{key:'meteor',label:'Kilof meteorytowy',color:'#d8753b',icon:'⛏'},
+	{key:'diamond',label:'Kilof diamentowy',color:'#43d8ff',icon:'⛏'},
+	{key:'bedrock',label:'Kilof macierzysty',color:'#7667a8',icon:'⛏'},
+	{key:'glider',label:'Lotnia',color:'#9ed9e8',icon:'⌁'}
+]);
+function inventoryFeedbackGlyph(key){
+	if(/^arrow/.test(key)) return '➶';
+	if(/^throwingStone/.test(key)) return '●';
+	if(/jewel/i.test(key)) return '◆';
+	const glyphs={
+		bronze:'▰',ufoConcrete:'▦',bedrock:'▰',rubberBall:'●',rubberBallTar:'●',
+		vine:'⌇',rope:'〰',harpoonBolt:'⇥',snowball:'○',toxicSnowball:'○',
+		halogen:'✦',waterBalloon:'💧',gasGrenade:'☁',stickyBomb:'✹',
+		antipersonnelMine:'⊙',fragmentationMine:'⊙',frostFlask:'❄',molotov:'♨'
+	};
+	return glyphs[key]||'';
+}
+function drawInventoryFeedbackThumbnail(canvas,entry){
+	const g=canvas && canvas.getContext ? canvas.getContext('2d') : null;
+	if(!g) return false;
+	g.clearRect(0,0,80,80);
+	if(entry.type==='gear' && entry.preview && entry.preview.item && MM.inventoryUI && MM.inventoryUI.drawItemThumb){
+		MM.inventoryUI.drawItemThumb(g,entry.preview.item);
+		return true;
+	}
+	const tileName=entry.preview && entry.preview.tile;
+	const tileId=tileName && T[tileName];
+	if(tileId!=null && MM.drawEntityTile){
+		const tileCanvas=document.createElement('canvas');
+		tileCanvas.width=20; tileCanvas.height=20;
+		const tileCtx=tileCanvas.getContext('2d');
+		let ok=false;
+		try{ ok=!!MM.drawEntityTile(tileCtx,tileId,0,0,7,11,{preview:true}); }catch(e){ ok=false; }
+		if(ok){
+			g.imageSmoothingEnabled=false;
+			g.drawImage(tileCanvas,7,7,66,66);
+			return true;
+		}
+	}
+	const glyph=(entry.preview && entry.preview.icon) || inventoryFeedbackGlyph(entry.key);
+	if(!glyph) return false;
+	g.fillStyle=entry.color||'#9fb8d1';
+	g.beginPath(); g.arc(40,40,31,0,Math.PI*2); g.fill();
+	g.strokeStyle='rgba(255,255,255,.45)'; g.lineWidth=3; g.stroke();
+	g.fillStyle='#f7fbff';
+	g.font='bold 39px system-ui,"Segoe UI Symbol","Segoe UI Emoji",sans-serif';
+	g.textAlign='center'; g.textBaseline='middle';
+	g.fillText(glyph,40,42);
+	return true;
+}
+const INVENTORY_FEEDBACK=createInventoryFeedback({
+	eventTarget:window,
+	host:document.getElementById('inventoryFeed'),
+	resourceDefs:RESOURCE_DEFS,
+	specialDefs:INVENTORY_FEEDBACK_TOOL_DEFS,
+	tierColors:(MM.inventory&&MM.inventory.TIER_COLORS)||{},
+	getResourceCount:key=>inv[key],
+	getSpecialCount:key=>inv.tools&&inv.tools[key]?1:0,
+	getItems:()=>MM.inventory&&MM.inventory.bagItems?MM.inventory.bagItems():[],
+	drawThumbnail:drawInventoryFeedbackThumbnail
+});
+MM.inventoryFeedback=INVENTORY_FEEDBACK;
 // Hotbar (slots triggered by keys 5..9, 0 — keys 1..4 belong to the weapon shortcuts)
 // HOTBAR_ORDER now mutable and can include CHEST_* pseudo entries (only placeable in god mode)
 const HOTBAR_ORDER=['GRASS','SAND','STONE','WOOD','LEAF','WATER'];
@@ -4872,6 +4938,7 @@ function applyGameData(data,opts){
 		if(transactional) saveCriticalState('load',true);
 		settleSaveSchedulerAfterLoad(schedulerState,true);
 		publishLoadReport({ok:true,stage:'complete',version:preflight.version,migratedFrom:preflight.migratedFrom||null,warnings:preflight.warnings||[],restored:true});
+		try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); }catch(e){}
 		return true;
 	}catch(e){
 		let rolledBack=false;
@@ -4888,6 +4955,7 @@ function applyGameData(data,opts){
 		const failures=Array.isArray(e && e.failures) ? e.failures : [{code:'restore',path:'runtime',detail:saveErrorText(e)}];
 		publishLoadReport({ok:false,stage:'restore',errors:failures,summary:saveErrorText(e),rolledBack,rollbackError:rollbackError?saveErrorText(rollbackError):null});
 		console.warn('Load failed',e);
+		try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); }catch(err){}
 		return false;
 	}
 }
@@ -5761,11 +5829,11 @@ const RECIPES=[
 	{id:'chair_stone', name:'Fotel kamienny', cost:{stone:4, wood:1}, make(){ inv.chairStone+=1; msg('Fotel kamienny +1 - trwalszy mebel do domu i kabiny mecha'); }},
 	{id:'chair_steel', name:'Fotel stalowy', cost:{steel:2, copperWire:1}, make(){ inv.chairSteel+=1; msg('Fotel stalowy +1 - mebel; jako fotel pilota najlepiej przenosi energie bohatera na naped'); }},
 	{id:'water_pipe', name:'Rury fluidowe x6', cost:{steel:1, plastic:1}, make(){ inv.waterPipe+=6; msg('Rury fluidowe +6 — PPM na rurze przełącza wlot wody'); }},
-	{id:'water_pump', name:'Pompa fluidowa', cost:{steel:3, copperWire:2, transistor:1}, make(){ inv.waterPump+=1; msg('Pompa fluidowa +1 - R obraca wejscie/wyjscie dla wody i gazow'); }},
+	{id:'water_pump', name:'Pompa fluidowa', cost:{steel:3, copperWire:2, transistor:1}, make(){ inv.waterPump+=1; msg('Pompa fluidowa +1 — R obraca przed postawieniem; PPM lub stuknięcie obraca ją w świecie'); }},
 	{id:'steam_boiler', name:'Kociol parowy', cost:{steel:4, copperWire:2, brick:2}, make(){ inv.steamBoiler+=1; msg('Kociol parowy +1 - pije wode, grzeje sie energia lub zarem i robi pare'); }},
 	{id:'steam_jet', name:'Dysza parowa', cost:{steel:3, brick:1, transistor:1}, make(){ inv.steamJet+=1; msg('Dysza parowa +1 - kolumna pary unosi; rzad dysz pod kadlubem to naped latajacego mecha'); }},
 	{id:'vending_machine', name:'Automat vendingowy', cost:{steel:4, glass:2, copperWire:3, waterPipe:1, transistor:2}, make(){ inv.vendingMachine+=1; msg('Automat vendingowy +1 - podlacz do zasilania i licz na szczescie'); }},
-	{id:'teleporter', name:'Teleporter', cost:{steel:6, copperWire:6, transistor:2, diamond:1, dynamo:1}, make(){ inv.teleporter+=1; msg('Teleporter +1 - R ustawia otwarcie, PPM obraca; zachowuje ped'); }},
+	{id:'teleporter', name:'Teleporter', cost:TELEPORTERS.RECIPE_COST, make(){ inv.teleporter+=1; msg('Teleporter +1 — R ustawia otwarcie; PPM lub stuknięcie obraca je w świecie'); }},
 	{id:'antigravity_beacon', name:'Beacon antygrawitacyjny', cost:{antimatter:1, iridium:2, meteoricIron:4, copperWire:4, transistor:1}, make(){ inv.antigravityBeacon+=1; msg('Beacon antygrawitacyjny +1 - wewnetrzny generator antymaterii dziala bez sieci'); }},
 	{id:'meteor_siren', name:'Syrena meteorytowa', cost:{meteoricIron:2, copperWire:3, transistor:1, coal:1}, make(){ inv.meteorSiren+=1; msg('Syrena meteorytowa +1 - ostrzega przed meteorytami w okolicy'); }},
 	{id:'crater_scanner', name:'Skaner kraterow', cost:{meteoricIron:2, copperWire:1, transistor:1, iridium:1}, make(){ inv.craterScanner+=1; msg('Skaner kraterow +1 - analizuje najblizszy krater meteorytowy'); }},
@@ -11334,7 +11402,7 @@ function ensurePausePanel(){
 			if(!control.hasAttribute('aria-label') && !control.hasAttribute('aria-labelledby')) control.setAttribute('aria-labelledby',labelId);
 		});
 	});
-	(document.getElementById('ui')||document.body).appendChild(pausePanel);
+	document.body.appendChild(pausePanel);
 	try{ if(FINALE && FINALE.wire) FINALE.wire(); }catch(e){}
 	return pausePanel;
 }
@@ -11404,12 +11472,14 @@ function setPaused(v){
 		try{ if(window.__injectSaveButtons) window.__injectSaveButtons(); }catch(e){}
 		panel.hidden=false;
 		panel.setAttribute('aria-hidden','false');
+		if(MM.modalInput && MM.modalInput.raise) MM.modalInput.raise('pause',panel);
 		try{ const resumeBtn=panel.querySelector('.pauseResume'); if(resumeBtn && resumeBtn.focus) resumeBtn.focus({preventScroll:true}); }catch(e){}
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('uiOpen'); }catch(e){}
 		window.addEventListener('keydown',pauseTrapKeydown,true);
 	}else{
 		panel.hidden=true;
 		panel.setAttribute('aria-hidden','true');
+		if(MM.modalInput && MM.modalInput.lower) MM.modalInput.lower('pause');
 		try{
 			const playerMenuBtn=document.getElementById('menuBtn');
 			if(playerMenuBtn) playerMenuBtn.setAttribute('aria-expanded','false');
@@ -11482,7 +11552,7 @@ function ensureKeybindPanel(){
 		refreshKeybindRows();
 	});
 	foot.appendChild(reset); keybindPanel.appendChild(foot);
-	(document.getElementById('ui')||document.body).appendChild(keybindPanel);
+	document.body.appendChild(keybindPanel);
 	return keybindPanel;
 }
 function keybindFocusableItems(){
@@ -11524,6 +11594,7 @@ function openKeybindPanel(){
 	refreshKeybindRows();
 	panel.hidden=false;
 	panel.setAttribute('aria-hidden','false');
+	if(MM.modalInput && MM.modalInput.raise) MM.modalInput.raise('keybind',panel);
 	if(pausePanelVisible()) pausePanel.setAttribute('aria-hidden','true');
 	try{ const first=panel.querySelector('.kbClose,.kbKey,button'); if(first) first.focus({preventScroll:true}); }catch(e){}
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('uiOpen'); }catch(e){}
@@ -11533,6 +11604,7 @@ function closeKeybindPanel(){
 	if(!keybindPanel) return;
 	keybindPanel.hidden=true;
 	keybindPanel.setAttribute('aria-hidden','true');
+	if(MM.modalInput && MM.modalInput.lower) MM.modalInput.lower('keybind');
 	if(pausePanelVisible()) pausePanel.setAttribute('aria-hidden','false');
 	keybindCapture=null;
 	window.removeEventListener('keydown',keybindTrapKeydown,true);
@@ -11691,7 +11763,7 @@ function ensureRadioPanel(){
 	const foot=document.createElement('div'); foot.className='radioFoot'; foot.textContent='E lub kliknięcie otwiera radio · wybór jest zapamiętywany · Shift+klik pozwala rozpocząć demontaż'; dialog.appendChild(foot);
 	radioPanel.appendChild(dialog);
 	radioPanel.addEventListener('pointerdown',e=>{ if(e.target===radioPanel) closeRadioPanel(); });
-	(document.getElementById('ui')||document.body).appendChild(radioPanel);
+	document.body.appendChild(radioPanel);
 	window.addEventListener('keydown',radioPanelKeydown,true);
 	return radioPanel;
 }
@@ -11703,7 +11775,7 @@ function openRadioPanel(target){
 	activateRadioAudio();
 	publishRadioPower();
 	renderRadioPanel(); radioPanel.hidden=false;
-	if(MM.modalInput && MM.modalInput.push) MM.modalInput.push('home-radio');
+	if(MM.modalInput && MM.modalInput.push) MM.modalInput.push('home-radio',radioPanel);
 	try{ if(AUDIO.play) AUDIO.play('uiOpen'); }catch(e){}
 	setTimeout(()=>{ const active=radioPanel && radioPanel.querySelector('[aria-pressed="true"]'); if(active) active.focus(); },0);
 	return true;
@@ -11798,18 +11870,18 @@ function updateHelpDiscoveries(){
 	const p=MM.discovery.progress();
 	const names=p.found.map(f=>f.label).join(' • ');
 	el.textContent='🧪 Odkrycia '+p.count+'/'+p.total+(p.count?': '+names:' — eksperymentuj z żywiołami, bronią i światem!')+
-		' ⸺ 🌙 '+visionShortcutLabel()+': noktowizja/termowizja z założonych gogli · 🧭 wisiorek-kompas wskazuje odkryte skarby · F3/G/I/M/P/J/K/L/V/O działają tylko przy otwartym panelu deweloperskim ⸺ ';
+		' ⸺ 🌙 '+visionShortcutLabel()+': noktowizja/termowizja z założonych gogli · 🧭 wisiorek-kompas wskazuje odkryte skarby · F3/G/;/M/P/J/K/L/V/O działają tylko przy otwartym panelu deweloperskim ⸺ ';
 }
 function normalizeLegacyHelpDebugCopy(){
 	const help=document.getElementById('help');
 	if(!help || help.dataset.debugCopyNormalized==='1') return;
 	const touchHelp=help.querySelector('.touchHelp');
-	if(touchHelp) touchHelp.innerHTML='<b>Dotyk:</b> lewy joystick steruje ruchem; wychylenie w górę lub przycisk ↑ skacze, także ponownie w powietrzu. W Kopaniu i Budowaniu prawy krzyżak przesuwa cel dokładnie o jedną kratkę; środkowy przycisk przywraca cel obok bohatera. W Walce prawa strefa zmienia się w analogowy celownik. TRYB przełącza Kopanie → Budowanie → Walkę, a przycisk KOP, POSTAW lub ATAK wykonuje opisaną akcję. Nadal możesz stuknąć bezpośrednio przeciwnika, łup, obiekt lub blok. Kompas skarbów jest w menu i wymaga założonego wisiorka-kompasu.';
+	if(touchHelp) touchHelp.innerHTML='<b>Dotyk:</b> lewy joystick steruje ruchem; wychylenie w górę lub przycisk ↑ skacze, także ponownie w powietrzu. W Kopaniu i Budowaniu prawy krzyżak przesuwa cel dokładnie o jedną kratkę; środkowy przycisk przywraca cel obok bohatera. W Walce prawa strefa zmienia się w analogowy celownik. TRYB przełącza Kopanie → Budowanie → Walkę, a przycisk KOP, POSTAW lub ATAK wykonuje opisaną akcję. Nadal możesz stuknąć bezpośrednio przeciwnika, łup lub obiekt. Stuknięcie pompy albo teleportera zmienia jego kierunek, a komunikat potwierdza nową orientację. Kompas skarbów jest w menu i wymaga założonego wisiorka-kompasu.';
 	for(const node of help.childNodes){
 		if(node.nodeType!==3 || !node.textContent) continue;
 		node.textContent=node.textContent.replace(
 			'M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę.',
-			'N przełącza minimapę, B pauzuje, C centruje kamerę. F3/M/G/I i pozostałe skróty testowe działają wyłącznie przy otwartym panelu deweloperskim 🛠.'
+			'N przełącza minimapę, B pauzuje, C centruje kamerę. F3/M/G/; i pozostałe skróty testowe działają wyłącznie przy otwartym panelu deweloperskim 🛠.'
 		);
 	}
 	help.dataset.debugCopyNormalized='1';
@@ -12179,7 +12251,7 @@ function buildWeaponTip(k){
 	if(!preview){
 		frag.appendChild(hudTipTitle(c.icon+' '+c.label));
 		frag.appendChild(hudTipNode('tipWarn','Brak broni w skrócie'));
-		frag.appendChild(hudTipNode('tipHint','Zaznacz „Skrót" przy broni w Ekwipunku (przytrzymaj E)'));
+		frag.appendChild(hudTipNode('tipHint','Zaznacz „Skrót" przy broni w Centrum bohatera (I)'));
 		return frag;
 	}
 	frag.appendChild(hudTipTitle(c.icon+' '+(preview.name||preview.id), tierColors[preview.tier]||null));
@@ -12253,8 +12325,8 @@ function buildHotbarTip(i){
 	if(chest) frag.appendChild(hudTipNode('tipHint','Skrzynie stawiasz tylko w trybie Boga'));
 	const id=T[name];
 	if(id===T.DYNAMO) frag.appendChild(hudTipNode('tipHint','R obraca dynamo ('+dynamoOrientationLabel()+')'));
-	else if(id===T.WATER_PUMP) frag.appendChild(hudTipNode('tipHint','R obraca przed postawieniem · PPM na pompie obraca ją w świecie ('+pumpOrientationLabel()+')'));
-	else if(id===T.TELEPORTER) frag.appendChild(hudTipNode('tipHint','R obraca otwarcie · PPM na teleporterze obraca je w świecie ('+teleporterOrientationLabel()+') · pęd jest zachowany'));
+	else if(id===T.WATER_PUMP) frag.appendChild(hudTipNode('tipHint','R obraca przed postawieniem · PPM lub stuknięcie pompy obraca ją w świecie ('+pumpOrientationLabel()+')'));
+	else if(id===T.TELEPORTER) frag.appendChild(hudTipNode('tipHint','R obraca otwarcie · PPM lub stuknięcie teleportera obraca je w świecie ('+teleporterOrientationLabel()+') · pęd jest zachowany'));
 	else if(id===T.WATER_PIPE) frag.appendChild(hudTipNode('tipHint','PPM na istniejącej rurze: zwykła ↔ wlot wody · nieoznaczone końcówki też łapią wodę'));
 	else if(id===T.RADIO) frag.appendChild(hudTipNode('tipHint','Postaw w domu · podejdź i naciśnij E lub kliknij, aby wybrać stację'));
 	else if(isBackgroundBuildTileId(id)) frag.appendChild(hudTipNode('tipHint','R przełącza budowanie w tle'));
@@ -12390,7 +12462,7 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target)) return; if
 	if(debugKeysEnabled && k==='f3' && !keysOnce.has('f3')){ showPerfHud=!showPerfHud; msg('Debug '+(showPerfHud?'ON':'OFF')); keysOnce.add('f3'); }
 	// Toolbox buttons call the same actions directly and remain unaffected.
 	if(debugKeysEnabled && k==='g'&&!keysOnce.has('g')){ toggleGod(); keysOnce.add('g'); }
-	if(debugKeysEnabled && k==='i'&&!keysOnce.has('i')){ toggleImmunity(); keysOnce.add('i'); }
+	if(debugKeysEnabled && k===';'&&!keysOnce.has(';')){ toggleImmunity(); keysOnce.add(';'); }
 	if(debugKeysEnabled && k==='p'&&!keysOnce.has('p')){ chestDebug=!chestDebug; msg('Chest debug '+(chestDebug?'ON':'OFF')); keysOnce.add('p'); }
 	if(debugKeysEnabled && k==='j'&&!keysOnce.has('j')){ keysOnce.add('j'); const pcx=Math.floor(player.x/CHUNK_W); msg('Skrzynie w pobliżu: '+countChestsAround(pcx,4)); }
 	if(debugKeysEnabled && k==='k'&&!keysOnce.has('k')){ // force spawn a chest at feet (cycle tiers)
@@ -13882,6 +13954,9 @@ function hoverTargetInfo(){
 	const surface=(WORLDGEN && WORLDGEN.surfaceHeight)? WORLDGEN.surfaceHeight(p.tx) : -1;
 	const hidden=!fogRevealAll() && !worldTileDiscovered(p.tx,p.ty) && (t!==T.AIR || p.ty>surface);
 	if(hidden) return {key:'hidden:'+p.tx+','+p.ty,label:'Nieodkryte',color:'#2d3744'};
+	const touch=document.documentElement.dataset.inputMode==='touch';
+	if(touch && t===T.WATER_PUMP) return {key:p.tx+','+p.ty+':pump-touch',label:'↻ Pompa · stuknij, aby zmienić kierunek',color:'#57d8ee'};
+	if(touch && t===T.TELEPORTER) return {key:p.tx+','+p.ty+':teleporter-touch',label:'↻ Teleporter · stuknij, aby zmienić kierunek',color:'#b891ff'};
 	if(overs.length) return {key:p.tx+','+p.ty+':'+t+':'+overs.join('|'),label:overs.map(tileLabel).join(' + ')+' / '+tileLabel(t),color:tileHoverColor(topOver)};
 	if(isRespawnTotemAt(p.tx,p.ty)) return {key:p.tx+','+p.ty+':respawnTotem',label:'Totem odrodzenia',color:'#e23b4e'};
 	return {key:p.tx+','+p.ty+':'+t,label:tileLabel(t),color:tileHoverColor(t)};
@@ -14908,6 +14983,35 @@ function dismantleDynamoAt(tx,ty){
 	updateInventory();
 	return true;
 }
+function awardFixedResourceDrops(rows){
+	const awarded=[];
+	for(const row of rows||[]){
+		const key=row && row.key;
+		const n=Math.max(0,Math.min(999,Number(row && row.n)|0));
+		if(!key || !n || !RESOURCE_KEY_SET.has(key)) continue;
+		inv[key]=(inv[key]||0)+n;
+		awarded.push({key,n});
+	}
+	return awarded;
+}
+function dismantleTeleporterAt(tx,ty){
+	if(!TELEPORTERS || !TELEPORTERS.dismantlePlanAt) return false;
+	const plan=TELEPORTERS.dismantlePlanAt(tx,ty,getTile);
+	if(!plan || !setForegroundConfirmed(tx,ty,T.AIR)) return false;
+	const drops=awardFixedResourceDrops(plan.drops);
+	applyMaterialBreakPersonality(T.TELEPORTER,tx,ty);
+	if(FIRE && FIRE.wakeLavaAround) FIRE.wakeLavaAround(tx,ty,getTile,{radius:22});
+	if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
+	if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
+	pushUndo(tx,ty,T.TELEPORTER,T.AIR,'break',drops,{teleporterState:plan.state});
+	updateInventory();
+	notifyInvasionMining(T.TELEPORTER,tx,ty);
+	if(plan.damaged){
+		const recovered=drops.reduce((sum,row)=>sum+row.n,0);
+		msg('Uszkodzony teleporter rozpadl sie na czesci (odzysk: '+recovered+')');
+	}
+	return true;
+}
 function meteorPickSparkTile(t){
 	return isMeteorPickSparkMaterial(t);
 }
@@ -15042,6 +15146,7 @@ function breakMinedTile(){
 	if(tId===T.INVASION_CACHE) return tryOpenInvasionCacheAt(mineTx,mineTy);
 	if(isGasTileId(tId)) return false;
 	if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT) return dismantleDynamoAt(mineTx,mineTy);
+	if(tId===T.TELEPORTER) return dismantleTeleporterAt(mineTx,mineTy);
 	if(tId===T.THIN_ICE){
 		// mining the glaze opens the lake back up — the sheet IS frozen water,
 		// so breaking it returns the water tile it froze from (volume-true)
@@ -15369,6 +15474,7 @@ function tryRotateWaterPumpAt(tx,ty){
 	if(!godMode && !withinReach(tx,ty,PLACE_REACH)){ msg('Za daleko'); return true; }
 	const blocked=blockedTargetReason(tx,ty);
 	if(blocked){ msg(blocked); return true; }
+	if(MM.ghostHeroIntents){ msg('Kierunek pompy może zmieniać host'); return true; }
 	if(!PUMPS || !PUMPS.orientationAt || !PUMPS.rotateDir || !PUMPS.setOrientationAt){
 		msg('Pompa nie odpowiada');
 		return true;
@@ -16171,6 +16277,10 @@ function undoLastChange(){
 		const drops=undoDropsFor(e);
 		if(!undoDropsAvailable(drops)){ keepFailedUndo(e); return; }
 		if(!setForegroundConfirmed(e.x,e.y,e.oldId)){ keepFailedUndo(e); return; }
+		if(e.oldId===T.TELEPORTER && e.teleporterState && (!TELEPORTERS || !TELEPORTERS.restoreMachineStateAt || !TELEPORTERS.restoreMachineStateAt(e.x,e.y,e.teleporterState,getTile))){
+			setForegroundConfirmed(e.x,e.y,T.AIR);
+			keepFailedUndo(e); return;
+		}
 		if(e.oldId===T.VENDING_MACHINE && VENDING && VENDING.onPlaced) VENDING.onPlaced(e.x,e.y,getTile);
 		if(e.oldId===T.SPRING_PLATFORM && SPRING_PLATFORMS && SPRING_PLATFORMS.onTileChanged) SPRING_PLATFORMS.onTileChanged(e.x,e.y,e.newId,e.oldId,getTile);
 		reclaimUndoDrops(drops);
@@ -16195,7 +16305,10 @@ function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptio
 	let types=[...baseTypes];
 	if(godMode){ Object.keys(CHEST_SELECTION_META).forEach(k=>{ const m=CHEST_SELECTION_META[k]; types.push({k, label:m.label, col:m.color}); }); }
 	types.forEach(t=>{ const b=document.createElement('button'); b.textContent=t.label; const baseBg='rgba(255,255,255,.08)'; const rareBg=t.col? t.col+'33': baseBg; const border=t.col? t.col+'88':'rgba(255,255,255,.15)'; b.style.cssText='text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;'; if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8'; b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' -> '+t.label); }); hotSelectOptions.appendChild(b); });
-	const rect=anchorEl.getBoundingClientRect(); hotSelectMenu.style.display='block'; hotSelectMenu.style.left=(rect.left + rect.width/2)+'px'; hotSelectMenu.style.top=(rect.top - 8)+'px'; hotSelectMenu.style.transform='translate(-50%,-100%)'; }
+	const rect=anchorEl.getBoundingClientRect();
+	const place=hotPickerPlacement(rect,{width:innerWidth,height:innerHeight},document.documentElement.dataset.inputMode==='touch');
+	hotSelectMenu.style.display='block'; hotSelectMenu.style.width=place.width+'px'; hotSelectMenu.style.maxHeight=place.maxHeight+'px';
+	hotSelectMenu.style.left=place.left+'px'; hotSelectMenu.style.top=place.top+'px'; hotSelectMenu.style.transform=place.transform; hotSelectMenu.dataset.placement=place.placement; }
 const HOT_SELECT_GROUPS=[
 	{id:'basic',label:'Podstawowe',tiles:['GRASS','SAND','CLAY','DIRT','STONE','WOOD','LIGHT_WOOD','HARD_WOOD','RUBBER_WOOD','LEAF','SNOW','TOXIC_SNOW','WATER']},
 	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','TIN_ORE','GOLD_ORE','SILVER_ORE','SILVER_INGOT','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL','MOTHER_ICE','MOTHER_LAVA','GRAPHITE','GRAPHENE']},
@@ -16317,6 +16430,15 @@ canvas.addEventListener('pointerdown',e=>{
 			} else if(DROPS.pickupAt(aim.x,aim.y,player,pickupOpts)==='picked'){ noteSaveActivity(); if(e.pointerType==='touch') touchHaptic(7,55); return; }
 		}
 		if(assignCompanionHarvestTargetAt(tx,ty)) return;
+		// Touch has no secondary mouse button. A deliberate tap on a directional
+		// machine is its contextual rotate action, before tool/weapon handling can
+		// mistake the same gesture for mining or an attack.
+		if(e.pointerType==='touch'){
+			if(tryRotateTeleporterAt(tx,ty) || tryRotateWaterPumpAt(tx,ty)){
+				touchHaptic(8,65);
+				return;
+			}
+		}
 		if(weaponMode){
 			if(actionStickController && actionStickController.active()) actionStickController.cancel();
 			if(fireBtnHeld){ releaseTouchWeaponFire(true); fireBtnHeld=false; fireBtnPointerId=null; if(fireBtn) fireBtn.classList.remove('on'); }
@@ -17231,7 +17353,7 @@ if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateIn
 	function ensurePanel(){
 		if(panel) return panel;
 		panel=document.createElement('div'); panel.id='traderPanel'; panel.hidden=true;
-		(document.getElementById('ui')||document.body).appendChild(panel);
+		document.body.appendChild(panel);
 		return panel;
 	}
 	function formatTradeCost(cost){
@@ -17328,7 +17450,7 @@ if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateIn
 		if(!panel.hidden){ renderPanel(); return; }
 		panel.hidden=false;
 		renderPanel();
-		if(MM.modalInput && MM.modalInput.push) MM.modalInput.push('trader');
+		if(MM.modalInput && MM.modalInput.push) MM.modalInput.push('trader',panel);
 		window.addEventListener('keydown',trapKeydown,true);
 	}
 	function closePanel(){
@@ -19792,6 +19914,7 @@ function regenWorld(){
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); }catch(e){} }
 	if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
 	resetCraftingAvailability();
+	try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); }catch(e){}
 	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Nowy świat seed '+worldSeed); }
 document.getElementById('centerBtn').addEventListener('click',()=>{ snapCameraToPlayer(); });
 document.getElementById('helpBtn').addEventListener('click',()=>toggleHelp());
@@ -20611,15 +20734,15 @@ if(!loaded && !loadRejected && !MM.ghostMode){
 		inv.water=Math.max(inv.water|0,10);
 	}catch(e){}
 }
-updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); normalizeLegacyHelpDebugCopy();
+updateInventory({noCraftNotify:true}); updateGodBtn(); updateImmunityBtn(); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); updateHotbarSel(); refreshHotbarDom(); updateWeaponBar(); normalizeLegacyHelpDebugCopy(); INVENTORY_FEEDBACK.start();
 if(MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch()) setTouchActionMode(touchActionMode,{announce:false,remember:false});
 if(MM.ghostMode){ /* the ghost veil owns the first paint */ }
 else if(loadRejected){ msg('Nie wczytano głównego zapisu. Oryginał zachowano, a autozapis zablokowano do czasu odzyskania lub nowej warstwy.'); }
 else if(!loaded){
 	const touchWelcome=MM.inputMode && MM.inputMode.isTouch && MM.inputMode.isTouch();
 	msg(touchWelcome
-		?'Dotyk: krzyżak wybiera blok pole po polu; w Walce zmienia się w joystick celowania. TRYB zmienia akcję. Bezpośrednie stuknięcia nadal działają.'
-		:'Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. E=Ekwipunek, '+visionShortcutLabel()+'=optyka, C=Centrum, H=Pomoc. Debug: panel 🛠.');
+		?'Dotyk: krzyżak wybiera blok pole po polu; w Walce zmienia się w joystick celowania. TRYB zmienia akcję. Stuknij pompę lub teleporter, aby zmienić kierunek.'
+		:'Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. I=Centrum bohatera, E=interakcja, '+visionShortcutLabel()+'=optyka, C=kamera, H=Pomoc. Debug: panel 🛠.');
 } else msg('Wczytano zapis – miłej gry!');
 // Ghost spectator bridge: the one sanctioned window into main.js internals for
 // ghost_host.js / ghost_client.js — snapshot codec, world access, camera and
@@ -21175,9 +21298,12 @@ MM.ghostBridge={
 		if(info.unmineable) return {ok:false, reason:'hard'};
 		if(info.chestTier || info.cache) return {ok:false, reason:'chest'};
 		if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT) return {ok:false, reason:'machine'};
+		const teleporterPlan=tId===T.TELEPORTER && TELEPORTERS && TELEPORTERS.dismantlePlanAt
+			? TELEPORTERS.dismantlePlanAt(tx,ty,getTile)
+			: null;
 		if(!stripForegroundForCarry(tx,ty,tId)) return {ok:false, reason:'write'};
 		noteSaveActivity();
-		return {ok:true, tid:tId, layer:'fg'};
+		return {ok:true, tid:tId, layer:'fg', loot:teleporterPlan ? teleporterPlan.drops : null};
 	},
 	// hero-mode gravity extraction: reach/LOS/rate already passed host-side; this
 	// seam re-validates the MATERIAL with the same predicate solo uses, then runs
@@ -21599,10 +21725,33 @@ if(!window.__lootNoticeInit){
 	// over the equipped item (same weapon class) or for the first item of an empty
 	// slot; everything else stays a quiet toast and waits in the Ekwipunek.
 	const upgradeNoticeEl=document.getElementById('upgradeNotice');
-	function dismissUpgradeNotice(card){
+	const upgradeNoticeQueue=createSingleNoticeQueue(entry=>entry.itemId);
+	let activeUpgradeNotice=null;
+	function pruneUpgradeNoticeQueue(){
+		const INV=MM.inventory;
+		upgradeNoticeQueue.prunePending(entry=>!!(INV && INV.getItem && INV.getItem(entry.itemId)));
+	}
+	function updateUpgradeQueueStatus(card){
 		if(!upgradeNoticeEl || !card) return;
+		pruneUpgradeNoticeQueue();
+		const waiting=upgradeNoticeQueue.state().pending.length;
+		const queueEl=card.querySelector('.upQueue');
+		if(queueEl){
+			queueEl.hidden=waiting<1;
+			const mod10=waiting%10, mod100=waiting%100;
+			const noun=waiting===1?'przedmiot':(mod10>=2 && mod10<=4 && !(mod100>=12 && mod100<=14)?'przedmioty':'przedmiotów');
+			queueEl.textContent='Jeszcze '+waiting+' '+noun+' w kolejce';
+		}
+		card.dataset.queueRemaining=String(waiting);
+		const title=card.querySelector('.upTitle');
+		upgradeNoticeEl.setAttribute('aria-label','Lepszy przedmiot: '+(title?title.textContent:card.dataset.itemId)+(waiting?', w kolejce: '+waiting:''));
+	}
+	function dismissUpgradeNotice(card){
+		if(!upgradeNoticeEl || !card || !activeUpgradeNotice || activeUpgradeNotice.card!==card) return;
+		activeUpgradeNotice=null;
+		upgradeNoticeQueue.finish();
 		card.remove();
-		if(!upgradeNoticeEl.childElementCount) upgradeNoticeEl.classList.remove('show');
+		showNextUpgradeNotice();
 	}
 	function upgradeNode(cls,text){ const n=document.createElement('div'); n.className=cls; if(text) n.textContent=text; return n; }
 	function isUpgradeWorthy(cmp){
@@ -21626,8 +21775,17 @@ if(!window.__lootNoticeInit){
 		if(!card || !upgradeNoticeEl) return false;
 		const INV=MM.inventory;
 		const item=INV && INV.getItem ? INV.getItem(card.dataset.itemId||'') : null;
+		if(!item){
+			if(activeUpgradeNotice && activeUpgradeNotice.card===card) dismissUpgradeNotice(card);
+			else card.remove();
+			return false;
+		}
 		const cmp=item && INV && INV.compareItem ? INV.compareItem(item.id) : null;
 		const equipped=!!(cmp && cmp.equipped && cmp.equipped.id===item.id);
+		if(equipped && activeUpgradeNotice && activeUpgradeNotice.card===card){
+			dismissUpgradeNotice(card);
+			return false;
+		}
 		const worthy=isUpgradeWorthy(cmp);
 		const kicker=card.querySelector('.upKicker');
 		const delta=card.querySelector('.upDelta');
@@ -21644,12 +21802,16 @@ if(!window.__lootNoticeInit){
 	}
 	function refreshUpgradeNotices(){
 		if(!upgradeNoticeEl) return 0;
-		const cards=upgradeNoticeEl.querySelectorAll('.upgradeNotice[data-item-id]');
-		cards.forEach(refreshUpgradeNoticeCard);
-		return cards.length;
+		if(!activeUpgradeNotice){
+			showNextUpgradeNotice();
+			return activeUpgradeNotice?1:0;
+		}
+		const card=activeUpgradeNotice.card;
+		const available=refreshUpgradeNoticeCard(card);
+		if(available && activeUpgradeNotice && activeUpgradeNotice.card===card) updateUpgradeQueueStatus(card);
+		return activeUpgradeNotice?1:0;
 	}
-	function showUpgradeNotice(item,cmp){
-		if(!upgradeNoticeEl) return false;
+	function buildUpgradeNoticeCard(item,cmp){
 		const INV=MM.inventory;
 		const card=document.createElement('section');
 		card.className='upgradeNotice';
@@ -21668,6 +21830,9 @@ if(!window.__lootNoticeInit){
 			INV.statChips(item).forEach(ch=>{ const c=document.createElement('span'); c.className='upChip'; c.title=ch.label; c.textContent=ch.icon+' '+ch.text; chips.appendChild(c); });
 			if(chips.childNodes.length) card.appendChild(chips);
 		}
+		const queueInfo=upgradeNode('upQueue','');
+		queueInfo.hidden=true;
+		card.appendChild(queueInfo);
 		const btns=document.createElement('div'); btns.className='upBtns';
 		const eq=document.createElement('button'); eq.type='button'; eq.className='upEquip'; eq.textContent='Załóż';
 		eq.addEventListener('click',()=>{
@@ -21676,13 +21841,44 @@ if(!window.__lootNoticeInit){
 			dismissUpgradeNotice(card);
 		});
 		const later=document.createElement('button'); later.type='button'; later.className='upLater'; later.textContent='Później';
-		later.title='Przedmiot czeka w torbie — Ekwipunek (przytrzymaj E)';
+		later.title='Przedmiot czeka w torbie — Centrum bohatera (I)';
 		later.addEventListener('click',()=>dismissUpgradeNotice(card));
 		btns.appendChild(eq); btns.appendChild(later);
 		card.appendChild(btns);
-		upgradeNoticeEl.prepend(card); // newest find stays visible at the top
+		return card;
+	}
+	function showNextUpgradeNotice(){
+		if(!upgradeNoticeEl || activeUpgradeNotice) return !!activeUpgradeNotice;
+		pruneUpgradeNoticeQueue();
+		const INV=MM.inventory;
+		let entry=null, item=null;
+		while(upgradeNoticeQueue.state().current && !item){
+			entry=upgradeNoticeQueue.state().current;
+			item=INV && INV.getItem ? INV.getItem(entry.itemId) : null;
+			if(!item){
+				upgradeNoticeQueue.finish();
+				entry=null;
+			}
+		}
+		if(!entry || !item){
+			upgradeNoticeEl.replaceChildren();
+			upgradeNoticeEl.classList.remove('show');
+			upgradeNoticeEl.setAttribute('aria-label','Lepsze przedmioty');
+			return false;
+		}
+		const cmp=INV && INV.compareItem ? INV.compareItem(item.id) : null;
+		const card=buildUpgradeNoticeCard(item,cmp);
+		activeUpgradeNotice={itemId:item.id,card};
+		upgradeNoticeEl.replaceChildren(card);
 		upgradeNoticeEl.classList.add('show');
 		refreshUpgradeNoticeCard(card);
+		if(activeUpgradeNotice && activeUpgradeNotice.card===card) updateUpgradeQueueStatus(card);
+		return true;
+	}
+	function showUpgradeNotice(item){
+		if(!upgradeNoticeEl || !item || !upgradeNoticeQueue.enqueue({itemId:item.id})) return false;
+		if(activeUpgradeNotice) updateUpgradeQueueStatus(activeUpgradeNotice.card);
+		else showNextUpgradeNotice();
 		return true;
 	}
 	window.addEventListener('mm-customization-change',refreshUpgradeNotices);
@@ -21693,11 +21889,11 @@ if(!window.__lootNoticeInit){
 		if(!rows.length) return;
 		rows.sort((a,b)=>lootNoticeRank(b)-lootNoticeRank(a));
 		const top=rows[0];
-		// Every fresh find that beats worn gear gets its own card. Reverse the
-		// ranked list before prepending so the strongest find remains on top.
+		// Real upgrades join a FIFO queue ranked strongest-first within this drop.
+		// Only the active queue entry owns a DOM card; later finds never stack.
 		const upgrades=rows.filter(row=>isUpgradeWorthy(row.cmp));
 		let shown=0;
-		upgrades.slice().reverse().forEach(row=>{ if(showUpgradeNotice(row.item,row.cmp)) shown++; });
+		upgrades.forEach(row=>{ if(showUpgradeNotice(row.item)) shown++; });
 		if(shown) return;
 		const extra=fresh.length>1 ? ' (+'+(fresh.length-1)+')' : '';
 		msg('Nowy przedmiot: '+lootNoticeName(top.item)+lootNoticeSuffix(top.cmp)+extra);
@@ -21723,5 +21919,6 @@ window.regenWorldSameSeed = function(){ try{ resetWorldTransitionRuntime(); if(M
 	// Also remove all animals when regenerating with same seed and freeze spawns briefly
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); if(MOBS.freezeSpawns) MOBS.freezeSpawns(4000); }catch(e){} } if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
 	resetCraftingAvailability();
+	try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); }catch(e){}
 	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Odświeżono świat (seed '+WORLDGEN.worldSeed+', ustawienia zmienione)'); }catch(e){ console.warn('regenWorldSameSeed failed',e); }}
 window.addEventListener('mm-regen-same-seed', ()=>{ if(window.regenWorldSameSeed) window.regenWorldSameSeed(); });

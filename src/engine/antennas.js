@@ -397,7 +397,7 @@ window.MM = window.MM || {};
       try{ chip.blur(); }catch(e){ /* focus guard */ }
     });
     const style = d.createElement('style');
-    style.textContent = 'body.touchUi #antennaChip{ bottom:212px; }'
+    style.textContent = ':root[data-input-mode="touch"] #antennaChip{ left:calc(var(--safe-left) + 10px) !important; bottom:calc(var(--safe-bottom) + var(--stick-zone) + 18px) !important; max-width:calc(100vw - var(--safe-left) - var(--safe-right) - 20px); }'
       + '#antennaChip.on{ border-color:rgba(201,140,255,.85); color:#f2e5ff; }'
       + '#antennaChip.cool{ opacity:.62; }';
     d.head && d.head.appendChild(style);
@@ -420,12 +420,18 @@ window.MM = window.MM || {};
     const t = nowMs();
     const running = st.id === item.antennaActive && t < st.until;
     const cooling = !running && t < st.cdUntil;
+    const touch=d.documentElement && d.documentElement.dataset.inputMode==='touch';
+    const key=(MM.keybinds && MM.keybinds.keyFor)
+      ? (MM.keybinds.displayKey ? MM.keybinds.displayKey(MM.keybinds.keyFor('antenna')) : String(MM.keybinds.keyFor('antenna')||'q').toUpperCase())
+      : 'Q';
     const text = spec.icon + ' ' + spec.label + ' · ' + (
       running ? (Math.max(0, (st.until - t) / 1000)).toFixed(1) + 's'
       : cooling ? '⏳' + Math.ceil((st.cdUntil - t) / 1000) + 's'
-      : '[Q]');
+      : touch ? 'DOTKNIJ' : '['+key+']');
     if(text !== chipLastText || chipDirty){
       chip.textContent = text;
+      chip.title='Aktywuj moc: '+spec.label+(touch?' — dotknij przycisku':' — klawisz '+key);
+      chip.setAttribute('aria-label','Aktywuj moc antenki: '+spec.label);
       chip.classList.toggle('on', running);
       chip.classList.toggle('cool', cooling);
       chipLastText = text;

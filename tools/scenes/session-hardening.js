@@ -82,8 +82,8 @@ const taskState = MM.tasks.state();
 if(taskState.active.length !== 1 || taskState.discarded.length !== 1 || taskState.discarded[0].id !== 'qa:near')
   return fail('discarding a task did not update the task lists');
 
-// Loot notices: three genuine upgrades must coexist. Dismissing one must remove
-// only that card and leave the other two visible for the captured screenshot.
+// Loot notices: three genuine upgrades enter one queue. Only one card may cover
+// the game, and dismissing it must promote exactly one waiting decision.
 const upgrades = [
   {id:'qa_cape_upgrade',kind:'cape',name:'Peleryna QA',tier:'epic',airJumps:20},
   {id:'qa_eyes_upgrade',kind:'eyes',name:'Oczy QA',tier:'epic',visionRadius:80},
@@ -94,11 +94,15 @@ for(const item of upgrades){
 }
 const gained = MM.onLootGained(upgrades.map(item=>MM.inventory.getItem(item.id)));
 const noticeHost = document.getElementById('upgradeNotice');
-if(gained !== 3 || noticeHost.querySelectorAll('.upgradeNotice').length !== 3)
-  return fail('upgrade notices did not stack');
+if(gained !== 3 || noticeHost.querySelectorAll('.upgradeNotice').length !== 1)
+  return fail('upgrade queue did not keep exactly one visible card');
+if(noticeHost.querySelector('.upgradeNotice').dataset.queueRemaining !== '2')
+  return fail('upgrade queue did not report two waiting items');
 noticeHost.querySelector('.upLater').click();
-if(noticeHost.querySelectorAll('.upgradeNotice').length !== 2 || !noticeHost.classList.contains('show'))
-  return fail('dismissing one upgrade replaced or hid the remaining cards');
+if(noticeHost.querySelectorAll('.upgradeNotice').length !== 1 || !noticeHost.classList.contains('show'))
+  return fail('dismissing one upgrade did not promote the next card');
+if(noticeHost.querySelector('.upgradeNotice').dataset.queueRemaining !== '1')
+  return fail('promoting the next upgrade did not decrement the queue');
 
 return 'ok :: menu=player controls; lampDrain='+(energyBefore-energyAfter).toFixed(2)
-  +'; toughness=3.4/4; tasks=1 active/1 discarded/priority qa:far; upgradeCards=2';
+  +'; toughness=3.4/4; tasks=1 active/1 discarded/priority qa:far; upgradeCards=1 queued=1';

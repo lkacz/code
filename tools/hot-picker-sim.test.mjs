@@ -12,12 +12,25 @@ globalThis.MM = {};
 globalThis.CustomEvent = class { constructor(type,opts){ this.type=type; this.detail=opts&&opts.detail; } };
 globalThis.dispatchEvent = () => true;
 
-const { foldText, createHotPickerModel } = await import('../src/engine/hot_picker.js');
+const { foldText, createHotPickerModel, hotPickerPlacement } = await import('../src/engine/hot_picker.js');
 
 // --- diacritics folding -----------------------------------------------------
 assert.equal(foldText('Śnieg'), 'snieg', 'folds Ś');
 assert.equal(foldText('ŻÓŁĆ gęślą jaźń'), 'zolc gesla jazn', 'folds the whole Polish set');
 assert.equal(foldText(''), '', 'empty stays empty');
+
+// --- responsive placement: mobile hotbar is above the catalogue -------------
+const mobilePlacement=hotPickerPlacement({left:20,top:246,bottom:290,width:54},{width:390,height:844},true);
+assert.equal(mobilePlacement.placement,'below','touch picker opens below the top-mounted mobile hotbar');
+assert.equal(mobilePlacement.transform,'translate(-50%,0)','below placement does not translate back over the slots');
+assert.ok(mobilePlacement.top>=298 && mobilePlacement.maxHeight<=844-mobilePlacement.top-8,'touch picker stays inside the viewport below its slot');
+const desktopPlacement=hotPickerPlacement({left:600,top:790,bottom:838,width:64},{width:1280,height:900},false);
+assert.equal(desktopPlacement.placement,'above','desktop picker remains above the bottom hotbar');
+assert.equal(desktopPlacement.transform,'translate(-50%,-100%)','desktop placement anchors its bottom edge to the slot');
+const landscapePlacement=hotPickerPlacement({left:300,top:326,bottom:380,width:54},{width:844,height:390},true);
+assert.equal(landscapePlacement.placement,'above','touch picker opens above a bottom-mounted landscape hotbar');
+assert.equal(landscapePlacement.transform,'translate(-50%,-100%)','landscape picker grows into the free area above the slots');
+assert.ok(landscapePlacement.top<=318 && landscapePlacement.maxHeight<=310,'landscape picker stays inside the short viewport');
 
 // --- ranked search over a synthetic catalog ----------------------------------
 const GROUPS=[
@@ -85,7 +98,7 @@ extra=[];
 const mainSrc=readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 // foldText rides along: the developer armoury search reuses the picker's
 // Polish-diacritics folding instead of growing a second copy of it.
-assert.match(mainSrc, /import \{ createHotPickerModel, createHotPicker, foldText \} from '\.\/engine\/hot_picker\.js'/, 'main.js imports the picker module');
+assert.match(mainSrc, /import \{ createHotPickerModel, createHotPicker, foldText, hotPickerPlacement \} from '\.\/engine\/hot_picker\.js'/, 'main.js imports the picker module and responsive placement helper');
 assert.match(mainSrc, /MM\.groupedHotSelect=HOTPICKER\.open/, 'slot clicks open the module picker');
 assert.match(mainSrc, /document\.addEventListener\('pointerdown',e=>\{ if\(hotSelectMenu[\s\S]{0,220}closeHotSelect/,
   'popover dismissal listens on POINTERDOWN — a click dismisser fires after chip re-renders detach the target and closes the menu on every chip press');
@@ -107,5 +120,8 @@ const indexHtml=readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 assert.match(indexHtml, /id="hotSelectTitle"/, 'shell exposes the per-slot title node');
 assert.match(indexHtml, /id="hotSelectFoot"/, 'shell exposes the footer hint node');
 assert.match(indexHtml, /id="hotSelectMenu"[^>]*width:min\(520px,calc\(100vw - 16px\)\)/, 'popover shell is grid-wide');
+const pickerSrc=readFileSync(new URL('../src/engine/hot_picker.js', import.meta.url), 'utf8');
+assert.match(pickerSrc, /addEventListener\('orientationchange',reposition/, 'open picker is repositioned after a phone rotation');
+assert.match(pickerSrc, /visualViewport\.addEventListener\('resize',reposition/, 'open picker follows the actual visible mobile viewport');
 
 console.log('hot-picker-sim: all assertions passed');

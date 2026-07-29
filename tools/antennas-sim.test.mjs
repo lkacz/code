@@ -155,6 +155,7 @@ const clientSrc = read('../src/engine/ghost_client.js');
 const netSrc = read('../src/engine/ghost_net.js');
 const keySrc = read('../src/engine/keybinds.js');
 const discSrc = read('../src/engine/discovery.js');
+const antennaSrc = read('../src/engine/antennas.js');
 // main.js: lifecycle + input + render seams
 assert.match(mainSrc, /ANTENNAS\.update\) ANTENNAS\.update\(player,dt,getTile\)/, 'antenna physics ticks with the cape/necklace frame');
 assert.match(mainSrc, /k==='q'&&!keysOnce\.has\('q'\)\)\{ activateAntennaPower\(\)/, 'Q fires the antenna active');
@@ -187,5 +188,7 @@ assert.match(clientSrc, /remoteHost\.cloaked = !!pl\.ck/, 'the host hero adopts 
 assert.match(keySrc, /\{id:'antenna',\s+group:'akcja', def:'q', label:'Moc antenki'\}/, 'antenna owns the Q default');
 assert.match(keySrc, /\{id:'vision',\s+group:'widok', def:'y'/, 'vision default moved to Y');
 assert.match(discSrc, /antenna_cloak: 'Kamuflaż antenki/, 'cloak discovery is in the catalog');
+assert.match(antennaSrc, /:root\[data-input-mode="touch"\] #antennaChip\{ left:calc\(var\(--safe-left\) \+ 10px\) !important; bottom:calc\(var\(--safe-bottom\) \+ var\(--stick-zone\) \+ 18px\) !important;/, 'touch antenna action sits above the movement joystick');
+assert.match(antennaSrc, /touch \? 'DOTKNIJ' : '\['\+key\+'\]'/, 'touch readiness copy describes the tappable action instead of showing a keyboard-only Q hint');
 
 console.log('antennas-sim: all assertions passed');

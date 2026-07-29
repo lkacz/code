@@ -57,7 +57,8 @@ camp, swaps weapons, hikes into fresh chunks, then forces a save and asserts
 the reload restores position, health and terrain exactly.
 
 ## Inventory, Equipment & Gameplay Modifiers
-The Ekwipunek panel (menu button or `E`) is a scalable inventory: equipment slots (cape /
+The Centrum bohatera panel (permanent 🎒 button, menu button or `I`) separates persistent
+character development from the scalable inventory: equipment slots (cape /
 eyes / outfit / weapon / charm), a bag of loot collected from chests, and a resources tab
 managing mined blocks (drop amounts, assign a block type to the active hotbar slot).
 Core model lives in `src/inventory.js` (registry, slots, bag, persistence under
@@ -80,7 +81,8 @@ Core model lives in `src/inventory.js` (registry, slots, bag, persistence under
   cards get a rarity-tinted frame via a `--tier` CSS variable, a primary **Załóż** vs
   ghost/toggle/icon-danger button hierarchy, and 2-line-clamped names/descriptions with
   tooltips. Resources render as a searchable card grid (owned first, empty stacks dimmed,
-  drop buttons disabled below their amount). Keyboard: `E` close, `Ctrl+←/→` tabs,
+  drop buttons disabled below their amount). Keyboard: `I` open/close, `1`/`2` switch
+  character/equipment, `Ctrl+←/→` cycles equipment tabs,
   `/` focuses search, `Esc` clears the search before closing. Visual QA driver:
   `node tools/inv-ui-qa.mjs` (headless Edge, seeds tiered loot, screenshots all tabs).
 

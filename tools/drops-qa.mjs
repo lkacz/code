@@ -11,7 +11,7 @@
 //   tools/drops-qa-c.png  cursor hover over a rare drop: corner preview card
 //                         (#dropPreview) + in-world highlight ring; the scene
 //                         also click-grabs it, verifies far-click refusal and
-//                         hold-E opening the wardrobe over loot underfoot
+//                         independent I opening over loot underfoot
 // Usage: node tools/drops-qa.mjs [--url=http://127.0.0.1:8123/index.html] [--size=1600x900]
 import { spawn, execFile } from 'node:child_process';
 import { writeFile, mkdtemp, rm, readFile } from 'node:fs/promises';
@@ -138,18 +138,18 @@ const GRAB = `(async()=>{
 	pm(r.left+r.width/2, r.top+40);
 	await sleep(300);
 	out.push('hideOnMiss='+(card && !card.classList.contains('show')));
-	// 4) tap E with loot underfoot: sweeps the drop, wardrobe stays shut
+	// 4) E with loot underfoot: sweeps the drop, hero center stays shut
 	MM.drops.spawnResource(player.x, player.y-1.2, 'coal', 1, {vx:0,vy:0});
 	await sleep(400);
 	window.dispatchEvent(new KeyboardEvent('keydown',{key:'e',bubbles:true}));
 	window.dispatchEvent(new KeyboardEvent('keyup',{key:'e',bubbles:true}));
 	await sleep(200);
 	out.push('tapSweeps='+(MM.drops.metrics().active===1)+' tapKeepsShut='+!(MM.inventoryUI && MM.inventoryUI.isOpen()));
-	// 5) HOLD E: past the tap window the wardrobe opens no matter the loot
-	window.dispatchEvent(new KeyboardEvent('keydown',{key:'e',bubbles:true}));
-	await sleep(700);
-	out.push('holdOpens='+!!(MM.inventoryUI && MM.inventoryUI.isOpen()));
-	window.dispatchEvent(new KeyboardEvent('keyup',{key:'e',bubbles:true}));
+	// 5) I opens the hero center independently of any contextual E action
+	window.dispatchEvent(new KeyboardEvent('keydown',{key:'i',bubbles:true}));
+	window.dispatchEvent(new KeyboardEvent('keyup',{key:'i',bubbles:true}));
+	await sleep(200);
+	out.push('iOpens='+!!(MM.inventoryUI && MM.inventoryUI.isOpen()));
 	try{ MM.inventoryUI.close(); }catch(e){}
 	return 'ok:'+out.join(' ');
 })()`;

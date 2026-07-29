@@ -11,8 +11,8 @@
 //   * jewel drops ({res}) — very rare, long-lived permanent-upgrade stones with
 //     their own reveal beam, particles and learned bell on arrival and pickup.
 //
-// Pickup contract: E sweeps everything in reach (the wardrobe/mech E
-// precedence asks wantsInteractKey first). Normal auto-pickup comes only from
+// Pickup contract: E sweeps everything in reach as a contextual world action.
+// Normal auto-pickup comes only from
 // worn lootMagnetLevel gear: current tile, then +1/+2/+3 tile rings. A separate
 // persisted developer override lives in the debug toolbox. Rarity is a visible
 // promise AND a ticking bomb: rare/epic
@@ -676,8 +676,8 @@ const drops = (function(){
     }catch(e){}
     return true;
   }
-  // E-precedence probe (inventory_ui): manual E remains useful beyond a worn
-  // magnet's ring, while holding E still opens the wardrobe as usual.
+  // Contextual-interaction probe: manual E remains useful beyond a worn
+  // magnet's ring.
   function wantsInteractKey(player){
     return !!nearestInReach(player,PICKUP_RADIUS);
   }
