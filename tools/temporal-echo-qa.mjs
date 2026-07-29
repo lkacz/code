@@ -56,6 +56,15 @@ const lifecycleAssertion=`(async()=>{
   const armed=MM.temporalEcho.state();
   const markerAtDeath=!!(localStorage.getItem('mm_temporal_echo_pending_v1')||sessionStorage.getItem('mm_temporal_echo_pending_v1'));
   const racing=await waitFor(()=>MM.temporalEcho.state().phase==='racing'&&MM.temporalEcho.state(),12000);
+  const temporalTarget=MM.temporalEcho.target();
+  const constants=await import('/src/constants.js');
+  const physics=await import('/src/engine/material_physics.js');
+  const groundedTarget=!!(temporalTarget&&physics.isObjectFootingTile(MM.world.getTile(temporalTarget.x,temporalTarget.y+1)));
+  let graveSelfHealed=false;
+  if(temporalTarget){
+    MM.world.setTile(temporalTarget.x,temporalTarget.y,constants.T.AIR);
+    graveSelfHealed=!!(await waitFor(()=>MM.world.getTile(temporalTarget.x,temporalTarget.y)===constants.T.GRAVE,2000));
+  }
   const trigger=document.getElementById('debugMenuBtn');
   const panel=document.getElementById('menuPanel');
   if(trigger&&panel&&panel.hidden) trigger.click();
@@ -68,6 +77,10 @@ const lifecycleAssertion=`(async()=>{
     storageWritable,
     markerAtDeath,
     racing:!!racing,
+    temporalTarget:!!temporalTarget,
+    spiritTarget:temporalTarget?.kind==='spirit',
+    groundedTarget,
+    graveSelfHealed,
     began,
     finished:!!finished,
     fullHealth:Math.abs(player.hp-player.maxHp)<0.001,

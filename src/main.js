@@ -7,7 +7,8 @@ import { worldGen as WORLDGEN } from './engine/worldgen.js';
 import world from './engine/world.js';
 import { trees as TREES } from './engine/trees.js';
 import { fallingSolids as FALLING } from './engine/falling.js';
-import { isAirOrGasTile, isBuildAnchorTile, isDoorTile, isGasTile, isHeroPassableTile, isLooseItemMaterial, isMeteorPickDenseRockMaterial, isMeteorPickSparkMaterial, isPlayerBuiltMaterial, isReplaceableNaturalOpenTile, isSafeLandingFloorTile, isSolidCollisionTile as isSolid, isStableMachineSupportTile, isSunTransparentTile, isTrapdoorTile } from './engine/material_physics.js';
+import { isAirOrGasTile, isBuildAnchorTile, isDoorTile, isGasTile, isHeroPassableTile, isLooseItemMaterial, isMeteorPickDenseRockMaterial, isMeteorPickSparkMaterial, isObjectFootingTile, isPlayerBuiltMaterial, isReplaceableNaturalOpenTile, isSafeLandingFloorTile, isSolidCollisionTile as isSolid, isStableMachineSupportTile, isSunTransparentTile, isTrapdoorTile } from './engine/material_physics.js';
+import { findGroundedGraveCell } from './engine/grave_placement.js';
 import { water as WATER } from './engine/water.js';
 import { gases as GASES } from './engine/gases.js';
 import { smoke as SMOKE } from './engine/smoke.js';
@@ -2783,6 +2784,18 @@ function restoreGrave(src){
 	if(grave){
 		ensureChunkAtY(Math.floor(grave.x/CHUNK_W),grave.y);
 		if(getTile(grave.x,grave.y)!==T.GRAVE) grave=null;
+		else if(!graveHasStableGround(grave.x,grave.y)){
+			// Migrate old saves whose tracked death marker was allowed to float.
+			const old={x:grave.x,y:grave.y};
+			const grounded=nearestOpenGraveCell(old.x,old.y);
+			if(grounded && setForegroundConfirmed(old.x,old.y,T.AIR)){
+				grave.x=grounded.x; grave.y=grounded.y;
+				if(!setForegroundConfirmed(grave.x,grave.y,T.GRAVE)){
+					grave.x=old.x; grave.y=old.y;
+					setForegroundConfirmed(old.x,old.y,T.GRAVE);
+				}
+			}
+		}
 	}
 	saveGrave();
 	return !!grave;
@@ -2909,8 +2922,10 @@ function collapseTemporalEcho(reason,notice){
 	clearTemporalPending();
 	temporalRewindFx=null;
 	if(grave && grave.echo){
+		const visual={x:grave.x,y:grave.y};
 		delete grave.echo;
 		if(!grave.res || !Object.keys(grave.res).length){ if(getTile(grave.x,grave.y)===T.GRAVE) setTile(grave.x,grave.y,T.AIR); grave=null; }
+		else refreshGraveMarkerVisual(visual.x,visual.y);
 	}
 	saveGrave(); saveState();
 	if(notice) msg(notice);
@@ -2946,6 +2961,7 @@ function updateTemporalEcho(dt){
 	}
 	const state=temporalEchoState();
 	if(state.phase==='racing'){
+		if(!repairTemporalGrave()) return false;
 		const checkpoint=WORLD&&WORLD.temporalCheckpointState?WORLD.temporalCheckpointState():null;
 		if(!checkpoint || !checkpoint.valid){
 			collapseTemporalEcho('checkpoint-invalid','⌛ Echo czasu pękło — świat zmienił się zbyt mocno');
@@ -2958,6 +2974,7 @@ function updateTemporalEcho(dt){
 }
 MM.temporalEcho={
 	state:temporalEchoState,
+	target:()=>grave&&grave.echo?Object.freeze({x:grave.x,y:grave.y,kind:'spirit'}):null,
 	// Local-only QA seam: production builds cannot bypass grave contact.
 	debugRewind:()=>debugShortcutsEnabled() ? beginTemporalRewind() : false
 };
@@ -3581,20 +3598,16 @@ window.heroDied=function(cause){
 	}
 	if(any || echoArmed){
 		let gx=Math.round(player.x); let gy=Math.round(player.y);
-		const here=getTile(gx,gy);
-		if(here!==T.AIR && here!==T.WATER && getTile(gx,gy-1)===T.AIR) gy=gy-1;
+		const spot=nearestOpenGraveCell(gx,gy);
+		if(spot){ gx=spot.x; gy=spot.y; }
 		// A crush death leaves the hero inside solid rubble — hunt for the nearest
-		// open cell so the gravestone (and half his resources) stays reachable.
-		if(!isReplaceableNaturalOpenTile(getTile(gx,gy),false)){
-			const spot=nearestOpenGraveCell(gx,gy);
-			if(spot){ gx=spot.x; gy=spot.y; }
-		}
-		grave={x:gx, y:gy, res, seed:WORLDGEN.worldSeed,echo:echoArmed}; saveGrave();
-		const t=getTile(gx,gy);
-		if(isReplaceableNaturalOpenTile(t,false)) setTile(gx,gy,T.GRAVE);
-		if(getTile(gx,gy)!==T.GRAVE){
+		// supported opening so the gravestone lands and stays reachable.
+		grave=spot ? {x:gx, y:gy, res, seed:WORLDGEN.worldSeed,echo:echoArmed} : null;
+		saveGrave();
+		if(spot && isReplaceableNaturalOpenTile(getTile(gx,gy),false)) setTile(gx,gy,T.GRAVE);
+		if(!spot || getTile(gx,gy)!==T.GRAVE){
 			// Never advertise an objective the player cannot complete. If even the
-			// bounded open-cell search fails, refund the split and preserve the old
+			// grounded-cell search fails, refund the split and preserve the old
 			// grave marker instead of silently deleting half the inventory.
 			for(const k in res) if(typeof inv[k]==='number') inv[k]+=res[k];
 			grave=previousGrave;
@@ -3609,22 +3622,67 @@ window.heroDied=function(cause){
 	updateInventory();
 	startDeathTravelFx(cause);
 };
+function graveHasStableGround(x,y){
+	return worldYInBounds(y) && worldYInBounds(y+1) &&
+		getTile(x,y)===T.GRAVE &&
+		isObjectFootingTile(getTile(x,y+1));
+}
 function nearestOpenGraveCell(cx,cy){
-	for(let r=1;r<=10;r++){
-		for(let dy=-r;dy<=r;dy++){
-			for(let dx=-r;dx<=r;dx++){
-				if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue; // ring perimeter only
-				const x=cx+dx, y=cy+dy;
-				if(y<worldMinY() || y>=worldMaxY()) continue;
-				if(isReplaceableNaturalOpenTile(getTile(x,y),false)) return {x,y};
-			}
+	return findGroundedGraveCell(cx,cy,{
+		getTile,
+		isOpen:t=>isReplaceableNaturalOpenTile(t,false),
+		isSupport:isObjectFootingTile,
+		minY:worldMinY(),
+		maxY:worldMaxY(),
+		horizontalRadius:10,
+		rise:12,
+		fall:160
+	});
+}
+function activeTemporalSpiritAt(tx,ty){
+	return !!(grave && grave.echo && grave.x===Math.floor(tx) && grave.y===Math.floor(ty));
+}
+function refreshGraveMarkerVisual(x,y){
+	if(getTile(x,y)!==T.GRAVE) return;
+	worldRenderChangeCounter++;
+	MM.worldRenderVersion=worldRenderChangeCounter;
+	const key=worldRenderSectionKey(Math.floor(x/CHUNK_W),worldSectionY(y));
+	const entry=chunkCanvases.get(key);
+	if(entry) entry.version=-1;
+	chunkRenderDirty.delete(key);
+}
+function activeTemporalGraveAt(tx,ty){
+	const state=temporalEchoState();
+	return state.phase==='racing' && activeTemporalSpiritAt(tx,ty);
+}
+function repairTemporalGrave(){
+	const state=temporalEchoState();
+	if(state.phase!=='racing' || !grave || !grave.echo) return true;
+	if(getTile(grave.x,grave.y)===T.GRAVE) return true;
+	ensureChunkAtY(Math.floor(grave.x/CHUNK_W),grave.y);
+	setTile(grave.x,grave.y,T.GRAVE);
+	if(getTile(grave.x,grave.y)===T.GRAVE){
+		if(!repairTemporalGrave._noticeAt || performance.now()-repairTemporalGrave._noticeAt>2500){
+			repairTemporalGrave._noticeAt=performance.now();
+			msg('⧖ Echo odtworzyło naruszony nagrobek');
 		}
+		return true;
 	}
-	return null;
+	// A missing objective must never leave the timer/rings running forever.
+	// Fail closed and refund the escrow if even authoritative reconstruction fails.
+	const refund=grave.res&&typeof grave.res==='object'?grave.res:null;
+	if(refund) for(const key in refund) if(typeof inv[key]==='number') inv[key]+=Math.max(0,Math.floor(Number(refund[key])||0));
+	grave=null;
+	collapseTemporalEcho('grave-lost','⚠ Echo straciło punkt zaczepienia — zasoby zostały zwrócone');
+	updateInventory();
+	return false;
 }
 function tryOpenGraveAt(tx,ty){
+	if(activeTemporalGraveAt(tx,ty)){
+		if(!repairTemporalGrave()) return false;
+		return beginTemporalRewind();
+	}
 	if(getTile(tx,ty)!==T.GRAVE) return false;
-	if(grave && grave.echo && grave.x===tx && grave.y===ty && temporalEchoState().phase==='racing') return beginTemporalRewind();
 	if(!setForegroundConfirmed(tx,ty,T.AIR)) return false;
 	if(grave && grave.x===tx && grave.y===ty && grave.res){
 		const got=[];
@@ -10293,7 +10351,9 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 							isSolid(chunkTileAt(arr,cx,lx-1,y,originY,sectionH)),
 							isSolid(chunkTileAt(arr,cx,lx+1,y,originY,sectionH)));
 					}
-					if(t===T.GRAVE) drawGraveTile(cctx, lx*TILE, y*TILE);
+					// The Temporal Echo keeps GRAVE only as an interaction anchor;
+					// its visible form is the animated spirit drawn every frame.
+					if(t===T.GRAVE && !activeTemporalSpiritAt(wx,y)) drawGraveTile(cctx, lx*TILE, y*TILE);
 					if(t===T.RESPAWN_TOTEM) drawRespawnTotemTile(cctx, lx*TILE, y*TILE);
 					if(t===T.GLOWSHROOM) drawGlowshroomTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
 					if(t===T.VINE) drawVineTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
@@ -15616,6 +15676,7 @@ function breakMinedTile(){
 		return true;
 	}
 	const tId=mineTileIdAt(mineTx,mineTy);
+	if(tId===T.GRAVE) return tryOpenGraveAt(mineTx,mineTy);
 	const info=mineInfoForId(tId);
 	if(!info) return false;
 	if(info.unmineable && !canMineBedrockWithCurrentTool(tId,mineTx,mineTy)) return false;
@@ -22136,6 +22197,87 @@ function ensureTemporalHud(){
 	temporalHudEl=el;
 	return el;
 }
+function drawTemporalEchoSpirit(screenX,groundY,time,pulse){
+	const unit=TILE*zoom;
+	const bob=Math.sin(time*3.4)*unit*.09;
+	const sway=Math.sin(time*2.1)*unit*.055;
+	const spiritY=groundY-unit*.34+bob;
+	ctx.save();
+	ctx.translate(screenX+sway,spiritY);
+
+	const aura=ctx.createRadialGradient(0,-unit*.42,unit*.08,0,-unit*.42,unit*1.28);
+	aura.addColorStop(0,'rgba(236,255,255,'+(0.38+pulse*.16)+')');
+	aura.addColorStop(.32,'rgba(83,239,255,'+(0.18+pulse*.08)+')');
+	aura.addColorStop(.72,'rgba(133,82,255,.11)');
+	aura.addColorStop(1,'rgba(39,22,91,0)');
+	ctx.fillStyle=aura;
+	ctx.beginPath(); ctx.arc(0,-unit*.42,unit*1.28,0,Math.PI*2); ctx.fill();
+
+	// Clock halo: broken arcs identify a moment held open, not an undead enemy.
+	ctx.lineCap='round';
+	for(let ring=0;ring<2;ring++){
+		const radius=unit*(.58+ring*.17);
+		const direction=ring?1:-1;
+		ctx.strokeStyle=ring?'rgba(255,219,119,.72)':'rgba(124,246,255,.78)';
+		ctx.lineWidth=Math.max(1,unit*(ring?.035:.05));
+		for(let segment=0;segment<4;segment++){
+			const start=time*direction*(.55+ring*.2)+segment*Math.PI/2;
+			ctx.beginPath(); ctx.arc(0,-unit*.58,radius,start,start+.62); ctx.stroke();
+		}
+	}
+
+	// Face and translucent robe. The split tail remains spectral while its tip
+	// points at the exact interactive ground cell.
+	ctx.shadowColor='rgba(91,241,255,.9)';
+	ctx.shadowBlur=unit*.32;
+	ctx.fillStyle='rgba(202,252,255,.88)';
+	ctx.beginPath(); ctx.arc(0,-unit*.78,unit*.27,0,Math.PI*2); ctx.fill();
+	const robe=ctx.createLinearGradient(0,-unit*.62,0,unit*.35);
+	robe.addColorStop(0,'rgba(178,249,255,.82)');
+	robe.addColorStop(.58,'rgba(91,207,255,.48)');
+	robe.addColorStop(1,'rgba(126,75,238,0)');
+	ctx.fillStyle=robe;
+	ctx.beginPath();
+	ctx.moveTo(-unit*.22,-unit*.62);
+	ctx.bezierCurveTo(-unit*.54,-unit*.28,-unit*.38,unit*.08,-unit*.18,unit*.34);
+	ctx.quadraticCurveTo(-unit*.03,unit*.13,0,unit*.4);
+	ctx.quadraticCurveTo(unit*.08,unit*.14,unit*.24,unit*.31);
+	ctx.bezierCurveTo(unit*.43,unit*.02,unit*.5,-unit*.31,unit*.22,-unit*.62);
+	ctx.closePath(); ctx.fill();
+	ctx.shadowBlur=0;
+
+	ctx.fillStyle='rgba(19,58,92,.9)';
+	ctx.beginPath(); ctx.ellipse(-unit*.09,-unit*.8,unit*.035,unit*.06,0,0,Math.PI*2); ctx.fill();
+	ctx.beginPath(); ctx.ellipse(unit*.09,-unit*.8,unit*.035,unit*.06,0,0,Math.PI*2); ctx.fill();
+	ctx.strokeStyle='rgba(255,235,151,.9)';
+	ctx.lineWidth=Math.max(1,unit*.035);
+	ctx.beginPath();
+	ctx.arc(0,-unit*.55,unit*.13,-Math.PI*.48,Math.PI*.9);
+	ctx.moveTo(0,-unit*.55); ctx.lineTo(unit*.075,-unit*.61);
+	ctx.moveTo(0,-unit*.55); ctx.lineTo(-unit*.045,-unit*.67);
+	ctx.stroke();
+
+	// Temporal motes orbit asymmetrically, avoiding a static marker-icon feel.
+	ctx.fillStyle='rgba(224,255,255,.82)';
+	for(let i=0;i<7;i++){
+		const angle=time*(.7+(i%3)*.13)+i*2.17;
+		const radius=unit*(.65+(i%2)*.23);
+		const mx=Math.cos(angle)*radius;
+		const my=-unit*.5+Math.sin(angle*1.27)*radius*.55;
+		const size=unit*(.025+(i%3)*.012);
+		ctx.fillRect(mx-size,my-size,size*2,size*2);
+	}
+	ctx.restore();
+
+	// This grounded ripple shows exactly where contact or mining resolves the Echo.
+	ctx.save();
+	ctx.strokeStyle='rgba(103,241,255,'+(0.42+pulse*.24)+')';
+	ctx.lineWidth=Math.max(1,unit*.045);
+	ctx.beginPath();
+	ctx.ellipse(screenX,groundY-unit*.04,unit*(.42+pulse*.13),unit*.11,0,0,Math.PI*2);
+	ctx.stroke();
+	ctx.restore();
+}
 function drawTemporalEchoOverlay(ts){
 	const state=temporalEchoState();
 	const active=state.phase!=='idle' || !!temporalRewindFx;
@@ -22148,7 +22290,7 @@ function drawTemporalEchoOverlay(ts){
 			hud.style.borderColor=urgent?'rgba(255,105,126,.92)':'rgba(111,246,255,.72)';
 			hud.innerHTML='<div style="font-size:10px;opacity:.72">ECHO CHWILI</div><div style="font-size:25px;letter-spacing:.03em;margin-top:2px;color:'+(urgent?'#ff8798':'#fff3b0')+'">'+
 				(state.phase==='rewinding'?'COFANIE':seconds.toFixed(1)+' s')+'</div><div style="font-size:10px;opacity:.75;margin-top:3px">'+
-				(state.phase==='armed'?'powrót do świata':state.phase==='rewinding'?'odtwarzanie fatalnej chwili':'dotknij nagrobka, aby wrócić')+'</div>';
+				(state.phase==='armed'?'powrót do świata':state.phase==='rewinding'?'odtwarzanie fatalnej chwili':'dotknij Ducha Chwili, aby wrócić')+'</div>';
 		}
 	}
 	if(!active) return;
@@ -22163,13 +22305,14 @@ function drawTemporalEchoOverlay(ts){
 	ctx.fillStyle=vignette; ctx.fillRect(0,0,W,H);
 	if(grave && (state.phase==='racing'||state.phase==='armed')){
 		const cam=currentRenderCamera();
-		const gx=(grave.x*TILE-cam.x*TILE)*zoom;
-		const gy=(grave.y*TILE-cam.y*TILE)*zoom;
+		const gx=((grave.x+.5)*TILE-cam.x*TILE)*zoom;
+		const gy=((grave.y+1)*TILE-cam.y*TILE)*zoom;
+		drawTemporalEchoSpirit(gx,gy,time,pulse);
 		for(let i=0;i<3;i++){
 			const r=(18+i*11+((time*22+i*13)%32))*zoom;
 			ctx.strokeStyle=i===1?'rgba(255,215,106,'+(0.42-pulse*.08)+')':'rgba(91,239,255,'+(0.5-i*.11)+')';
 			ctx.lineWidth=Math.max(1,2.2*zoom-i*.35);
-			ctx.beginPath(); ctx.arc(gx+TILE*zoom/2,gy+TILE*zoom/2,r,0,Math.PI*2); ctx.stroke();
+			ctx.beginPath(); ctx.arc(gx,gy-TILE*zoom*.52,r,0,Math.PI*2); ctx.stroke();
 		}
 	}
 	if(temporalRewindFx){

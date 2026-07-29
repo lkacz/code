@@ -39,6 +39,14 @@ assert.match(main,/persistTemporalCooldown\(\)[\s\S]*TEMPORAL_COOLDOWN_MS/, 'suc
 assert.match(main,/resetWorldTransitionRuntime\(\)[\s\S]*clearTemporalPending\(\)/, 'intentional world transitions clear the crash marker');
 assert.match(main,/finishDeathTravelRespawn\(\)[\s\S]*TEMPORAL_ECHO\.beginRace/);
 assert.match(main,/tryOpenGraveAt\(tx,ty\)[\s\S]*beginTemporalRewind/);
+assert.match(main,/function breakMinedTile\(\)[\s\S]*tId===T\.GRAVE\) return tryOpenGraveAt/, 'finishing a grave mining action resolves the grave instead of deleting its tile');
+assert.match(main,/function repairTemporalGrave\(\)[\s\S]*setTile\(grave\.x,grave\.y,T\.GRAVE\)[\s\S]*collapseTemporalEcho\('grave-lost'/, 'external grave destruction self-heals or fails closed');
+assert.match(main,/function updateTemporalEcho\(dt\)[\s\S]*state\.phase==='racing'[\s\S]*repairTemporalGrave\(\)/, 'the racing loop enforces the grave objective invariant');
+assert.match(main,/findGroundedGraveCell\(cx,cy,[\s\S]*isSupport:isObjectFootingTile/, 'death markers require physical footing instead of freezing in open air');
+assert.match(main,/t===T\.GRAVE && !activeTemporalSpiritAt\(wx,y\)[\s\S]*drawGraveTile/, 'the temporal interaction anchor never bakes a floating stone marker');
+assert.match(main,/function drawTemporalEchoSpirit\([\s\S]*Clock halo[\s\S]*Temporal motes/, 'the Echo target is a distinct animated spirit');
+assert.match(main,/function refreshGraveMarkerVisual\([\s\S]*entry\.version=-1[\s\S]*chunkRenderDirty\.delete/, 'a surviving resource grave is rebaked when the spirit expires');
+assert.match(main,/kind:'spirit'/, 'the QA contract identifies the new target presentation');
 assert.match(main,/restoreTemporalEchoPayload\(payload\)[\s\S]*restoreTemporalCheckpoint\(\)[\s\S]*player\.hp=player\.maxHp[\s\S]*hpInvul/);
 assert.match(main,/restoreTemporalEchoPayload\(payload\)[\s\S]*DISCOVERY\.restore\(payload\.discovery\)/, 'branch-only discoveries are rolled back with their XP');
 assert.match(main,/restoreTemporalEchoPayload\(payload\)[\s\S]*applyProgressHp\(\)[\s\S]*applyHeroEnergyCapacity\(\)/, 'derived hero capacities are recomputed from restored progression and gear');

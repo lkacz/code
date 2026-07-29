@@ -84,7 +84,7 @@
     "test:atlantis": "node tools/atlantis-sim.test.mjs",
     "test:piranhas": "node tools/piranha-sim.test.mjs",
     "test:death-respawn": "node tools/death-respawn-fx-sim.test.mjs",
-    "test:temporal-echo": "node tools/temporal-echo-sim.test.mjs && node tools/temporal-world-checkpoint-sim.test.mjs",
+    "test:temporal-echo": "node tools/grave-placement-sim.test.mjs && node tools/temporal-echo-sim.test.mjs && node tools/temporal-world-checkpoint-sim.test.mjs",
     "qa:temporal-echo": "node tools/temporal-echo-qa.mjs",
     "test:movement": "node tools/movement-sim.test.mjs",
     "test:tree-impact": "node tools/tree-impact-sim.test.mjs",
