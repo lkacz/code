@@ -131,6 +131,52 @@ assert.ok(S && S.beginFrame && S.wakeDt, 'world sim module exports its frame/gat
   assert.equal(S.metrics().windows, 2, 'hero plus one live guest');
 }
 
+// --------------------------------------------------- exact observer-replica regions
+{
+  S.reset();
+  const hero={x:0,y:0};
+  const far={x:CHUNK_W*10+7,y:WORLD_SECTION_H+5};
+  S.beginFrame(0.1,hero,null,[far]); S.endFrame();
+  assert.equal(S.isHot(far.x,far.y),true,'a far replica keeps its exact region hot');
+  assert.equal(S.isHot(far.x+CHUNK_W,far.y),false,'the adjacent horizontal region stays cold');
+  assert.equal(S.isHot(far.x,far.y+WORLD_SECTION_H),false,'the adjacent vertical section stays cold');
+  assert.equal(S.metrics().windows,1,'a replica is not counted as a player window');
+  assert.equal(S.metrics().observers,1,'replica anchors have a separate metric');
+
+  S.beginFrame(0.1,hero,null,[]); S.endFrame();
+  assert.equal(S.isHot(far.x,far.y),false,'removing a replica freezes its old region on the next frame');
+
+  S.reset();
+  S.beginFrame(0.1,null,null,[far]); S.endFrame();
+  assert.equal(S.tracking(),true,'an observer alone can arm far-world simulation');
+  assert.equal(S.isHot(far.x,far.y),true,'observer-only tracking still heats exactly its region');
+
+  const many=[
+    far,
+    {x:CHUNK_W*12,y:0,enabled:false},
+    {x:NaN,y:0},
+    {x:CHUNK_W*14,y:0},
+    {x:CHUNK_W*16,y:0},
+    {x:CHUNK_W*18,y:0}
+  ];
+  S.beginFrame(0.1,hero,null,many); S.endFrame();
+  assert.equal(S.metrics().observers,3,'invalid/disabled anchors are ignored and excess valid anchors are capped');
+  assert.equal(S.isHot(CHUNK_W*18,0),false,'the fourth valid observer cannot expand the hot set');
+
+  // Actor capacity and replica capacity are independent: a busy co-op session
+  // cannot silently consume the three performance-budgeted observer slots.
+  const guests=Array.from({length:12},(_,i)=>({x:CHUNK_W*(30+i*3),y:0}));
+  const observers=[
+    {x:CHUNK_W*80,y:0},
+    {x:CHUNK_W*82,y:0},
+    {x:CHUNK_W*84,y:0}
+  ];
+  S.beginFrame(0.1,hero,guests,observers); S.endFrame();
+  assert.equal(S.metrics().windows,13,'host plus twelve co-op actors retain their windows');
+  assert.equal(S.metrics().observers,3,'all three exact replicas remain honored alongside co-op actors');
+  observers.forEach(o=>assert.equal(S.isHot(o.x,o.y),true,'each bounded observer region is hot'));
+}
+
 // ------------------------------------------------------------ vertical sections
 {
   S.reset();
@@ -191,7 +237,8 @@ assert.ok(S && S.beginFrame && S.wakeDt, 'world sim module exports its frame/gat
 {
   const mainSrc = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const modSrc = await readFile(new URL('../src/engine/world_sim.js', import.meta.url), 'utf8');
-  assert.match(mainSrc, /WORLD_SIM\.beginFrame\(dt, player, MM\.coopBodies\)/, 'the sim step opens the frame with hero + coop bodies');
+  assert.match(mainSrc, /WORLD_SIM\.beginFrame\(dt,player,MM\.coopBodies,OBSERVER_REPLICAS\.activeAnchors\(\)\)/,
+    'the sim step opens the frame with hero + coop bodies + a separate replica plane');
   assert.match(mainSrc, /WORLD_SIM\.endFrame\(\);\n\}\n\/\/ Hero-mode guest frame/, 'the frame closes after the LAST machine update — mid-frame stamping would steal lag from later modules');
   assert.match(mainSrc, /if\(!\(WORLD_SIM && WORLD_SIM\.skip\(simDt\)\)\) return false;/, 'the throttled-tab gap rides the clock skip — the per-module fan-out is gone (it would double-credit hot machines)');
   assert.match(mainSrc, /worldSim: timedSavePart\('worldSim'/, 'the clock is part of the save');

@@ -369,8 +369,187 @@ const ghostClient = (function(){
 	// the host validates them with solo-grade rules and the world returns on the
 	// tile stream. Combat forwards through the wrapped damage entries below.
 	const hero = { on: false, spawned: false };
+	// Observer placement/recovery cross the guest inventory and host world. Keep a
+	// durable, bounded transaction through a final receipt acknowledgement so a
+	// crash on either side cannot duplicate or lose the item.
+	const heroPlaceTx = new Map();
+	let heroSavedState = null; // detached from streamed host snapshots while demoted
+	function heroPlaceTxSnapshot(){
+		return NET.normalizeHeroPlaceTransactions(Array.from(heroPlaceTx.values())
+			.filter(tx=>tx.committed)
+			.map(tx=>({qid:tx.qid,x:tx.x,y:tx.y,tid:tx.tid,l:tx.l,d:tx.d,at:tx.at,
+				confirmedAt:tx.confirmedAt||0,a:tx.a==='mine'?'mine':'place',receipt:!!tx.receipt})));
+	}
+	function pendingObserverTransferSnapshot(){
+		return heroPlaceTxSnapshot().filter(tx=>!tx.receipt);
+	}
+	function restoreHeroPlaceTransactions(raw){
+		heroPlaceTx.clear();
+		for(const row of NET.normalizeHeroPlaceTransactions(raw)){
+			if(row.tid!==T.OBSERVER_REPLICA) continue;
+			heroPlaceTx.set(row.qid,Object.assign(row,{committed:true,lastSentAt:0,visible:false,
+				announced:false,awarded:row.a==='mine' && !!row.receipt,deferred:null}));
+		}
+		try{
+			if(bridge && bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore(pendingObserverTransferSnapshot());
+		}catch(e){ /* the ownership ledger is conservative only */ }
+	}
+	function clearHeroPlaceTransactions(){
+		heroPlaceTx.clear();
+		try{ if(bridge && bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore([]); }catch(e){}
+	}
+	function heroPlacePacket(tx){
+		if(tx.a==='mine') return {t:'hact',a:'mine',x:tx.x,y:tx.y,qid:tx.qid};
+		const packet={t:'hact',a:'place',x:tx.x,y:tx.y,tid:tx.tid,l:tx.l,qid:tx.qid};
+		if(['east','south','west','north'].includes(tx.d)) packet.d=tx.d;
+		return packet;
+	}
+	function sendHeroPlaceTransaction(tx,force){
+		if(!tx || !tx.committed || state!=='live' || !conn) return false;
+		const t=nowMs();
+		if(!force && t-(tx.lastSentAt||0)<NET.HERO_PLACE_TX_RULES.RETRY_MS) return false;
+		try{
+			conn.send(tx.receipt ? {t:'hrec',qid:tx.qid} : heroPlacePacket(tx));
+			tx.lastSentAt=t;
+			return true;
+		}catch(e){ return false; }
+	}
+	function replayHeroPlaceTransactions(force){
+		for(const tx of heroPlaceTx.values()) sendHeroPlaceTransaction(tx,!!force);
+	}
+	function finishHeroObserverSuccess(tx){
+		if(!tx || !heroPlaceTx.has(tx.qid)) return false;
+		if(tx.receipt) return sendHeroPlaceTransaction(tx,true);
+		if(tx.a==='mine' && !tx.awarded){
+			let awarded=false;
+			try{
+				awarded=hero.on
+					? !!(bridge && bridge.ghostHeroGain && bridge.ghostHeroGain('observerReplica',1))
+					: !!(bridge && bridge.ghostHeroGainSaved && bridge.ghostHeroGainSaved(heroSavedState,'observerReplica',1));
+			}catch(e){ awarded=false; }
+			if(!awarded) return false;
+			tx.awarded=true;
+		}else if(tx.a==='place'){
+			try{ if(bridge && bridge.ghostHeroObserverPendingSettle) bridge.ghostHeroObserverPendingSettle(tx.x,tx.y); }catch(e){}
+		}
+		// Receipt phase plus the recovered item are committed locally before the
+		// host is allowed to compact its replay tombstone.
+		tx.receipt=true;
+		tx.lastSentAt=0;
+		try{
+			if(bridge && bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore(pendingObserverTransferSnapshot());
+		}catch(e){}
+		if(!saveHeroState(true,true)){
+			tx.receipt=false;
+			if(tx.a==='mine' && tx.awarded){
+				try{
+					if(hero.on && bridge && bridge.ghostHeroSpend) bridge.ghostHeroSpend('observerReplica',1);
+					else if(bridge && bridge.ghostHeroSpendSaved) bridge.ghostHeroSpendSaved(heroSavedState,'observerReplica',1);
+				}catch(e){}
+				tx.awarded=false;
+			}
+			try{
+				if(bridge && bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore(pendingObserverTransferSnapshot());
+			}catch(e){}
+			return false;
+		}
+		return sendHeroPlaceTransaction(tx,true);
+	}
+	function finishHeroObserverReceipt(pl){
+		if(!pl || !NET.validHeroPlaceQid(pl.qid)) return false;
+		const tx=heroPlaceTx.get(pl.qid);
+		if(!tx || !tx.receipt) return false;
+		heroPlaceTx.delete(tx.qid);
+		if(!saveHeroState(true,true)){
+			heroPlaceTx.set(tx.qid,tx);
+			return false;
+		}
+		return true;
+	}
+	function observerReplicaVisible(x,y){
+		x=Math.floor(Number(x)); y=Math.floor(Number(y));
+		if(!Number.isFinite(x)||!Number.isFinite(y)) return false;
+		let hit=false;
+		for(const tx of Array.from(heroPlaceTx.values())){
+			if(tx.a!=='place' || tx.receipt || tx.x!==x || tx.y!==y) continue;
+			tx.visible=true; hit=true;
+			if(tx.confirmedAt) finishHeroObserverSuccess(tx);
+		}
+		return hit;
+	}
+	function settleHeroObserverAck(pl){
+		if(!pl || !NET.validHeroPlaceQid(pl.qid)) return false;
+		const tx=heroPlaceTx.get(pl.qid);
+		if(!tx) return false; // duplicate/foreign ack: never mint a second refund
+		if((pl.a==='mine'?'mine':'place')!==tx.a) return false;
+		const outcome={ok:!!pl.ok,reason:pl.reason||null};
+		if(!tx.committed){ tx.deferred=outcome; return true; } // synchronous fake transport: payment follows send()
+		if(outcome.ok){
+			if(tx.receipt) return sendHeroPlaceTransaction(tx,true);
+			const first=!tx.confirmedAt;
+			if(first) tx.confirmedAt=Date.now();
+			if(tx.a==='place' && first && !tx.announced){
+				tx.announced=true;
+				try{ if(bridge && bridge.ghostHeroPlaced) bridge.ghostHeroPlaced(tx.tid,tx.x,tx.y); }catch(e){}
+			}
+			if(tx.a==='mine') return finishHeroObserverSuccess(tx);
+			let present=!!tx.visible;
+			try{ if(!present && bridge && bridge.ghostHeroObserverPresent) present=!!bridge.ghostHeroObserverPresent(tx.x,tx.y); }catch(e){}
+			// Usually the streamed tile transfers ownership immediately. If a
+			// resync proves it was subsequently removed, do not strand this already
+			// accepted payment forever: repeated idempotent outcomes close it.
+			if(present || Date.now()-tx.confirmedAt>=NET.HERO_PLACE_TX_RULES.RETRY_MS*3) finishHeroObserverSuccess(tx);
+			else saveHeroState(true,true);
+		}else{
+			heroPlaceTx.delete(tx.qid); // delete first: a duplicate ack cannot refund twice
+			if(tx.a==='place'){
+				if(hero.on){
+					try{ if(bridge && bridge.ghostHeroRefund) bridge.ghostHeroRefund(tx.tid,tx.x,tx.y); }catch(e){}
+				}else{
+					try{ if(bridge && bridge.ghostHeroObserverPendingSettle) bridge.ghostHeroObserverPendingSettle(tx.x,tx.y); }catch(e){}
+					try{
+						if(heroSavedState && bridge && bridge.ghostHeroRefundSaved) bridge.ghostHeroRefundSaved(heroSavedState,tx.tid);
+					}catch(e){}
+				}
+			}
+			try{
+				if(bridge && bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore(pendingObserverTransferSnapshot());
+			}catch(e){}
+			try{ if(bridge) bridge.msg(tx.a==='place'
+				? '🧱 Gospodarz odrzucił postawienie ('+(outcome.reason||'?')+') — surowiec wraca'
+				: 'Gospodarz odrzucił odzyskanie atrapy ('+(outcome.reason||'?')+')'); }catch(e){}
+			saveHeroState(true,true);
+		}
+		return true;
+	}
 	const heroIntents = {
-		mineBreak(tx, ty){
+		mineBreak(tx, ty, tid){
+			if((Number(tid)|0)===T.OBSERVER_REPLICA){
+				if(state!=='live' || !conn || heroPlaceTx.size>=NET.HERO_PLACE_TX_RULES.CLIENT_MAX) return false;
+				const px=Math.floor(Number(tx)), py=Math.floor(Number(ty));
+				const region=NET.heroPlaceRegionKey(px,py);
+				if(!region || Array.from(heroPlaceTx.values()).some(row=>NET.heroPlaceRegionKey(row.x,row.y)===region)) return false;
+				let qid=null;
+				try{ qid=NET.mintHeroPlaceQid(); }catch(e){ return false; }
+				const row={qid,x:px,y:py,tid:T.OBSERVER_REPLICA,l:'fg',d:undefined,a:'mine',
+					at:Date.now(),confirmedAt:0,receipt:false,committed:true,lastSentAt:0,
+					visible:false,announced:false,awarded:false,deferred:null};
+				heroPlaceTx.set(qid,row);
+				try{
+					if(bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore(pendingObserverTransferSnapshot());
+				}catch(e){}
+				// No host write is allowed until the recovery intent itself is
+				// durable in the same local profile that will receive the item.
+				if(!saveHeroState(true,true)){
+					heroPlaceTx.delete(qid);
+					try{
+						if(bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore(pendingObserverTransferSnapshot());
+					}catch(e){}
+					return false;
+				}
+				sendHeroPlaceTransaction(row,true);
+				return true;
+			}
 			if(state === 'live' && conn) conn.send({ t: 'hact', a: 'mine', x: tx, y: ty });
 			return true; // the break "lands" when the host's tile diff arrives
 		},
@@ -389,9 +568,46 @@ const ghostClient = (function(){
 			if(state !== 'live' || !conn) return false;
 			const packet={ t: 'hact', a: 'place', x: tx, y: ty, tid: Number(tid) | 0, l: layer };
 			if(['east','south','west','north'].includes(dir)) packet.d=dir;
-			conn.send(packet);
+			if(packet.tid===T.OBSERVER_REPLICA){
+				if(heroPlaceTx.size>=NET.HERO_PLACE_TX_RULES.CLIENT_MAX) return false;
+				const px=Math.floor(Number(tx)), py=Math.floor(Number(ty));
+				const region=NET.heroPlaceRegionKey(px,py);
+				if(!region || Array.from(heroPlaceTx.values()).some(row=>NET.heroPlaceRegionKey(row.x,row.y)===region)) return false;
+				let qid=null;
+				try{ qid=NET.mintHeroPlaceQid(); }catch(e){ return false; }
+				const txRow={qid,x:px,y:py,tid:packet.tid,
+					l:packet.l==='overlay'||packet.l==='background'?packet.l:'fg',
+					d:['east','south','west','north'].includes(dir)?dir:undefined,
+					a:'place',at:Date.now(),confirmedAt:0,receipt:false,committed:false,
+					lastSentAt:0,visible:false,announced:false,awarded:false,deferred:null};
+				heroPlaceTx.set(qid,txRow);
+				// Main consumes the local item next, then commitPlace persists the
+				// spent inventory and qid together before this ever reaches the host.
+				return qid;
+			}
+			try{ conn.send(packet); }catch(e){ return false; }
 			return true;
 		},
+		commitPlace(qid){
+			if(!NET.validHeroPlaceQid(qid)) return false;
+			const tx=heroPlaceTx.get(qid);
+			if(!tx || tx.a!=='place') return false;
+			tx.committed=true;
+			const deferred=tx.deferred; tx.deferred=null;
+			if(!saveHeroState(true,true)){
+				heroPlaceTx.delete(tx.qid);
+				try{ if(bridge && bridge.ghostHeroRefund) bridge.ghostHeroRefund(tx.tid,tx.x,tx.y); }catch(e){}
+				try{
+					if(bridge && bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore(pendingObserverTransferSnapshot());
+				}catch(e){}
+				saveHeroState(true,true);
+				return false;
+			}
+			sendHeroPlaceTransaction(tx,true);
+			if(deferred) settleHeroObserverAck({a:'place',tid:tx.tid,qid:tx.qid,ok:deferred.ok,reason:deferred.reason});
+			return true;
+		},
+		observerVisible:observerReplicaVisible,
 		pickup(wx, wy){
 			if(state !== 'live' || !conn) return false;
 			conn.send({ t: 'hact', a: 'pickup', x: +Number(wx).toFixed(1), y: +Number(wy).toFixed(1) });
@@ -501,12 +717,28 @@ const ghostClient = (function(){
 		for(const [sys, fn, orig] of heroDmgWrapped.splice(0)) sys[fn] = orig;
 	}
 	let heroSaveAt = 0;
-	function saveHeroState(force){
-		if(!hero.on || !bridge || !bridge.ghostHeroCapture) return;
+	function readStoredHero(){
+		let saved=null;
+		try{ saved=JSON.parse(localStorage.getItem(NET.HERO_KEY)||'null'); }catch(e){ saved=null; }
+		return saved && typeof saved==='object' && (saved.v===1 || saved.v===2)
+			&& saved.room===WATCH.room && saved.gid===gid && saved.state
+			? saved
+			: null;
+	}
+	function saveHeroState(force,allowInactive){
+		if((!hero.on && !allowInactive) || !bridge || !bridge.ghostHeroCapture) return;
 		const t = nowMs();
 		if(!force && t - heroSaveAt < 3000) return;
 		heroSaveAt = t;
-		try{ localStorage.setItem(NET.HERO_KEY, JSON.stringify({ v: 1, room: WATCH.room, gid, at: Date.now(), state: bridge.ghostHeroCapture() })); }catch(e){ /* session-only hero */ }
+		if(hero.on){
+			try{ heroSavedState=bridge.ghostHeroCapture(); }catch(e){ return false; }
+		}
+		if(!heroSavedState || typeof heroSavedState!=='object') return false;
+		try{ localStorage.setItem(NET.HERO_KEY, JSON.stringify({
+			v:2, room:WATCH.room, gid, at:Date.now(),
+			state:heroSavedState,
+			pending:heroPlaceTxSnapshot()
+		})); return true; }catch(e){ return false; }
 	}
 	function enterHero(){
 		if(hero.on) return;
@@ -525,16 +757,23 @@ const ghostClient = (function(){
 		remoteHost.vx = p.vx || 0; remoteHost.vy = p.vy || 0; remoteHost.f = p.facing || 1;
 		// the HOST's riches came in with applyGameData — keeping them would be item
 		// duplication into guest-local truth: restore OUR persisted hero or start fresh
-		let saved = null;
-		try{ saved = JSON.parse(localStorage.getItem(NET.HERO_KEY) || 'null'); }catch(e){ saved = null; }
-		const returning = !!(saved && typeof saved === 'object' && saved.room === WATCH.room && saved.state
-			&& bridge.ghostHeroRestore && bridge.ghostHeroRestore(saved.state));
-		if(!returning && bridge.ghostHeroFresh) bridge.ghostHeroFresh();
+		const returning = !!(heroSavedState && bridge.ghostHeroRestore && bridge.ghostHeroRestore(heroSavedState));
+		if(returning){
+			try{
+				if(bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore(pendingObserverTransferSnapshot());
+			}catch(e){}
+		}
+		else{
+			clearHeroPlaceTransactions();
+			if(bridge.ghostHeroFresh) bridge.ghostHeroFresh();
+		}
+		try{ heroSavedState=bridge.ghostHeroCapture(); }catch(e){ heroSavedState=null; }
 		document.body.classList.add('mmGhostHero');
 		if(MMR) MMR.ghostHeroIntents = heroIntents; // main.js chokepoints activate on this hook
 		wrapHeroDamage();
 		if(myLook && conn && state === 'live') conn.send({ t: 'plook', c: myLook });
 		cam.mode = 'follow';
+		replayHeroPlaceTransactions(true);
 		bridge.msg(returning ? '🕹 PEŁNE WCIELENIE — twój bohater wrócił z ekwipunkiem!'
 			: '🕹 PEŁNE WCIELENIE: grasz jak u siebie — kop, buduj, wytwarzaj. Świat należy do gospodarza, twój ekwipunek do ciebie.');
 		updateBar();
@@ -763,6 +1002,10 @@ const ghostClient = (function(){
 		loadAvatar();
 		loadLook();
 		loadProgress();
+		const storedHero=readStoredHero();
+		heroSavedState=storedHero ? storedHero.state : null;
+		if(storedHero) restoreHeroPlaceTransactions(storedHero.pending);
+		else clearHeroPlaceTransactions();
 		document.body.classList.add('mmGhostMode');
 		injectCss();
 		showVeil('Łączenie z warstwą <b>' + WATCH.room + '</b>…');
@@ -796,6 +1039,7 @@ const ghostClient = (function(){
 			try{ frame(0.5, (typeof performance !== 'undefined') ? performance.now() : Date.now(), true); }catch(e){ /* next tick */ }
 			try{ flushProgress(); }catch(e){ /* storage blocked */ }
 			try{ refreshResumeCredential(false); }catch(e){ /* next lifecycle retry */ }
+			try{ replayHeroPlaceTransactions(false); }catch(e){ /* idempotent retry waits for the next beat */ }
 		}, 500);
 		return true;
 	}
@@ -817,13 +1061,15 @@ const ghostClient = (function(){
 		// Never delete the shared base credential here: the document that won the
 		// owner-nonce lease still needs it. Only this document's session proof rotates.
 		releaseGidLease(losingGid);
+		if(hero.on) exitHero();
+		if(play.on) exitPlay();
 		gid = gidMint(); resumeToken = null; resumeAuthenticatedThisDocument = false; lastResumeCacheAt = 0;
 		try{
 			sessionStorage.removeItem(NET.RESUME_TOKEN_KEY);
 			sessionStorage.setItem(NET.GID_KEY, gid);
 		}catch(e){ /* the in-memory identity is still isolated */ }
-		if(hero.on) exitHero();
-		if(play.on) exitPlay();
+		heroSavedState=null;
+		clearHeroPlaceTransactions();
 		mode = 'watch'; queue.length = 0; poseLog.length = 0;
 		restartForLeaseConflict();
 		leaseConflictRotating = false;
@@ -852,6 +1098,8 @@ const ghostClient = (function(){
 		try{ if(rejectedGid !== baseGid) removeResumeCredential(localStorage, WATCH.room, rejectedGid); }catch(e){ /* cache may be unavailable */ }
 		releaseGidLease(rejectedGid);
 		gid = gidMint();
+		heroSavedState=null;
+		clearHeroPlaceTransactions();
 		try{
 			sessionStorage.removeItem(NET.RESUME_TOKEN_KEY);
 			sessionStorage.removeItem(NET.GID_KEY);
@@ -1000,7 +1248,7 @@ const ghostClient = (function(){
 		if(pl.t === 'perm'){
 			if(NET.validPermissionMode(pl.mode)){
 				mode = pl.mode;
-				if(mode === 'hero'){ enterHero(); }
+				if(mode === 'hero'){ enterHero(); replayHeroPlaceTransactions(true); }
 				else if(mode === 'play'){ if(hero.on) exitHero(); enterPlay(); }
 				else { if(play.on) exitPlay(); if(hero.on) exitHero(); }
 				bridge.msg(mode === 'watch' ? '👁 Gospodarz: możesz teraz tylko oglądać'
@@ -1012,7 +1260,17 @@ const ghostClient = (function(){
 			}
 			return;
 		}
+		if(pl.t === 'hrack'){
+			finishHeroObserverReceipt(pl);
+			return;
+		}
 		if(pl.t === 'hact'){
+			// Observer transfers are durable qid transactions, not ordinary
+			// best-effort hero acks. Settle them even after a permission demotion.
+			if((pl.a==='place' || pl.a==='mine') && NET.validHeroPlaceQid(pl.qid) && heroPlaceTx.has(pl.qid)){
+				settleHeroObserverAck(pl);
+				return;
+			}
 			// hero-mode ack: a validated break awards THIS side's own drop logic,
 			// a refused placement refunds the locally spent block
 			if(hero.on){
@@ -1031,8 +1289,11 @@ const ghostClient = (function(){
 					// a refused throw empties the display hand (the host's is the truth)
 					try{ if(bridge.ghostHeroGravHeld) bridge.ghostHeroGravHeld(0); }catch(e){ /* fine */ }
 				}
+				else if(pl.a === 'place' && pl.ok && pl.tid){
+					try{ if(bridge.ghostHeroPlaced) bridge.ghostHeroPlaced(pl.tid,pl.x,pl.y); }catch(e){ /* fine */ }
+				}
 				else if(pl.a === 'place' && !pl.ok && pl.tid){
-					try{ if(bridge.ghostHeroRefund) bridge.ghostHeroRefund(pl.tid); }catch(e){ /* fine */ }
+					try{ if(bridge.ghostHeroRefund) bridge.ghostHeroRefund(pl.tid,pl.x,pl.y); }catch(e){ /* fine */ }
 					bridge.msg('🧱 Gospodarz odrzucił postawienie (' + (pl.reason || '?') + ') — surowiec wraca');
 				}
 				else if(pl.a === 'mine' && !pl.ok && pl.reason === 'chest') bridge.msg('🎁 Skrzynię otwórz kliknięciem — nie kilofem');
@@ -1420,6 +1681,7 @@ const ghostClient = (function(){
 		}
 		hideVeil();
 		updateBar();
+		if(hero.on && mode==='hero') replayHeroPlaceTransactions(true);
 	}
 	function drainQueue(){
 		for(const pl of queue.splice(0)){
@@ -1432,10 +1694,25 @@ const ghostClient = (function(){
 						if(t - lastSnapReq > 5000){ lastSnapReq = t; conn.send({ t: 'needSnap' }); }
 						continue;
 					}
+					const cells=[];
 					for(let i = 0; i + 2 < pl.d.length; i += 3){
-						if(Number.isFinite(pl.d[i]) && Number.isFinite(pl.d[i + 1]) && Number.isFinite(pl.d[i + 2])) bridge.setTile(pl.d[i], pl.d[i + 1], pl.d[i + 2]);
+						if(Number.isFinite(pl.d[i]) && Number.isFinite(pl.d[i + 1]) && Number.isFinite(pl.d[i + 2])){
+							cells.push({x:pl.d[i],y:pl.d[i+1],v:pl.d[i+2],applied:false});
+						}
 					}
-					stats.tileMsgs++; stats.tilesApplied += pl.d.length / 3;
+					// The host coalesces by coordinate, not causal order. Free all
+					// observer slots first so a valid A->D move cannot present D as a
+					// transient fourth replica and get rejected by the local hard cap.
+					for(const cell of cells){
+						let old=T.AIR;
+						try{ old=bridge.getTile ? bridge.getTile(cell.x,cell.y) : T.AIR; }catch(e){ old=T.AIR; }
+						if(old===T.OBSERVER_REPLICA && cell.v!==T.OBSERVER_REPLICA){
+							bridge.setTile(cell.x,cell.y,cell.v);
+							cell.applied=true;
+						}
+					}
+					for(const cell of cells) if(!cell.applied) bridge.setTile(cell.x,cell.y,cell.v);
+					stats.tileMsgs++; stats.tilesApplied += cells.length;
 				} else if(pl.t === 'hero'){
 					if(!Number.isFinite(pl.x) || !Number.isFinite(pl.y)) continue; // NaN would poison the replica
 					if(play.on || hero.on){

@@ -736,7 +736,7 @@ assert.match(mainSrc, /TELEPORTERS\.canEnterTeleporter\(player,getTile\)/, 'co-o
 assert.match(mainSrc, /id:'teleporter', name:'Teleporter', cost:TELEPORTERS\.RECIPE_COST/, 'crafting and damaged-machine salvage share one teleporter recipe definition');
 assert.match(mainSrc, /function dismantleTeleporterAt\(tx,ty\)[\s\S]*?TELEPORTERS\.dismantlePlanAt\(tx,ty,getTile\)[\s\S]*?teleporterState:plan\.state/, 'solo mining converts a damaged teleporter into its planned component salvage and remembers undo state');
 assert.match(mainSrc, /e\.oldId===T\.TELEPORTER && e\.teleporterState[\s\S]*?TELEPORTERS\.restoreMachineStateAt/, 'undo restores the teleporter damage instead of silently rebuilding it at full health');
-assert.match(mainSrc, /ghostHeroMineAt:\(tx,ty\)=>\{[\s\S]*?const teleporterPlan=tId===T\.TELEPORTER[\s\S]*?loot:teleporterPlan \? teleporterPlan\.drops : null/, 'host-authoritative hero mining computes teleporter salvage before removing machine state');
+assert.match(mainSrc, /ghostHeroMineAt:\(tx,ty,claim\)=>\{[\s\S]*?const teleporterPlan=tId===T\.TELEPORTER[\s\S]*?loot:teleporterPlan \? teleporterPlan\.drops : null/, 'host-authoritative hero mining computes teleporter salvage before removing machine state');
 assert.match(mainSrc, /WEAPONS\.update\(dt, getTile, setTile, \{teleporters:TELEPORTERS,getElectricNetworkTile,dynamo:DYNAMO,heroEnergy:MM\.heroEnergy,player\}\)/, 'weapon simulation receives the powered directional teleporter context');
 assert.match(mainSrc, /function placeDebugTeleporterPair\(\)/, 'main exposes a debug action that places a powered teleporter pair');
 assert.match(mainSrc, /function placeDebugTeleporterOne\(\)/, 'main exposes a debug action that places one teleporter');

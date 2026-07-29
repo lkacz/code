@@ -50,6 +50,37 @@ assert.deepEqual(NET.parseWatch('?watch=ROOM42%'), { room: 'ROOM42', via: null, 
 }
 assert.equal(NET.parseWatch('?watch=ROOM42&name=%E0%A4%A').name, '%E0%A4%A', 'malformed name escape falls back to raw text');
 
+// --- idempotent observer placement handoff ------------------------------------
+{
+	const qid=NET.mintHeroPlaceQid();
+	assert.equal(NET.validHeroPlaceQid(qid),true,'observer placement ids use a strict high-entropy wire shape');
+	assert.equal(NET.validHeroPlaceQid('q1'),false,'generic/short ids cannot alias an observer transaction');
+	const normalized=NET.normalizeHeroPlaceTransactions([
+		{qid,x:4,y:7,tid:150,l:'fg',d:'east',at:10},
+		{qid,x:99,y:99,tid:150},
+		{qid:'o'+'b'.repeat(24),x:5,y:8,tid:150},
+		{qid:'bad',x:1,y:1,tid:150}
+	]);
+	assert.equal(normalized.length,1,'persisted placement transactions are validated and deduplicated by id and region');
+	assert.deepEqual(normalized[0],{qid,x:4,y:7,tid:150,l:'fg',d:'east',at:10,confirmedAt:0,a:'place',receipt:false},
+		'the durable transaction retains only the bounded replay payload');
+	assert.equal(NET.heroPlaceRegionKey(63,69),'0,0','placement transactions use the exact simulation grid');
+	assert.equal(NET.heroPlaceRegionKey(64,70),'1,1','placement regions cross both 64x70 boundaries');
+	let at=100;
+	const ledger=NET.createHeroPlaceOutcomeLedger({max:2,ttlMs:1000,now:()=>at});
+	const okPacket={t:'hact',a:'place',ok:true,qid,x:4,y:7,tid:150};
+	assert.equal(ledger.remember('g-owner',qid,okPacket,at),true,'the host records the first terminal outcome');
+	assert.equal(ledger.remember('g-owner',qid,{...okPacket,ok:false},at),false,'a duplicate id cannot replace its first outcome');
+	assert.deepEqual(ledger.get('g-owner',qid,at),okPacket,'a reconnect receives the exact original outcome');
+	const copy=ledger.get('g-owner',qid,at); copy.ok=false;
+	assert.equal(ledger.get('g-owner',qid,at).ok,true,'callers cannot mutate the stored outcome through a returned packet');
+	assert.equal(ledger.forget('g-owner',qid),true,'a durable client receipt compacts the volatile copy');
+	assert.equal(ledger.get('g-owner',qid,at),null,'a compacted outcome is no longer retained in session memory');
+	assert.equal(ledger.remember('g-owner',qid,okPacket,at),true,'the ledger may record a still-unsettled replay again');
+	at+=1001;
+	assert.equal(ledger.get('g-owner',qid,at),null,'outcomes expire after the bounded reconnect window');
+}
+
 // --- snapshot chunking -----------------------------------------------------------
 const small = NET.chunkPayload('snap', 'hello');
 assert.equal(small.length, 1, 'small payload -> one chunk');
@@ -1134,9 +1165,10 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/kind==='ignite'.*MOBS\.igniteAt.*dur:2\.5/.test(mainSrc) && /kind==='chill'.*MOBS\.chillAt.*dur:3/.test(mainSrc),
 		'elemental forwards use host-fixed durations, never client-claimed ones');
 	// the bridge seams re-validate world truth with solo-grade rules
-	assert.ok(/ghostHeroMineAt:\(tx,ty\)=>\{/.test(mainSrc) && /info\.chestTier \|\| info\.cache\) return \{ok:false, reason:'chest'\}/.test(mainSrc),
+	assert.ok(/ghostHeroMineAt:\(tx,ty,claim\)=>\{/.test(mainSrc)
+		&& /if\(info\.chestTier \|\| info\.cache\)\{[\s\S]{0,180}reason:'chest'/.test(mainSrc),
 		'hero mining spans the three solo layers but chests stay host economy');
-	assert.ok(/ghostHeroPlaceAt:\(tx,ty,tid,layer,body,dir\)=>\{/.test(mainSrc) && /canPlaceInfrastructureAt\(tx,ty,id,\{body\}\)/.test(mainSrc)
+	assert.ok(/ghostHeroPlaceAt:\(tx,ty,tid,layer,body,dir,claim\)=>\{/.test(mainSrc) && /canPlaceInfrastructureAt\(tx,ty,id,\{body\}\)/.test(mainSrc)
 		&& /canPlaceConstructionBackgroundAt\(tx,ty,id,\{body\}\)/.test(mainSrc)
 		&& /const actorBlocked=remotePlacementActorBlockedReason\(body,tx,ty\)/.test(mainSrc),
 		'hero placement re-validates every layer against the authenticated guest body');
@@ -1158,9 +1190,9 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok((mainSrc.match(/if\(cur===T\.WATER && id===T\.WOOD\) return \{ok:false, reason:'boat'\};/g) || []).length >= 2,
 		'play and hero placement fail closed when wood-on-water would require the unsupported raft transaction');
 	// the write chokepoints: the guest's real mining/building routes through intents
-	assert.ok(/if\(MM\.ghostHeroIntents\) return MM\.ghostHeroIntents\.mineBreak\(mineTx,mineTy\);/.test(mainSrc),
+	assert.ok(/if\(MM\.ghostHeroIntents\) return MM\.ghostHeroIntents\.mineBreak\(mineTx,mineTy,mineTileIdAt\(mineTx,mineTy\)\);/.test(mainSrc),
 		'breakMinedTile defers to the intent chokepoint for hero guests');
-	assert.ok(/const machineDir=v\.id===T\.TELEPORTER \? teleporterOrientation : undefined;[\s\S]{0,120}if\(!MM\.ghostHeroIntents\.place\(tx,ty,v\.id,layer,machineDir\)\) return false;/.test(mainSrc),
+	assert.ok(/const machineDir=v\.id===T\.TELEPORTER \? teleporterOrientation : undefined;[\s\S]{0,600}const placementIntent=MM\.ghostHeroIntents\.place\(tx,ty,v\.id,layer,machineDir\);[\s\S]{0,80}if\(!placementIntent\)\{/.test(mainSrc),
 		'tryPlace defers to the intent chokepoint for hero guests');
 	// the hero frame: world systems stay OFF on the guest (streamed), hero systems run
 	assert.ok(/function runHeroStep\(dt,ts\)/.test(mainSrc) && !/runHeroStep[\s\S]{0,900}MOBS\.update/.test(mainSrc)
@@ -1236,7 +1268,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'claimed hero vitals are clamped display/targeting state');
 	assert.ok(/if\(!entry\.heroMode && b\.dead && t >= b\.respawnAt\)/.test(hostSrc), 'the host never respawns a hero body — the guest does');
 	// client: the fresh-kit rule (the HOST’s riches must not become guest-local truth)
-	assert.ok(/if\(!returning && bridge\.ghostHeroFresh\) bridge\.ghostHeroFresh\(\);/.test(clientSrc),
+	assert.ok(/else\{[\s\S]{0,100}clearHeroPlaceTransactions\(\);[\s\S]{0,100}if\(bridge\.ghostHeroFresh\) bridge\.ghostHeroFresh\(\);/.test(clientSrc),
 		'a first-time hero starts FRESH — applyGameData’s host inventory never leaks into guest truth');
 	assert.ok(/const hadPose = !!\(play\.on && play\.spawned\);/.test(clientSrc) && /hero\.spawned = hadPose;/.test(clientSrc),
 		'a play→hero promotion claims its pose IMMEDIATELY — waiting for the pb echo raced and silenced the ppose uplink');
@@ -1310,6 +1342,21 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		assert.ok(new RegExp("NET\\.HERO_RULES\\." + floor).test(hostSrc),
 			"the host branch for '" + a + "' actually reads its rate floor");
 	}
+	assert.ok(/const tid = Number\(pl\.tid\) \| 0;\s*\n\s*if\(t - \(b\.lastHeroPlaceAt \|\| 0\) < NET\.HERO_RULES\.PLACE_MS\)\{\s*\n\s*sendHeroAction\(\{ t: 'hact', a: 'place', ok: false, reason: 'rate', x: tx, y: ty, tid \}\);\s*\n\s*return;/.test(hostSrc),
+		'a rate-limited full-hero placement receives a failed ack so the guest refunds its predicted spend');
+	assert.ok(/const rejectHeroAction=\(reason,extra\)=>\{[\s\S]{0,360}packet\.tid=Number\(pl\.tid\)\|0;[\s\S]{0,220}packet\.x=px; packet\.y=py;/.test(hostSrc)
+		&& /if\(!b \|\| entry\.mode !== 'hero'\)\{ rejectHeroAction\('perm'\); return; \}/.test(hostSrc)
+		&& /rejectHeroAction\('reach',\{x:tx,y:ty\}\)/.test(hostSrc)
+		&& /rejectHeroAction\('blocked',\{x:tx,y:ty\}\)/.test(hostSrc),
+		'every early full-hero placement refusal echoes tile and coordinates for an exact refund');
+	assert.ok(/if\(!Number\.isFinite\(tx\) \|\| !Number\.isFinite\(ty\)\)\{ rejectHeroAction\('target'\); return; \}/.test(hostSrc),
+		'an invalid placement target receives a refusal instead of silently losing its speculative item');
+	assert.ok(/bridge\.ghostHeroRefund\(pl\.tid,pl\.x,pl\.y\)/.test(clientSrc),
+		'the failed placement ack forwards its exact coordinate to pending-ownership settlement');
+	const heroPlaceBridge=mainSrc.slice(mainSrc.indexOf('ghostHeroPlaceAt:(tx,ty,tid,layer,body,dir,claim)=>'),
+		mainSrc.indexOf('ghostHeroDamage:(x,y,amt,kind)=>'));
+	assert.ok(/setForegroundConfirmed\(tx,ty,id\)[\s\S]*noteSaveActivity\(\);\s*saveState\(\);\s*return \{ok:true, tid:id\};/.test(heroPlaceBridge),
+		'a confirmed guest world placement marks the host save dirty before success is returned');
 	// --- drop verb: the inverse of pickup, and the guest-to-guest trade path ----
 	// hero mode = the guest's pouch is its own truth, so the ack only CONFIRMS and
 	// the guest debits itself; play mode = zero trust, so the host takes from the
@@ -1884,8 +1931,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	assert.ok(/if\(b && !b\.dead && Number\.isFinite\(b\.x\) && Number\.isFinite\(b\.y\)\) windows\.push\(\{x: b\.x, y: b\.y\}\);/.test(ws),
 		'worldSim hot windows include every live embodied co-op body');
 	const mainWs = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
-	assert.ok(/WORLD_SIM\.beginFrame\(dt, player, MM\.coopBodies\)/.test(mainWs),
-		'main feeds MM.coopBodies into the hot set every frame (CLAUDE.md rule 3)');
+	assert.ok(/WORLD_SIM\.beginFrame\(dt,player,MM\.coopBodies,OBSERVER_REPLICAS\.activeAnchors\(\)\)/.test(mainWs),
+		'main feeds real co-op bodies and a separate inert observer plane into the hot set every frame');
 	const tur = readFileSync(new URL('../src/engine/turrets.js', import.meta.url), 'utf8');
 	assert.ok(/const step=SIM \? SIM\.wakeDt\(dt,m\.x,m\.y,WAKE_MAX_SECONDS\) : dt;/.test(tur),
 		'turrets gate through worldSim (frozen far, wake pays the gap)');

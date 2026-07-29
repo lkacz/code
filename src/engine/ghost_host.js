@@ -15,6 +15,7 @@
 //   ghosts    — presence relay so every watcher (and the host) sees the spirits
 import { ghostNet as NET } from './ghost_net.js';
 import { bodyFootprintOverlapsCell } from './body_footprint.js';
+import { T } from '../constants.js';
 
 const MMR = (typeof window !== 'undefined' && window.MM) ? window.MM : null;
 // Neutral from the first frame: every consumer (mobs XP, movement, weapons)
@@ -113,6 +114,13 @@ const ghostHost = (function(){
 			lastSimAt: now(), // a fresh session is not "idle" before its first sim frame
 			duelAsks: new Map(), // 'challenger>target' → ts; a duel starts only on MUTUAL asks
 			modeMemory: new Map(), // gid → {mode, ts, body}: embodied rungs + combat state survive a reconnect
+			heroPlaceOutcomes: NET.createHeroPlaceOutcomeLedger({
+				max:NET.HERO_PLACE_TX_RULES.OUTCOME_MAX,
+				ttlMs:MODE_MEMORY_MS,
+				now
+			}),
+			heroObserverPending: new Map(), // gid\0qid -> awaited durable world commit
+			heroReceiptPending: new Map(), // gid\0qid -> awaited tombstone compaction
 			tokens: new Map(), // gid → resume token: the ONLY proof of gid ownership this session
 			// per-session invite secret (at least 128 bits): the capability that gates
 			// remote join. It rides the shared link's #fragment; v2 RTC signaling derives
@@ -188,6 +196,43 @@ const ghostHost = (function(){
 	}
 
 	function active(){ return !!session; }
+	function hasPendingObserverTransactions(){
+		return !!(session && (
+			(session.heroObserverPending && session.heroObserverPending.size)
+			|| (session.heroReceiptPending && session.heroReceiptPending.size)
+		));
+	}
+	function differentRoomCode(previous){
+		const old=NET.normalizeRoom(previous);
+		for(let i=0;i<8;i++){
+			const candidate=NET.normalizeRoom(NET.roomCode());
+			if(candidate && candidate!==old) return candidate;
+		}
+		// A deterministic or broken RNG may keep returning the retired room. Room
+		// normalization accepts A/B, so changing its final glyph is a valid,
+		// guaranteed-different fallback even for a manually supplied room code.
+		if(old) return old.slice(0,-1)+(old.endsWith('A')?'B':'A');
+		return null;
+	}
+	function rotateRoomNamespace(){
+		let readable=false, stored=null;
+		try{
+			stored=NET.normalizeRoom(sessionStorage.getItem(HOST_ROOM_TAB_KEY));
+			readable=true;
+		}catch(e){ /* storage-disabled tabs never retain a room across the reload */ }
+		const previous=session ? session.room : stored;
+		const next=differentRoomCode(previous);
+		if(!next) return false;
+		try{
+			sessionStorage.setItem(HOST_ROOM_TAB_KEY,next);
+			return NET.normalizeRoom(sessionStorage.getItem(HOST_ROOM_TAB_KEY))===next;
+		}catch(e){
+			// If reads worked, the old namespace may still survive the reload and
+			// must not be reused. With wholly unavailable storage, start() already
+			// creates an ephemeral room on every boot, so stopping is sufficient.
+			return !readable;
+		}
+	}
 
 	function link(via){
 		if(!session) return null;
@@ -626,6 +671,32 @@ const ghostHost = (function(){
 			handlePlayAct(s, entry, pl);
 		} else if(pl.t === 'hact'){
 			handleHeroAct(s, entry, pl);
+		} else if(pl.t === 'hrec'){
+			if(NET.validHeroPlaceQid(pl.qid)){
+				const key=entry.gid+'\0'+pl.qid;
+				const existing=s.heroReceiptPending && s.heroReceiptPending.get(key);
+				if(existing){ existing.waiters.add(entry.peer); return; }
+				const pending={waiters:new Set([entry.peer])};
+				s.heroReceiptPending.set(key,pending);
+				let commit=null;
+				try{
+					commit=bridge.ghostHeroObserverReceipt
+						? bridge.ghostHeroObserverReceipt(entry.gid,pl.qid)
+						: false;
+				}catch(e){ commit=false; }
+				Promise.resolve(commit).then(durable=>{
+					if(s.heroReceiptPending.get(key)!==pending) return;
+					s.heroReceiptPending.delete(key);
+					if(!durable || s.closed) return;
+					if(s.heroPlaceOutcomes) s.heroPlaceOutcomes.forget(entry.gid,pl.qid);
+					const packet={t:'hrack',qid:pl.qid};
+					for(const peer of pending.waiters){
+						try{ peer.send(packet); }catch(e){ /* durable receipt retries after reconnect */ }
+					}
+				},()=>{
+					if(s.heroReceiptPending.get(key)===pending) s.heroReceiptPending.delete(key);
+				});
+			}
 		} else if(pl.t === 'buff'){
 			handleBuff(s, entry, pl);
 		} else if(pl.t === 'needMobs'){
@@ -1914,16 +1985,99 @@ const ghostHost = (function(){
 	// still cannot write one illegal tile or exceed the damage cap.
 	function handleHeroAct(s, entry, pl){
 		markActive(entry);
-		const b = entry.body;
-		if(!b || entry.mode !== 'hero'){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'perm' }); return; }
-		if(b.dead){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'dead' }); return; }
-		// Reject stunned hero bodies before any action timer or world bridge call.
-		if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.isFrozenState && MMR.heroStatus.isFrozenState(b.statusSt)){
-			entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'frozen' });
+		const receivedAt=now();
+		const observerHasQid=!!(pl && (pl.a==='place' || pl.a==='mine') && pl.qid!=null);
+		const observerQid=observerHasQid && NET.validHeroPlaceQid(pl.qid) ? pl.qid : null;
+		const observerKey=observerQid ? entry.gid+'\0'+observerQid : null;
+		if(observerHasQid && !observerQid){
+			entry.peer.send({t:'hact',a:pl.a,ok:false,reason:'qid',
+				tid:Number(pl.tid)|0,x:Math.floor(Number(pl.x)),y:Math.floor(Number(pl.y))});
 			return;
 		}
-		if(!NET.validHeroAction(pl.a)){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'action' }); return; }
-		const t = now();
+		// A duplicate may arrive after the connection (or permission) changed.
+		// Return the first terminal answer before re-running any gate or world write.
+		if(observerQid && s.heroPlaceOutcomes){
+			const cached=s.heroPlaceOutcomes.get(entry.gid,observerQid,receivedAt);
+			if(cached){ entry.peer.send(cached); return; }
+		}
+		if(observerKey && s.heroObserverPending && s.heroObserverPending.has(observerKey)){
+			s.heroObserverPending.get(observerKey).waiters.add(entry.peer);
+			return;
+		}
+		// Successful locally-paid observer outcomes outlive both the volatile
+		// reconnect ledger and the tile itself until the client confirms durable
+		// settlement. This check deliberately precedes permission/body gates: a
+		// demoted or reconnecting guest is querying an old outcome, not acting.
+		if(observerQid){
+			let accepted=null;
+			try{
+				accepted=bridge.ghostHeroObserverAccepted
+					? bridge.ghostHeroObserverAccepted(entry.gid,observerQid)
+					: null;
+			}catch(e){ accepted=null; }
+			if(accepted){
+				const packet={t:'hact',a:accepted.action==='mine'?'mine':'place',ok:true,qid:observerQid,tid:T.OBSERVER_REPLICA,
+					x:Number.isSafeInteger(accepted.x)?accepted.x:Math.floor(Number(pl.x)),
+					y:Number.isSafeInteger(accepted.y)?accepted.y:Math.floor(Number(pl.y))};
+				if(s.heroPlaceOutcomes) s.heroPlaceOutcomes.remember(entry.gid,observerQid,packet,receivedAt);
+				entry.peer.send(packet);
+				return;
+			}
+		}
+		const sendHeroAction=(packet)=>{
+			if(observerQid && packet && (packet.a==='place' || packet.a==='mine')){
+				packet.qid=observerQid;
+				if(s.heroPlaceOutcomes) s.heroPlaceOutcomes.remember(entry.gid,observerQid,packet,receivedAt);
+			}
+			entry.peer.send(packet);
+		};
+		// Placement spends the full-hero guest's local item before this
+		// authoritative reply arrives. Every early refusal must therefore echo
+		// the tile and target so the guest can refund and settle its in-flight
+		// ownership entry just like a refusal from the placement core below.
+		const rejectHeroAction=(reason,extra)=>{
+			const packet=Object.assign({ t: 'hact', a: pl.a, ok: false, reason },extra||{});
+			if(pl && pl.a === 'place'){
+				packet.tid=Number(pl.tid)|0;
+				const px=Math.floor(Number(pl.x)), py=Math.floor(Number(pl.y));
+				if(Number.isFinite(px) && Number.isFinite(py)){ packet.x=px; packet.y=py; }
+			}
+			sendHeroAction(packet);
+		};
+		const persistObserverOutcome=(packet)=>{
+			if(!observerKey || !observerQid || !packet) return false;
+			packet.qid=observerQid;
+			const pending={waiters:new Set([entry.peer])};
+			s.heroObserverPending.set(observerKey,pending);
+			let commit=null;
+			try{
+				commit=bridge.ghostHeroObserverPersist
+					? bridge.ghostHeroObserverPersist(entry.gid,observerQid)
+					: false;
+			}catch(e){ commit=false; }
+			Promise.resolve(commit).then(durable=>{
+				if(s.heroObserverPending.get(observerKey)!==pending) return;
+				s.heroObserverPending.delete(observerKey);
+				if(!durable || s.closed) return;
+				if(s.heroPlaceOutcomes) s.heroPlaceOutcomes.remember(entry.gid,observerQid,packet,now());
+				for(const peer of pending.waiters){
+					try{ peer.send(packet); }catch(e){ /* reconnect replay uses the durable proof */ }
+				}
+			},()=>{
+				if(s.heroObserverPending.get(observerKey)===pending) s.heroObserverPending.delete(observerKey);
+			});
+			return true;
+		};
+		const b = entry.body;
+		if(!b || entry.mode !== 'hero'){ rejectHeroAction('perm'); return; }
+		if(b.dead){ rejectHeroAction('dead'); return; }
+		// Reject stunned hero bodies before any action timer or world bridge call.
+		if(b.statusSt && MMR && MMR.heroStatus && MMR.heroStatus.isFrozenState && MMR.heroStatus.isFrozenState(b.statusSt)){
+			rejectHeroAction('frozen');
+			return;
+		}
+		if(!NET.validHeroAction(pl.a)){ rejectHeroAction('action'); return; }
+		const t = receivedAt;
 		if(pl.a === 'dmg'){
 			// fire-and-forget: the wound shows up on the creature stream either way
 			if(t - (b.lastHeroDmgAt || 0) < NET.HERO_RULES.DMG_MS) return;
@@ -2136,10 +2290,10 @@ const ghostHost = (function(){
 			return;
 		}
 		const tx = Math.floor(Number(pl.x)), ty = Math.floor(Number(pl.y));
-		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return;
-		if(!NET.playReachOk(b.x, b.y, tx, ty, NET.HERO_RULES.REACH)){ entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'reach', x: tx, y: ty }); return; }
+		if(!Number.isFinite(tx) || !Number.isFinite(ty)){ rejectHeroAction('target'); return; }
+		if(!NET.playReachOk(b.x, b.y, tx, ty, NET.HERO_RULES.REACH)){ rejectHeroAction('reach',{x:tx,y:ty}); return; }
 		if((pl.a === 'use' || pl.a === 'mine' || pl.a === 'place' || pl.a === 'gvx') && !guestTargetClear(b, tx, ty)){
-			entry.peer.send({ t: 'hact', a: pl.a, ok: false, reason: 'blocked', x: tx, y: ty });
+			rejectHeroAction('blocked',{x:tx,y:ty});
 			return;
 		}
 		if(pl.a === 'gvx'){
@@ -2175,14 +2329,20 @@ const ghostHost = (function(){
 			if(t - (b.lastHeroMineAt || 0) < NET.HERO_RULES.MINE_MS) return; // silent — re-mining retries
 			b.lastHeroMineAt = t;
 			let res = null;
-			try{ res = bridge.ghostHeroMineAt ? bridge.ghostHeroMineAt(tx, ty) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
+			try{
+				res = bridge.ghostHeroMineAt
+					? bridge.ghostHeroMineAt(tx, ty, observerQid ? {gid:entry.gid,qid:observerQid} : null)
+					: null;
+			}catch(e){ res = { ok: false, reason: 'error' }; }
 			if(res && res.ok){
-				s.stats.heroMines = (s.stats.heroMines || 0) + 1;
+				if(!res.replayed) s.stats.heroMines = (s.stats.heroMines || 0) + 1;
 				const loot=Array.isArray(res.loot) ? res.loot.slice(0,8).map(row=>({
 					key:row && typeof row.key==='string' ? row.key.slice(0,24) : '',
 					n:Math.max(1,Math.min(99,Number(row && row.n)|0))
 				})).filter(row=>row.key) : null;
-				if(loot){
+				if((res.tid|0)===T.OBSERVER_REPLICA && observerQid){
+					res._wireLoot=null; // locally-owned item settles on the durable qid ack
+				}else if(loot){
 					for(const row of loot) NET.pouchAdd(b.pouch,row.key,row.n);
 					if(loot.length) keepBody(entry);
 				}else{
@@ -2190,37 +2350,72 @@ const ghostHost = (function(){
 					try{ key = bridge.ghostHeroPlacementKey ? bridge.ghostHeroPlacementKey(res.tid) : null; }catch(e){ key = null; }
 					if(typeof key === 'string' && key){ NET.pouchAdd(b.pouch, key, 1); keepBody(entry); }
 				}
-				res._wireLoot=loot;
+				res._wireLoot=((res.tid|0)===T.OBSERVER_REPLICA && observerQid) ? null : loot;
 			}
-			entry.peer.send({ t: 'hact', a: 'mine', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid: (res && res.tid) || 0,
-				loot:(res && res._wireLoot) || null });
+			if(res && res.retry) return;
+			const packet={ t: 'hact', a: 'mine', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid: (res && res.tid) || 0,
+				loot:(res && res._wireLoot) || null };
+			if(res && res.ok && (res.tid|0)===T.OBSERVER_REPLICA && observerQid){
+				persistObserverOutcome(packet);
+				return;
+			}
+			sendHeroAction(packet);
 		} else if(pl.a === 'place'){
-			if(t - (b.lastHeroPlaceAt || 0) < NET.HERO_RULES.PLACE_MS) return;
-			b.lastHeroPlaceAt = t;
 			const tid = Number(pl.tid) | 0;
+			if(t - (b.lastHeroPlaceAt || 0) < NET.HERO_RULES.PLACE_MS){
+				sendHeroAction({ t: 'hact', a: 'place', ok: false, reason: 'rate', x: tx, y: ty, tid });
+				return;
+			}
+			b.lastHeroPlaceAt = t;
 			const layer = (pl.l === 'overlay' || pl.l === 'background') ? pl.l : 'fg';
 			if(layer === 'fg' && cellOverlapsOtherBody(s, entry, tx, ty)){
-				entry.peer.send({ t: 'hact', a: 'place', ok: false, reason: 'body', x: tx, y: ty, tid });
+				sendHeroAction({ t: 'hact', a: 'place', ok: false, reason: 'body', x: tx, y: ty, tid });
 				return;
 			}
 			// Derive and debit the placement cost from host-owned tile/resource truth.
 			let key = null;
 			try{ key = bridge.ghostHeroPlacementKey ? bridge.ghostHeroPlacementKey(tid) : null; }catch(e){ key = null; }
 			if(typeof key !== 'string' || !key){
-				entry.peer.send({ t: 'hact', a: 'place', ok: false, reason: 'key', x: tx, y: ty, tid });
+				sendHeroAction({ t: 'hact', a: 'place', ok: false, reason: 'key', x: tx, y: ty, tid });
 				return;
 			}
-			if(!NET.pouchTake(b.pouch, key, 1)){
-				entry.peer.send({ t: 'hact', a: 'place', ok: false, reason: 'cost', x: tx, y: ty, tid });
+			// A full-hero guest normally mirrors placeable resources in this
+			// host-owned pouch. A narrowly whitelisted local-entitlement tile may
+			// instead rely on the trusted guest inventory; the host still enforces
+			// every world rule (including the observer's hard global cap).
+			let localEntitlement=false;
+			try{
+				localEntitlement=!!(bridge.ghostHeroPlacementUsesLocalEntitlement
+					&& bridge.ghostHeroPlacementUsesLocalEntitlement(tid));
+			}catch(e){ localEntitlement=false; }
+			if(localEntitlement && !observerQid){
+				sendHeroAction({t:'hact',a:'place',ok:false,reason:'qid',x:tx,y:ty,tid});
+				return;
+			}
+			const escrowDebited=NET.pouchTake(b.pouch, key, 1);
+			if(!escrowDebited && !localEntitlement){
+				sendHeroAction({ t: 'hact', a: 'place', ok: false, reason: 'cost', x: tx, y: ty, tid });
 				return;
 			}
 			let res = null;
 			const dir = ['east','south','west','north'].includes(pl.d) ? pl.d : 'east';
-			try{ res = bridge.ghostHeroPlaceAt ? bridge.ghostHeroPlaceAt(tx, ty, tid, layer, { x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H }, dir) : null; }catch(e){ res = { ok: false, reason: 'error' }; }
-			if(res && res.ok) s.stats.heroPlaces = (s.stats.heroPlaces || 0) + 1;
-			else NET.pouchAdd(b.pouch, key, 1);
+			try{
+				res = bridge.ghostHeroPlaceAt
+					? bridge.ghostHeroPlaceAt(tx, ty, tid, layer,
+						{ x: b.x, y: b.y, w: NET.PLAY_RULES.BODY_W, h: NET.PLAY_RULES.BODY_H },
+						dir, observerQid ? {gid:entry.gid,qid:observerQid} : null)
+					: null;
+			}catch(e){ res = { ok: false, reason: 'error' }; }
+			if(res && res.ok && !res.replayed) s.stats.heroPlaces = (s.stats.heroPlaces || 0) + 1;
+			else if(escrowDebited) NET.pouchAdd(b.pouch, key, 1);
 			keepBody(entry); // persist the debit or its exact refund before the result ack
-			entry.peer.send({ t: 'hact', a: 'place', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid });
+			if(res && res.retry) return;
+			const packet={ t: 'hact', a: 'place', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid };
+			if(res && res.ok && localEntitlement && observerQid){
+				persistObserverOutcome(packet);
+				return;
+			}
+			sendHeroAction(packet);
 		}
 	}
 	// --- per-body survival: the world itself is a hazard -----------------------------
@@ -3339,7 +3534,7 @@ const ghostHost = (function(){
 		perks.textContent = 'Uprawnienia: „tylko ogląda” = sama obecność (płoszy stwory, wzmacnia). „+ czat” dopuszcza krótkie wiadomości i wskazywanie miejsc 📍 (filtr wulgaryzmów). „+ czat i wpływ” odblokowuje doping, błogosławieństwa i moce (popłoch/mróz/grom). „Gra (sakwa)” pozostaje host-autorytatywna i nadaje się dla niezaufanego klienta; „pełny bohater” ufa lokalnemu stanowi gracza i jest tylko dla zaufanych osób. 🛠 mianuje asystentów (może być kilku — gdy rywalizują o surowce, wygrywa szybszy), z zatwierdzaniem ich propozycje czekają na twoje Zatwierdź. Widok: „duchy/dymki/działania” chowają awatary, teksty i efekty (👁/🙈 przy widzu chowa jednego); Enter = szybka wiadomość do widzów.';
 	}
 
-	const api = { wire, start, stop, active, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource, giftWeapon, forkGrant, partyMembers,
+	const api = { wire, start, stop, active, hasPendingObserverTransactions, rotateRoomNamespace, link, frame, metrics, drawSpirits, paintSpirit, paintChatBubble, paintBodyTag, say, setViewerMode, banViewer, setAssistant, setDefaultMode, setApprovalMode, setViewPref, setViewerHidden, approveAssist, rejectAssist, socialBoost: updateSocialBoost, openPanel: () => togglePanel(true), giftResource, giftWeapon, forkGrant, partyMembers,
 		// QA seam: the LIVE body object for a gid (host page only — the host owns every
 		// body anyway; this just spares QA the private-scope gymnastics)
 		_debugBody: (gid) => { if(!session) return null; for(const e of entries()) if(e.gid === gid) return e.body; return null; } };

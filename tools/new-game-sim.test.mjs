@@ -87,6 +87,20 @@ assert.match(mainSrc,/window\.confirm\('Rozpocząć nową grę\?/,'new game requ
 assert.match(mainSrc,/_startingNewGame=true;[\s\S]*clearActiveGameStorage\(localStorage\);[\s\S]*queueFreshWorldSeed[\s\S]*window\.location\.reload\(\)/,'new game suppresses saves, purges state, queues a new world, then reloads');
 assert.match(mainSrc,/function startNewGame\(requestedSeed\)/,'new game accepts an optional player-selected seed');
 assert.match(mainSrc,/queueWorldSeed\(seedStore,chosenSeed\)/,'a valid selected seed is queued instead of being rerolled');
+assert.match(mainSrc,/function prepareHostedWorldReplacement\(\)[\s\S]{0,900}hasPendingObserverTransactions\(\)[\s\S]{0,900}rotateRoomNamespace\(\)[\s\S]{0,900}GHOST_HOST\.stop\(\)/,
+  'a world replacement waits for active observer commits, retires their room-scoped replay namespace, then stops the host');
+assert.match(mainSrc,/function startNewGame\(requestedSeed\)[\s\S]{0,300}if\(!prepareHostedWorldReplacement\(\)\) return false;/,
+  'new game crosses the protected hosted-world replacement boundary');
+assert.match(mainSrc,/loadB\.addEventListener\('click',[\s\S]{0,300}prepareHostedWorldReplacement\(\)/,
+  'loading a named save cannot inherit stale guest observer transactions');
+assert.match(mainSrc,/loadBtn\.addEventListener\('click',[\s\S]{0,200}prepareHostedWorldReplacement\(\)/,
+  'reloading the main save cannot inherit stale guest observer transactions');
+assert.match(mainSrc,/regenBtn'\)\?\.addEventListener\('click',[\s\S]{0,200}prepareHostedWorldReplacement\(\)/,
+  'developer world regeneration cannot inherit stale guest observer transactions');
+assert.match(mainSrc,/window\.regenWorldSameSeed = function\(settings\)\{[\s\S]{0,160}prepareHostedWorldReplacement\(\)[\s\S]{0,220}WORLDGEN\.setSettings\(settings\)[\s\S]{0,160}resetWorldTransitionRuntime\(\)/,
+  'same-seed regeneration crosses the hosted-world boundary before changing generator settings or terrain');
+assert.match(uiSrc,/window\.regenWorldSameSeed\(ns\)===false/,
+  'the production world-settings Apply path delegates settings and regeneration to the guarded boundary');
 assert.match(mainSrc,/seedInput\.placeholder='losowe'/,'the player may leave the new-world seed random');
 assert.match(mainSrc,/className='pauseSeedValue'/,'the player menu shows the current world seed');
 assert.match(mainSrc,/saveMount\.id='playerSaveMenu'/,'save management is mounted in the release-facing player menu');

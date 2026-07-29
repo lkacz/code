@@ -112,24 +112,71 @@ assert.equal(S.persistent(), false, 'and it reports honestly that it does not pe
   S._resetMemory();
   store.clear();
   assert.equal(S.walRead(42), null, 'no journal, no rows');
-  assert.equal(S.walStash(42, [chunk(3, 7), chunk(4, 7)]), 2, 'the journal takes the unwritten chunks');
+  const observerReplicas={
+    v:1,
+    list:[[195,61,'g-save-owner','oaaaaaaaaaaaaaaaaaaaaaaaa'],[323,-8]],
+    accepted:[['g-save-owner','oaaaaaaaaaaaaaaaaaaaaaaaa',195,61]]
+  };
+  const criticalState={v:4,seed:42,stateHash:'aabbccdd',inv:{observerReplica:0},observerReplicas};
+  assert.equal(S.walStash(42, [chunk(3, 7), chunk(4, 7)],{observerReplicas,criticalState}), 2,
+    'the journal takes the unwritten chunks');
   const wal = S.walRead(42);
   assert.equal(wal.rows.length, 2, 'and hands them back');
+  assert.match(wal.id,/^[0-9a-f]{8}-[a-z0-9]+-[a-z0-9]+$/i,'every journal has an immutable acknowledgement id');
   assert.equal(wal.rows[0].data, 'rle-3-7', 'verbatim');
+  assert.deepEqual(wal.meta.observerReplicas,observerReplicas,'observer coordinates stay paired with the terrain delta');
+  assert.deepEqual(wal.meta.criticalState,criticalState,'the matching critical inventory state round-trips');
+  assert.equal(wal.meta.rowCount,2,'transaction metadata records its complete terrain row count');
+  assert.match(wal.meta.txHash,/^[0-9a-f]{8}$/i,'metadata is bound to the exact ordered terrain row identities');
   assert.equal(S.walRead(43), null, 'a journal from another world is not this world\'s business');
   S.walClear();
   assert.equal(S.walRead(42), null, 'a consumed journal is gone');
   // Bounded on purpose: a journal is a last-seconds carrier, not a save format.
   const many = [];
   for (let i = 0; i < S.config.WAL_MAX_CHUNKS + 40; i++) many.push(chunk(i, 1));
-  assert.equal(S.walStash(42, many), S.config.WAL_MAX_CHUNKS, 'the journal stops at its chunk cap');
+  assert.equal(S.walStash(42, many), S.config.WAL_MAX_CHUNKS, 'a metadata-free diagnostic journal stops at its chunk cap');
+  assert.equal(S.walRead(42).meta,null,'a truncated terrain journal never carries newer inventory or observer metadata');
+  S.walClear();
+  assert.equal(S.walStash(42,[chunk(9,1)],{observerReplicas,criticalState}),1,'a complete transaction becomes the current journal');
+  assert.equal(S.walStash(42,many,{observerReplicas,criticalState}),0,
+    'a gameplay transaction that exceeds the cap is refused instead of tearing terrain from inventory');
+  assert.equal(S.walRead(42).rows[0].cx,9,'a refused partial transaction preserves the older consistent journal');
   const big = [];
   for (let i = 0; i < 40; i++) big.push(chunk(i, 1, 'x'.repeat(20000)));
   S.walClear();
   const stashed = S.walStash(42, big);
   assert.ok(stashed > 0 && stashed < 40, 'and at its byte cap (' + stashed + ' of 40)');
+  assert.equal(S.walRead(42).meta,null,'byte-truncated journals also drop transaction metadata');
+  S.walClear();
+  const exactOver=big.slice(0,20);
+  assert.equal(S.walStash(42,exactOver,{observerReplicas,criticalState}),0,
+    'a final row that would cross the byte cap rejects the paired transaction instead of slipping through');
   S.walClear();
   assert.equal(S.walStash(42, [{ cx: 0.5, ver: 1, data: 'x', h: 'aabbccdd' }]), 0, 'a malformed row never reaches the journal');
+  assert.equal(S.walStash(42,[chunk(1,1)],{observerReplicas:{v:2,list:[[1,2]]}}),0,
+    'malformed transaction metadata blocks the paired terrain write');
+  assert.equal(S.walRead(42),null,'a refused malformed transaction publishes no terrain half');
+  assert.equal(S.walStash(42,[chunk(1,1)],{observerReplicas}),0,
+    'observer coordinates without their matching critical inventory capsule are refused');
+  assert.equal(S.walStash(42,[chunk(1,1)],{criticalState}),0,
+    'critical inventory without matching observer coordinates is refused');
+  assert.equal(S.walStash(42,[chunk(5,1)],{observerReplicas,criticalState}),1,'a digest test transaction is accepted');
+  const tamperedPayload=JSON.parse(store.get(S.config.WAL_KEY));
+  tamperedPayload.rows[0]=chunk(6,1);
+  store.set(S.config.WAL_KEY,JSON.stringify(tamperedPayload));
+  assert.equal(S.walRead(42).meta,null,
+    'swapping a valid same-count terrain row breaks its transaction digest');
+  S.walClear();
+  assert.equal(S.walStash(42,[chunk(7,1)],{observerReplicas,criticalState}),1,'the first acknowledgement-race WAL is accepted');
+  const firstWal=S.walRead(42);
+  assert.equal(S.walStash(42,[chunk(8,1)],{observerReplicas,criticalState}),1,'a newer WAL atomically replaces its predecessor');
+  const secondWal=S.walRead(42);
+  assert.notEqual(firstWal.id,secondWal.id,'replacement WALs have distinct ids');
+  assert.equal(S.walAcknowledge(firstWal.id),true,'an older durable save may acknowledge only the WAL it observed');
+  assert.equal(S.walRead(42).id,secondWal.id,'acknowledging W1 cannot suppress newer W2');
+  assert.equal(S.walAcknowledge(secondWal.id),true,'the matching replay can acknowledge W2');
+  assert.equal(S.walRead(42),null,'an exactly acknowledged WAL is no longer replayable');
+  S.walClear();
   // A journal written when storage is full must not throw into the unload path.
   const realSet = globalThis.localStorage.setItem;
   globalThis.localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
@@ -172,11 +219,45 @@ assert.equal(S.persistent(), false, 'and it reports honestly that it does not pe
   assert.match(mainSrc, /if\(!replaceWorld\) for\(const \[key,rec\] of _storeChunkVers\) if\(!live\.has\(key\)\) deletes\.push/, 'chunks that left the world are deleted, not orphaned');
   assert.match(mainSrc, /_storeChunkVers=live;\s*_storeBaselineSeed=seed;/, 'the baseline advances only after the transaction commits');
   assert.match(mainSrc, /if\(storeActive\(\)\)\{[\s\S]{0,400}stashStoreWal\(\);\s*persistStoreSave\('flush'\);/, 'unload journals synchronously before kicking the async write');
+  assert.match(mainSrc, /meta=\{observerReplicas:criticalState\.observerReplicas,criticalState\};[\s\S]{0,120}SAVE_STORE\.walStash\(seed,upserts,meta\)/,
+    'a complete unload journal pairs terrain with observer and critical inventory state');
+  assert.match(mainSrc, /if\(_storeNeedsFullRepublish \|\| _storeBaselineSeed!==seed \|\| !_committedSaveIdentity\) return 0;[\s\S]{0,220}for\(const \[key\] of _storeChunkVers\) if\(!live\.has\(key\)\) return 0;/,
+    'replacement worlds and pending chunk deletions refuse an upsert-only WAL');
+  assert.match(mainSrc, /if\(!complete \|\| !upserts\.length\) return 0;/,
+    'an unload refuses to journal a truncated terrain transaction');
+  assert.match(src, /const pairedMeta=!!\(safeMeta && safeMeta\.observerReplicas && safeMeta\.criticalState[\s\S]{0,800}if\(requiresMeta && \(!complete \|\| !pairedMeta\)\) return 0;/,
+    'the store refuses to overwrite a consistent WAL with an incomplete paired transaction');
+  assert.match(src, /function walTransactionHash\(seed,rows,stateHash\)[\s\S]{0,420}JSON\.stringify\(\[seed,String\(stateHash\|\|''\)\.toLowerCase\(\),identities\]\)/,
+    'the transaction digest includes the world seed, critical-state hash, and ordered row identities');
+  assert.match(src, /const expected=walTransactionHash\(parsed\.seed,rows,meta\.criticalState && meta\.criticalState\.stateHash\);\s*if\(!meta\.txHash \|\| meta\.txHash!==expected\) meta=null;/,
+    'the store verifies a digest binding seed, rows, and critical state before exposing metadata');
+  assert.match(src, /function walAcknowledge\(id\)[\s\S]{0,420}root\.localStorage\.setItem\(WAL_ACK_KEY,id\)/,
+    'journal completion uses an atomic id acknowledgement rather than a racy read/remove');
+  assert.match(mainSrc, /walObserverReplicas:walMeta && walMeta\.observerReplicas,[\s\S]{0,100}walCriticalState:walMeta && walMeta\.criticalState/,
+    'store replay forwards only paired WAL metadata into the transactional restore');
+  assert.match(mainSrc, /if\(walRows\) for\(const key of walAppliedKeys\) _storeChunkVers\.delete\(key\);[\s\S]{0,300}await persistStoreSave\('wal-replay',wal && wal\.id\)/,
+    'replayed keys are removed from the baseline and republished before the WAL can be cleared');
+  assert.doesNotMatch(mainSrc.slice(mainSrc.indexOf('async function persistStoreSaveNow'),mainSrc.indexOf('function scheduleStoreSave')),
+    /SAVE_STORE\.walClear\(\)/,'an unrelated or older store commit never destroys a newer WAL');
+  assert.match(mainSrc, /if\(reason==='wal-replay' && walId && !SAVE_STORE\.walAcknowledge\(walId\)\)/,
+    'only the durable replay transaction acknowledges its exact WAL id');
+  const loadStoreStart=mainSrc.indexOf('async function loadGameFromStore');
+  const loadStoreEnd=mainSrc.indexOf('function parseStoreManifest',loadStoreStart);
+  const loadStoreSrc=mainSrc.slice(loadStoreStart,loadStoreEnd);
+  assert.doesNotMatch(loadStoreSrc,/SAVE_STORE\.walAcknowledge\(/,
+    'a stale tab that rejects a newer valid WAL cannot acknowledge data it never durably incorporated');
+  assert.equal((mainSrc.match(/SAVE_STORE\.walAcknowledge\(/g)||[]).length,1,
+    'the successful durable wal-replay commit is the sole acknowledgement site');
+  assert.match(mainSrc, /storeParentHash:storeMode && typeof opts\.storeParentHash==='string' \? opts\.storeParentHash : undefined/,
+    'store manifests carry their hashed parent');
+  assert.match(mainSrc, /buildSaveObject\(\{lightweight:true, storeChunkCount:live\.size, storeParentHash, auditChunkIds:\[\], perf\}\)/,
+    'the store save passes its pre-await parent identity into the manifest');
   assert.match(mainSrc, /const owner=storeOwnerRecord\(\);\s*if\(owner\)\{[\s\S]{0,400}blockSaveWrites\('save store unavailable/, 'a missing store with a live owner marker fails closed instead of loading a stale world');
   assert.match(mainSrc, /const preferLegacy=!!legacy && \(!meta \|\| legacy\.savedAt>\(Number\(meta\.savedAt\)\|\|0\)\);/, 'a freshly written localStorage save (a world fork) wins over an older store world');
-  // A journal is best effort. A bad row must be dropped, never merged into the
-  // manifest — a merged bad row fails preflight and costs the whole world.
-  assert.match(mainSrc, /if\(computeHash\(row\.data\)!==row\.h\)\{ walDropped\+\+; continue; \}/, 'a corrupt journal row is dropped rather than allowed to fail the world');
+  assert.match(mainSrc, /const pairedState=\(!walDropped && wal\.meta && wal\.meta\.criticalState && wal\.meta\.observerReplicas\)[\s\S]{0,420}if\(pairedState && verified\.length===wal\.rows\.length\)/,
+    'WAL replay requires every terrain row and its manifest-bound critical capsule');
+  assert.match(mainSrc, /else\{\s*walDropped\+=verified\.length;\s*\}/,
+    'one corrupt or unpaired row rejects the whole transaction rather than replaying half');
   assert.match(mainSrc, /SAVE_STORE\.clearAll\(\)\.then\(\(\)=>\{[\s\S]{0,200}wipeAndNavigate\(\);/, 'a new game drops the stored world BEFORE it navigates');
 }
 

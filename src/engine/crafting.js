@@ -129,13 +129,14 @@ const crafting = (function(){
     function maxCrafts(r){
       if(!r || done(r)) return 0;
       const entries = costEntries(r);
-      if(!entries.length) return 1;
+      const recipeBatch = Math.max(1, Math.min(maxBatch, Number.isFinite(Number(r.batchCap)) ? Math.floor(Number(r.batchCap)) : maxBatch));
+      if(!entries.length) return Math.min(1,recipeBatch);
       let max = Infinity;
       for(const [k,v] of entries){
         const need = Math.max(1, v|0);
         max = Math.min(max, Math.floor(have(k)/need));
       }
-      return Math.max(0, Math.min(maxBatch, max===Infinity ? 1 : max));
+      return Math.max(0, Math.min(recipeBatch, max===Infinity ? 1 : max));
     }
     function missing(r){
       return costEntries(r)

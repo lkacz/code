@@ -74,7 +74,7 @@ export function buildMaterialProfile(t){
 }
 
 export function isPassableForFalling(t){
-  return t===T.AIR || t===T.WATER || (t!==T.DYNAMO_SLOT && t!==T.TELEPORTER && !!(INFO[t] && INFO[t].passable));
+  return t===T.AIR || t===T.WATER || (t!==T.DYNAMO_SLOT && t!==T.TELEPORTER && t!==T.OBSERVER_REPLICA && !!(INFO[t] && INFO[t].passable));
 }
 
 export function isGasTile(t){
@@ -372,6 +372,10 @@ export function looseItemPhysicsMode(t){
 export function isRigidObjectTile(t){
   const info=INFO[t];
   if(!info) return false;
+  // Observer replicas are anchored simulation fixtures, not transportable
+  // rubble. Turning one into a falling entity would temporarily remove it from
+  // the globally bounded registry and could lose it if a landing is rejected.
+  if(info.observerReplica) return false;
   if(info.chestTier) return true;
   if(info.cache) return true;
   if(t===T.TELEPORTER) return true;

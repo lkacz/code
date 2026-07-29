@@ -20,6 +20,7 @@ const {
 const { worldGen: WG } = await import('../src/engine/worldgen.js');
 const { worldLayers } = await import('../src/engine/world_layers.js');
 const { world } = await import('../src/engine/world.js');
+const { observerReplicas } = await import('../src/engine/observer_replicas.js');
 const { solar } = await import('../src/engine/solar.js');
 
 WG.worldSeed = 20260701;
@@ -702,7 +703,12 @@ assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*ensureChunk
   // incompressible payloads fall back to a raw copy instead of a bloated RLE string
   const noise = new Uint8Array(CHUNK_W*WORLD_H);
   let seed = 1234567;
-  for(let i=0;i<noise.length;i++){ seed=(seed*1103515245+12345)>>>0; let b=seed%251; if(b===T.TELEPORTER) b=(b+1)%251; noise[i]=b; }
+  for(let i=0;i<noise.length;i++){
+    seed=(seed*1103515245+12345)>>>0;
+    let b=seed%251;
+    if(b===T.TELEPORTER || b===T.OBSERVER_REPLICA) b=(b+2)%251;
+    noise[i]=b;
+  }
   assert.equal(world.setChunkArray('c80',noise), true, 'noise chunk installs');
   world.markModifiedChunk(80);
   const noisePristine = world.chunkArray('c80').slice();
@@ -720,6 +726,66 @@ assert.match(mainSource, /function debugRigCellsClear\(cells\)[\s\S]*ensureChunk
   assert.equal(world._parked.has('c60'), false, 'chunks holding a teleporter never park');
   assert.ok(world._world.has('c60'), 'teleporter chunk stays live for network scans');
 
+  // Observer replicas pin their own far simulation chunks for the same reason:
+  // a hot machine must not make the cache park/rehydrate the region every turn.
+  observerReplicas.reset();
+  world.ensureChunk(62);
+  world.setTile(62*CHUNK_W+2,ty,T.OBSERVER_REPLICA);
+  assert.equal(observerReplicas.hasAt(62*CHUNK_W+2,ty),true,'the cache pin is backed by the bounded observer registry');
+  for(let cx=71; cx<=78; cx++) world.ensureChunk(cx);
+  world._evictFarChunks();
+  assert.equal(world._parked.has('c62'),false,'chunks holding an observer replica never park');
+  assert.ok(world._world.has('c62'),'the bounded observer chunk remains resident');
+  assert.equal(world.setChunkArray('c62',new Uint8Array(CHUNK_W*WORLD_H)),true,
+    'whole-chunk replacement can remove observer terrain');
+  assert.equal(observerReplicas.count(),0,'whole-chunk replacement reconciles the observer registry');
+  assert.equal(observerReplicas.pinsChunk(62,null,true),false,'whole-chunk replacement releases the cache pin');
+
+  // A raw id without a sidecar registration is sanitized. Corrupt saves
+  // therefore cannot leave inert replicas or convert terrain into resident pins.
+  observerReplicas.reset();
+  const orphan=new Uint8Array(CHUNK_W*WORLD_H);
+  orphan[ty*CHUNK_W+2]=T.OBSERVER_REPLICA;
+  assert.equal(world.setChunkArray('c90',orphan),true,'an orphan-id fixture can model malformed restored terrain');
+  assert.equal(world.getTile(90*CHUNK_W+2,ty),T.AIR,'an unregistered raw observer id is removed at the bulk-write boundary');
+  world.markModifiedChunk(90);
+  for(let cx=79; cx<=88; cx++) world.ensureChunk(cx);
+  world._evictFarChunks();
+  assert.equal(world._parked.has('c90'),true,'the sanitized malformed chunk remains parkable');
+
+  // Save loading temporarily admits only the coordinates named by its sidecar.
+  observerReplicas.reset();
+  const restoredX=91*CHUNK_W+3;
+  const restored=new Uint8Array(CHUNK_W*WORLD_H);
+  restored[ty*CHUNK_W+3]=T.OBSERVER_REPLICA;
+  restored[(ty+1)*CHUNK_W+4]=T.OBSERVER_REPLICA;
+  world.beginObserverRestore({v:1,list:[[restoredX,ty]]});
+  assert.equal(world.setChunkArray('c91',restored),true,'observer-aware restore installs a validated chunk');
+  world.endObserverRestore();
+  assert.equal(world.getTile(restoredX,ty),T.OBSERVER_REPLICA,'the sidecar-authorized observer tile survives');
+  assert.equal(world.getTile(91*CHUNK_W+4,ty+1),T.AIR,'extra raw observer ids are stripped during restore');
+  assert.equal(observerReplicas.restore({v:1,list:[[restoredX,ty]]},world.peekTile,world),true,
+    'the bounded registry activates the authorized restored tile');
+  assert.equal(observerReplicas.count(),1,'exactly one restored observer becomes active');
+  world.setTile(restoredX,ty,T.AIR);
+
+  const transientX=92*CHUNK_W+1;
+  world.setTransientTile(transientX,ty,T.OBSERVER_REPLICA);
+  assert.notEqual(world.getTile(transientX,ty),T.OBSERVER_REPLICA,'transient writers cannot create unpersisted observers');
+  assert.equal(observerReplicas.count(),0,'a rejected transient observer write cannot create a phantom anchor');
+
+  // All direct writers share the same hard cap, including undo/script paths.
+  observerReplicas.reset();
+  for(let i=0;i<3;i++) world.setTile((100+i)*CHUNK_W+1,ty,T.OBSERVER_REPLICA);
+  assert.equal(observerReplicas.count(),3,'three direct writes fill the single global registry');
+  const fourthX=103*CHUNK_W+1;
+  const fourthBefore=world.getTile(fourthX,ty);
+  world.setTile(fourthX,ty,T.OBSERVER_REPLICA);
+  assert.equal(world.getTile(fourthX,ty),fourthBefore,'the terrain boundary leaves a fourth destination unchanged');
+  assert.equal(observerReplicas.count(),3,'a rejected direct write cannot diverge terrain and registry');
+  world.clear();
+  assert.equal(observerReplicas.count(),0,'clearing the world also clears its observer registry');
+
   world._setChunkCapForTest(1536);
   delete globalThis.player;
   world.clear();
@@ -732,8 +798,20 @@ assert.match(worldSource, /if\(genDepth>0\)\{ evictPending=true; return; \}/, 'e
 assert.match(worldSource, /const EVICT_DROP_BUDGET=8;/, 'each world-cache maintenance turn has a hard chunk mutation budget');
 assert.match(worldSource, /worldAPI\.maintainChunkCache = maintainChunkCache;/, 'the host frame can resume bounded cache maintenance');
 assert.match(mainSource, /function runGameFrame\(totalDt,ts\)\{\s*if\(WORLD && WORLD\.maintainChunkCache\) WORLD\.maintainChunkCache\(\);/, 'the host game frame resumes bounded world-cache maintenance once per rendered frame');
-assert.match(worldSource, /if\(old===T\.TELEPORTER \|\| v===T\.TELEPORTER\) noteNeverParkEligibilityChanged\(\);/, 'only direct teleporter tile transitions invalidate pinned eviction retry state');
-assert.match(worldSource, /if\(previous && previousNeverPark!==nextNeverPark\) noteNeverParkEligibilityChanged\(\);/, 'whole-chunk teleporter eligibility transitions also invalidate pinned retry state');
+assert.match(worldSource, /MM\.observerReplicas\.pinsChunk\(ref\.cx,ref\.sy,ref\.base\)/,
+  'observer cache pins come from the globally bounded coordinate registry');
+assert.match(worldSource, /if\(arr\[i\]===T\.TELEPORTER\) return true;/,
+  'raw never-park scans are limited to teleporter discovery');
+assert.doesNotMatch(worldSource, /if\(isNeverParkTile\(arr\[i\]\)\) return true;/,
+  'raw observer ids cannot pin malformed save chunks');
+assert.match(worldSource, /if\(isNeverParkTile\(old\) \|\| isNeverParkTile\(v\)\) noteNeverParkEligibilityChanged\(\);/,
+  'direct never-park tile transitions invalidate pinned eviction retry state');
+assert.match(worldSource, /if\(previousNeverPark!==nextNeverPark\) noteNeverParkEligibilityChanged\(\);/, 'whole-chunk never-park eligibility transitions also invalidate pinned retry state');
+assert.match(worldSource, /sanitizeObserverTiles\(next,ref\)/,'bulk chunk writers strip observer ids not authorized by the active sidecar');
+assert.match(worldSource, /MM\.observerReplicas\.reconcileChunk\(ref\.cx,ref\.sy,ref\.base,peekTile\)/,
+  'whole-chunk replacement reconciles registered observer anchors');
+assert.match(worldSource, /if\(transient && \(v===T\.OBSERVER_REPLICA \|\| old===T\.OBSERVER_REPLICA\)\) return;/,
+  'transient tile writers cannot split observer terrain from persistent state');
 assert.doesNotMatch(worldSource, /cand\.sort\(/, 'eviction no longer allocates and sorts a full candidate array in one turn');
 assert.match(worldSource, /invalidateViewsFor\(parsed\);\s+\/\/ surgical/, 'eviction invalidates only the dropped chunk section views');
 assert.doesNotMatch(worldSource, /sectionViews\.clear\(\); \/\/ cached views may alias deleted chunk arrays/, 'eviction no longer wipes the whole section-view cache');

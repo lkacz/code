@@ -259,12 +259,15 @@ MM.ui = (function(){
           lakeMaxDepth: parseInt(r12.input.value,10),
           forestDensityMul: parseFloat(r13.input.value)
         };
-  const WG2 = WORLDGEN || (MM.worldGen||null);
-  if(WG2 && WG2.setSettings) WG2.setSettings(ns);
-    if(MM.ui && MM.ui.msg) MM.ui.msg('Zastosowano ustawienia świata');
         // Regenerate world with the SAME seed
-        if(window.regenWorldSameSeed){ window.regenWorldSameSeed(); }
-        else { window.dispatchEvent(new CustomEvent('mm-regen-same-seed')); }
+        if(window.regenWorldSameSeed){
+          if(window.regenWorldSameSeed(ns)===false) return;
+        } else {
+          const WG2 = WORLDGEN || (MM.worldGen||null);
+          if(WG2 && WG2.setSettings) WG2.setSettings(ns);
+          window.dispatchEvent(new CustomEvent('mm-regen-same-seed'));
+        }
+        if(MM.ui && MM.ui.msg) MM.ui.msg('Zastosowano ustawienia świata');
         closeWorldSettings();
       }catch(e){}
     });

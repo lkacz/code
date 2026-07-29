@@ -5624,6 +5624,22 @@ const invasions = (function(){
     for(const k in obj || {}) total += Math.max(0, Math.floor(Number(obj[k]) || 0));
     return total;
   }
+  function cachedResourceCount(key){
+    if(typeof key !== 'string' || !key || key.length > 48) return 0;
+    let total = 0;
+    for(const cache of caches){
+      try{
+        const resources = cache && cache.resources;
+        if(!resources || typeof resources !== 'object' || Array.isArray(resources)
+          || !Object.prototype.hasOwnProperty.call(resources,key)) continue;
+        const n = Math.floor(Number(resources[key]));
+        if(!Number.isFinite(n) || n <= 0) continue;
+        if(n >= Number.MAX_SAFE_INTEGER - total) return Number.MAX_SAFE_INTEGER;
+        total += n;
+      }catch(e){}
+    }
+    return total;
+  }
   function findCacheSpot(player,getTile,ctx){
     const px = floor(player && Number.isFinite(player.x) ? player.x : 0);
     const py = player && Number.isFinite(player.y) ? player.y : surfaceY(px,60);
@@ -6385,6 +6401,7 @@ const invasions = (function(){
     onHeroKilled,
     onHeroAction,
     openCacheAt,
+    cachedResourceCount,
     forceNightInvasion,
     forceMolekinInvasion,
     spawnRuinCommander,

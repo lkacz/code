@@ -1085,7 +1085,7 @@ assert.ok(invasions.teamTypes().includes('aliens'), 'alien profile is registered
 invasions.registerTeamType('dwarves', {baseSpeed:2.0, roles:{rusher:{weight:3}, sapper:{weight:2}}});
 assert.ok(invasions.teamTypes().includes('dwarves'), 'new invader kinds can register team profiles');
 
-const inv = {wood:10, stone:8, diamond:1};
+const inv = {wood:10, stone:8, diamond:1, observerReplica:6};
 const originalInv = {...inv};
 const originalBag = [
   {id:'blade_1',kind:'weapon',name:'Blade',attackDamage:7},
@@ -1132,11 +1132,16 @@ for(const item of originalBag){
 overrides.clear();
 saveMarks = 0;
 taskCalls.length = 0;
-const theft = invasions.onHeroKilled({player, inv, resourceKeys:['wood','stone','diamond'], inventory, getTile, setTile, ...ctx});
+const theft = invasions.onHeroKilled({player, inv, resourceKeys:['wood','stone','diamond','observerReplica'], inventory, getTile, setTile, ...ctx});
 assert.equal(theft.handled, true, 'alien-caused death is handled by the invasion theft path');
 assert.ok(theft.cache && getTile(theft.cache.x,theft.cache.y)===T.INVASION_CACHE, 'stolen loot is hidden in a special neighborhood cache tile');
 assert.ok(taskCalls.some(c=>c[0] === 'upsert' && c[1] === theft.cache.id), 'stolen loot cache registers a recovery task');
 assert.ok(inv.wood < originalInv.wood || inv.stone < originalInv.stone || inv.diamond < originalInv.diamond, 'alien theft removes roughly half of carried resources');
+assert.equal(invasions.cachedResourceCount('observerReplica'), theft.cache.resources.observerReplica,
+  'the public cache counter reports observer replicas that remain recoverable');
+assert.ok(invasions.cachedResourceCount('observerReplica') > 0,
+  'cache ownership keeps a stolen observer replica in the escalating craft cap');
+assert.equal(invasions.cachedResourceCount(''), 0, 'the public cache counter rejects invalid resource keys');
 assert.ok(snap.bag.length < originalBag.length, 'alien theft removes random dynamic gear from the bag');
 assert.ok(theft.cache.gear.length >= 1, 'alien cache records stolen gear objects for recovery');
 const stolenIds = new Set(theft.cache.gear.map(item=>item.id));
@@ -1149,12 +1154,16 @@ invasions.reset();
 taskCalls.length = 0;
 assert.equal(invasions.restore(theftSnap,getTile,setTile), true, 'invasion restore accepts theft-cache snapshots');
 assert.ok(taskCalls.some(c=>c[0] === 'sync' && c[1] === 1), 'restoring theft caches refreshes task tracker state');
+assert.equal(invasions.cachedResourceCount('observerReplica'), theft.cache.resources.observerReplica,
+  'restoring an invasion cache preserves its observer-replica ownership count');
 taskCalls.length = 0;
 assert.ok(invasions.openCacheAt(theft.cache.x,theft.cache.y,{inv, inventory, getTile, setTile, updateInventory(){}, saveState(){}, notifyStructureTileChanged(){}}), 'opening the cache restores stolen loot');
 assert.ok(taskCalls.some(c=>c[0] === 'complete' && c[1] === theft.cache.id), 'opening the stolen loot cache completes its task');
 assert.equal(getTile(theft.cache.x,theft.cache.y), T.AIR, 'opened cache tile is cleared');
 assert.equal(snap.bag.length, originalBag.length, 'opening the cache grants stolen gear back');
 assert.ok(inv.wood >= originalInv.wood && inv.stone >= originalInv.stone, 'opening the cache restores stolen resources');
+assert.equal(inv.observerReplica, originalInv.observerReplica, 'opening the cache returns every stolen observer replica');
+assert.equal(invasions.cachedResourceCount('observerReplica'), 0, 'opened caches no longer count as external ownership');
 assert.ok(grants.length >= theft.cache.gear.length, 'each stolen gear item is granted back through inventory APIs');
 
 saveMarks = 0;

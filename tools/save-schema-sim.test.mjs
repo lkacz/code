@@ -123,14 +123,14 @@ assert.match(src, /function restoreHotbar\(src\)/, 'load code defines a hotbar r
 assert.match(src, /function snapshotEquipment\(\)/, 'save code defines an equipment snapshot helper');
 assert.match(src, /function restoreEquipment\(src\)/, 'load code defines an equipment restore helper');
 assert.match(src, /const CRITICAL_SAVE_KEY='mm_save_critical_v1'/, 'save code has a dedicated fast critical-state recovery key');
-assert.match(src, /const CRITICAL_SAVE_SCHEMA_VERSION=3/, 'critical recovery rejects capsules from the earlier unbound schema');
+assert.match(src, /const CRITICAL_SAVE_SCHEMA_VERSION=4/, 'critical recovery rejects capsules from schemas that predate observer-transaction binding');
 assert.match(src, /function criticalStateIntegritySignature\(state\)[\s\S]{0,600}savedAt:state && state\.savedAt[\s\S]{0,300}baseManifestHash:state && state\.baseManifestHash[\s\S]{0,160}baseRevision:state && state\.baseRevision/, 'critical recovery integrity covers freshness and base-manifest metadata separately from deduplication');
 assert.match(src, /state\.stateHash=computeHash\(criticalStateIntegritySignature\(state\)\)/, 'critical recovery signs metadata and payload together');
 assert.match(src, /state\.v!==CRITICAL_SAVE_SCHEMA_VERSION[\s\S]{0,420}computeHash\(criticalStateIntegritySignature\(state\)\)!==state\.stateHash/, 'legacy or metadata-tampered critical capsules are rejected before freshness comparison');
 assert.match(src, /function snapshotPlayerState\(\)[\s\S]*hp:saveNumber\(player\.hp,2\)[\s\S]*energy:saveNumber\(player\.energy,2\)/, 'player snapshot persists health and energy in one shared helper');
 assert.match(src, /function restorePlayerHealth\(src\)/, 'load code restores saved hero health after max-HP progression is applied');
-assert.match(src, /function snapshotCriticalState\(reason\)[\s\S]*player:snapshotPlayerState\(\)[\s\S]*inv:snapshotInventory\(\)[\s\S]*hotbar:snapshotHotbar\(\)[\s\S]*equipment:snapshotEquipment\(\)/, 'critical recovery snapshot includes player state, inventory, hotbar, and gear');
-assert.match(src, /function loadCriticalStateForSave\(data,opts\)[\s\S]*opts\.ignoreCritical[\s\S]*state\.baseManifestHash\.toLowerCase\(\)!==saveManifestHash[\s\S]*state\.revision!==state\.baseRevision[\s\S]*criticalTime>saveTime/, 'critical recovery must be newer, tied to the exact main manifest, and free of unsaved world changes');
+assert.match(src, /function snapshotCriticalState\(reason\)[\s\S]*player:snapshotPlayerState\(\)[\s\S]*inv:snapshotInventory\(\)[\s\S]*hotbar:snapshotHotbar\(\)[\s\S]*equipment:snapshotEquipment\(\)[\s\S]*observerReplicas:/, 'critical recovery snapshot includes player state, inventory, hotbar, gear, and observer anchors');
+assert.match(src, /function loadCriticalStateForSave\(data,opts\)[\s\S]*opts\.ignoreCritical[\s\S]*matchesSave[\s\S]*matchesDirectParent[\s\S]*state\.revision!==state\.baseRevision[\s\S]*matchesDirectParent \? criticalTime<saveTime : criticalTime<=saveTime/, 'critical recovery must be fresh, tied to the exact main manifest or its hashed direct child, and free of unjournaled world changes');
 assert.match(src, /const criticalState=loadCriticalStateForSave\(data,opts\)/, 'load path checks for a newer critical recovery capsule');
 assert.match(src, /const criticalApplied=restoreCriticalState\(criticalState\)/, 'load path overlays a valid critical recovery capsule after the main save');
 assert.match(src, /setInterval\(\(\)=>\{ saveCriticalState\('heartbeat'\); \},CRITICAL_SAVE_INTERVAL_MS\)/, 'critical recovery state is refreshed by a cheap heartbeat');
@@ -428,7 +428,7 @@ assert.match(src, /function restoreGrave\(src\)[\s\S]*getTile\(grave\.x,grave\.y
 assert.match(src, /restoreGrave\(hasOwn\('grave'\) \? data\.grave : legacyWorldMarkers\.grave\)/, 'grave restore uses snapshot state with same-seed legacy compatibility');
 assert.match(src, /function dropWorldBoundMarkers\(\)[\s\S]*respawnTotems=\[\];[\s\S]*healingShelters=\[\];[\s\S]*grave=null;/, 'snapshot replacement drops every side-store world marker before restore');
 
-const sameSeedRegen = src.match(/window\.regenWorldSameSeed = function\(\)\{ try\{([\s\S]*?)window\.addEventListener\('mm-regen-same-seed'/)?.[1] || '';
+const sameSeedRegen = src.match(/window\.regenWorldSameSeed = function\(settings\)\{([\s\S]*?)window\.addEventListener\('mm-regen-same-seed'/)?.[1] || '';
 assert.match(sameSeedRegen, /player\.xp=0/, 'same-seed regeneration resets hero XP');
 assert.match(sameSeedRegen, /PROGRESS && PROGRESS\.reset/, 'same-seed regeneration resets progression milestones and trophy history');
 assert.match(sameSeedRegen, /clearRespawnTotems\(\)/, 'same-seed regeneration clears stale respawn totem indexes');
@@ -480,7 +480,7 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
     return ('00000000'+(h>>>0).toString(16)).slice(-8);
   };
   const sandbox={
-    CRITICAL_SAVE_SCHEMA_VERSION:3,
+    CRITICAL_SAVE_SCHEMA_VERSION:4,
     CRITICAL_SAVE_KEY:'mm_save_critical_v1',
     CRITICAL_SAVE_INTERVAL_MS:2500,
     WORLDGEN:{worldSeed:42},
@@ -495,8 +495,9 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   const main={v:7,seed:42,h:'1234abcd',savedAt:100};
   const capsule=(overrides={})=>{
     const state=Object.assign({
-      v:3,seed:42,savedAt:200,revision:7,baseManifestHash:main.h,baseRevision:7,reason:'heartbeat',
-      player:{x:1,y:2,hp:100},inv:{stone:1},hotbar:{selected:0},equipment:{}
+      v:4,seed:42,savedAt:200,revision:7,baseManifestHash:main.h,baseRevision:7,reason:'heartbeat',
+      player:{x:1,y:2,hp:100},inv:{stone:1},hotbar:{selected:0},equipment:{},
+      observerReplicas:{v:1,list:[[12,34]]}
     },overrides);
     state.stateHash=hash(sandbox.criticalApi.integrity(state));
     return state;
@@ -507,6 +508,26 @@ assert.match(weaponsSrc, /kind:a\.thrown\?'thrown':'arrow'/, 'arrows and thrown 
   assert.ok(sandbox.criticalApi.load(main,{}),'matching clean capsule overlays its exact newer main manifest');
   store(capsule({revision:8}));
   assert.equal(sandbox.criticalApi.load(main,{}),null,'a mine/place revision after the base rejects the partial inventory overlay');
+  const walCapsule=capsule({revision:8});
+  assert.ok(sandbox.criticalApi.load(main,{walCriticalState:walCapsule,walObserverReplicas:walCapsule.observerReplicas}),
+    'a complete terrain journal may apply its exactly paired newer inventory and observer state');
+  const directChild={v:7,seed:42,h:'5678abcd',savedAt:150,storeParentHash:main.h};
+  assert.ok(sandbox.criticalApi.load(directChild,{walCriticalState:walCapsule,walObserverReplicas:walCapsule.observerReplicas}),
+    'a WAL collected during an older in-flight commit may overlay that manifest’s hashed direct child');
+  const equalTimeChild={v:7,seed:42,h:'4567abcd',savedAt:walCapsule.savedAt,storeParentHash:main.h};
+  assert.ok(sandbox.criticalApi.load(equalTimeChild,{walCriticalState:walCapsule,walObserverReplicas:walCapsule.observerReplicas}),
+    'a hashed direct-parent WAL remains valid when reduced timer precision gives it the child manifest timestamp');
+  const newerChild={v:7,seed:42,h:'3456abcd',savedAt:walCapsule.savedAt+1,storeParentHash:main.h};
+  assert.equal(sandbox.criticalApi.load(newerChild,{walCriticalState:walCapsule,walObserverReplicas:walCapsule.observerReplicas}),null,
+    'a direct-parent WAL older than the child manifest is rejected');
+  const equalTimeExactBase=Object.assign({},main,{savedAt:walCapsule.savedAt});
+  assert.equal(sandbox.criticalApi.load(equalTimeExactBase,{walCriticalState:walCapsule,walObserverReplicas:walCapsule.observerReplicas}),null,
+    'timestamp equality is accepted only through the hashed direct-parent race path');
+  const unrelatedChild={v:7,seed:42,h:'8765abcd',savedAt:walCapsule.savedAt,storeParentHash:'deadbeef'};
+  assert.equal(sandbox.criticalApi.load(unrelatedChild,{walCriticalState:walCapsule,walObserverReplicas:walCapsule.observerReplicas}),null,
+    'an unrelated manifest cannot claim a WAL merely because its seed and timestamp match');
+  assert.equal(sandbox.criticalApi.load(main,{walCriticalState:walCapsule,walObserverReplicas:{v:1,list:[]}}),null,
+    'mismatched WAL observer and inventory metadata is rejected');
   store(capsule({baseManifestHash:'deadbeef'}));
   assert.equal(sandbox.criticalApi.load(main,{}),null,'a capsule for another main manifest is rejected');
   const tampered=capsule(); tampered.baseRevision=6; store(tampered);

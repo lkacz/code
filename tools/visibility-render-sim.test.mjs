@@ -387,7 +387,7 @@ assert.match(mainSource, /function drawAntimatterCrystalArt\(g,px,py,h\)/, 'anti
 assert.match(mainSource, /function drawMaterialIdentityArt\(g,t,px,py,h\)/, 'rare material identity art is routed through one shared renderer');
 assert.match(mainSource, /drawMaterialIdentityArt\(g,t,px,py,h\);/, 'inventory and build previews use shared rare-material art');
 assert.match(mainSource, /drawMaterialIdentityArt\(cctx,t,lx\*TILE,y\*TILE,h\);/, 'placed world tiles use the same rare-material art');
-assert.match(mainSource, /const openArtTile=t===T\.GLOWSHROOM \|\| t===T\.LEAF_PILE \|\| t===T\.METEOR_DUST \|\| t===T\.WEATHERVANE \|\| t===T\.LIGHTNING_ROD \|\| t===T\.VINE;/, 'open organic, dust and instrument tiles (incl. hanging vines) keep transparent silhouettes instead of colored square backplates');
+assert.match(mainSource, /const openArtTile=t===T\.GLOWSHROOM \|\| t===T\.LEAF_PILE \|\| t===T\.METEOR_DUST \|\| t===T\.WEATHERVANE \|\| t===T\.LIGHTNING_ROD \|\| t===T\.VINE \|\| t===T\.OBSERVER_REPLICA;/, 'open organic, dust, instrument and observer tiles keep transparent silhouettes instead of colored square backplates');
 assert.match(mainSource, /if\(t===T\.GLOWSHROOM\) drawGlowshroomTileArt\(cctx,lx\*TILE,y\*TILE,hash32\(wx,y\)\);/, 'placed glowshrooms use their mushroom silhouette');
 assert.match(mainSource, /if\(t===T\.VINE\) drawVineTileArt\(cctx,lx\*TILE,y\*TILE,hash32\(wx,y\)\);/, 'hanging vines draw a draping silhouette, not a square backplate');
 assert.match(mainSource, /if\(t===T\.LEAF_PILE\) drawLeafPileTileArt\(cctx,lx\*TILE,y\*TILE,hash32\(wx,y\)\);/, 'placed leaf piles use an irregular low mound silhouette');

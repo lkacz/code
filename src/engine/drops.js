@@ -1233,13 +1233,21 @@ const drops = (function(){
     }
   }
   function reset(){ list.length=0; chestDrops.clear(); arrowCollectFx.length=0; mergeT=0; dry=0; sacrificeDry=0; hoverDrop=null; }
+  function resourceCount(res){
+    if(typeof res!=='string' || !res) return 0;
+    let total=0;
+    for(const d of list){
+      if(d && d.kind==='resource' && d.res===res) total+=Math.max(0,Math.floor(Number(d.qty)||0));
+    }
+    return total;
+  }
 
   const api={
     update,draw,
     spawnResource,spawnGear,spawnJewel,spawnChest,rollGearDrop,rollJewelDrop,rollGuardianDrop,showArrowCollect,
     pickupNearest,wantsInteractKey,hoverAt,pickupAt,chestAtPoint,remove,
     debugAutoPickup,setDebugAutoPickup,autoPickup,setAutoPickup,lootMagnetLevel,
-    snapshot,restore,reset,
+    snapshot,restore,reset,resourceCount,
     metrics:()=>({active:list.length, jewels:list.filter(d=>d.kind==='jewel').length, chests:chestDrops.size, arrowCollectFx:arrowCollectFx.length, autoPickup:debugAutoPickup(), debugAutoPickup:debugAutoPickup(), lootMagnetLevel:lootMagnetLevel()}),
     _debug:{list,arrowCollectFx,arrowStyleFor, GEAR_LOOT, GUARDIAN_LOOT, JEWEL_STYLE, dangerFor, jewelPowerFor, jewelChanceFor, jewelBossLike, rollTier, setRandom:(fn)=>{ rand=typeof fn==='function'?fn:Math.random; }, collect, nearestInReach,inAutoPickupReach,
       dryStreak:()=>dry, setDryStreak:(n)=>{ dry=Math.max(0,Math.floor(Number(n)||0)); },

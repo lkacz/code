@@ -11,11 +11,11 @@
 //   • rtc      — WebRTC DataChannel; signaling rides MQTT-over-WSS on public
 //                brokers (free infra, no server of ours; CSP in index.html
 //                allowlists exactly these broker origins)
-import { HERO_BODY_W, HERO_BODY_H } from '../constants.js';
+import { CHUNK_W, HERO_BODY_W, HERO_BODY_H, WORLD_SECTION_H } from '../constants.js';
 
 // GitHub Pages stays a static host: gameplay traffic is peer-to-peer.
 
-export const GHOST_PROTO = 1;
+export const GHOST_PROTO = 3;
 
 // Buff lanes: cosmetic cheers are near-free, mechanical blessings are scarce.
 // The HOST owns the ledger — a modified ghost client cannot spam heals.
@@ -857,6 +857,88 @@ export function resumeTokenMatch(a, b){
 	let diff = 0;
 	for(let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
 	return diff === 0;
+}
+
+// --- idempotent full-hero observer transactions ------------------------------------
+// Observer replicas cross two owners: a full-hero guest's local inventory and the
+// host's world. Placement and recovery therefore keep a durable qid until both
+// sides have committed, including a final receipt phase. A short disconnect
+// between those commits must not lose or duplicate the item.
+export const HERO_PLACE_TX_RULES = Object.freeze({
+	CLIENT_MAX: 3,
+	OUTCOME_MAX: 96,
+	OUTCOME_TTL_MS: 10 * 60 * 1000,
+	RETRY_MS: 1500
+});
+export function mintHeroPlaceQid(){ return 'o' + randBytesHex(12); }
+export function validHeroPlaceQid(qid){ return typeof qid === 'string' && /^o[0-9a-f]{24}$/.test(qid); }
+export function heroPlaceRegionKey(x,y){
+	x=Number(x); y=Number(y);
+	if(!Number.isSafeInteger(x) || !Number.isSafeInteger(y)) return null;
+	return Math.floor(x/CHUNK_W)+','+Math.floor(y/WORLD_SECTION_H);
+}
+export function normalizeHeroPlaceTransactions(raw){
+	if(!Array.isArray(raw)) return [];
+	const out = [], seen = new Set(), regions = new Set();
+	for(const row of raw.slice(0, HERO_PLACE_TX_RULES.CLIENT_MAX * 4)){
+		if(!row || typeof row !== 'object' || !validHeroPlaceQid(row.qid) || seen.has(row.qid)) continue;
+		const x = Number(row.x), y = Number(row.y), tid = Number(row.tid);
+		if(!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || !Number.isSafeInteger(tid) || tid <= 0) continue;
+		const region=heroPlaceRegionKey(x,y);
+		if(!region || regions.has(region)) continue;
+		const layer = row.l === 'overlay' || row.l === 'background' ? row.l : 'fg';
+		const dir = ['east','south','west','north'].includes(row.d) ? row.d : undefined;
+		const at = Number.isFinite(Number(row.at)) ? Math.max(0, Math.floor(Number(row.at))) : 0;
+		const confirmedAt = Number.isFinite(Number(row.confirmedAt)) ? Math.max(0, Math.floor(Number(row.confirmedAt))) : 0;
+		const action = row.a === 'mine' ? 'mine' : 'place';
+		const receipt = row.receipt === true || row.receipt === 1;
+		seen.add(row.qid);
+		regions.add(region);
+		out.push({ qid: row.qid, x, y, tid, l: layer, d: dir, at, confirmedAt, a: action, receipt });
+		if(out.length >= HERO_PLACE_TX_RULES.CLIENT_MAX) break;
+	}
+	return out;
+}
+export function createHeroPlaceOutcomeLedger(opts){
+	opts = opts || {};
+	const max = Math.max(1, Math.min(512, Number(opts.max) | 0 || HERO_PLACE_TX_RULES.OUTCOME_MAX));
+	const ttl = Math.max(1000, Math.min(60 * 60 * 1000, Number(opts.ttlMs) | 0 || HERO_PLACE_TX_RULES.OUTCOME_TTL_MS));
+	const clock = typeof opts.now === 'function' ? opts.now : Date.now;
+	const rows = new Map();
+	const keyFor = (gid,qid) => gid + '\0' + qid;
+	function prune(at){
+		const t = Number.isFinite(Number(at)) ? Number(at) : Number(clock());
+		for(const [key,row] of rows){
+			if(!row || !Number.isFinite(t) || t - row.at < 0 || t - row.at >= ttl) rows.delete(key);
+		}
+		while(rows.size > max) rows.delete(rows.keys().next().value);
+		return rows.size;
+	}
+	return {
+		remember(gid,qid,packet,at){
+			if(!validGid(gid) || !validHeroPlaceQid(qid) || !packet || typeof packet !== 'object') return false;
+			const t = Number.isFinite(Number(at)) ? Number(at) : Number(clock());
+			prune(t);
+			const key = keyFor(gid,qid);
+			if(rows.has(key)) return false;
+			rows.set(key,{at:t,packet:Object.assign({},packet)});
+			prune(t);
+			return true;
+		},
+		get(gid,qid,at){
+			if(!validGid(gid) || !validHeroPlaceQid(qid)) return null;
+			prune(at);
+			const row = rows.get(keyFor(gid,qid));
+			return row ? Object.assign({},row.packet) : null;
+		},
+		forget(gid,qid){
+			if(!validGid(gid) || !validHeroPlaceQid(qid)) return false;
+			return rows.delete(keyFor(gid,qid));
+		},
+		prune,
+		size(){ return rows.size; },
+		clear(){ rows.clear(); }
+	};
 }
 
 // --- wire size caps: a hostile peer must not be able to make us allocate freely ------
@@ -2057,6 +2139,7 @@ const api = {
 	chunkPayload, createAssembler, createCooldownLedger,
 	utf8Len, WIRE_LIMITS, withinWireLimit, validSignalSize,
 	RESUME_TOKEN_BYTES, RESUME_TOKEN_KEY, mintResumeToken, validResumeTokenShape, resumeTokenMatch,
+	HERO_PLACE_TX_RULES, mintHeroPlaceQid, validHeroPlaceQid, heroPlaceRegionKey, normalizeHeroPlaceTransactions, createHeroPlaceOutcomeLedger,
 	SIGNAL_ENVELOPE_VERSION, INVITE_SECRET_BYTES, SIG_REPLAY_WINDOW_MS, mintInviteSecret, validInviteSecret, signSignal, verifySignal, createReplayGuard,
 	sdpFingerprint, createSignedChannel, parseInviteSecret,
 	clampStep, sweepBodyMove, createByteBudget, createRateBudget, createSendQueue, DC_QUEUE, RTC_LIMITS, createRtcHost, createRtcJoin,

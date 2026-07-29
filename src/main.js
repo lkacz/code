@@ -43,6 +43,7 @@ import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engin
 import { createInventoryFeedback } from './engine/inventory_feedback.js';
 import { createSingleNoticeQueue } from './engine/single_notice_queue.js';
 import { furnishings as FURNISHINGS } from './engine/furnishings.js';
+import { observerReplicas as OBSERVER_REPLICAS } from './engine/observer_replicas.js';
 import { createHotPickerModel, createHotPicker, foldText, hotPickerPlacement } from './engine/hot_picker.js';
 import { createCraftDrag } from './engine/craft_drag.js';
 import './inventory.js';
@@ -2859,7 +2860,9 @@ function restoreTemporalEchoPayload(payload){
 	restore(BOATS,d.boats);
 	restore(MECHS,d.mechs,[getTile]);
 	restore(CAVE_IN,d.caveIn); restore(FOREST,d.forest); restore(ATTENTION,d.attention); restore(KILN,d.kiln);
-	restore(WIND,d.wind); restore(WORLD_SIM,d.worldSim); restore(SEASONS,d.seasons); restore(CLOUDS,d.clouds);
+	restore(WIND,d.wind); restore(WORLD_SIM,d.worldSim);
+	restore(OBSERVER_REPLICAS,d.observerReplicas,[WORLD.peekTile,WORLD,{temporal:true}]);
+	restore(SEASONS,d.seasons); restore(CLOUDS,d.clouds);
 	restore(DYNAMO,d.dynamo,[getTile]); restore(SOLAR,d.solar,[getTile]);
 	if(d.furnishingsPower!=null && FURNISHINGS&&FURNISHINGS.restorePower) try{ ok=FURNISHINGS.restorePower(d.furnishingsPower,getTile)!==false&&ok; }catch(e){ ok=false; }
 	restore(TELEPORTERS,d.teleporters,[getTile]); restore(PUMPS,d.pumps,[getTile]); restore(STEAM_MACHINES,d.steamMachines,[getTile]);
@@ -3649,7 +3652,7 @@ const SAVE_KEY='mm_save_v7';
 const OLD_SAVE_KEYS=['mm_save_v6','mm_save_v5','mm_save_v4','mm_save_v3','mm_save_v2'];
 const AUTOSAVE_CHUNK_PREFIX='mm_save_v7_chunk_';
 const CRITICAL_SAVE_KEY='mm_save_critical_v1';
-const CRITICAL_SAVE_SCHEMA_VERSION=3;
+const CRITICAL_SAVE_SCHEMA_VERSION=4;
 const CRITICAL_SAVE_INTERVAL_MS=2500;
 const SAVE_SCHEMA_VERSION=8;
 const SAVE_SUPPORTED_VERSIONS=Object.freeze([6,7,8]);
@@ -4437,7 +4440,8 @@ function snapshotCriticalState(reason){
 		player:snapshotPlayerState(),
 		inv:snapshotInventory(),
 		hotbar:snapshotHotbar(),
-		equipment:snapshotEquipment()
+		equipment:snapshotEquipment(),
+		observerReplicas:(OBSERVER_REPLICAS && OBSERVER_REPLICAS.snapshot) ? OBSERVER_REPLICAS.snapshot() : {v:1,list:[]}
 	};
 }
 function criticalStateComparable(state){
@@ -4446,7 +4450,8 @@ function criticalStateComparable(state){
 		player:state && state.player,
 		inv:state && state.inv,
 		hotbar:state && state.hotbar,
-		equipment:state && state.equipment
+		equipment:state && state.equipment,
+		observerReplicas:state && state.observerReplicas
 	};
 }
 function criticalStateSignature(state){
@@ -4493,9 +4498,13 @@ function loadCriticalStateForSave(data,opts){
 	opts=opts||{};
 	if(opts.ignoreCritical) return null;
 	try{
-		const raw=localStorage.getItem(CRITICAL_SAVE_KEY);
-		if(!raw) return null;
-		const state=JSON.parse(raw);
+		const fromWal=!!(opts.walCriticalState && typeof opts.walCriticalState==='object' && !Array.isArray(opts.walCriticalState));
+		let state=fromWal ? opts.walCriticalState : null;
+		if(!state){
+			const raw=localStorage.getItem(CRITICAL_SAVE_KEY);
+			if(!raw) return null;
+			state=JSON.parse(raw);
+		}
 		if(!state || state.v!==CRITICAL_SAVE_SCHEMA_VERSION || typeof state!=='object') return null;
 		if(typeof state.stateHash!=='string' || !/^[0-9a-f]{8}$/i.test(state.stateHash) || computeHash(criticalStateIntegritySignature(state))!==state.stateHash){
 			console.warn('Critical save hash mismatch');
@@ -4503,17 +4512,34 @@ function loadCriticalStateForSave(data,opts){
 		}
 		if(!Number.isSafeInteger(state.revision) || state.revision<0 || !Number.isSafeInteger(state.baseRevision) || state.baseRevision<0 || !Number.isFinite(state.savedAt) || state.savedAt<=0) return null;
 		if(typeof state.baseManifestHash!=='string' || !/^[0-9a-f]{8}$/i.test(state.baseManifestHash)) return null;
+		if(fromWal){
+			if(!opts.walObserverReplicas || stableStringify(state.observerReplicas)!==stableStringify(opts.walObserverReplicas)) return null;
+		}
 		const saveSeed=Number.isFinite(Number(data && data.seed)) ? Number(data.seed) : WORLDGEN.worldSeed;
 		const criticalSeed=Number(state.seed);
 		if(!Number.isFinite(criticalSeed) || criticalSeed!==saveSeed) return null;
 		const saveManifestHash=data && typeof data.h==='string' ? data.h.toLowerCase() : '';
-		if(!saveManifestHash || state.baseManifestHash.toLowerCase()!==saveManifestHash) return null;
+		const storeParentHash=fromWal && data && typeof data.storeParentHash==='string'
+			? data.storeParentHash.toLowerCase()
+			: '';
+		const criticalBaseHash=state.baseManifestHash.toLowerCase();
+		const matchesSave=criticalBaseHash===saveManifestHash;
+		const matchesDirectParent=!!(fromWal && storeParentHash && criticalBaseHash===storeParentHash);
+		// A pagehide WAL can be written while an older serialized store save is
+		// already committing. Its complete delta was collected from that save's
+		// parent baseline, so it is valid over either the exact base or that one
+		// direct descendant. The parent pointer is inside the manifest hash.
+		if(!saveManifestHash || (!matchesSave && !matchesDirectParent)) return null;
 		// Any saveState() since the base manifest may represent a terrain/inventory
 		// exchange. A partial critical overlay would then duplicate or lose items.
-		if(state.revision!==state.baseRevision) return null;
+		if(state.revision!==state.baseRevision && !fromWal) return null;
 		const saveTime=Number(data && data.savedAt)||0;
 		const criticalTime=Number(state.savedAt)||0;
-		if(!(criticalTime>saveTime)) return null;
+		// Date.now() can give the in-flight child manifest and the later pagehide
+		// WAL the same tick (especially under reduced timer precision). The hashed
+		// direct-parent link proves the only equality case that is safe to accept;
+		// an older journal, or an equal-time capsule for the exact save, is stale.
+		if(matchesDirectParent ? criticalTime<saveTime : criticalTime<=saveTime) return null;
 		return state;
 	}catch(e){ return null; }
 }
@@ -4608,6 +4634,7 @@ function buildSaveObject(opts){
 	v:SAVE_SCHEMA_VERSION,
 	seed: WORLDGEN.worldSeed,
 	world:worldData,
+	storeParentHash:storeMode && typeof opts.storeParentHash==='string' ? opts.storeParentHash : undefined,
 	respawnTotems: timedSavePart('respawnTotems',()=>snapshotRespawnTotems(),perf),
 	healingShelters: timedSavePart('healingShelters',()=>snapshotHealingShelters(),perf),
 	grave: timedSavePart('grave',()=>snapshotGrave(),perf),
@@ -4638,6 +4665,7 @@ function buildSaveObject(opts){
 	// the far-world clock: without it every region would wake with zero lag
 	// after a reload and forfeit the catch-up it was owed
 	worldSim: timedSavePart('worldSim',()=>((WORLD_SIM && WORLD_SIM.snapshot) ? WORLD_SIM.snapshot() : null),perf),
+	observerReplicas: timedSavePart('observerReplicas',()=>((OBSERVER_REPLICAS && OBSERVER_REPLICAS.snapshot) ? OBSERVER_REPLICAS.snapshot() : null),perf),
 	seasons: timedSavePart('seasons',()=>((SEASONS && SEASONS.snapshot) ? SEASONS.snapshot() : null),perf),
 	clouds: timedSavePart('clouds',()=>((CLOUDS && CLOUDS.snapshot) ? CLOUDS.snapshot() : null),perf),
 	dynamo: timedSavePart('dynamo',()=>((DYNAMO && DYNAMO.snapshot) ? DYNAMO.snapshot() : null),perf),
@@ -4795,7 +4823,7 @@ function drainRestoreAudits(budget){
 // "unwritten" means.
 function collectStoreChunkDelta(limit,forceAll,perf){
 	const upserts=[], live=new Map();
-	let encodeMs=0, readMs=0;
+	let encodeMs=0, readMs=0, complete=true;
 	for(const raw of modifiedChunkIds()){
 		const ref=normalizeWorldChunkRef(raw);
 		if(!ref) throw new Error('Modified chunk list contains an invalid reference');
@@ -4803,7 +4831,7 @@ function collectStoreChunkDelta(limit,forceAll,perf){
 		live.set(ref.key,{ver,cx:ref.cx,sy:ref.base?null:ref.sy});
 		const known=forceAll ? null : _storeChunkVers.get(ref.key);
 		if(known && known.ver===ver) continue;
-		if(Number.isFinite(limit) && upserts.length>=limit) continue;
+		if(Number.isFinite(limit) && upserts.length>=limit){ complete=false; continue; }
 		// NO settle audits here. The old incremental job ran FALLING/MEAT/GASES per
 		// chunk before encoding it, and measured on a 500-chunk world that was 1238 ms
 		// of the 1289 ms this function blocked for — against 9.5 ms of actual encoding.
@@ -4823,20 +4851,21 @@ function collectStoreChunkDelta(limit,forceAll,perf){
 	}
 	addSavePerfPart(perf,'delta.read',readMs);
 	addSavePerfPart(perf,'delta.encode',encodeMs);
-	return {upserts,live};
+	return {upserts,live,complete};
 }
 // Saves are serialized through one chain rather than refused while another is in
 // flight: a caller that asked for a save gets a promise for ITS save, not a
 // silent false because the debounce happened to fire first.
-function persistStoreSave(reason){
-	const run=()=>persistStoreSaveNow(reason);
+function persistStoreSave(reason,walId){
+	const run=()=>persistStoreSaveNow(reason,walId);
 	_storeSaveChain=_storeSaveChain.then(run,run);
 	return _storeSaveChain;
 }
-async function persistStoreSaveNow(reason){
+async function persistStoreSaveNow(reason,walId){
 	if(_saveWritesBlocked || temporalEchoActive() || MM.ghostMode || _startingNewGame || !storeActive()) return false;
 	const manual=reason==='manual';
 	const snapshotRevision=_saveRevision;
+	const storeParentHash=_committedSaveIdentity ? _committedSaveIdentity.manifestHash : '';
 	try{
 		const t0=savePerfNow();
 		const perf={parts:[]};
@@ -4861,7 +4890,7 @@ async function persistStoreSaveNow(reason){
 		// baseline this write is discarding).
 		const deletes=[];
 		if(!replaceWorld) for(const [key,rec] of _storeChunkVers) if(!live.has(key)) deletes.push(SAVE_STORE.chunkKey(seed,rec.cx,rec.sy));
-		const manifest=buildSaveObject({lightweight:true, storeChunkCount:live.size, auditChunkIds:[], perf});
+		const manifest=buildSaveObject({lightweight:true, storeChunkCount:live.size, storeParentHash, auditChunkIds:[], perf});
 		const serialized=timedSavePart('hash',()=>serializeHashedSave(manifest),perf);
 		// Everything up to here ran on the main thread. In a large world the manifest
 		// (registry snapshots, not chunks) dominates that cost, so the debounce below
@@ -4876,7 +4905,9 @@ async function persistStoreSaveNow(reason){
 		_storeBaselineSeed=seed;
 		_storeNeedsFullRepublish=false;
 		_storeLastDelta=upserts.length;
-		SAVE_STORE.walClear();
+		if(reason==='wal-replay' && walId && !SAVE_STORE.walAcknowledge(walId)){
+			console.warn('Durable journal replay committed, but its acknowledgement could not be recorded');
+		}
 		writeStoreOwner(seed);
 		rememberCommittedSave(serialized.object,snapshotRevision);
 		recordSaveSuccess();
@@ -4924,9 +4955,21 @@ function scheduleStoreSave(delay){
 function stashStoreWal(){
 	if(!storeActive() || _saveWritesBlocked || _startingNewGame) return 0;
 	try{
-		const {upserts}=collectStoreChunkDelta(SAVE_STORE.config.WAL_MAX_CHUNKS,false,null);
-		if(!upserts.length) return 0;
-		const stashed=SAVE_STORE.walStash(WORLDGEN.worldSeed,upserts);
+		const seed=WORLDGEN.worldSeed;
+		// A bounded upsert journal cannot express a world replacement or deletion.
+		// Refuse those states instead of pairing a new inventory with a hybrid of
+		// old and new terrain.
+		if(_storeNeedsFullRepublish || _storeBaselineSeed!==seed || !_committedSaveIdentity) return 0;
+		const {upserts,complete,live}=collectStoreChunkDelta(SAVE_STORE.config.WAL_MAX_CHUNKS,false,null);
+		for(const [key] of _storeChunkVers) if(!live.has(key)) return 0;
+		// Terrain and the inventory/observer state form one transaction. If the
+		// bounded journal cannot hold every unpublished chunk, keep the older
+		// consistent WAL (if any) and let the async store flush attempt finish.
+		if(!complete || !upserts.length) return 0;
+		const criticalState=snapshotCriticalState('wal');
+		criticalState.stateHash=computeHash(criticalStateIntegritySignature(criticalState));
+		const meta={observerReplicas:criticalState.observerReplicas,criticalState};
+		const stashed=SAVE_STORE.walStash(seed,upserts,meta);
 		try{ window.__lastWalRows=stashed; }catch(e){}
 		return stashed;
 	}catch(e){ return 0; }
@@ -4948,18 +4991,38 @@ async function loadGameFromStore(opts){
 	const readMs=savePerfNow()-storeReadT;
 	const seed=Number(active.seed);
 	let walRows=0;
+	const walAppliedKeys=[];
 	const wal=SAVE_STORE.walRead(seed);
 	let walDropped=0;
+	let walMeta=null;
 	if(wal){
+		const verified=[];
 		for(const row of wal.rows){
-			// The journal is best effort by construction. A row that fails its own hash
-			// is DROPPED, never merged: letting it through would fail preflight and cost
-			// the player the entire world the journal existed to protect.
-			if(computeHash(row.data)!==row.h){ walDropped++; continue; }
-			active.chunks.set(SAVE_STORE.chunkKey(seed,row.cx,row.sy),{cx:row.cx,sy:row.sy,ver:row.ver,data:row.data,h:row.h,rle:true});
-			walRows++;
+			const ref=normalizeWorldChunkRef(row.sy==null ? row.cx : {cx:row.cx,sy:row.sy});
+			if(computeHash(row.data)!==row.h || !ref){ walDropped++; continue; }
+			verified.push({row,ref});
 		}
-		if(walDropped) console.warn('Dropped '+walDropped+' corrupt journal rows');
+		// Replay is atomic across terrain, inventory and observer coordinates.
+		// A corrupt row, metadata-less legacy WAL, or capsule that is not tied to
+		// this exact base manifest invalidates the whole journal—not just one half.
+		const pairedState=(!walDropped && wal.meta && wal.meta.criticalState && wal.meta.observerReplicas)
+			? loadCriticalStateForSave(active.manifest,{
+				walCriticalState:wal.meta.criticalState,
+				walObserverReplicas:wal.meta.observerReplicas
+			})
+			: null;
+		if(pairedState && verified.length===wal.rows.length){
+			walMeta=Object.assign({},wal.meta,{criticalState:pairedState});
+			for(const item of verified){
+				const row=item.row;
+				active.chunks.set(SAVE_STORE.chunkKey(seed,row.cx,row.sy),{cx:row.cx,sy:row.sy,ver:row.ver,data:row.data,h:row.h,rle:true});
+				walAppliedKeys.push(item.ref.key);
+				walRows++;
+			}
+		}else{
+			walDropped+=verified.length;
+		}
+		if(walDropped) console.warn('Ignored non-atomic journal with '+walDropped+' terrain rows');
 	}
 	const preflight=parseStoreManifest(active.manifest,active.chunks);
 	if(!preflight.ok){
@@ -4972,24 +5035,32 @@ async function loadGameFromStore(opts){
 	const applyT=savePerfNow();
 	const applied=applyGameData(preflight.data,Object.assign({},opts,{
 		preflightResult:preflight, transactional:true, rememberCommitted:true, fromStore:true,
-		storeChunks:active.chunks, parkChunks:opts && opts.parkChunks===true
+		storeChunks:active.chunks, parkChunks:opts && opts.parkChunks===true,
+		walObserverReplicas:walMeta && walMeta.observerReplicas,
+		walCriticalState:walMeta && walMeta.criticalState
 	}));
 	const applyMs=savePerfNow()-applyT;
 	if(applied){
 		clearSaveWriteBlock();
-		// Seed the delta baseline from the LIVE versions the restore produced, so the
-		// first save after a load writes the chunks the player actually touches — not
-		// the whole world again.
+		// Seed from live versions, then deliberately forget every replayed key so
+		// the recovery write republishes those chunks with its matching manifest.
 		_storeChunkVers=new Map();
 		for(const raw of modifiedChunkIds()){
 			const ref=normalizeWorldChunkRef(raw);
 			if(!ref) continue;
 			_storeChunkVers.set(ref.key,{ver:worldChunkVersion(ref),cx:ref.cx,sy:ref.base?null:ref.sy});
 		}
+		if(walRows) for(const key of walAppliedKeys) _storeChunkVers.delete(key);
 		_storeBaselineSeed=WORLDGEN.worldSeed;
-		SAVE_STORE.walClear();
-		saveCriticalState('load',true);
-		try{ window.__lastStoreLoad={chunks:active.chunks.size,walRows,walDropped,parked:opts&&opts.parkChunks===true,readMs:+readMs.toFixed(0),applyMs:+applyMs.toFixed(0)}; }catch(e){}
+		let walPersisted=true;
+		if(walRows){
+			_saveDirty=true;
+			walPersisted=await persistStoreSave('wal-replay',wal && wal.id);
+			if(!walPersisted) console.warn('Recovered journal remains pending because its durable republish failed');
+		}else{
+			saveCriticalState('load',true);
+		}
+		try{ window.__lastStoreLoad={chunks:active.chunks.size,walRows,walDropped,walPersisted,parked:opts&&opts.parkChunks===true,readMs:+readMs.toFixed(0),applyMs:+applyMs.toFixed(0)}; }catch(e){}
 	}
 	else blockSaveWrites('store world restore failed');
 	return applied;
@@ -5239,6 +5310,9 @@ function applyGameDataCore(data,opts){
 	if(!isSaveRecord(data)) throw new Error('Save core requires a validated object');
 	const ver=data.v;
 	const criticalState=loadCriticalStateForSave(data,opts);
+	const observerRestoreData=(criticalState && criticalState.observerReplicas!=null)
+		? criticalState.observerReplicas
+		: data.observerReplicas;
 	// Only the centralized preflight/migration layer may feed the mutating core.
 	if(ver!==SAVE_SCHEMA_VERSION) throw new Error('Save core requires migrated schema v'+SAVE_SCHEMA_VERSION);
 	// Marker fields were added over time. Preserve an old side-store only for a
@@ -5353,8 +5427,18 @@ function applyGameDataCore(data,opts){
 	const expectedChunks=(data.world && data.world.store===true)
 		? (isChunkMap(opts.storeChunks) ? opts.storeChunks.size : 0)
 		: (Array.isArray(data.world && data.world.modified) ? data.world.modified.length : (Array.isArray(data.world && data.world.chunkRefs) ? data.world.chunkRefs.length : 0));
-	const restoredChunks=restoreRequired('world',true,()=>restoreWorldChunks(data.world,opts)) || [];
+	let restoredChunks=[];
+	try{
+		if(WORLD && WORLD.beginObserverRestore) WORLD.beginObserverRestore(observerRestoreData);
+		restoredChunks=restoreRequired('world',true,()=>restoreWorldChunks(data.world,opts)) || [];
+	}finally{
+		if(WORLD && WORLD.endObserverRestore) WORLD.endObserverRestore();
+	}
 	if(restoredChunks.length!==expectedChunks) restoreFailures.push({code:'restore-incomplete',path:'world',detail:'restored '+restoredChunks.length+' of '+expectedChunks+' chunks'});
+	restoreRequired('observerReplicas',observerRestoreData!=null,()=>{
+		if(OBSERVER_REPLICAS && OBSERVER_REPLICAS.restore) return OBSERVER_REPLICAS.restore(observerRestoreData,WORLD.peekTile,WORLD);
+		throw new Error('observer replica restorer unavailable');
+	});
 	restoreRequired('water',data.water!=null,()=>{
 		if(!WATER || typeof WATER.restore!=='function') throw new Error('water restorer unavailable');
 		return WATER.restore(data.water);
@@ -5527,7 +5611,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 			const nameB=document.createElement('b'); nameB.textContent=nameDisp+(isCur?' *':'');
 			const meta=document.createElement('span'); meta.style.cssText='font-size:10px; opacity:.65;'; meta.textContent=new Date(s.time).toLocaleString()+' • '+sizeKB+' KB • '+hashState+' • seed '+(s.seed??'-');
 			info.textContent=''; info.appendChild(nameB); info.appendChild(document.createElement('br')); info.appendChild(meta);
-			const loadB=document.createElement('button'); loadB.textContent='Wczytaj'; loadB.style.fontSize='11px'; loadB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(raw){ try{ const ok=loadSaveCandidate(raw,{ignoreCritical:true,transactional:true,persistAsMain:true}); if(ok){ currentSlotId=s.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Wczytano '+nameDisp); refreshList(); } else msg('Błąd wczyt.'); }catch(e){ msg('Błąd wczyt.'); } } });
+			const loadB=document.createElement('button'); loadB.textContent='Wczytaj'; loadB.style.fontSize='11px'; loadB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(raw){ if(!prepareHostedWorldReplacement()) return; try{ const ok=loadSaveCandidate(raw,{ignoreCritical:true,transactional:true,persistAsMain:true}); if(ok){ currentSlotId=s.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Wczytano '+nameDisp); refreshList(); } else msg('Błąd wczyt.'); }catch(e){ msg('Błąd wczyt.'); } } });
 			const exportB=document.createElement('button'); exportB.textContent='Eksport'; exportB.style.fontSize='11px'; exportB.addEventListener('click',()=>{ const raw=localStorage.getItem(slotKey(s.id)); if(!raw){ msg('Brak danych'); return; } try{ const portable=portableSaveJson(raw,localStorage); const blob=new Blob([portable],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); const safe=nameDisp.replace(/[^a-z0-9_-]+/gi,'_'); a.download='save_'+safe+'.json'; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },0); msg('Wyeksportowano'); }catch(e){ console.warn('Save export failed',e); msg('Błąd eksportu'); } });
 			const renameB=document.createElement('button'); renameB.textContent='Nazwa'; renameB.style.fontSize='11px'; renameB.addEventListener('click',()=>{ const nn=prompt('Nowa nazwa zapisu:', s.name||''); if(nn!=null){ s.name=nn.trim(); storeSlots(slots); refreshList(); }});
 			const delB=document.createElement('button'); 
@@ -5559,6 +5643,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 		let targetId=currentSlotId || localStorage.getItem(LAST_SLOT_KEY);
 		if(!targetId){ targetId = slots.sort((a,b)=>b.time-a.time)[0].id; }
 		const raw=localStorage.getItem(slotKey(targetId)); if(!raw){ msg('Brak danych'); return; }
+		if(!prepareHostedWorldReplacement()) return;
 		try{ const ok=loadSaveCandidate(raw,{ignoreCritical:true,transactional:true,persistAsMain:true}); if(ok){ currentSlotId=targetId; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Kontynuowano'); refreshList(); } else msg('Błąd'); }catch(e){ msg('Błąd'); }
 	});
 
@@ -5577,7 +5662,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 	// In store mode the main save IS the store: re-reading localStorage here would
 	// hand the player the frozen pre-migration world. Eager (unparked) restore, as
 	// this replaces a world the player is standing in.
-	loadBtn.addEventListener('click',()=>{ if(storeActive()){ loadGameFromStore({parkChunks:false}).then(reportMainLoad,()=>reportMainLoad(false)); return; } reportMainLoad(loadGame()); });
+	loadBtn.addEventListener('click',()=>{ if(!prepareHostedWorldReplacement()) return; if(storeActive()){ loadGameFromStore({parkChunks:false}).then(reportMainLoad,()=>reportMainLoad(false)); return; } reportMainLoad(loadGame()); });
 	saveAsBtn.addEventListener('click',()=>{ performNamedSave(true); });
 	const openBrowserBtn=document.createElement('button'); openBrowserBtn.textContent='Lista zapisów'; openBrowserBtn.style.cssText='margin-top:4px;'; openBrowserBtn.addEventListener('click',()=>{ browser.style.display= browser.style.display==='flex' ? 'none':'flex'; if(browser.style.display==='flex') refreshList(); });
 	group.appendChild(openBrowserBtn); group.appendChild(browser);
@@ -5867,8 +5952,28 @@ window.addEventListener('pagehide',flushPendingSave);
 window.addEventListener('beforeunload',flushPendingSave);
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden' && !temporalEchoActive()) flushPendingSave(); });
 
+function prepareHostedWorldReplacement(){
+	if(MM.ghostMode || !GHOST_HOST) return true;
+	if(GHOST_HOST && GHOST_HOST.hasPendingObserverTransactions && GHOST_HOST.hasPendingObserverTransactions()){
+		msg('Poczekaj chwilę — trwa bezpieczne rozliczanie atrapy obserwatora');
+		return false;
+	}
+	// A paid guest observer qid can remain durable while its success packet is
+	// still in flight. The guest journal is room-scoped, so retire that complete
+	// transaction namespace before replacing the world—even if hosting was
+	// already stopped and only the tab-retained room remains.
+	if(GHOST_HOST && GHOST_HOST.rotateRoomNamespace && !GHOST_HOST.rotateRoomNamespace()){
+		msg('Nie udało się bezpiecznie zamknąć starego pokoju współpracy');
+		return false;
+	}
+	if(GHOST_HOST && GHOST_HOST.active && GHOST_HOST.active()) GHOST_HOST.stop();
+	return true;
+}
 function startNewGame(requestedSeed){
 	if(_startingNewGame) return false;
+	// Quiesce the network inlet synchronously before asynchronous store deletion.
+	// With no in-flight observer commit, no later guest action can cross the wipe.
+	if(!prepareHostedWorldReplacement()) return false;
 	_startingNewGame=true;
 	paused=true;
 	_saveDirty=false;
@@ -5961,6 +6066,94 @@ function grantCraftedItem(def){
 	msg('Wytworzono: '+def.name+' (założono)');
 	return true;
 }
+// Full-hero guest placement has a short ownership hand-off:
+// inventory item -> pending host intent -> streamed active tile. Keeping the
+// middle state in a bounded coordinate multiset prevents a fourth craft while
+// the authoritative tile diff is still in flight. A second reservation in the
+// same 64x70 region is refused before payment, matching the active-anchor rule
+// even when the first streamed tile has not arrived yet.
+const pendingObserverPlacements=new Map();
+const pendingObserverRecoveries=new Map();
+function observerPendingPlacementKey(x,y){
+	x=Math.floor(Number(x)); y=Math.floor(Number(y));
+	return Number.isFinite(x) && Number.isFinite(y) ? x+','+y : null;
+}
+function observerPendingRegionKey(x,y){
+	x=Math.floor(Number(x)); y=Math.floor(Number(y));
+	return Number.isFinite(x) && Number.isFinite(y)
+		? Math.floor(x/CHUNK_W)+','+Math.floor(y/WORLD_SECTION_H)
+		: null;
+}
+function observerPendingRegionReserved(x,y){
+	const wanted=observerPendingRegionKey(x,y);
+	if(!wanted) return false;
+	for(const key of pendingObserverPlacements.keys()){
+		const comma=key.lastIndexOf(',');
+		if(comma<0) continue;
+		if(observerPendingRegionKey(Number(key.slice(0,comma)),Number(key.slice(comma+1)))===wanted) return true;
+	}
+	return false;
+}
+function pendingObserverPlacementCount(){
+	let total=0;
+	for(const n of pendingObserverPlacements.values()) total+=Math.max(0,Number(n)|0);
+	return Math.min(OBSERVER_REPLICAS.MAX,total);
+}
+function pendingObserverRecoveryCount(){
+	let total=0;
+	for(const n of pendingObserverRecoveries.values()) total+=Math.max(0,Number(n)|0);
+	return Math.min(OBSERVER_REPLICAS.MAX,total);
+}
+function addPendingObserverPlacement(x,y){
+	const key=observerPendingPlacementKey(x,y);
+	if(!key || observerPendingRegionReserved(x,y) || pendingObserverPlacementCount()>=OBSERVER_REPLICAS.MAX) return false;
+	pendingObserverPlacements.set(key,(pendingObserverPlacements.get(key)|0)+1);
+	return true;
+}
+function settlePendingObserverPlacement(x,y){
+	const key=observerPendingPlacementKey(x,y);
+	if(!key) return false;
+	const n=pendingObserverPlacements.get(key)|0;
+	if(n<=0) return false;
+	if(n===1) pendingObserverPlacements.delete(key);
+	else pendingObserverPlacements.set(key,n-1);
+	return true;
+}
+function addPendingObserverRecovery(x,y){
+	const key=observerPendingPlacementKey(x,y);
+	if(!key || pendingObserverRecoveries.size>=OBSERVER_REPLICAS.MAX) return false;
+	pendingObserverRecoveries.set(key,(pendingObserverRecoveries.get(key)|0)+1);
+	return true;
+}
+function settlePendingObserverRecovery(x,y){
+	const key=observerPendingPlacementKey(x,y);
+	if(!key) return false;
+	const n=pendingObserverRecoveries.get(key)|0;
+	if(n<=0) return false;
+	if(n===1) pendingObserverRecoveries.delete(key);
+	else pendingObserverRecoveries.set(key,n-1);
+	return true;
+}
+function clearPendingObserverPlacements(){
+	pendingObserverPlacements.clear();
+	pendingObserverRecoveries.clear();
+}
+function restorePendingObserverPlacements(rows){
+	clearPendingObserverPlacements();
+	if(!Array.isArray(rows)) return 0;
+	for(const row of rows.slice(0,OBSERVER_REPLICAS.MAX)){
+		if(!row || typeof row!=='object') continue;
+		if(row.a==='mine') addPendingObserverRecovery(row.x,row.y);
+		else addPendingObserverPlacement(row.x,row.y);
+	}
+	return Math.min(OBSERVER_REPLICAS.MAX,pendingObserverPlacementCount()+pendingObserverRecoveryCount());
+}
+MM.onObserverReplicaActivated=(x,y)=>{
+	settlePendingObserverPlacement(x,y);
+	try{
+		if(MM.ghostHeroIntents && MM.ghostHeroIntents.observerVisible) MM.ghostHeroIntents.observerVisible(x,y);
+	}catch(e){}
+};
 const RECIPES=[
 	{id:'pick_bedrock', name:'Kilof macierzysty', cost:{motherIce:1, motherLava:1, diamond:1}, done:()=>hasBedrockPick(), make(){ inv.tools.bedrock=true; inv.bedrockPickDurability=BEDROCK_PICK_MAX_DURABILITY; msg('Kilof macierzysty: niszczy skale macierzysta, ale ma tylko '+BEDROCK_PICK_MAX_DURABILITY+' uderzen'); }},
 	{id:'pick_stone', name:'Kilof kamienny', cost:{stone:10}, done:()=>inv.tools.stone, make(){ inv.tools.stone=true; msg('Kilof kamienny (przełączaj klawiszem 1)'); }},
@@ -6121,6 +6314,17 @@ const RECIPES=[
 // The home workshop owns its large catalogue and procedural art in one module;
 // recipes stay compatible with the ordinary inventory/crafting pipeline.
 RECIPES.push(...FURNISHINGS.createRecipes({inventory:inv,notify:msg}));
+RECIPES.push(OBSERVER_REPLICAS.createRecipe({
+	inventory:inv,
+	notify:msg,
+	// Moving a copy through a ground drop, death grave or recoverable invasion
+	// cache must not reset its escalating tier or open a cheap fourth craft.
+	externalOwned:()=>Math.max(0,Number(grave&&grave.res&&grave.res.observerReplica)||0)
+		+Math.max(0,Number(DROPS&&DROPS.resourceCount&&DROPS.resourceCount('observerReplica'))||0)
+		+Math.max(0,Number(INVASIONS&&INVASIONS.cachedResourceCount&&INVASIONS.cachedResourceCount('observerReplica'))||0)
+		+pendingObserverPlacementCount()
+		+pendingObserverRecoveryCount()
+}));
 const CRAFT_GROUPS=[
 	{id:'all',label:'Wszystko'},
 	{id:'survival',label:'Start'},
@@ -6666,7 +6870,12 @@ function renderCraftDetail(r){
 	detail.appendChild(ings);
 	const miss=recipeMissing(r);
 	const status=document.createElement('div'); status.className='craftStatus';
-	if(done){ status.classList.add('done'); status.textContent='Gotowe - masz juz ten wariant.'; }
+	if(done){
+		status.classList.add('done');
+		let doneText=null;
+		try{ doneText=typeof r.doneText==='function' ? r.doneText() : r.doneText; }catch(e){ doneText=null; }
+		status.textContent=doneText||'Gotowe - masz juz ten wariant.';
+	}
 	else if(miss.length) status.textContent='Brakuje: '+miss.map(x=>x.missing+' × '+(RES_LABEL[x.key]||x.key)).join(', ');
 	else { status.classList.add('ok'); status.textContent='Mozesz wytworzyc teraz'+(max>1?' (zapas na ×'+Math.min(99,max)+')':'')+'.'; }
 	detail.appendChild(status);
@@ -6677,7 +6886,7 @@ function renderCraftDetail(r){
 		const dropRow=document.createElement('div'); dropRow.className='craftHotDrop';
 		dropRow.appendChild(makeCraftDragTile(outDef));
 		const info=document.createElement('div'); info.className='craftHotDropInfo';
-		const lab=document.createElement('b'); lab.textContent=outDef.label+' · masz ×'+Math.min(9999,inv[r.out]|0);
+		const lab=document.createElement('b'); lab.textContent=outDef.label+' · w plecaku ×'+Math.min(9999,inv[r.out]|0);
 		const hint=document.createElement('span'); hint.textContent='Przeciągnij kafelek na pasek (5–9, 0) albo kliknij, aby przypisać do aktywnego slotu.';
 		info.appendChild(lab); info.appendChild(hint);
 		dropRow.appendChild(info);
@@ -9872,6 +10081,11 @@ function drawEntityTile(g,t,px,py,wx,wy,opts){
 	g.save();
 	const oldAlpha=g.globalAlpha;
 	if(opts && Number.isFinite(Number(opts.alpha))) g.globalAlpha=oldAlpha*Number(opts.alpha);
+	if(t===T.OBSERVER_REPLICA){
+		OBSERVER_REPLICAS.drawTile(g,px,py,TILE,{customization:MM.customization,drawOutfit:MM.drawOutfit,now:performance.now()});
+		g.restore();
+		return true;
+	}
 	if(isChairTileId(t)){
 		// chairs are open fixtures: glyph only, never a filled block square
 		drawChairTile(g,px,py,t);
@@ -10055,7 +10269,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 				// TORCH renders as a sprite in the fire.js pass; GRAVE gets a headstone shape
 				// below — both bake only their backdrop here
 				const gasTile = isGasTileId(t);
-				const openArtTile=t===T.GLOWSHROOM || t===T.LEAF_PILE || t===T.METEOR_DUST || t===T.WEATHERVANE || t===T.LIGHTNING_ROD || t===T.VINE;
+				const openArtTile=t===T.GLOWSHROOM || t===T.LEAF_PILE || t===T.METEOR_DUST || t===T.WEATHERVANE || t===T.LIGHTNING_ROD || t===T.VINE || t===T.OBSERVER_REPLICA;
 				const bgT=(WORLD && WORLD.getConstructionBackground) ? WORLD.getConstructionBackground(wx,y) : T.AIR;
 				const hasBg=bgT!==T.AIR && INFO[bgT] && INFO[bgT].color;
 				if(hasBg){
@@ -13095,6 +13309,8 @@ function resetWorldTransitionRuntime(){
 	sandSlowActive=false; sandMsgAt=0; waterPressureMsgAt=0;
 	resetHouseHealingRuntimeState();
 	if(FURNISHINGS && FURNISHINGS.resetRuntimeCaches) FURNISHINGS.resetRuntimeCaches();
+	if(!MM.ghostHeroIntents) clearPendingObserverPlacements();
+	if(OBSERVER_REPLICAS && OBSERVER_REPLICAS.reset) OBSERVER_REPLICAS.reset();
 	if(AUDIO && AUDIO.clearRadioSource) AUDIO.clearRadioSource();
 	if(typeof radioPanelVisible==='function' && radioPanelVisible()) closeRadioPanel({silent:true});
 	player.hp=Math.max(1,Number(player.maxHp)||100);
@@ -15362,7 +15578,7 @@ function breakMinedTile(){
 	// INTENT — the host validates it with solo-grade rules and the world change
 	// returns on the tile stream; the yield is awarded LOCALLY on the ack
 	// (guest-local player truth, host-validated world truth)
-	if(MM.ghostHeroIntents) return MM.ghostHeroIntents.mineBreak(mineTx,mineTy);
+	if(MM.ghostHeroIntents) return MM.ghostHeroIntents.mineBreak(mineTx,mineTy,mineTileIdAt(mineTx,mineTy));
 	if(mineBossTarget) return breakBossPart();
 	if(!canPhysicallyTargetTile(mineTx,mineTy)) return false;
 	const overId=getInfrastructureTile(mineTx,mineTy);
@@ -15425,7 +15641,7 @@ function breakMinedTile(){
 	const drops=awardTileDrops(info,dropCtx);
 	// double-yield pickaxe head: the block sheds a second helping (bonus only —
 	// the undo record refunds the ORIGINAL yield, generosity is not dupe fuel)
-	if(equippedPickPerk()==='double' && tId!==T.BEDROCK && Math.random()<PICK_PERKS.double.chance){
+	if(equippedPickPerk()==='double' && tId!==T.BEDROCK && tId!==T.OBSERVER_REPLICA && Math.random()<PICK_PERKS.double.chance){
 		awardTileDrops(info,dropCtx);
 		spawnBurst((mineTx+0.5)*TILE,(mineTy+0.5)*TILE,0,{color:'#a8ffc2'});
 	}
@@ -15447,7 +15663,7 @@ function breakMinedTile(){
 // undo, drops, falling wakes and multiplayer streaming all stay intact.
 let veinChainDepth=0;
 function maybeChainVeinBreak(tId){
-	if(veinChainDepth>0 || tId===T.BEDROCK) return;
+	if(veinChainDepth>0 || tId===T.BEDROCK || tId===T.OBSERVER_REPLICA) return;
 	if(equippedPickPerk()!=='vein') return;
 	if(Math.random()>=PICK_PERKS.vein.chance) return;
 	const info=INFO[tId];
@@ -16189,6 +16405,15 @@ function canPlaceAt(tx,ty){
 			return {ok:false,reason:furnishingPlacement.reason||'Nieprawidlowe podparcie mebla'};
 		}
 	}
+	let observerPlacement=null;
+	if(!chest && id===T.OBSERVER_REPLICA && OBSERVER_REPLICAS && OBSERVER_REPLICAS.validatePlacement){
+		// A hero guest's local registry can trail the host's tile stream. Keep its
+		// preview support-aware, but let the host make the authoritative cap call.
+		observerPlacement=OBSERVER_REPLICAS.validatePlacement(tx,ty,getTile,{ignoreCap:!!MM.ghostHeroIntents});
+		if(observerPlacement && !observerPlacement.ok){
+			return {ok:false,reason:observerPlacement.reason||'Nie mozna postawic atrapy obserwatora'};
+		}
+	}
 	// Wood built on water floats: it becomes (or extends) a raft entity instead of
 	// a tile. Air cells above water only float when no solid support would carry a
 	// normal build — planks against a dock keep behaving like ordinary tiles.
@@ -16210,7 +16435,7 @@ function canPlaceAt(tx,ty){
 		}
 	}
 	let pressureCells=null;
-	if(!chest && !godMode && id!==T.SAND && id!==T.WATER && !loosePlacement && !waterGolemDrop && !molekinMotherLavaDrop && !(furnishingPlacement && furnishingPlacement.applies)){
+	if(!chest && !godMode && id!==T.SAND && id!==T.WATER && !loosePlacement && !waterGolemDrop && !molekinMotherLavaDrop && !(furnishingPlacement && furnishingPlacement.applies) && !(observerPlacement && observerPlacement.applies)){
 		let checkedStructural=false;
 		if(FALLING && FALLING.canSupportPlacement){
 			const structural=FALLING.canSupportPlacement(tx,ty,id);
@@ -16227,7 +16452,8 @@ function canPlaceAt(tx,ty){
 	}
 	if(!chest && !haveBlocksFor(id)) return {ok:false, reason:'Brak bloków', pressureCells};
 	return {ok:true, id, chest, replacedWater:cur===T.WATER, pressureCells,
-		furnishingSupport:furnishingPlacement&&furnishingPlacement.support};
+		furnishingSupport:furnishingPlacement&&furnishingPlacement.support,
+		observerSupport:observerPlacement&&observerPlacement.support};
 }
 function tryPlace(tx,ty){
 	const v=canPlaceAt(tx,ty);
@@ -16240,8 +16466,16 @@ function tryPlace(tx,ty){
 		if(v.chest || v.boat || v.structure==='dynamo'){ msg('Ta konstrukcja nie jest jeszcze dostępna w trybie gościa'); return false; }
 		const layer=v.overlay?'overlay':(v.background?'background':'fg');
 		const machineDir=v.id===T.TELEPORTER ? teleporterOrientation : undefined;
-		if(!MM.ghostHeroIntents.place(tx,ty,v.id,layer,machineDir)) return false;
+		const tracksObserver=v.id===T.OBSERVER_REPLICA;
+		if(tracksObserver && typeof MM.ghostHeroIntents.commitPlace!=='function') return false;
+		if(tracksObserver && !addPendingObserverPlacement(tx,ty)) return false;
+		const placementIntent=MM.ghostHeroIntents.place(tx,ty,v.id,layer,machineDir);
+		if(!placementIntent){
+			if(tracksObserver) settlePendingObserverPlacement(tx,ty);
+			return false;
+		}
 		consumeFor(v.id); updateInventory(); updateHotbarCounts();
+		if(tracksObserver && !MM.ghostHeroIntents.commitPlace(placementIntent)) return false;
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		return true;
 	}
@@ -16312,6 +16546,9 @@ function tryPlace(tx,ty){
 	if(VOLCANO && VOLCANO.onTileChanged) VOLCANO.onTileChanged(tx,ty,id,getTile,setTile);
 	consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+	if(id===T.OBSERVER_REPLICA){
+		msg('Atrapa aktywna '+OBSERVER_REPLICAS.count()+'/3 - regionalna automatyka 64x70 dziala');
+	}
 	if(WATER){ if(id===T.WATER) WATER.addSource(tx,ty,getTile,setTile); else if(v.replacedWater && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile); }
 	if(FIRE){
 		if(id===T.TORCH){
@@ -16574,7 +16811,7 @@ const HOT_SELECT_GROUPS=[
 	{id:'rock',label:'Skały i rudy',tiles:['GRANITE','BASALT','COAL','TIN_ORE','GOLD_ORE','SILVER_ORE','SILVER_INGOT','OBSIDIAN','DIAMOND','IRIDIUM','METEORIC_IRON','RADIOACTIVE_ORE','METEOR_DUST','ANTIMATTER_CRYSTAL','MOTHER_ICE','MOTHER_LAVA','GRAPHITE','GRAPHENE']},
 	{id:'build',label:'Budulce',tiles:['BRICK','CHIMNEY','GLASS','WOOD_DOOR','STONE_DOOR','STEEL_DOOR','WOOD_TRAPDOOR','STONE_TRAPDOOR','STEEL_TRAPDOOR','STEEL','ALIEN_BIOMASS','VOLCANO_MASTER_STONE','SERVANT_STONE']},
 	{id:'home',label:'Dom i wyposażenie',tiles:['CHAIR_WOOD','CHAIR_STONE','CHAIR_STEEL','RUSTIC_STOOL','PINE_TABLE','WALL_SHELF','OAK_CABINET','COZY_BED','BOOKCASE','PATCHWORK_SOFA','HAMMOCK','WOVEN_RUG','POTTED_FERN','WALL_CLOCK','MIRROR','AQUARIUM','TERRARIUM','CHANDELIER','INDOOR_FOUNTAIN','HOLOGRAM_ART','DESK_LAMP','RADIO','TELEVISION','GAME_CONSOLE','REFRIGERATOR','COFFEE_MACHINE','AIR_PURIFIER','MEDICAL_STATION','HEALING_POD','ZERO_G_LOUNGER','MEMORY_PROJECTOR','CHRONO_CLOCK','BIOLUM_GARDEN','MINIATURE_SUN','DREAM_SYNTH','COSMIC_ORRERY']},
-		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','MECH_DRILL_HEAD','LADDER_MODULE','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','KILN','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET','SMR_CELL']},
+		{id:'machine',label:'Maszyny',tiles:['DYNAMO','SOLAR_PANEL','SOLAR_BATTERY','SPRING_PLATFORM','TRACK','MECH_DRILL_HEAD','LADDER_MODULE','STEAM_BOILER','STEAM_JET','VENDING_MACHINE','KILN','TELEPORTER','ANTIGRAVITY_BEACON','METEOR_SIREN','TURRET','FIRE_TURRET','WATER_TURRET','SMR_CELL','OBSERVER_REPLICA']},
 	{id:'utility',label:'Instalacje',tiles:['WIRE','COPPER_WIRE','SILVER_WIRE','WATER_PIPE','LADDER','BEDROCK_LADDER','WATER_PUMP','TRANSISTOR','TORCH','WEATHERVANE','LIGHTNING_ROD','RESPAWN_TOTEM','PIT_PROP','SAPLING']},
 	{id:'food',label:'Jedzenie',tiles:['MEAT','ROTTEN_MEAT','BAKED_MEAT','GLOWSHROOM']},
 	{id:'chest',label:'Skrzynie',tiles:['CHEST_COMMON','CHEST_UNCOMMON','CHEST_RARE','CHEST_EPIC','CHEST_LEGENDARY']},
@@ -16833,6 +17070,11 @@ function draw(){ // Background first
  if(gfxUltraOn('shadows') && POST_FX.drawTreeShadowsPass){
 	 POST_FX.drawTreeShadowsPass(ctx,{TILE,sx,viewX,getTile,surfaceHeight:(WORLDGEN && WORLDGEN.surfaceHeight)?WORLDGEN.surfaceHeight:null,isTrunk:isWood,visibleAt:worldFxVisible,time:frameTimeInfo,frameMs:lastFrameMs});
  }
+ // Bogus replicas are late-drawn entities rather than baked blocks: they reuse
+ // the hero's current outfit and keep their cyan scan-lines alive.
+ if(OBSERVER_REPLICAS && OBSERVER_REPLICAS.drawWorld){
+	 OBSERVER_REPLICAS.drawWorld(ctx,TILE,worldFxVisible,{customization:MM.customization,drawOutfit:MM.drawOutfit,now:performance.now()});
+ }
  // Standing in the same foreground cell as a wall mirror turns the hero into
  // the depth plane: the human player sees the back, while the late clipped
  // mirror pass below renders the live face. Outside that overlap rendering is
@@ -17045,8 +17287,22 @@ function draw(){ // Background first
 	 const placingDynamo=selectedTileId()===T.DYNAMO;
 	 const placingInfrastructure=isInfrastructureTileId(selectedTileId());
 	 const placingBackground=backgroundBuildMode && isBackgroundBuildTileId(selectedTileId());
+	 const placingObserver=selectedTileId()===T.OBSERVER_REPLICA;
 	 if(placingBackground || placingInfrastructure || placingDynamo || isReplaceableNaturalOpenTile(curT,false)){
 		 const v=canPlaceAt(gp.tx,gp.ty);
+		 if(placingObserver && OBSERVER_REPLICAS && OBSERVER_REPLICAS.regionAt){
+			 const region=OBSERVER_REPLICAS.regionAt(gp.tx,gp.ty);
+			 if(region){
+				 ctx.save();
+				 ctx.fillStyle=v.ok?'rgba(76,225,255,0.035)':'rgba(255,90,90,0.025)';
+				 ctx.fillRect(region.x*TILE,region.y*TILE,region.w*TILE,region.h*TILE);
+				 ctx.strokeStyle=v.ok?'rgba(76,225,255,0.88)':'rgba(255,110,110,0.78)';
+				 ctx.lineWidth=Math.max(1,2/Math.max(0.25,zoom||1));
+				 if(ctx.setLineDash) ctx.setLineDash([Math.max(4,TILE*0.45),Math.max(3,TILE*0.3)]);
+				 ctx.strokeRect(region.x*TILE+0.5,region.y*TILE+0.5,region.w*TILE-1,region.h*TILE-1);
+				 ctx.restore();
+			 }
+		 }
 		 ctx.strokeStyle= v.ok? (v.background?'rgba(120,220,255,0.82)':'rgba(140,255,140,0.7)'):'rgba(255,110,110,0.6)';
 		 ctx.lineWidth=1;
 		 const cells=Array.isArray(v.cells) ? v.cells : [{x:gp.tx,y:gp.ty}];
@@ -17346,6 +17602,7 @@ function minimapTileColor(t){
 	if(t===T.DYNAMO) return '#ffd24a';
 	if(t===T.DYNAMO_SLOT) return '#54ccff';
 	if(t===T.TELEPORTER) return '#7cf7ff';
+	if(t===T.OBSERVER_REPLICA) return '#7de8ff';
 	if(t===T.ANTIGRAVITY_BEACON) return '#c46bff';
 	if(t===T.METEOR_SIREN) return '#ff9f45';
 	if(t===T.TURRET) return '#9fb0c8';
@@ -17521,7 +17778,7 @@ function stepMinimapBuild(MW,MH){
 						continue;
 					}
 					const c=minimapTileColor(t);
-					if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || t===T.MECH_DRILL_HEAD || t===T.LADDER_MODULE || isFurnishingTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.STEAM_BOILER || t===T.STEAM_JET || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
+					if(t===T.WATER || t===T.LAVA || t===T.GOLD_ORE || t===T.SILVER_ORE || t===T.SILVER_INGOT || t===T.DIAMOND || t===T.IRIDIUM || t===T.UFO_CONCRETE || t===T.METEORIC_IRON || t===T.RADIOACTIVE_ORE || t===T.ALIEN_BIOMASS || t===T.METEOR_DUST || t===T.ANTIMATTER_CRYSTAL || t===T.COAL || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE || t===T.TORCH || isDoorTile(t) || isTrapdoorTile(t) || t===T.STEEL || t===T.TRACK || t===T.MECH_DRILL_HEAD || t===T.LADDER_MODULE || isFurnishingTileId(t) || t===T.GLASS || t===T.CHIMNEY || t===T.WIRE || isPowerCableTileId(t) || t===T.WATER_PIPE || t===T.WATER_PUMP || t===T.STEAM_BOILER || t===T.STEAM_JET || t===T.VENDING_MACHINE || t===T.ELECTRONICS || t===T.TRANSISTOR || t===T.DYNAMO || t===T.DYNAMO_SLOT || t===T.TELEPORTER || t===T.OBSERVER_REPLICA || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN || t===T.TURRET || t===T.FIRE_TURRET || t===T.WATER_TURRET || t===T.SPRING_PLATFORM || t===T.SOLAR_PANEL || t===T.SOLAR_BATTERY || t===T.MEAT || t===T.ROTTEN_MEAT || t===T.BAKED_MEAT || isGasTileId(t) || t===T.RESPAWN_TOTEM || INFO[t].chestTier || INFO[t].cache){ color=c; priority=true; wx=wx1+1; break; }
 					if(!color) color=c;
 				}
 			}
@@ -20145,7 +20402,7 @@ if(MM.ui && MM.ui.injectEconomyDebugPanel) MM.ui.injectEconomyDebugPanel({
 }, menuPanel);
 
 // Regeneracja świata z nowym ziarnem
-document.getElementById('regenBtn')?.addEventListener('click',()=>{ setSeedFromInput(); regenWorld(); if(MM.ui && MM.ui.closeMenu) MM.ui.closeMenu(); });
+document.getElementById('regenBtn')?.addEventListener('click',()=>{ if(!prepareHostedWorldReplacement()) return; setSeedFromInput(); regenWorld(); if(MM.ui && MM.ui.closeMenu) MM.ui.closeMenu(); });
 function regenWorld(){
 	resetWorldTransitionRuntime();
 	// Purge mobs and freeze spawns briefly
@@ -21004,6 +21261,21 @@ else if(!loaded){
 		?'Dotyk: krzyżak wybiera blok pole po polu; w Walce zmienia się w joystick celowania. TRYB zmienia akcję. Stuknij pompę lub teleporter, aby zmienić kierunek.'
 		:'Sterowanie: A/D/W. 1=kilof: LPM kopie, PPM stawia. 2/3/4=broń: LPM strzela/atakuje, PPM ult/obrona. I=Centrum bohatera, E=interakcja, '+visionShortcutLabel()+'=optyka, C=kamera, H=Pomoc. Debug: panel 🛠.');
 } else msg('Wczytano zapis – miłej gry!');
+
+function observerTransactionPersistenceReady(){
+	return !_startingNewGame && !_saveWritesBlocked && !MM.ghostMode
+		&& !(typeof temporalEchoActive==='function' && temporalEchoActive());
+}
+function persistObserverTransaction(reason){
+	if(!observerTransactionPersistenceReady()) return Promise.resolve(false);
+	try{
+		return storeActive()
+			? Promise.resolve(persistStoreSave(reason)).then(ok=>!!ok,()=>false)
+			: Promise.resolve(!!saveGame(false));
+	}catch(e){
+		return Promise.resolve(false);
+	}
+}
 // Ghost spectator bridge: the one sanctioned window into main.js internals for
 // ghost_host.js / ghost_client.js — snapshot codec, world access, camera and
 // hero touch-points. Hosting streams THROUGH it; watching replays INTO it.
@@ -21228,6 +21500,56 @@ MM.ghostBridge={
 	ghostHeroPlacementKey:(tid)=>{
 		const id=Number(tid)|0;
 		return Object.prototype.hasOwnProperty.call(TILE_TO_RES,id) ? TILE_TO_RES[id] : null;
+	},
+	// Observer replicas are crafted in the full hero guest's real local
+	// inventory. Their item entitlement is therefore local, while the host still
+	// validates reach, support, occupancy and the global three-copy terrain cap.
+	ghostHeroPlacementUsesLocalEntitlement:(tid)=>(Number(tid)|0)===T.OBSERVER_REPLICA,
+	ghostHeroPlaced:(tid)=>{
+		if((Number(tid)|0)!==T.OBSERVER_REPLICA) return false;
+		msg('Atrapa aktywna - regionalna automatyka 64x70 dziala');
+		return true;
+	},
+	ghostHeroObserverPendingRestore:(rows)=>restorePendingObserverPlacements(rows),
+	ghostHeroObserverPendingSettle:(x,y,action)=>action==='mine'
+		? settlePendingObserverRecovery(x,y)
+		: settlePendingObserverPlacement(x,y),
+	ghostHeroObserverPresent:(x,y)=>!!(OBSERVER_REPLICAS && OBSERVER_REPLICAS.hasAt && OBSERVER_REPLICAS.hasAt(x,y)),
+	ghostHeroObserverAccepted:(gid,qid)=>(OBSERVER_REPLICAS && OBSERVER_REPLICAS.acceptedTransaction)
+		? OBSERVER_REPLICAS.acceptedTransaction(gid,qid)
+		: null,
+	ghostHeroObserverPersist:(gid,qid)=>{
+		const row=(OBSERVER_REPLICAS && OBSERVER_REPLICAS.transactionRecord)
+			? OBSERVER_REPLICAS.transactionRecord(gid,qid)
+			: null;
+		if(!row || row.ackPending) return Promise.resolve(false);
+		if(row.durable) return Promise.resolve(true);
+		return persistObserverTransaction('observer-transaction').then(ok=>{
+			if(!ok) return false;
+			return !!(OBSERVER_REPLICAS.markTransactionDurable
+				&& OBSERVER_REPLICAS.markTransactionDurable(gid,qid));
+		},()=>false);
+	},
+	ghostHeroObserverReceipt:(gid,qid)=>{
+		const row=(OBSERVER_REPLICAS && OBSERVER_REPLICAS.transactionRecord)
+			? OBSERVER_REPLICAS.transactionRecord(gid,qid)
+			: null;
+		// Absence is an idempotent success: a previous receipt save may have
+		// committed just before the host disconnected.
+		if(!row) return Promise.resolve(true);
+		if(!row.durable || row.ackPending || !OBSERVER_REPLICAS.beginTransactionAcknowledgement
+			|| !OBSERVER_REPLICAS.beginTransactionAcknowledgement(gid,qid)) return Promise.resolve(false);
+		noteSaveActivity();
+		return persistObserverTransaction('observer-receipt').then(ok=>{
+			const finalized=!!(OBSERVER_REPLICAS.finalizeTransactionAcknowledgement
+				&& OBSERVER_REPLICAS.finalizeTransactionAcknowledgement(gid,qid,!!ok));
+			return !!ok && finalized;
+		},()=>{
+			if(OBSERVER_REPLICAS.finalizeTransactionAcknowledgement){
+				OBSERVER_REPLICAS.finalizeTransactionAcknowledgement(gid,qid,false);
+			}
+			return false;
+		});
 	},
 	// Guest mining: the same whitelist and lifecycle hooks the companion diggers use
 	// (breakTileByCompanion is the model) — but the yield goes to the CALLER (the
@@ -21521,11 +21843,36 @@ MM.ghostBridge={
 		if(!W || !W.spawnHeroProjectile) return false;
 		return !!W.spawnHeroProjectile(body,spec);
 	},
-	ghostHeroRefund:(tid)=>{
+	ghostHeroRefund:(tid,x,y)=>{
+		if((Number(tid)|0)===T.OBSERVER_REPLICA) settlePendingObserverPlacement(x,y);
 		const def=RESOURCE_DEFS.find(r=>r.tile && T[r.tile]===(Number(tid)|0));
 		if(!def) return false;
 		inv[def.key]=(inv[def.key]|0)+1;
 		try{ updateInventory(); updateHotbarCounts(); }catch(e){}
+		return true;
+	},
+	// A terminal observer rejection can arrive after demotion and a spectator
+	// snapshot. Refund the detached guest save, never the host inventory currently
+	// rendered through the live bridge.
+	ghostHeroRefundSaved:(state,tid)=>{
+		if(!state || typeof state!=='object' || !state.inv || typeof state.inv!=='object') return false;
+		const def=RESOURCE_DEFS.find(r=>r.tile && T[r.tile]===(Number(tid)|0));
+		if(!def) return false;
+		state.inv[def.key]=Math.max(0,Number(state.inv[def.key])|0)+1;
+		return true;
+	},
+	ghostHeroGainSaved:(state,key,qty)=>{
+		if(!state || typeof state!=='object' || !state.inv || typeof state.inv!=='object') return false;
+		if(typeof key!=='string' || !RESOURCE_DEFS.find(r=>r.key===key)) return false;
+		state.inv[key]=Math.max(0,Number(state.inv[key])|0)+Math.max(1,Math.min(99,Number(qty)|0));
+		return true;
+	},
+	ghostHeroSpendSaved:(state,key,qty)=>{
+		if(!state || typeof state!=='object' || !state.inv || typeof state.inv!=='object') return false;
+		if(typeof key!=='string' || !RESOURCE_DEFS.find(r=>r.key===key)) return false;
+		const n=Math.max(1,Math.min(99,Number(qty)|0));
+		if((Number(state.inv[key])|0)<n) return false;
+		state.inv[key]=Math.max(0,(Number(state.inv[key])|0)-n);
 		return true;
 	},
 	// HOST-side world seams: SOLO-grade validation. Mining honors the same three
@@ -21533,10 +21880,30 @@ MM.ghostBridge={
 	// → foreground) with the same lifecycle hooks; the YIELD is the caller's —
 	// nothing here touches the host inventory. Chests, bedrock and machine cores
 	// stay host-only economy in this wave.
-	ghostHeroMineAt:(tx,ty)=>{
+	ghostHeroMineAt:(tx,ty,claim)=>{
 		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
+		const claimed=claim && OBSERVER_REPLICAS.validTransactionClaim(claim.gid,claim.qid);
+		if(claim && !claimed) return {ok:false, reason:'qid'};
+		if(claimed){
+			const prior=OBSERVER_REPLICAS.transactionRecord(claim.gid,claim.qid);
+			if(prior){
+				if(prior.action!=='mine' || prior.x!==tx || prior.y!==ty) return {ok:false, reason:'qid'};
+				if(prior.ackPending) return {ok:false, reason:'pending', retry:true};
+				if(prior.durable) return {ok:true, tid:T.OBSERVER_REPLICA, layer:'fg', replayed:true};
+				// A failed save normally leaves AIR and only needs another commit.
+				// Temporal rewind may have restored the tile; then discard only the
+				// transient proof and execute the removal again before persisting.
+				if(getTile(tx,ty)!==T.OBSERVER_REPLICA){
+					return observerTransactionPersistenceReady()
+						? {ok:true, tid:T.OBSERVER_REPLICA, layer:'fg', replayed:true}
+						: {ok:false, reason:'save', retry:true};
+				}
+				OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
+			}
+		}
 		const overId=getInfrastructureTile(tx,ty);
 		if(overId!==T.AIR){
+			if(claimed) return {ok:false, reason:'tile'};
 			if(!INFO[overId]) return {ok:false, reason:'tile'};
 			if(!clearInfrastructureConfirmed(tx,ty,overId)) return {ok:false, reason:'write'};
 			notifyInvasionMining(overId,tx,ty);
@@ -21544,6 +21911,7 @@ MM.ghostBridge={
 			return {ok:true, tid:overId, layer:'overlay'};
 		}
 		if(miningTargetsConstructionBackground(tx,ty)){
+			if(claimed) return {ok:false, reason:'tile'};
 			const bgId=getConstructionBackgroundTile(tx,ty);
 			if(!INFO[bgId]) return {ok:false, reason:'tile'};
 			if(!clearConstructionBackgroundConfirmed(tx,ty)) return {ok:false, reason:'write'};
@@ -21553,15 +21921,39 @@ MM.ghostBridge={
 			return {ok:true, tid:bgId, layer:'background'};
 		}
 		const tId=getTile(tx,ty);
+		if(claimed && tId!==T.OBSERVER_REPLICA) return {ok:false, reason:'tile'};
+		if(tId===T.OBSERVER_REPLICA){
+			if(!claimed) return {ok:false, reason:'qid'};
+			if(!observerTransactionPersistenceReady()) return {ok:false, reason:'save'};
+			if(!OBSERVER_REPLICAS.canAcceptTransaction(claim.gid,claim.qid)) return {ok:false, reason:'txfull'};
+			if(!OBSERVER_REPLICAS.claimDetachedTransaction(claim.gid,claim.qid,tx,ty)){
+				return {ok:false, reason:'qid'};
+			}
+		}
 		const info=INFO[tId];
-		if(!info || tId===T.AIR || isGasTileId(tId)) return {ok:false, reason:'tile'};
-		if(info.unmineable) return {ok:false, reason:'hard'};
-		if(info.chestTier || info.cache) return {ok:false, reason:'chest'};
-		if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT) return {ok:false, reason:'machine'};
+		if(!info || tId===T.AIR || isGasTileId(tId)){
+			if(claimed) OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
+			return {ok:false, reason:'tile'};
+		}
+		if(info.unmineable){
+			if(claimed) OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
+			return {ok:false, reason:'hard'};
+		}
+		if(info.chestTier || info.cache){
+			if(claimed) OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
+			return {ok:false, reason:'chest'};
+		}
+		if(tId===T.DYNAMO || tId===T.DYNAMO_SLOT){
+			if(claimed) OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
+			return {ok:false, reason:'machine'};
+		}
 		const teleporterPlan=tId===T.TELEPORTER && TELEPORTERS && TELEPORTERS.dismantlePlanAt
 			? TELEPORTERS.dismantlePlanAt(tx,ty,getTile)
 			: null;
-		if(!stripForegroundForCarry(tx,ty,tId)) return {ok:false, reason:'write'};
+		if(!stripForegroundForCarry(tx,ty,tId)){
+			if(claimed) OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
+			return {ok:false, reason:'write'};
+		}
 		noteSaveActivity();
 		return {ok:true, tid:tId, layer:'fg', loot:teleporterPlan ? teleporterPlan.drops : null};
 	},
@@ -21588,11 +21980,33 @@ MM.ghostBridge={
 	},
 	// Hero-mode placement: ghost_host already debited its host-authoritative
 	// resource escrow; this seam validates world legality on the requested layer.
-	ghostHeroPlaceAt:(tx,ty,tid,layer,body,dir)=>{
+	ghostHeroPlaceAt:(tx,ty,tid,layer,body,dir,claim)=>{
 		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
 		const id=Number(tid)|0;
 		const def=RESOURCE_DEFS.find(r=>r.tile && T[r.tile]===id);
 		if(!def) return {ok:false, reason:'key'};
+		if(id===T.OBSERVER_REPLICA && layer!=='fg') return {ok:false, reason:'layer'};
+		if(id===T.OBSERVER_REPLICA && (!claim || !OBSERVER_REPLICAS.validTransactionClaim(claim.gid,claim.qid))){
+			return {ok:false, reason:'qid'};
+		}
+		if(id===T.OBSERVER_REPLICA){
+			const prior=OBSERVER_REPLICAS.transactionRecord(claim.gid,claim.qid);
+			if(prior){
+				if(prior.action!=='place' || prior.x!==tx || prior.y!==ty) return {ok:false, reason:'qid'};
+				if(prior.ackPending) return {ok:false, reason:'pending', retry:true};
+				if(prior.durable) return {ok:true, tid:id, replayed:true};
+				if(OBSERVER_REPLICAS.matchesTransaction(tx,ty,claim.gid,claim.qid) && getTile(tx,ty)===id){
+					return observerTransactionPersistenceReady()
+						? {ok:true, tid:id, replayed:true}
+						: {ok:false, reason:'save', retry:true};
+				}
+				OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
+			}
+			if(!observerTransactionPersistenceReady()) return {ok:false, reason:'save'};
+			if(!OBSERVER_REPLICAS.canAcceptTransaction(claim.gid,claim.qid)){
+				return {ok:false, reason:'txfull'};
+			}
+		}
 		if(id===T.VENDING_MACHINE || id===T.SPRING_PLATFORM || id===T.DYNAMO) return {ok:false, reason:'machine'};
 		if(layer==='overlay'){
 			const v=canPlaceInfrastructureAt(tx,ty,id,{body});
@@ -21612,13 +22026,29 @@ MM.ghostBridge={
 		const actorBlocked=remotePlacementActorBlockedReason(body,tx,ty);
 		if(actorBlocked) return {ok:false, reason:actorBlocked==='Za daleko'?'reach':'blocked'};
 		const cur=getTile(tx,ty);
+		// If a host session restarted, the volatile outcome ledger is gone but the
+		// observer sidecar retains the accepting guest and qid. Only that exact
+		// transaction may replay; a fresh click at an occupied cell is rejected.
+		if(id===T.OBSERVER_REPLICA && cur===id){
+			return OBSERVER_REPLICAS.matchesTransaction(tx,ty,claim.gid,claim.qid)
+				? {ok:true, tid:id, replayed:true}
+				: {ok:false, reason:'occupied'};
+		}
 		if(!isReplaceableNaturalOpenTile(cur,false)) return {ok:false, reason:'occupied'};
 		if(cur===T.WATER && id===T.WATER) return {ok:false, reason:'occupied'};
 		if(cur===T.WATER && id===T.WOOD) return {ok:false, reason:'boat'};
 		if(cellOverlapsPlayer(tx,ty)) return {ok:false, reason:'hero'};
 		if(body && Number.isFinite(body.x) && tx+1>body.x-(body.w||HERO_BODY_W)/2 && tx<body.x+(body.w||HERO_BODY_W)/2
 			&& ty+1>body.y-(body.h||HERO_BODY_H)/2 && ty<body.y+(body.h||HERO_BODY_H)/2) return {ok:false, reason:'self'};
-		if(id!==T.SAND && id!==T.WATER && FALLING && FALLING.canSupportPlacement){
+		let observerPlacement=null;
+		if(id===T.OBSERVER_REPLICA && OBSERVER_REPLICAS && OBSERVER_REPLICAS.validatePlacement){
+			observerPlacement=OBSERVER_REPLICAS.validatePlacement(tx,ty,getTile);
+			if(!observerPlacement || !observerPlacement.ok){
+				const capFull=OBSERVER_REPLICAS.count && OBSERVER_REPLICAS.count()>=OBSERVER_REPLICAS.MAX;
+				return {ok:false, reason:(observerPlacement&&observerPlacement.code)||(capFull?'limit':'support')};
+			}
+		}
+		if(id!==T.SAND && id!==T.WATER && !observerPlacement && FALLING && FALLING.canSupportPlacement){
 			const structural=FALLING.canSupportPlacement(tx,ty,id);
 			if(structural && structural.applies && !structural.ok) return {ok:false, reason:'support'};
 		}
@@ -21628,13 +22058,26 @@ MM.ghostBridge={
 			if(!displaced) return {ok:false, reason:'water'};
 		}
 		if(!setForegroundConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
-		if(id===T.TELEPORTER && TELEPORTERS && TELEPORTERS.setOrientationAt) TELEPORTERS.setOrientationAt(tx,ty,dir,getTile);
-		if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(tx,ty);
-		if(WATER && id===T.WATER) WATER.addSource(tx,ty,getTile,setTile);
-		if(COMPANIONS && COMPANIONS.onTileChanged) COMPANIONS.onTileChanged(tx,ty,cur,id,getTile,setTile);
-		if(VOLCANO && VOLCANO.onTileChanged) VOLCANO.onTileChanged(tx,ty,id,getTile,setTile);
+		if(id===T.OBSERVER_REPLICA){
+			// The terrain hook has now registered the cell. Bind restart replay
+			// proof before marking the save dirty so terrain + claim persist as one
+			// critical transaction.
+			if(!OBSERVER_REPLICAS.claimTransactionAt(tx,ty,claim.gid,claim.qid)){
+				setForegroundConfirmed(tx,ty,cur);
+				return {ok:false, reason:'qid'};
+			}
+		}
+		// Once terrain truth accepted the tile, optional side-system failures must
+		// not turn the authoritative result into a rejection (and refund a guest
+		// for an item that now exists in the world).
+		try{ if(id===T.TELEPORTER && TELEPORTERS && TELEPORTERS.setOrientationAt) TELEPORTERS.setOrientationAt(tx,ty,dir,getTile); }catch(e){}
+		try{ if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(tx,ty); }catch(e){}
+		try{ if(WATER && id===T.WATER) WATER.addSource(tx,ty,getTile,setTile); }catch(e){}
+		try{ if(COMPANIONS && COMPANIONS.onTileChanged) COMPANIONS.onTileChanged(tx,ty,cur,id,getTile,setTile); }catch(e){}
+		try{ if(VOLCANO && VOLCANO.onTileChanged) VOLCANO.onTileChanged(tx,ty,id,getTile,setTile); }catch(e){}
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		noteSaveActivity();
+		saveState();
 		return {ok:true, tid:id};
 	},
 	// hero-mode combat (coarse H1 channel): a damage application forwarded by the
@@ -21808,11 +22251,11 @@ function runGameStep(dt,ts){
 		updateBlink(ts);
 		return;
 	}
-	// Far-world clock: advance sim time and recompute the hot set (host hero +
-	// every embodied co-op body — CLAUDE.md rule 3) BEFORE any machine registry
-	// runs, so all of them read the same pre-frame staleness. Stamping happens in
-	// endFrame at the bottom, after the last registry ran.
-	if(WORLD_SIM) WORLD_SIM.beginFrame(dt, player, MM.coopBodies);
+	// Far-world clock: advance sim time and recompute actor windows plus the
+	// observer replicas' three exact-region anchors BEFORE any machine registry
+	// runs. All registries read the same pre-frame staleness; stamping happens at
+	// the bottom, after the last one ran.
+	if(WORLD_SIM) WORLD_SIM.beginFrame(dt,player,MM.coopBodies,OBSERVER_REPLICAS.activeAnchors());
 	if(TELEPORTERS && TELEPORTERS.beginPowerFrame) TELEPORTERS.beginPowerFrame();
 	physics(dt); if(player.atkCd>0) player.atkCd-=dt;
 	// Weapon use: canvas taps keep exact pointer aim, the right stick keeps its
@@ -22239,8 +22682,14 @@ if(!window.__lootNoticeInit){
 	};
 }
 
-// Regenerate world using the CURRENT seed (do not change WG.worldSeed)
-window.regenWorldSameSeed = function(){ try{ resetWorldTransitionRuntime(); if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); if(FOREST && FOREST.reset) FOREST.reset(); if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); if(KILN && KILN.reset) KILN.reset(); if(WORLD_SIM && WORLD_SIM.reset) WORLD_SIM.reset(); if(FALLING && FALLING.reset) FALLING.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+// Regenerate world using the CURRENT seed (do not change WG.worldSeed). Generator
+// settings ride this same guarded call so they cannot mutate before a pending
+// guest observer transaction has either settled or refused the replacement.
+window.regenWorldSameSeed = function(settings){
+	if(!prepareHostedWorldReplacement()) return false;
+	try{
+	if(settings && typeof settings==='object' && WORLDGEN && WORLDGEN.setSettings) WORLDGEN.setSettings(settings);
+	resetWorldTransitionRuntime(); if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); if(FOREST && FOREST.reset) FOREST.reset(); if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); if(KILN && KILN.reset) KILN.reset(); if(WORLD_SIM && WORLD_SIM.reset) WORLD_SIM.reset(); if(FALLING && FALLING.reset) FALLING.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
 	if(SMOKE && SMOKE.reset) SMOKE.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}
@@ -22249,5 +22698,5 @@ window.regenWorldSameSeed = function(){ try{ resetWorldTransitionRuntime(); if(M
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); if(MOBS.freezeSpawns) MOBS.freezeSpawns(4000); }catch(e){} } if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
 	resetCraftingAvailability();
 	try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); }catch(e){}
-	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Odświeżono świat (seed '+WORLDGEN.worldSeed+', ustawienia zmienione)'); }catch(e){ console.warn('regenWorldSameSeed failed',e); }}
+	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Odświeżono świat (seed '+WORLDGEN.worldSeed+', ustawienia zmienione)'); return true; }catch(e){ console.warn('regenWorldSameSeed failed',e); return false; }}
 window.addEventListener('mm-regen-same-seed', ()=>{ if(window.regenWorldSameSeed) window.regenWorldSameSeed(); });

@@ -48,8 +48,10 @@
   // deliberately tiny: it exists to carry the last few seconds across a closed
   // tab, not to be a second save format.
   const WAL_KEY = 'mm_world_wal_v1';
+  const WAL_ACK_KEY = 'mm_world_wal_ack_v1';
   const WAL_MAX_CHUNKS = 64;
   const WAL_MAX_BYTES = 384 * 1024;
+  const WAL_META_MAX_BYTES = 96 * 1024;
   // A store write that claims more chunks than this is refusing to be a world;
   // the caller's own cap is stricter, this is the backstop.
   const MAX_CHUNK_RECORDS = 262144;
@@ -326,19 +328,111 @@
   // ------------------------------------------------------------------ WAL
   // Synchronous, bounded, localStorage. Written from pagehide when an async store
   // write cannot be awaited; drained into the store on the next boot.
-  function walStash(seed, entries){
+  let walNonce=0;
+  function walHash(text){
+    let h=0x811c9dc5;
+    const src=String(text);
+    for(let i=0;i<src.length;i++){ h^=src.charCodeAt(i); h=(h>>>0)*0x01000193; h>>>0; }
+    return ('00000000'+(h>>>0).toString(16)).slice(-8);
+  }
+  function walTransactionHash(seed,rows,stateHash){
+    const identities=(rows||[]).map(row=>[
+      row.cx,
+      row.sy==null ? null : row.sy,
+      row.ver|0,
+      String(row.h||'').toLowerCase()
+    ]);
+    return walHash(JSON.stringify([seed,String(stateHash||'').toLowerCase(),identities]));
+  }
+  function cleanWalMeta(meta,expectedRows){
+    if(!meta || typeof meta !== 'object' || Array.isArray(meta)) return null;
+    const rowCount=Number(meta.rowCount);
+    if(!Number.isSafeInteger(rowCount) || rowCount<1 || rowCount>WAL_MAX_CHUNKS) return null;
+    if(Number.isSafeInteger(expectedRows) && rowCount!==expectedRows) return null;
+    const out={rowCount};
+    const raw=meta.observerReplicas;
+    if(raw && raw.v===1 && Array.isArray(raw.list)){
+      const list=[];
+      const seen=new Set();
+      for(const row of raw.list.slice(0,12)){
+        if(!Array.isArray(row) || row.length<2 || !Number.isSafeInteger(row[0]) || !Number.isSafeInteger(row[1])) continue;
+        const key=row[0]+','+row[1];
+        if(seen.has(key)) continue;
+        const clean=[row[0],row[1]];
+        if(typeof row[2]==='string' && /^g[a-zA-Z0-9._-]{1,39}$/.test(row[2])
+          && typeof row[3]==='string' && /^o[0-9a-f]{24}$/.test(row[3])){
+          clean.push(row[2],row[3]);
+        }
+        seen.add(key); list.push(clean);
+        if(list.length>=3) break;
+      }
+      const observerReplicas={v:1,list};
+      if(Array.isArray(raw.accepted)){
+        const accepted=[], acceptedSeen=new Set();
+        for(const row of raw.accepted.slice(0,3072)){
+          if(!Array.isArray(row) || row.length<2
+            || typeof row[0]!=='string' || !/^g[a-zA-Z0-9._-]{1,39}$/.test(row[0])
+            || typeof row[1]!=='string' || !/^o[0-9a-f]{24}$/.test(row[1])) continue;
+          const key=row[0]+'\0'+row[1];
+          if(acceptedSeen.has(key)) continue;
+          acceptedSeen.add(key);
+          const clean=[row[0],row[1]];
+          if(Number.isSafeInteger(row[2]) && Number.isSafeInteger(row[3])) clean.push(row[2],row[3]);
+          accepted.push(clean);
+          if(accepted.length>=768) break;
+        }
+        if(accepted.length) observerReplicas.accepted=accepted;
+      }
+      out.observerReplicas=observerReplicas;
+    }
+    const critical=meta.criticalState;
+    if(critical && typeof critical==='object' && !Array.isArray(critical)){
+      try{
+        const json=JSON.stringify(critical);
+        if(json && json.length<=WAL_META_MAX_BYTES){
+          const clone=JSON.parse(json);
+          if(clone && typeof clone==='object' && !Array.isArray(clone)) out.criticalState=clone;
+        }
+      }catch(e){}
+    }
+    if(typeof meta.txHash==='string' && /^[0-9a-f]{8}$/i.test(meta.txHash)) out.txHash=meta.txHash.toLowerCase();
+    return out.observerReplicas || out.criticalState ? out : null;
+  }
+  function walStash(seed, entries, meta){
     try{
       if(!Array.isArray(entries) || !entries.length) return 0;
+      const requiresMeta=meta!=null;
       const rows = [];
       let bytes = 0;
-      for(const rec of entries){
-        if(rows.length >= WAL_MAX_CHUNKS || bytes >= WAL_MAX_BYTES) break;
-        if(!validRecord(rec)) continue;
+      let complete=true;
+      for(let i=0;i<entries.length;i++){
+        const rec=entries[i];
+        if(rows.length >= WAL_MAX_CHUNKS){ complete=false; break; }
+        if(!validRecord(rec)){ complete=false; continue; }
+        const rowBytes=rec.data.length+48;
+        if(bytes+rowBytes>WAL_MAX_BYTES){ complete=false; break; }
         rows.push({cx:rec.cx, sy:rec.sy == null ? null : rec.sy, ver:rec.ver|0, data:rec.data, h:rec.h});
-        bytes += rec.data.length + 48;
+        bytes += rowBytes;
       }
       if(!rows.length) return 0;
-      root.localStorage.setItem(WAL_KEY, JSON.stringify({v:1, seed, at:Date.now(), rows}));
+      const payload={v:1, seed, at:Date.now(), rows};
+      complete=complete && rows.length===entries.length;
+      const safeMeta=complete ? cleanWalMeta(Object.assign({},meta,{rowCount:rows.length}),rows.length) : null;
+      const pairedMeta=!!(safeMeta && safeMeta.observerReplicas && safeMeta.criticalState
+        && typeof safeMeta.criticalState.stateHash==='string'
+        && /^[0-9a-f]{8}$/i.test(safeMeta.criticalState.stateHash));
+      // A gameplay unload supplies transaction metadata. Never replace an older
+      // consistent journal with terrain that was truncated or lost its matching
+      // inventory/observer capsule; replaying either half would duplicate or
+      // destroy the replica (and ordinary mined resources).
+      if(requiresMeta && (!complete || !pairedMeta)) return 0;
+      const txHash=walTransactionHash(seed,rows,pairedMeta ? safeMeta.criticalState.stateHash : '');
+      payload.id=txHash+'-'+Date.now().toString(36)+'-'+((walNonce++ & 0xffff).toString(36));
+      if(safeMeta){
+        safeMeta.txHash=txHash;
+        payload.meta=safeMeta;
+      }
+      root.localStorage.setItem(WAL_KEY, JSON.stringify(payload));
       return rows.length;
     }catch(e){ return 0; }
   }
@@ -348,14 +442,33 @@
       if(!raw) return null;
       const parsed = JSON.parse(raw);
       if(!parsed || parsed.v !== 1 || !Array.isArray(parsed.rows)) return null;
+      const id=typeof parsed.id==='string' && /^[0-9a-f]{8}-[a-z0-9]+-[a-z0-9]+$/i.test(parsed.id) ? parsed.id : null;
+      if(id && root.localStorage.getItem(WAL_ACK_KEY)===id) return null;
       // A journal from another world is not this world's business.
       if(Number.isFinite(seed) && parsed.seed !== seed) return null;
       const rows = parsed.rows.filter(validRecord).slice(0, WAL_MAX_CHUNKS);
-      return rows.length ? {seed:parsed.seed, at:parsed.at, rows} : null;
+      // Transaction metadata is usable only if every row originally paired with
+      // it survived parsing. Partial terrain plus a newer inventory is unsafe.
+      let meta=parsed.rows.length===rows.length ? cleanWalMeta(parsed.meta,rows.length) : null;
+      if(meta){
+        const expected=walTransactionHash(parsed.seed,rows,meta.criticalState && meta.criticalState.stateHash);
+        if(!meta.txHash || meta.txHash!==expected) meta=null;
+      }
+      return rows.length ? {id,seed:parsed.seed, at:parsed.at, rows, meta} : null;
     }catch(e){ return null; }
   }
+  // localStorage has no compare-and-remove. An acknowledgement is one atomic
+  // setItem instead: acknowledging W1 can never suppress a newer payload W2,
+  // because walRead ignores only an exact id match.
+  function walAcknowledge(id){
+    try{
+      if(typeof id!=='string' || !/^[0-9a-f]{8}-[a-z0-9]+-[a-z0-9]+$/i.test(id)) return false;
+      root.localStorage.setItem(WAL_ACK_KEY,id);
+      return true;
+    }catch(e){ return false; }
+  }
   function walClear(){
-    try{ root.localStorage.removeItem(WAL_KEY); }catch(e){}
+    try{ root.localStorage.removeItem(WAL_KEY); root.localStorage.removeItem(WAL_ACK_KEY); }catch(e){}
   }
 
   // ----------------------------------------------------------------- info
@@ -387,9 +500,9 @@
     open, ready, persistent, backend:()=>backendName,
     readActive, readActiveMeta, writeDelta, clearWorld, clearAll,
     writeSlot, readSlot, removeSlot, listSlots,
-    walStash, walRead, walClear,
+    walStash, walRead, walAcknowledge, walClear,
     estimate, info, chunkKey,
-    config:{DB_NAME, DB_VERSION, WAL_KEY, WAL_MAX_CHUNKS, WAL_MAX_BYTES, MAX_CHUNK_RECORDS},
+    config:{DB_NAME, DB_VERSION, WAL_KEY, WAL_ACK_KEY, WAL_MAX_CHUNKS, WAL_MAX_BYTES, MAX_CHUNK_RECORDS},
     _resetMemory
   };
   MM.saveStore = api;

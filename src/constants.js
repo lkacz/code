@@ -77,7 +77,11 @@ export const T = {AIR:0,GRASS:1,SAND:2,STONE:3,DIAMOND:4,WOOD:5,LEAF:6,SNOW:7,WA
   // Built-mech excavation tools (engine/mechs.js). A complete bottom row of
   // drill heads turns a chair-crowned construction into a vertical boring rig.
   // The ladder module can ride the rig or extend a shaft upward when placed.
-  MECH_DRILL_HEAD:148, LADDER_MODULE:149
+  MECH_DRILL_HEAD:148, LADDER_MODULE:149,
+  // Atrapa obserwatora (engine/observer_replicas.js): a stationary likeness of
+  // the hero that keeps exactly one far-world simulation region awake. The ID
+  // is append-only because persisted terrain stores raw tile bytes.
+  OBSERVER_REPLICA:150
 };
 export const INFO = {
   0:{hp:0,color:null,drop:null,passable:true},
@@ -324,6 +328,7 @@ INFO[T.SAPLING]={hp:1,color:'#5fae4a',drop:'wood',passable:true,flammable:true,b
 INFO[T.KILN]={hp:14,color:'#9c5b3a',drop:'brick',passable:false,machine:true};
 INFO[T.MECH_DRILL_HEAD]={hp:16,color:'#4b7180',drop:'mechDrillHead',passable:false,machine:'mechDrillHead',powerDevice:true,conductor:true};
 INFO[T.LADDER_MODULE]={hp:10,color:'#6f5b43',drop:'ladderModule',passable:false,machine:'ladderModule'};
+INFO[T.OBSERVER_REPLICA]={hp:6,color:'#7de8ff',drop:'observerReplica',passable:true,machine:'observerReplica',observerReplica:true};
 // --- the glow attribute -------------------------------------------------------
 // ONE declaration that a thing emits light. Tiles carry it here; creatures,
 // weapons, projectiles, drops and effects carry the same shape on their own

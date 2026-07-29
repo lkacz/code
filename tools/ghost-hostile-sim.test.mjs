@@ -806,6 +806,10 @@ let healHeroCalls = 0;
 let playPlaceCalls = 0;
 let playMineCalls = 0;
 let heroPlaceCalls = 0;
+const heroObserverCells = new Map();
+const heroObserverAccepted = new Map();
+let heroObserverPersist = () => true;
+let heroObserverReceipt = (gid,qid) => heroObserverAccepted.delete(gid+'\0'+qid);
 let heroDamageCalls = 0;
 let heroMineCalls = 0;
 let assistExecCalls = 0;
@@ -837,11 +841,35 @@ const bridge = {
 	ghostPlayMineAt: () => { playMineCalls++; return playMineResult; },
 	ghostPlayPlaceAt: () => { playPlaceCalls++; return { ok: true }; },
 	ghostHeroDamage: () => { heroDamageCalls++; return 1; },
-	ghostHeroMineAt: () => { heroMineCalls++; return heroMineResult; },
+	ghostHeroMineAt: (x,y,claim) => {
+		heroMineCalls++;
+		if(heroMineResult && heroMineResult.ok && (heroMineResult.tid|0)===150 && claim){
+			heroObserverAccepted.set(claim.gid+'\0'+claim.qid,
+				{gid:claim.gid,qid:claim.qid,x,y,action:'mine'});
+		}
+		return heroMineResult;
+	},
 	ghostHeroPickupAt: () => heroPickupResult,
 	ghostHeroUseAt: () => heroUseResult,
-	ghostHeroPlacementKey: tid => ({ 1: 'wood', 77: 'diamond' })[Number(tid) | 0] || null,
-	ghostHeroPlaceAt: () => { heroPlaceCalls++; return heroPlaceOk ? { ok: true } : { ok: false, reason: 'write' }; },
+	ghostHeroPlacementKey: tid => ({ 1: 'wood', 77: 'diamond', 150: 'observerReplica' })[Number(tid) | 0] || null,
+	ghostHeroPlacementUsesLocalEntitlement: tid => (Number(tid) | 0) === 150,
+	ghostHeroObserverAccepted: (gid,qid) => heroObserverAccepted.get(gid+'\0'+qid) || null,
+	ghostHeroObserverPersist: (gid,qid) => heroObserverPersist(gid,qid),
+	ghostHeroObserverReceipt: (gid,qid) => heroObserverReceipt(gid,qid),
+	ghostHeroPlaceAt: (x,y,tid,_layer,_body,_dir,claim) => {
+		heroPlaceCalls++;
+		if(!heroPlaceOk) return {ok:false,reason:'write'};
+		if((Number(tid)|0)===150){
+			const key=x+','+y, existing=heroObserverCells.get(key);
+			if(existing && (!claim || existing.gid!==claim.gid || existing.qid!==claim.qid)){
+				return {ok:false,reason:'occupied'};
+			}
+			if(!claim) return {ok:false,reason:'qid'};
+			heroObserverCells.set(key,{gid:claim.gid,qid:claim.qid});
+			heroObserverAccepted.set(claim.gid+'\0'+claim.qid,{gid:claim.gid,qid:claim.qid,x,y});
+		}
+		return {ok:true};
+	},
 	ghostGiftTake: (key, n) => ({ ok: true, key, n, label: key })
 };
 // Install the render-change seam before host start so live infra tests can mark
@@ -1508,6 +1536,80 @@ try{
 		h.clear(); h.send({ t: 'hact', a: 'place', x: 102, y: 5, tid: 77, l: 'fg' }); await flush();
 		check(h.last('hact') && h.last('hact').reason === 'cost' && heroPlaceCalls === 2, 'a second placement is denied without another earned unit');
 
+		await new Promise(r => setTimeout(r, NET.HERO_RULES.PLACE_MS + 25));
+		const observerQid=NET.mintHeroPlaceQid(), callsBeforeObserver=heroPlaceCalls;
+		h.clear(); h.send({t:'hact',a:'place',x:101,y:5,tid:150,l:'fg',qid:observerQid}); await flush();
+		const observerOutcome=h.last('hact');
+		check(observerOutcome && observerOutcome.ok && observerOutcome.qid===observerQid,
+			'a locally paid observer placement receives its durable transaction id');
+		check(heroPlaceCalls===callsBeforeObserver+1,'the first observer qid performs exactly one host world write');
+		h.clear(); h.send({t:'hact',a:'place',x:102,y:5,tid:150,l:'fg',qid:observerQid}); await flush();
+		check(h.last('hact') && h.last('hact').ok && h.last('hact').x===101,
+			'a duplicate observer qid replays the original terminal outcome, not the changed payload');
+		check(heroPlaceCalls===callsBeforeObserver+1,'replaying an observer qid cannot write or charge twice');
+		await new Promise(r => setTimeout(r, NET.HERO_RULES.PLACE_MS + 25));
+		const freshObserverQid=NET.mintHeroPlaceQid();
+		h.clear(); h.send({t:'hact',a:'place',x:101,y:5,tid:150,l:'fg',qid:freshObserverQid}); await flush();
+		check(h.last('hact') && !h.last('hact').ok && h.last('hact').reason==='occupied',
+			'a fresh observer qid cannot claim success from another transaction at the same cell');
+		check(heroPlaceCalls===callsBeforeObserver+2,'the distinct qid reaches validation but performs no second world write');
+		check(heroObserverAccepted.has('gid-hero-intents\0'+observerQid),
+			'an accepted observer remains durable until its client settles the qid');
+		h.clear(); h.send({t:'hrec',qid:observerQid}); await flush();
+		check(!heroObserverAccepted.has('gid-hero-intents\0'+observerQid),
+			'a post-persistence client receipt compacts the durable observer outcome');
+		check(h.last('hrack') && h.last('hrack').qid===observerQid,
+			'the host confirms receipt compaction back to the durable client journal');
+
+		// Success is withheld while the host save is unresolved, and duplicate
+		// retries join that one commit instead of performing another world write.
+		await new Promise(r => setTimeout(r, NET.HERO_RULES.PLACE_MS + 25));
+		const delayedObserverQid=NET.mintHeroPlaceQid();
+		let resolveObserverPersist=null;
+		heroObserverPersist=()=>new Promise(resolve=>{ resolveObserverPersist=resolve; });
+		const callsBeforeDelayed=heroPlaceCalls;
+		h.clear(); h.send({t:'hact',a:'place',x:102,y:5,tid:150,l:'fg',qid:delayedObserverQid}); await flush();
+		check(!h.last('hact'),'observer placement has no success ack before its host save commits');
+		h.send({t:'hact',a:'place',x:103,y:5,tid:150,l:'fg',qid:delayedObserverQid}); await flush();
+		check(heroPlaceCalls===callsBeforeDelayed+1 && !h.last('hact'),
+			'a retry coalesces behind the same in-flight observer save');
+		resolveObserverPersist(true); await flush();
+		check(h.last('hact') && h.last('hact').ok && h.last('hact').x===102,
+			'the original observer outcome is released after durable host commit');
+		heroObserverPersist=()=>true;
+
+		let resolveObserverReceipt=null;
+		heroObserverReceipt=(gid,qid)=>new Promise(resolve=>{
+			resolveObserverReceipt=()=>{ heroObserverAccepted.delete(gid+'\0'+qid); resolve(true); };
+		});
+		h.clear(); h.send({t:'hrec',qid:delayedObserverQid}); await flush();
+		check(!h.last('hrack'),'receipt ack is withheld until tombstone compaction commits');
+		h.send({t:'hrec',qid:delayedObserverQid}); await flush();
+		resolveObserverReceipt(); await flush();
+		check(h.last('hrack') && h.last('hrack').qid===delayedObserverQid,
+			'duplicate receipts share one durable compaction and receive its ack');
+		heroObserverReceipt=(gid,qid)=>heroObserverAccepted.delete(gid+'\0'+qid);
+
+		await new Promise(r => setTimeout(r, NET.HERO_RULES.MINE_MS + 25));
+		const recoverQid=NET.mintHeroPlaceQid();
+		const minesBeforeRecovery=heroMineCalls;
+		const hostObserverPouchBefore=body.pouch.observerReplica||0;
+		heroMineResult={ok:true,tid:150,layer:'fg'};
+		h.clear(); h.send({t:'hact',a:'mine',x:102,y:5,qid:recoverQid}); await flush();
+		check(h.last('hact') && h.last('hact').a==='mine' && h.last('hact').ok
+			&& h.last('hact').qid===recoverQid,
+			'observer recovery receives a durable qid outcome before local credit');
+		check(heroMineCalls===minesBeforeRecovery+1 && (body.pouch.observerReplica||0)===hostObserverPouchBefore,
+			'observer recovery removes once and never duplicates the guest-local item into the host pouch');
+		h.clear(); h.send({t:'hact',a:'mine',x:103,y:5,qid:recoverQid}); await flush();
+		check(h.last('hact') && h.last('hact').ok && h.last('hact').x===102
+			&& heroMineCalls===minesBeforeRecovery+1,
+			'a recovery retry replays its original outcome without removing another tile');
+		h.clear(); h.send({t:'hrec',qid:recoverQid}); await flush();
+		check(h.last('hrack') && !heroObserverAccepted.has('gid-hero-intents\0'+recoverQid),
+			'recovery proof compacts only after the same durable receipt handshake');
+		heroMineResult={ok:false,reason:'tile'};
+
 		const copperBefore = body.pouch.copper || 0;
 		heroPickupResult = { ok: true, kind: 'res', key: 'copper', qty: 2 };
 		h.clear(); h.send({ t: 'hact', a: 'pickup', x: body.x, y: body.y }); await flush();
@@ -1803,6 +1905,34 @@ try{
 		const roomStore = JSON.parse(localStorage.getItem('mm_ghost_bodies_v1') || 'null');
 		const stopRows = roomStore && Array.isArray(roomStore.entries) ? roomStore.entries.filter(row => row.gid === 'gid-stop-a') : [];
 		check(stopRows.some(row => row.room === ROOM && row.pouch.diamond === 3) && stopRows.some(row => row.room === OTHER_ROOM && !row.pouch.diamond), 'the bounded host store retains independent rows for both rooms');
+
+		// A world reset is a transaction-namespace boundary. Even with hosting
+		// already stopped (and even if RNG repeats the old room), the retained room
+		// must rotate so a guest cannot replay an unacknowledged old-world qid.
+		sessionStorage.setItem('mm_ghost_host_room_v1','AAAAAA');
+		const realRandom=Math.random;
+		Math.random=()=>0;
+		try{
+			check(ghostHost.rotateRoomNamespace()===true,'new game can retire an inactive host room namespace');
+		}finally{ Math.random=realRandom; }
+		const rotatedRoom=sessionStorage.getItem('mm_ghost_host_room_v1');
+		check(rotatedRoom==='AAAAAB','room rotation is guaranteed different even when RNG repeats the retired code');
+		ghostHost.start({rtc:false}); await flush();
+		check(ghostHost.metrics().room===rotatedRoom,'the next host session uses the replacement world namespace');
+		const staleRoomGuest=makeGuest('c-stale-world-room','AAAAAA');
+		staleRoomGuest.hello('gid-stale-world-room'); await flush();
+		check(staleRoomGuest.last('welcome')===null,'the retired room has no host that could execute a stale placement or recovery qid');
+		ghostHost.stop();
+
+		sessionStorage.setItem('mm_ghost_host_room_v1','FAILRM');
+		const realSetItem=sessionStorage.setItem;
+		sessionStorage.setItem=(key,value)=>{
+			if(key!=='mm_ghost_host_room_v1') realSetItem(key,value);
+		};
+		try{
+			check(ghostHost.rotateRoomNamespace()===false && sessionStorage.getItem('mm_ghost_host_room_v1')==='FAILRM',
+				'a readable retained room that cannot be replaced makes world reset fail closed');
+		}finally{ sessionStorage.setItem=realSetItem; }
 	}
 }finally{
 	for(const g of openGuests) g.close();

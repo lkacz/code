@@ -35,6 +35,7 @@ window.MM = window.MM || {};
   const TEMPORAL_OVERLAY_CAP=40000;
   let temporalJournal=null;
   let temporalRestoring=false;
+  let observerRestoreAllowed=null;
   const isChestTile=t=>t===T.CHEST_COMMON||t===T.CHEST_UNCOMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC||t===T.CHEST_LEGENDARY;
   const chestTierForTile=t=>t===T.CHEST_LEGENDARY?'legendary':t===T.CHEST_EPIC?'epic':t===T.CHEST_RARE?'rare':t===T.CHEST_UNCOMMON?'uncommon':'common';
   function stripChestTiles(arr){
@@ -83,6 +84,43 @@ window.MM = window.MM || {};
     const cx=Number(rest.slice(0,sAt));
     const sy=Number(rest.slice(sAt+2));
     return Number.isFinite(cx) && Number.isFinite(sy) ? {cx, sy, base:false, key:k} : null;
+  }
+  function observerCellForIndex(ref,i){
+    const lx=i%CHUNK_W, ly=Math.floor(i/CHUNK_W);
+    return {
+      x:ref.cx*CHUNK_W+lx,
+      y:ref.base ? ly : ref.sy*WORLD_SECTION_H+ly
+    };
+  }
+  function beginObserverRestore(data){
+    const allowed=new Set();
+    const regions=new Set();
+    const rows=data && data.v===1 && Array.isArray(data.list) ? data.list.slice(0,12) : [];
+    for(const row of rows){
+      if(!Array.isArray(row) || row.length<2 || !Number.isSafeInteger(row[0]) || !Number.isSafeInteger(row[1])) continue;
+      if(!worldYInBounds(row[1]) || Math.abs(row[0])>MAX_COORD) continue;
+      const region=Math.floor(row[0]/CHUNK_W)+','+sectionYFor(row[1]);
+      if(regions.has(region)) continue;
+      regions.add(region); allowed.add(row[0]+','+row[1]);
+      if(allowed.size>=3) break;
+    }
+    observerRestoreAllowed=allowed;
+    return allowed.size;
+  }
+  function endObserverRestore(){ observerRestoreAllowed=null; }
+  function sanitizeObserverTiles(arr,ref){
+    for(let i=0;i<arr.length;i++){
+      if(arr[i]!==T.OBSERVER_REPLICA) continue;
+      const p=observerCellForIndex(ref,i);
+      let keep=false;
+      if(observerRestoreAllowed) keep=observerRestoreAllowed.has(p.x+','+p.y);
+      else{
+        try{ keep=!!(MM.observerReplicas && MM.observerReplicas.hasAt && MM.observerReplicas.hasAt(p.x,p.y)); }
+        catch(e){ keep=false; }
+      }
+      if(!keep) arr[i]=T.AIR;
+    }
+    return arr;
   }
   function normalizeChunkRef(ref){
     if(typeof ref==='number' && Number.isFinite(ref)) return {cx:ref, sy:null, base:true, key:ck(ref), h:WORLD_H};
@@ -192,11 +230,18 @@ window.MM = window.MM || {};
       for(let sy=WORLD_MIN_SECTION; sy<=WORLD_MAX_SECTION; sy++){ if(isBaseSection(sy)) sectionViews.delete(viewKey(parsed.cx,sy)); }
     } else sectionViews.delete(viewKey(parsed.cx,parsed.sy));
   }
-  // teleporters.js discovers its network by scanning the LIVE map for tiles —
-  // chunks carrying one must stay resident or far teleporters would drop off it
-  function chunkContainsNeverParkTile(arr){
-    for(let i=0;i<arr.length;i++){ if(arr[i]===T.TELEPORTER) return true; }
-    return false;
+  // Teleporters are discovered by scanning the LIVE map. Observer cache pins
+  // instead come from their bounded coordinate registry: raw tile ids in a
+  // malformed save must never become an unbounded keep-resident list.
+  function isNeverParkTile(t){
+    return t===T.TELEPORTER || t===T.OBSERVER_REPLICA;
+  }
+  function chunkContainsNeverParkTile(arr,ref){
+    if(arr) for(let i=0;i<arr.length;i++){ if(arr[i]===T.TELEPORTER) return true; }
+    try{
+      return !!(ref && MM.observerReplicas && MM.observerReplicas.pinsChunk
+        && MM.observerReplicas.pinsChunk(ref.cx,ref.sy,ref.base));
+    }catch(e){ return false; }
   }
   function parkedPeekArray(k){
     const hit=peekParkCache.get(k);
@@ -300,7 +345,7 @@ window.MM = window.MM || {};
       const arr=world.get(k);
       if(!arr) continue;
       if(versions.get(k)){
-        if(chunkContainsNeverParkTile(arr)) continue;
+        if(chunkContainsNeverParkTile(arr,parsed)) continue;
         parked.set(k,packChunkArray(arr));          // modified: park compressed, version survives
         peekParkCache.delete(k);
         chunkCacheStats.parked++;
@@ -2412,6 +2457,7 @@ window.MM = window.MM || {};
     try{ if(MM.dynamo && MM.dynamo.onTileChanged) MM.dynamo.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.solar && MM.solar.onTileChanged) MM.solar.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.furnishings && MM.furnishings.onTileChanged) MM.furnishings.onTileChanged(x,y,old,v,getTile); }catch(e){}
+    try{ if(MM.observerReplicas && MM.observerReplicas.onTileChanged) MM.observerReplicas.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.teleporters && MM.teleporters.onTileChanged) MM.teleporters.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.pumps && MM.pumps.onTileChanged) MM.pumps.onTileChanged(x,y,old,v); }catch(e){}
     try{ if(MM.steamMachines && MM.steamMachines.onTileChanged) MM.steamMachines.onTileChanged(x,y,old,v); }catch(e){}
@@ -2507,10 +2553,22 @@ window.MM = window.MM || {};
     const idx=tileIndex(lx,ly);
     if(arr[idx]===v) return;
     const old=arr[idx];
+    // Transient writers deliberately bypass terrain persistence. Observer
+    // anchors are persistent world objects, so allowing either half of their
+    // lifecycle through this path would split the tile from its registry.
+    if(transient && (v===T.OBSERVER_REPLICA || old===T.OBSERVER_REPLICA)) return;
+    if(!temporalRestoring && v===T.OBSERVER_REPLICA && old!==T.OBSERVER_REPLICA){
+      let allowed=false;
+      try{
+        allowed=!!(MM.observerReplicas && MM.observerReplicas.canAcceptTileChange
+          && MM.observerReplicas.canAcceptTileChange(x,y,old,v));
+      }catch(e){ allowed=false; }
+      if(!allowed) return;
+    }
     rememberTemporalSection(cx,sy,arr);
     arr[idx]=v;
-    if(old===T.TELEPORTER || v===T.TELEPORTER) noteNeverParkEligibilityChanged();
     notifyTileChanged(x,y,old,v);
+    if(isNeverParkTile(old) || isNeverParkTile(v)) noteNeverParkEligibilityChanged();
     if(!transient){
       markModifiedChunk(cx,null,sy);
       // render-cache hook (main.js): runs for EVERY real tile edit — including
@@ -2610,7 +2668,7 @@ window.MM = window.MM || {};
     }
     markOverlaySections(touchedSections);
   }
-  function clearWorld(){ temporalJournal=null; temporalRestoring=false; try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); parked.clear(); peekParkCache.clear(); evictWork=null; evictPending=false; evictRetrySize=-1; evictRetryRequested=false; lastRevivedKey=null; liveChunkAddEpoch=0; versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function clearWorld(){ temporalJournal=null; temporalRestoring=false; observerRestoreAllowed=null; try{ if(MM.observerReplicas && MM.observerReplicas.reset) MM.observerReplicas.reset(); }catch(e){} try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); parked.clear(); peekParkCache.clear(); evictWork=null; evictPending=false; evictRetrySize=-1; evictRetryRequested=false; lastRevivedKey=null; liveChunkAddEpoch=0; versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
   function beginTemporalCheckpoint(opts){
     if(temporalJournal) return false;
     const sectionCap=Math.max(16,Math.min(8192,Math.floor(Number(opts&&opts.sectionCap)||TEMPORAL_SECTION_CAP)));
@@ -2632,7 +2690,7 @@ window.MM = window.MM || {};
         const current=ensureSection(rec.cx,rec.sy);
         if(!current || current.length!==rec.old.length){ invalidateTemporalJournal('section-shape'); return false; }
         const originY=sectionOriginY(rec.sy);
-        let changed=false, teleporterChanged=false;
+        let changed=false, neverParkChanged=false;
         for(let i=0;i<current.length;i++){
           const old=rec.old[i], next=current[i];
           if(old===next) continue;
@@ -2640,12 +2698,12 @@ window.MM = window.MM || {};
           const x=rec.cx*CHUNK_W+lx, y=originY+ly;
           current[i]=old;
           changed=true;
-          if(old===T.TELEPORTER || next===T.TELEPORTER) teleporterChanged=true;
+          if(isNeverParkTile(old) || isNeverParkTile(next)) neverParkChanged=true;
           notifyTileChanged(x,y,next,old);
           try{ if(MM.onTileRenderChanged) MM.onTileRenderChanged(x,y,next,old); }catch(e){}
         }
         if(changed) markModifiedChunk(rec.cx,null,rec.sy);
-        if(teleporterChanged) noteNeverParkEligibilityChanged();
+        if(neverParkChanged) noteNeverParkEligibilityChanged();
       }
       const records=[...journal.overlays.values()].reverse();
       for(const rec of records){
@@ -2702,7 +2760,9 @@ window.MM = window.MM || {};
     }
     const expected=CHUNK_W*(ref.base ? WORLD_H : WORLD_SECTION_H);
     if(!(arr instanceof Uint8Array) || arr.length!==expected) return null;
-    return {ref, next:stripChestTiles(arr)};
+    const next=stripChestTiles(arr);
+    sanitizeObserverTiles(next,ref);
+    return {ref,next};
   }
   // A save load hands the world every chunk the player ever edited AT ONCE. Making
   // each one live costs a full 4.4 KB array apiece and blows straight past
@@ -2711,18 +2771,24 @@ window.MM = window.MM || {};
   // work the load just did. So park them directly: `parked` is the same cold store
   // eviction produces, a read rehydrates one losslessly, and nothing else in the
   // engine can tell the difference. Chunks carrying a never-park tile still go
-  // live, because teleporters.js discovers its network by scanning the live map.
+  // live, because teleporters need discovery and observer replicas are simulation
+  // anchors whose regions must not churn through park/rehydrate cycles.
   function restoreChunkParked(key,arr){
     const prepared=prepareRestoredChunk(key,arr);
     if(!prepared) return false;
     const {ref,next}=prepared;
-    if(chunkContainsNeverParkTile(next)) return setChunkArray(key,next);
+    if(chunkContainsNeverParkTile(next,ref)) return setChunkArray(key,next);
     const wasLive=world.has(ref.key);
     if(wasLive) world.delete(ref.key);
     peekParkCache.delete(ref.key);
     parked.set(ref.key,packChunkArray(next));
     chunkCacheStats.parked++;
     invalidateViewsFor(ref);
+    try{
+      if(MM.observerReplicas && MM.observerReplicas.reconcileChunk){
+        MM.observerReplicas.reconcileChunk(ref.cx,ref.sy,ref.base,peekTile);
+      }
+    }catch(e){}
     // Interior backdrops are derived, never saved: the same replay the live path
     // runs, since it writes the separate background layer rather than the chunk.
     if(ref.base){ try{ applyDevastatedCity(null,ref.cx,true); }catch(e){} }
@@ -2735,12 +2801,17 @@ window.MM = window.MM || {};
     if(!prepared) return false;
     const ref=prepared.ref;
     const previous=world.get(ref.key);
-    const previousNeverPark=!!previous && chunkContainsNeverParkTile(previous);
+    const previousNeverPark=chunkContainsNeverParkTile(previous,ref);
     const next=prepared.next;
-    const nextNeverPark=!!previous && chunkContainsNeverParkTile(next);
     parked.delete(ref.key); peekParkCache.delete(ref.key); // restored data supersedes any parked copy
     setLiveChunk(ref.key,next); invalidateViewsFor(ref);
-    if(previous && previousNeverPark!==nextNeverPark) noteNeverParkEligibilityChanged();
+    try{
+      if(MM.observerReplicas && MM.observerReplicas.reconcileChunk){
+        MM.observerReplicas.reconcileChunk(ref.cx,ref.sy,ref.base,peekTile);
+      }
+    }catch(e){}
+    const nextNeverPark=chunkContainsNeverParkTile(next,ref);
+    if(previousNeverPark!==nextNeverPark) noteNeverParkEligibilityChanged();
     if(world.size>CHUNK_CAP) requestEvict();
     // Save-loaded base chunks skip ensureChunk, so replay the deterministic
     // city pass in background-only mode to rebuild interior backdrops.
@@ -2754,6 +2825,8 @@ window.MM = window.MM || {};
   worldAPI.ensureSection = ensureSection;
   worldAPI.setChunkArray = setChunkArray;
   worldAPI.restoreChunkParked = restoreChunkParked;
+  worldAPI.beginObserverRestore = beginObserverRestore;
+  worldAPI.endObserverRestore = endObserverRestore;
   // Save-restore support: watch which parked chunks come back to life, so a
   // deferred per-chunk audit can run when the chunk is actually needed instead of
   // rehydrating a whole world at load time to audit it.

@@ -165,6 +165,6 @@ assert.match(mainSource, /function resetWorldTransitionRuntime\(\)[\s\S]*deathTr
 assert.match(mainSource, /function resetHouseHealingRuntimeState\(\)[\s\S]*HOUSE_HEALING\.createState[\s\S]*Object\.assign\(houseHealingState,fresh\)[\s\S]*houseHealMsgAt=0;/, 'world replacement recreates the full house-healing runtime state');
 assert.match(mainSource, /function applyGameDataCore\(data,opts\)[\s\S]*if\(ver!==SAVE_SCHEMA_VERSION\)[^\n]*[\s\S]*const legacyWorldMarkers=[\s\S]*resetWorldTransitionRuntime\(\);[\s\S]*if\(WORLD && WORLD\.clear\) WORLD\.clear\(\)/, 'preflight-migrated snapshot loading captures guarded legacy markers, then cancels transient respawn state before replacing chunks');
 assert.match(mainSource, /function regenWorld\(\)\{\s*resetWorldTransitionRuntime\(\);[\s\S]*WORLD\.clear\(\)/, 'new-seed regeneration cancels transient respawn state before clearing the world');
-assert.match(mainSource, /window\.regenWorldSameSeed = function\(\)\{ try\{ resetWorldTransitionRuntime\(\);[\s\S]*WORLD && WORLD\.clear/, 'same-seed regeneration cancels transient respawn state before clearing the world');
+assert.match(mainSource, /window\.regenWorldSameSeed = function\(settings\)\{[\s\S]*resetWorldTransitionRuntime\(\);[\s\S]*WORLD && WORLD\.clear/, 'same-seed regeneration cancels transient respawn state before clearing the world');
 
 console.log('death-respawn-fx-sim: all assertions passed');

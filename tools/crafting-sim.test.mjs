@@ -28,6 +28,7 @@ assert.equal(model.canCraft(recipes[3]), true, 'costless recipe is always crafta
 assert.equal(model.maxCrafts(recipes[3]), 1, 'costless recipe caps at one batch');
 inv.wood = 7;
 assert.equal(model.maxCrafts(recipes[0]), 3, 'batch capacity floors have/need');
+assert.equal(model.maxCrafts({...recipes[0],batchCap:1}), 1, 'a recipe may cap dynamic-cost batching to one craft');
 assert.equal(model.progress(recipes[0]), 1, 'affordable recipe reports full progress');
 inv.coal = 2; inv.diamond = 0;
 const miss = model.missing(recipes[2]);

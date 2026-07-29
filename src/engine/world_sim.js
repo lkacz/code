@@ -26,8 +26,7 @@
 //   * the world sim CLOCK (seconds of simulated time; pauses when the game
 //     does, persists in the save, and can `skip()` across a throttled-tab gap);
 //   * the HOT SET (the union of windows around the host hero and every
-//     embodied co-op guest — CLAUDE.md rule 3: far-world policy must consult
-//     MM.coopBodies, exactly like the mob eco pass);
+//     embodied co-op guest, plus up to three exact-region observer replicas);
 //   * per-region STALENESS stamps (one number per 64×70 tile region recording
 //     when it was last simulated, so a wake knows how much time to pay back).
 //
@@ -64,7 +63,8 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
     // twice that all debts look identical — no reason to serialize huge floats.
     SNAPSHOT_AGE_CAP: 7200,
     STAMP_CAP: 20000,
-    MAX_WINDOWS: 16        // host + MAX_GHOSTS embodied guests, with slack
+    MAX_WINDOWS: 16,       // host + MAX_GHOSTS embodied guests, with slack
+    MAX_OBSERVERS: 3       // inert replicas; exact regions, never actor windows
   };
 
   let now = 0;        // seconds of simulated world time (persisted)
@@ -72,6 +72,7 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
   let tracking = false;
   const stamps = new Map();       // "cx,sy" -> sim-second the region was last hot
   const windows = [];             // {x,y} — hero + embodied co-op bodies
+  const observerAnchors = [];      // {x,y} — inert exact-region presence anchors
   const hotRegions = new Set();   // this frame's hot region keys — THE hotness truth
   const metricsState = { wakes: 0, frozenSkips: 0, stampWrites: 0, evictions: 0 };
 
@@ -80,7 +81,7 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
   const secOf = (y) => Math.floor(y / WORLD_SECTION_H);
 
   // ---------------------------------------------------------------- frame
-  function beginFrame(dt, hero, bodies){
+  function beginFrame(dt, hero, bodies, observers){
     dt = Number(dt);
     if(!(dt > 0) || !isFinite(dt)) dt = 0;
     prevNow = now;
@@ -93,7 +94,16 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
         if(b && !b.dead && Number.isFinite(b.x) && Number.isFinite(b.y)) windows.push({x: b.x, y: b.y});
       }
     }
-    tracking = windows.length > 0;
+    observerAnchors.length = 0;
+    if(observers){
+      for(const observer of observers){
+        if(observerAnchors.length >= CFG.MAX_OBSERVERS) break;
+        if(observer && observer.enabled!==false && Number.isFinite(observer.x) && Number.isFinite(observer.y)){
+          observerAnchors.push({x:observer.x,y:observer.y});
+        }
+      }
+    }
+    tracking = windows.length > 0 || observerAnchors.length > 0;
     // Hotness lives at REGION granularity, precomputed once per frame: a machine
     // is hot iff its region is in this set, and endFrame stamps exactly this
     // set. Hotness and stamps sharing one granularity is a correctness
@@ -109,6 +119,12 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
       for(let cx = cx0; cx <= cx1; cx++){
         for(let sy = sy0; sy <= sy1; sy++) hotRegions.add(rKey(cx, sy));
       }
+    }
+    // A replica promises one chunk, not another player-sized visibility bubble:
+    // three full windows would awaken dozens of regions and defeat the cap's
+    // purpose. Quantize each inert anchor directly to its one 64x70 region.
+    for(const observer of observerAnchors){
+      hotRegions.add(rKey(colOf(observer.x),secOf(observer.y)));
     }
   }
   // Stamping happens at frame END, after every module ran its updates: during
@@ -205,7 +221,7 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
   }
   function reset(){
     now = 0; prevNow = 0; tracking = false;
-    stamps.clear(); windows.length = 0; hotRegions.clear();
+    stamps.clear(); windows.length = 0; observerAnchors.length = 0; hotRegions.clear();
     metricsState.wakes = 0; metricsState.frozenSkips = 0; metricsState.stampWrites = 0; metricsState.evictions = 0;
   }
   function metrics(){
@@ -213,6 +229,7 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
       now: +now.toFixed(2),
       tracking,
       windows: windows.length,
+      observers: observerAnchors.length,
       stamps: stamps.size,
       wakes: metricsState.wakes,
       frozenSkips: metricsState.frozenSkips,
@@ -227,7 +244,7 @@ import { CHUNK_W, WORLD_SECTION_H } from '../constants.js';
     tracking: () => tracking,
     snapshot, restore, reset, metrics,
     CFG,
-    _debug: { stamps, windows, hotRegions, colOf, secOf }
+    _debug: { stamps, windows, observerAnchors, hotRegions, colOf, secOf }
   };
   MM.worldSim = api;
 })();
