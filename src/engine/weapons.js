@@ -19,11 +19,16 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
 
   const arrows=[]; // {x,y,vx,vy,dmg,life,stuck,stuckT,travel,maxTravel}
   const arrowFragments=[]; // short-lived shaft/head pieces after an arrow breaks
+  const mines=[]; // thrown, then resting {x,y,type,age,armed}
+  const mineFragments=[]; // short-lived visual shrapnel; damage lands radially at detonation
   const puffs=[];  // {kind,x,y,vx,vy,life,total,dps}
   const electricBeams=[]; // {x1,y1,x2,y2,t,life,hit,blocked,phase}
   const ARROW_SPEED=22, ARROW_GRAV=14, ARROW_LIFE=5, ARROW_STUCK=4, ARROW_RECOVER_SECONDS=12, MAX_ARROWS=64;
   const MAX_ARROW_ENTITIES=128; // embedded arrows do not consume the whole in-flight budget
   const ARROW_EXPIRY_FALL_SECONDS=0.8, MAX_ARROW_FRAGMENTS=96;
+  const MINE_ARM_SECONDS=0.55, MINE_TRIGGER_RADIUS=1.15, MINE_CRATER_RADIUS=3;
+  const MINE_BLAST_DAMAGE=22, MINE_FRAGMENT_RADIUS=5.4, MINE_FRAGMENT_DAMAGE=26;
+  const MAX_MINES=40, MAX_MINE_FRAGMENTS=96;
   const ARROW_DAMAGE_FALLOFF={close:1, mid:0.6, long:0.33};
   const BOW_CHARGE_SECONDS=4;
   const BOW_MAX_CHARGE_MULT=2;
@@ -165,6 +170,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     waterBalloon:  {key:'waterBalloon',  label:'Balony wodne',      color:'#7cc4ff', head:'#dff2ff', speed:14.5, lob:-2.0, life:2.4, splat:'wet', ball:true},
     gasGrenade:    {key:'gasGrenade',    label:'Granaty gazowe',    color:'#9dbf5a', head:'#e2f0b8', speed:14.0, lob:-2.4, life:2.6, splat:'gascloud', ball:true},
     stickyBomb:    {key:'stickyBomb',    label:'Lepkie bomby',      color:'#b0703c', head:'#ffd9a8', speed:14.5, lob:-2.4, life:3.0, splat:'bomb', ball:true, sticky:true, fuse:1.5},
+    antipersonnelMine:{key:'antipersonnelMine', label:'Miny przeciwpiechotne', color:'#46505a', head:'#ff5b45', speed:12.8, lob:-1.6, life:7.0, splat:'mine', ball:true, mineType:'blast', noDamage:true},
+    fragmentationMine:{key:'fragmentationMine', label:'Miny odłamkowe', color:'#5b493d', head:'#ffb14a', speed:12.4, lob:-1.7, life:7.0, splat:'mine', ball:true, mineType:'fragmentation', noDamage:true},
     // Frost flask: a chill cloud, no direct damage — the reliable half of the
     // wet+chill -> frozen-solid combo. Molotov: a lobbed incendiary that ignites
     // creatures AND flammable terrain (host-only world write, like the bomb).
@@ -2379,6 +2386,36 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   // sprayed straight onto lava into rhythmic booms instead of a 60-per-second buzz.
   const blastsFx=[]; // {x,y,R,t,max}
   let explodeCd=0;
+  function radialDamageAmount(base,distance,radius,minDamage){
+    const b=Math.max(1,Number(base)||1), r=Math.max(0.1,Number(radius)||0.1);
+    const d=Math.max(0,Number(distance)||0);
+    return Math.max(Math.max(1,Number(minDamage)||1),Math.round(b*(1-d/(r+0.5))));
+  }
+  function damageBlastHeroes(wx,wy,r,dmg,cause){
+    const radius=Math.max(0.5,Number(r)||1), base=Math.max(1,Number(dmg)||1);
+    let hits=0;
+    const pl=(typeof window!=='undefined' && window.player)||null;
+    if(pl && typeof pl.hp==='number' && pl.hp>0 && typeof window.damageHero==='function'){
+      const d=Math.hypot(pl.x-wx,pl.y-wy);
+      if(d<radius){
+        window.damageHero(radialDamageAmount(base,d,radius,3),{srcX:wx,srcY:wy,kb:6,kbY:-5,cause:cause||'explosion'});
+        hits++;
+      }
+    }
+    const bodies=(typeof MM!=='undefined' && MM.coopBodies)||null;
+    if(Array.isArray(bodies)){
+      for(const body of bodies){
+        if(!body || body.dead || typeof body.hurt!=='function') continue;
+        const d=Math.hypot((Number(body.x)||0)-wx,(Number(body.y)||0)-wy);
+        if(d>=radius) continue;
+        try{
+          body.hurt(radialDamageAmount(base,d,radius,3),wx,wy,cause||'explosion');
+          hits++;
+        }catch(e){}
+      }
+    }
+    return hits;
+  }
   function explodeAt(wx,wy,getTile,setTile,opts){
     opts=opts||{};
     if(explodeCd>0 && !opts.force){ return false; } // fizzle — the triggering puff just burns off
@@ -2416,30 +2453,27 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       }
     }
     // the rim catches fire
-    if(FIRE && FIRE.ignite){
+    if(opts.igniteRim!==false && FIRE && FIRE.ignite){
       for(let k=0;k<6;k++){ const a=Math.random()*6.283; FIRE.ignite(Math.round(bx+Math.cos(a)*R), Math.round(by+Math.sin(a)*R), getTile, setTile); }
     }
     // creatures, bosses, plants
     const blastSource=typeof opts.source==='string' && opts.source ? opts.source : 'hero';
     const blastCause=typeof opts.cause==='string' && opts.cause ? opts.cause : 'weapon_blast';
+    const blastDamage=Number.isFinite(Number(opts.damage)) ? Math.max(1,Math.min(120,Number(opts.damage))) : 14;
     const blastOpts={kind:'explosion',source:blastSource,cause:blastCause,terrainDamage:true};
-    damageBlastCreatures(MM,wx,wy,R+1.5,14,{source:blastSource,cause:blastCause});
-    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt){ MM.centerGuardian.damageAt(bx,by,14,blastOpts); MM.centerGuardian.damageAt(bx+1,by,9,blastOpts); MM.centerGuardian.damageAt(bx-1,by,9,blastOpts); } }catch(e){}
-    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,14,blastOpts); MM.guardianLairs.damageAt(bx+1,by,9,blastOpts); MM.guardianLairs.damageAt(bx-1,by,9,blastOpts); MM.guardianLairs.damageAt(bx,by-1,9,blastOpts); } }catch(e){}
-    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.undergroundBoss.damageAt(bx,by,14,gasOpts); MM.undergroundBoss.damageAt(bx+1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx-1,by,9,gasOpts); MM.undergroundBoss.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
-    try{ if(MM.skyGuardian && MM.skyGuardian.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.skyGuardian.damageAt(bx,by,14,gasOpts); MM.skyGuardian.damageAt(bx+1,by,9,gasOpts); MM.skyGuardian.damageAt(bx-1,by,9,gasOpts); MM.skyGuardian.damageAt(bx,by-1,9,gasOpts); } }catch(e){}
-    try{ if(MM.bosses && MM.bosses.damageAt){ MM.bosses.damageAt(bx,by,12,blastOpts); MM.bosses.damageAt(bx+1,by,8,blastOpts); MM.bosses.damageAt(bx-1,by,8,blastOpts); MM.bosses.damageAt(bx,by-1,8,blastOpts); } }catch(e){}
-    try{ if(MM.ufo && MM.ufo.damageAt){ MM.ufo.damageAt(bx,by,14); MM.ufo.damageAt(bx,by-1,8); } }catch(e){}
+    const edgeDamage=Math.max(2,Math.round(blastDamage*0.64));
+    if(blastDamage===14) damageBlastCreatures(MM,wx,wy,R+1.5,14,{source:blastSource,cause:blastCause});
+    else damageBlastCreatures(MM,wx,wy,R+1.5,blastDamage,{source:blastSource,cause:blastCause});
+    try{ if(MM.centerGuardian && MM.centerGuardian.damageAt){ MM.centerGuardian.damageAt(bx,by,blastDamage,blastOpts); MM.centerGuardian.damageAt(bx+1,by,edgeDamage,blastOpts); MM.centerGuardian.damageAt(bx-1,by,edgeDamage,blastOpts); } }catch(e){}
+    try{ if(MM.guardianLairs && MM.guardianLairs.damageAt){ MM.guardianLairs.damageAt(bx,by,blastDamage,blastOpts); MM.guardianLairs.damageAt(bx+1,by,edgeDamage,blastOpts); MM.guardianLairs.damageAt(bx-1,by,edgeDamage,blastOpts); MM.guardianLairs.damageAt(bx,by-1,edgeDamage,blastOpts); } }catch(e){}
+    try{ if(MM.undergroundBoss && MM.undergroundBoss.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.undergroundBoss.damageAt(bx,by,blastDamage,gasOpts); MM.undergroundBoss.damageAt(bx+1,by,edgeDamage,gasOpts); MM.undergroundBoss.damageAt(bx-1,by,edgeDamage,gasOpts); MM.undergroundBoss.damageAt(bx,by-1,edgeDamage,gasOpts); } }catch(e){}
+    try{ if(MM.skyGuardian && MM.skyGuardian.damageAt){ const gasOpts=streamDamageOpts('gas',{x:wx,y:wy,type:'gasExplosion'}); MM.skyGuardian.damageAt(bx,by,blastDamage,gasOpts); MM.skyGuardian.damageAt(bx+1,by,edgeDamage,gasOpts); MM.skyGuardian.damageAt(bx-1,by,edgeDamage,gasOpts); MM.skyGuardian.damageAt(bx,by-1,edgeDamage,gasOpts); } }catch(e){}
+    try{ if(MM.bosses && MM.bosses.damageAt){ MM.bosses.damageAt(bx,by,blastDamage*0.86,blastOpts); MM.bosses.damageAt(bx+1,by,edgeDamage,blastOpts); MM.bosses.damageAt(bx-1,by,edgeDamage,blastOpts); MM.bosses.damageAt(bx,by-1,edgeDamage,blastOpts); } }catch(e){}
+    try{ if(MM.ufo && MM.ufo.damageAt){ MM.ufo.damageAt(bx,by,blastDamage); MM.ufo.damageAt(bx,by-1,edgeDamage); } }catch(e){}
     try{ if(MM.plants && MM.plants.scorchAt) MM.plants.scorchAt(wx,wy,R+1); }catch(e){}
-    // the hero standing close is hurt and hurled (central damageHero handles
-    // i-frames/knockback/death; explosions just bring bigger numbers)
-    const pl=(typeof window!=='undefined' && window.player)||null;
-    if(pl && typeof pl.hp==='number' && typeof window.damageHero==='function'){
-      const d=Math.hypot(pl.x-wx,pl.y-wy);
-      if(d<R+2){
-        window.damageHero(Math.max(4, Math.round(16*(1-d/(R+2.5)))), {srcX:wx, srcY:wy, kb:6, kbY:-5, cause:'explosion'});
-      }
-    }
+    // Host and embodied co-op heroes share the same distance falloff.
+    const heroDamage=Number.isFinite(Number(opts.heroDamage)) ? Math.max(1,Math.min(120,Number(opts.heroDamage))) : 16;
+    damageBlastHeroes(wx,wy,R+2,heroDamage,blastCause);
     // FX: expanding ring + spark burst + scattered short flames
     blastsFx.push({x:wx,y:wy,R,t:0,max:0.5});
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(wx*(MM.TILE||20),wy*(MM.TILE||20),'epic'); }catch(e){}
@@ -2449,6 +2483,150 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       puffs.push({kind:'flame', x:wx, y:wy, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp-1, life:0.3+Math.random()*0.3, total:0.55, dps:5});
     }
     return true;
+  }
+
+  function deployMine(a,getTile,setTile){
+    if(!a || !Number.isFinite(a.x) || !Number.isFinite(a.y)) return false;
+    if(mines.length>=MAX_MINES) mines.shift();
+    const type=a.mineType==='fragmentation'?'fragmentation':'blast';
+    mines.push({
+      x:a.x,
+      y:a.y,
+      type,
+      age:0,
+      armed:false,
+      color:type==='fragmentation'?'#5b493d':'#46505a',
+      headColor:type==='fragmentation'?'#ffb14a':'#ff5b45'
+    });
+    const tile=MM.TILE||20;
+    try{ if(MM.particles && MM.particles.spawnImpactChips) MM.particles.spawnImpactChips(a.x*tile,a.y*tile,{power:0.42,element:'mine_set'}); }catch(e){}
+    try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:a.x,y:a.y}); }catch(e){}
+    return true;
+  }
+  function actorBodyTouchesMine(actor,mine,bodyIsCentered){
+    if(!actor || !Number.isFinite(actor.x) || !Number.isFinite(actor.y)) return false;
+    const w=Math.max(0.25,Number(actor.w)||0.7);
+    const h=Math.max(0.3,Number(actor.h)||0.95);
+    const footY=bodyIsCentered===false ? actor.y : actor.y+h*0.5;
+    return Math.abs(actor.x-mine.x)<=Math.max(0.58,w*0.52)
+      && Math.abs(footY-mine.y)<=0.48;
+  }
+  function mineHasTriggerActor(mine,player){
+    const pl=player || ((typeof window!=='undefined' && window.player)||null);
+    if(pl && typeof pl.hp==='number' && pl.hp>0 && actorBodyTouchesMine(pl,mine,true)) return true;
+    const bodies=(typeof MM!=='undefined' && MM.coopBodies)||null;
+    if(Array.isArray(bodies)){
+      for(const body of bodies){
+        if(body && !body.dead && actorBodyTouchesMine(body,mine,true)) return true;
+      }
+    }
+    try{
+      if(MM.mobs && MM.mobs.nearestLiving && MM.mobs.nearestLiving(mine.x,mine.y-0.28,MINE_TRIGGER_RADIUS)) return true;
+    }catch(e){}
+    try{
+      if(MM.invasions && MM.invasions.nearestForEnemy && MM.invasions.nearestForEnemy(mine.x,mine.y-0.28,MINE_TRIGGER_RADIUS)) return true;
+    }catch(e){}
+    try{
+      if(MM.companions && MM.companions.nearestForEnemy && MM.companions.nearestForEnemy(mine.x,mine.y-0.28,MINE_TRIGGER_RADIUS)) return true;
+    }catch(e){}
+    try{
+      if(MM.mechs && MM.mechs.findAt){
+        const tx=Math.floor(mine.x), ty=Math.floor(mine.y);
+        if(MM.mechs.findAt(tx,ty) || MM.mechs.findAt(tx,ty-1)) return true;
+      }
+    }catch(e){}
+    try{
+      if(MM.npcSystem && MM.npcSystem.list){
+        for(const npc of MM.npcSystem.list()){
+          const body=npc && typeof npc.body==='function' ? npc.body() : null;
+          if(body && actorBodyTouchesMine(body,mine,true)) return true;
+        }
+      }
+    }catch(e){}
+    // Boss families already expose bounded turret target queries. Reusing them
+    // keeps mines off private arrays while still making a boss-sized foot/body a
+    // valid pressure trigger.
+    try{
+      for(const system of [MM.bosses,MM.guardianLairs,MM.undergroundBoss,MM.skyGuardian]){
+        if(system && typeof system.nearestForTurret==='function'
+          && system.nearestForTurret(mine.x,mine.y-0.28,MINE_TRIGGER_RADIUS,true)) return true;
+      }
+    }catch(e){}
+    try{
+      const center=MM.centerGuardian && MM.centerGuardian.status ? MM.centerGuardian.status() : null;
+      if(center && center.mimic && Math.hypot(center.mimic.x-mine.x,center.mimic.y-mine.y)<=MINE_TRIGGER_RADIUS) return true;
+    }catch(e){}
+    try{
+      const craft=MM.ufo && MM.ufo.current ? MM.ufo.current() : null;
+      if(craft && craft.hp>0 && Math.hypot(craft.x-mine.x,craft.y-mine.y)<=MINE_TRIGGER_RADIUS) return true;
+    }catch(e){}
+    return false;
+  }
+  function spawnMineShrapnel(x,y){
+    const count=12;
+    for(let i=0;i<count;i++){
+      if(mineFragments.length>=MAX_MINE_FRAGMENTS) mineFragments.shift();
+      const angle=(i/count)*Math.PI*2+(Math.random()-0.5)*0.16;
+      const speed=7.5+Math.random()*5.5;
+      mineFragments.push({
+        x,y:y-0.08,
+        vx:Math.cos(angle)*speed,
+        vy:Math.sin(angle)*speed-0.8,
+        angle,
+        t:0,
+        life:0.42+Math.random()*0.30
+      });
+    }
+  }
+  function detonateMine(mine,getTile,setTile){
+    if(!mine || typeof getTile!=='function' || typeof setTile!=='function') return false;
+    const fragmentation=mine.type==='fragmentation';
+    const cause=fragmentation?'fragmentation_mine':'antipersonnel_mine';
+    const exploded=explodeAt(mine.x,mine.y,getTile,setTile,{
+      force:true,
+      radius:MINE_CRATER_RADIUS,
+      damage:MINE_BLAST_DAMAGE,
+      heroDamage:MINE_BLAST_DAMAGE,
+      source:'hero',
+      cause,
+      igniteRim:false
+    });
+    if(fragmentation){
+      spawnMineShrapnel(mine.x,mine.y);
+      damageBlastCreatures(MM,mine.x,mine.y,MINE_FRAGMENT_RADIUS,MINE_FRAGMENT_DAMAGE,{
+        source:'hero',
+        cause:'fragmentation_mine_shrapnel'
+      });
+      damageBlastHeroes(mine.x,mine.y,MINE_FRAGMENT_RADIUS,MINE_FRAGMENT_DAMAGE,'fragmentation_mine_shrapnel');
+      try{
+        if(MM.particles && MM.particles.spawnSparks){
+          MM.particles.spawnSparks(mine.x*(MM.TILE||20),mine.y*(MM.TILE||20),'rare',18);
+        }
+      }catch(e){}
+    }
+    return exploded;
+  }
+  function updateMines(dt,getTile,setTile,player){
+    for(let i=mines.length-1;i>=0;i--){
+      const mine=mines[i];
+      mine.age+=dt;
+      if(!mine.armed && mine.age>=MINE_ARM_SECONDS) mine.armed=true;
+      if(!mine.armed || !mineHasTriggerActor(mine,player)) continue;
+      mines.splice(i,1);
+      detonateMine(mine,getTile,setTile);
+    }
+    for(let i=mineFragments.length-1;i>=0;i--){
+      const f=mineFragments[i];
+      f.t+=dt;
+      if(f.t>=f.life){ mineFragments.splice(i,1); continue; }
+      f.vy+=ARROW_GRAV*0.22*dt;
+      f.x+=f.vx*dt;
+      f.y+=f.vy*dt;
+      f.angle=Math.atan2(f.vy,f.vx);
+      if(typeof getTile==='function' && isSolid(getTile(Math.floor(f.x),Math.floor(f.y)))){
+        mineFragments.splice(i,1);
+      }
+    }
   }
 
   // White cosmetic steam wisps (boiled water, quenched lava)
@@ -2705,6 +2883,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       if(gt && st) explodeAt(a.x,a.y,gt,st,{force:true,radius:1.6});
       return;
     }
+    if(a.splat==='mine'){
+      if(a.coopOwner) return;
+      deployMine(a,getTile,setTile);
+      return;
+    }
     if(a.splat==='fire'){
       // Molotov: burns creatures in the splash AND sets flammable terrain alight.
       // World-writing (tile ignite) — never for a guest projectile.
@@ -2771,6 +2954,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       stoneKey:stoneTier?stoneTier.key:undefined, stoneSurvive:stoneTier?stoneTier.survive:undefined,
       life:spec.life, stuck:false, stuckT:ARROW_STUCK,
       thrown:true, snowball:!!spec.ball, rock:!!spec.rock, splat:spec.splat,
+      deployMine:!!spec.mineType, mineType:spec.mineType||undefined,
       sandSpray:spec.visual==='sand', sandSeed, spitDroplet:spec.visual==='spit', toxicSpit,
       noDamage:!!spec.noDamage,
       stickyFuse:spec.sticky ? (spec.fuse||1.5) : 0,
@@ -2795,6 +2979,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     else if(spit) cause='spit';
     else if(a.splat==='gascloud') cause='gas_grenade';
     else if(a.splat==='bomb') cause='sticky_bomb';
+    else if(a.splat==='mine') cause=a.mineType==='fragmentation'?'fragmentation_mine':'antipersonnel_mine';
     return Object.assign({
       source:a.coopOwner?'coop':'hero',
       // 'bouncy' carries no elemental keyword by design (combatElementFromOpts
@@ -3315,6 +3500,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       b.t+=dt;
       if(b.t>=b.life) electricBeams.splice(i,1);
     }
+    updateMines(dt,getTile,setTile,opts.player);
     updateArrowFragments(dt,getTile);
     // Arrows
     for(let i=arrows.length-1;i>=0;i--){
@@ -3358,6 +3544,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       a.inWater=false;
       a.life-=dt;
       if(a.life<=0){
+        // A mine that somehow never finds a floor (for example after being
+        // thrown into the void) is retired instead of arming in mid-air.
+        if(a.deployMine){ arrows.splice(i,1); continue; }
         // A spent rubber ball is not a broken shaft: it settles, and often stays
         // as a pickup (retireBouncyBall owns that roll for every exit path).
         if(a.bouncy){ retireBouncyBall(a); arrows.splice(i,1); continue; }
@@ -3407,7 +3596,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         // Sand needs contact detection without ever entering a target's damage
         // handler (many of those deliberately clamp even zero to chip damage).
         // Its status splat is the entire effect.
-        if(a.noDamage && !a.spent && MM.mobs && MM.mobs.nearestLiving
+        if(a.noDamage && !a.deployMine && !a.spent && MM.mobs && MM.mobs.nearestLiving
            && MM.mobs.nearestLiving(a.x,a.y,0.72)){
           noteWeaponCombatHit(a.x,a.y-0.10,0,{source:a.coopOwner?'coop':'hero',kind:'thrown'},projectileCombatVisualMeta(a,{target:'mob',power:0.65}));
           splatProjectile(a,getTile,setTile);
@@ -3489,7 +3678,10 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
             arrows.splice(i,1);
             break;
           }
-          if(a.stickyFuse){
+          if(a.deployMine){
+            a.x-=a.vx*sdt*0.6; a.y-=a.vy*sdt*0.6;
+            a.vx*=-0.22; a.vy=Math.min(2,Math.abs(a.vy)*0.18);
+          } else if(a.stickyFuse){
             a.x-=a.vx*sdt*0.4; a.y-=a.vy*sdt*0.4;
             a.stuck=true; a.stuckT=a.stickyFuse;
           } else if(a.thrown || a.snowball || a.rock){
@@ -3570,7 +3762,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         const t=getTile(tx,ty);
         const chestProjectileOpts={kind:a.thrown?'thrown':'arrow',specialAttack:!!a.specialAttack,hitRadius:0.12};
         if(a.harpoon) chestProjectileOpts.kind='harpoon';
-        if(!a.spent && !a.coopOwner && openChestFromWeaponHit(a.x,a.y,chestProjectileOpts)){
+        if(!a.deployMine && !a.spent && !a.coopOwner && openChestFromWeaponHit(a.x,a.y,chestProjectileOpts)){
           noteWeaponCombatHit(a.x,a.y,0,{source:'hero',kind:chestProjectileOpts.kind},projectileCombatVisualMeta(a,{target:'chest',power:0.72}));
           if(a.splat) splatProjectile(a,getTile,setTile);
           if(a.bouncy){
@@ -3619,6 +3811,21 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
             if(bounceBallOffTile(a,tx,ty,dx,dy,getTile)) continue;
             retireBouncyBall(a);
             arrows.splice(i,1);
+            break;
+          }
+          // A thrown mine is not a contact grenade. Side/ceiling impacts make it
+          // tumble down; a downward impact leaves it resting on the surface.
+          if(a.deployMine){
+            a.x-=dx; a.y-=dy;
+            const floorImpact=dy>0 && Math.abs(dy)>=Math.abs(dx)*0.32;
+            if(floorImpact){
+              deployMine(a,getTile,setTile);
+              arrows.splice(i,1);
+            }else{
+              if(Math.abs(dx)>=Math.abs(dy)) a.vx=-a.vx*0.24;
+              else a.vy=Math.abs(a.vy)*0.20;
+              a.vx*=0.82;
+            }
             break;
           }
           // sticky bombs cling to the wall and detonate after their fuse
@@ -3876,6 +4083,56 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   function draw(ctx,TILE,canDrawTile){
     const visibleTile = typeof canDrawTile === 'function' ? canDrawTile : null;
     const tileVisible = (x,y)=> !visibleTile || visibleTile(Math.floor(x),Math.floor(y));
+    if(mines.length){
+      const now=nowMs();
+      ctx.save();
+      for(const mine of mines){
+        if(!tileVisible(mine.x,mine.y)) continue;
+        const x=mine.x*TILE, y=mine.y*TILE;
+        const r=TILE*0.27;
+        ctx.save();
+        ctx.translate(x,y);
+        ctx.fillStyle='rgba(0,0,0,0.32)';
+        ctx.beginPath(); ctx.ellipse(0,TILE*0.055,r*1.12,r*0.36,0,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle=mine.type==='fragmentation'?'#c88945':'#77818a';
+        ctx.lineWidth=Math.max(1,TILE*0.055);
+        for(let k=0;k<4;k++){
+          const a=k*Math.PI*0.5;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a)*r*0.58,Math.sin(a)*r*0.22);
+          ctx.lineTo(Math.cos(a)*r*1.18,Math.sin(a)*r*0.44);
+          ctx.stroke();
+        }
+        ctx.fillStyle=mine.color;
+        ctx.beginPath(); ctx.ellipse(0,0,r,r*0.46,0,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=mine.type==='fragmentation'?'#2f2824':'#252b30';
+        ctx.beginPath(); ctx.ellipse(0,-r*0.08,r*0.52,r*0.27,0,0,Math.PI*2); ctx.fill();
+        const blink=mine.armed ? (0.58+0.42*Math.sin(now*0.018+mine.x)*Math.sin(now*0.018+mine.x)) : 0.34;
+        ctx.globalAlpha=blink;
+        ctx.fillStyle=mine.headColor;
+        ctx.beginPath(); ctx.arc(0,-r*0.13,Math.max(1.3,TILE*0.055),0,Math.PI*2); ctx.fill();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+    if(mineFragments.length){
+      ctx.save();
+      ctx.lineCap='round';
+      for(const f of mineFragments){
+        if(!tileVisible(f.x,f.y)) continue;
+        const alpha=Math.max(0,1-f.t/f.life);
+        ctx.globalAlpha=alpha;
+        ctx.strokeStyle=alpha>0.55?'#fff1bd':'#d89045';
+        ctx.lineWidth=Math.max(1,TILE*0.065);
+        const len=TILE*(0.16+alpha*0.22);
+        ctx.save();
+        ctx.translate(f.x*TILE,f.y*TILE);
+        ctx.rotate(f.angle||0);
+        ctx.beginPath(); ctx.moveTo(-len,0); ctx.lineTo(len*0.35,0); ctx.stroke();
+        ctx.restore();
+      }
+      ctx.restore();
+    }
     if(arrows.length){
       ctx.save();
       for(const a of arrows){
@@ -4017,6 +4274,26 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
             ctx.beginPath(); ctx.arc(0,0,r*(0.52+fl*0.16),0,Math.PI*2); ctx.fill();
             ctx.globalCompositeOperation='source-over';
           }
+          ctx.restore();
+          continue;
+        }
+        if(a.deployMine){
+          const px=a.x*TILE, py=a.y*TILE;
+          a.rot=(a.rot||0)+0.18;
+          ctx.save();
+          ctx.translate(px,py); ctx.rotate(a.rot);
+          const r=TILE*0.20;
+          ctx.strokeStyle=a.mineType==='fragmentation'?'#c88945':'#77818a';
+          ctx.lineWidth=Math.max(1,TILE*0.05);
+          for(let k=0;k<4;k++){
+            const ang=k*Math.PI*0.5;
+            ctx.beginPath(); ctx.moveTo(Math.cos(ang)*r*0.45,Math.sin(ang)*r*0.45);
+            ctx.lineTo(Math.cos(ang)*r*1.24,Math.sin(ang)*r*1.24); ctx.stroke();
+          }
+          ctx.fillStyle=a.color||'#46505a';
+          ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
+          ctx.fillStyle=a.headColor||'#ff5b45';
+          ctx.beginPath(); ctx.arc(0,0,Math.max(1.2,TILE*0.055),0,Math.PI*2); ctx.fill();
           ctx.restore();
           continue;
         }
@@ -4791,7 +5068,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       dir:spearCharge.dir<0?-1:1
     };
   }
-  function reset(){ arrows.length=0; arrowFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bouncyCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; swing.form='sword'; swing.charge=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; grav.channel=null; grav.heldTid=0; grav.throwAtMs=0; resetBowCharge(); resetSpearCharge(); }
+  function reset(){ arrows.length=0; arrowFragments.length=0; mines.length=0; mineFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bouncyCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; swing.form='sword'; swing.charge=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; grav.channel=null; grav.heldTid=0; grav.throwAtMs=0; resetBowCharge(); resetSpearCharge(); }
 
   // --- ghost mirror: the hero's weapons, seen from the cheap seats ------------
   // A watcher runs the full renderer but no simulation, so its weapons module
@@ -4800,8 +5077,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   // COSMETIC state only (no damage, no ammo, no tile writes; draw() is already
   // read-only), and the watcher integrates it locally between packets so arrows
   // keep flying smoothly instead of teleporting once per network tick.
-  const GHOST_FX_CAP={arrows:24, puffs:80, beams:8, blasts:8};
+  const GHOST_FX_CAP={arrows:24, mines:32, mineFragments:48, puffs:80, beams:8, blasts:8};
   const FX_STUCK=1, FX_POWER=2, FX_ROCK=4, FX_SNOW=8, FX_SAND=16, FX_SPIT=32, FX_TOXIC_SPIT=64, FX_HARPOON=128, FX_AQUATIC=256, FX_BOUNCY=512, FX_GRAV=1024;
+  const FX_MINE=2048, FX_FRAG_MINE=4096;
   // --- co-op guest combat: body-attributed swings and arrows -----------------------
   // Embodied multiplayer guests fight through the SAME damage chains and the SAME
   // projectile array as the hero, but attributed 'coop': no host ult charge, no
@@ -4907,7 +5185,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       (a.stuck?FX_STUCK:0)|(a.power?FX_POWER:0)|(a.rock?FX_ROCK:0)|(a.snowball?FX_SNOW:0)|
       (a.sandSpray?FX_SAND:0)|(a.spitDroplet?FX_SPIT:0)|(a.toxicSpit?FX_TOXIC_SPIT:0)|(a.harpoon?FX_HARPOON:0)|(a.aquatic?FX_AQUATIC:0)|(a.bouncy?FX_BOUNCY:0)|(a.grav?FX_GRAV:0),
       +(a.ang||0).toFixed(3), a.color||'', a.headColor||'', (Number(a.sandSeed)>>>0)||0,
-      Math.max(0,Math.min(4,Number(a.weaponPrestige)||0)), a.weaponGlow||'', a.weaponMaterial||''
+      Math.max(0,Math.min(4,Number(a.weaponPrestige)||0)), a.weaponGlow||'', a.weaponMaterial||'',
+      (a.deployMine?FX_MINE:0)|(a.mineType==='fragmentation'?FX_FRAG_MINE:0)
+    ]);
+    if(mines.length) st.mn=mines.slice(-GHOST_FX_CAP.mines).map(m=>[
+      +m.x.toFixed(2),+m.y.toFixed(2),m.type==='fragmentation'?1:0,m.armed?1:0,+Math.max(0,m.age||0).toFixed(2)
+    ]);
+    if(mineFragments.length) st.mf=mineFragments.slice(-GHOST_FX_CAP.mineFragments).map(f=>[
+      +f.x.toFixed(2),+f.y.toFixed(2),+(f.vx||0).toFixed(2),+(f.vy||0).toFixed(2),
+      +(f.t||0).toFixed(3),+(f.life||0.5).toFixed(3),+(f.angle||0).toFixed(3)
     ]);
     if(puffs.length) st.pf=puffs.slice(-GHOST_FX_CAP.puffs).map(p=>[
       p.kind, +p.x.toFixed(2), +p.y.toFixed(2), +(p.vx||0).toFixed(2), +(p.vy||0).toFixed(2),
@@ -4958,9 +5244,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     for(const a of (Array.isArray(st.ar)?st.ar.slice(0,GHOST_FX_CAP.arrows):[])){
       if(!Array.isArray(a)) continue;
       const f=num(a[4])|0;
+      const mf=num(a[12])|0;
       arrows.push({x:num(a[0]), y:num(a[1]), vx:num(a[2]), vy:num(a[3]),
         stuck:!!(f&FX_STUCK), power:!!(f&FX_POWER), rock:!!(f&FX_ROCK), snowball:!!(f&FX_SNOW),
         sandSpray:!!(f&FX_SAND), spitDroplet:!!(f&FX_SPIT), toxicSpit:!!(f&FX_TOXIC_SPIT), harpoon:!!(f&FX_HARPOON),
+        deployMine:!!(mf&FX_MINE),mineType:(mf&FX_FRAG_MINE)?'fragmentation':((mf&FX_MINE)?'blast':undefined),
         ang:num(a[5]), color:typeof a[6]==='string'?a[6].slice(0,24):'', headColor:typeof a[7]==='string'?a[7].slice(0,24):'',
         sandSeed:(num(a[8])>>>0)||1,
         weaponPrestige:Math.max(0,Math.min(4,num(a[9]))), weaponGlow:typeof a[10]==='string'?a[10].slice(0,24):'',
@@ -4969,6 +5257,20 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         grav:!!(f&FX_GRAV), // replica renders the tinted block; all physics stays host-side
         gravityMult:(f&FX_HARPOON)?0.12:((f&FX_BOUNCY)?BOUNCY_GRAVITY_MULT:1),
         life:9, stuckT:9, travel:0, maxTravel:1e9, ghost:true});
+    }
+    mines.length=0;
+    for(const m of (Array.isArray(st.mn)?st.mn.slice(0,GHOST_FX_CAP.mines):[])){
+      if(!Array.isArray(m)) continue;
+      const fragmentation=!!num(m[2]);
+      mines.push({x:num(m[0]),y:num(m[1]),type:fragmentation?'fragmentation':'blast',
+        armed:!!num(m[3]),age:Math.max(0,num(m[4])),color:fragmentation?'#5b493d':'#46505a',
+        headColor:fragmentation?'#ffb14a':'#ff5b45',ghost:true});
+    }
+    mineFragments.length=0;
+    for(const f of (Array.isArray(st.mf)?st.mf.slice(0,GHOST_FX_CAP.mineFragments):[])){
+      if(!Array.isArray(f)) continue;
+      mineFragments.push({x:num(f[0]),y:num(f[1]),vx:num(f[2]),vy:num(f[3]),t:Math.max(0,num(f[4])),
+        life:Math.max(0.05,num(f[5],0.5)),angle:num(f[6]),ghost:true});
     }
     puffs.length=0;
     for(const p of (Array.isArray(st.pf)?st.pf.slice(0,GHOST_FX_CAP.puffs):[])){
@@ -5005,6 +5307,15 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       if(a.stuck) continue;
       a.x+=a.vx*d; a.y+=a.vy*d; a.vy+=ARROW_GRAV*(Number.isFinite(a.gravityMult)?a.gravityMult:1)*d;
     }
+    for(let i=mineFragments.length-1;i>=0;i--){
+      const f=mineFragments[i];
+      f.t+=d;
+      f.x+=(f.vx||0)*d;
+      f.y+=(f.vy||0)*d;
+      f.vy=(f.vy||0)+ARROW_GRAV*0.22*d;
+      f.angle=Math.atan2(f.vy||0,f.vx||1);
+      if(f.t>=f.life) mineFragments.splice(i,1);
+    }
     for(let i=puffs.length-1;i>=0;i--){
       const p=puffs[i];
       p.life-=d; p.x+=(p.vx||0)*d; p.y+=(p.vy||0)*d;
@@ -5024,8 +5335,8 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     ghostFxState,ghostApplyFx,ghostStepFx,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,stoneInfo,bouncyInfo,hudStatus,addUltCharge,
     gravityInfo,setGravHeld,spawnGravityProjectile,
-    metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),bouncyAmmo:bouncyAmmoCount(),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
-    _debug:{arrows,arrowFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowResourceKey,dropSurvivingArrow,spawnDroppedArrowPickup,splatProjectile,arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,projectileImpactOpts,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern,
+    metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,mines:mines.length,mineFragments:mineFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),bouncyAmmo:bouncyAmmoCount(),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),
+    _debug:{arrows,arrowFragments,mines,mineFragments,puffs,electricBeams,arrowTiers:ARROW_TIERS,arrowResourceKey,dropSurvivingArrow,spawnDroppedArrowPickup,splatProjectile,deployMine,detonateMine,mineHasTriggerActor,damageBlastHeroes,radialDamageAmount,mineTuning:{armSeconds:MINE_ARM_SECONDS,triggerRadius:MINE_TRIGGER_RADIUS,craterRadius:MINE_CRATER_RADIUS,blastDamage:MINE_BLAST_DAMAGE,fragmentRadius:MINE_FRAGMENT_RADIUS,fragmentDamage:MINE_FRAGMENT_DAMAGE},arrowBreakChance,arrowBreaksOnImpact,spawnArrowBreakFx,beginArrowExpiryFall,pushArrow,arrowDamageAtRange,arrowRangeBand,arrowDamageFalloff:ARROW_DAMAGE_FALLOFF,bowCharge,bowChargeRatio,bowDamageMult,spearCharge,spearChargeRatio,spearChargeStatus,heroSubmersion,meleeWaterProfile,bowWaterProfile,harpoonWaterProfile,weaponPrestigeRank,weaponVisualSeed,weaponPrestigeColor,weaponMaterialProfile,weaponCombatVisualMeta,projectileCombatVisualMeta,projectileImpactOpts,weaponLightSource,weaponLightRgba,meleeVisualForm,meleeAttackPose,swing,heldActionFx,heldActionState,triggerHeldActionFx,drawHeldChargeFx,drawProjectilePrestigeTrail,waterHeat,electricChargeTargetAt,meleeEffects:MELEE_EFFECTS,meleeReach,thrownKinds:THROWN_KINDS,sandVisualPattern,
       spawnBouncyBall,bounceBallOffTile,bounceBallOffBody,retireBouncyBall,bouncyAmmoCount,
       bouncySpec,igniteBouncyBall,spreadBouncyFire,bouncyKinds:BOUNCY_KINDS,bouncyBurnBounces:BOUNCY_BURN_BOUNCES,
       bouncyTuning:{speed:BOUNCY_SPEED,gravityMult:BOUNCY_GRAVITY_MULT,life:BOUNCY_LIFE,maxBounces:BOUNCY_MAX_BOUNCES,

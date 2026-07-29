@@ -424,6 +424,11 @@ const ghostClient = (function(){
 			conn.send({ t: 'hact', a: 'tp' });
 			return true;
 		},
+		ram(tx,ty,dir){
+			if(state !== 'live' || !conn) return false;
+			conn.send({ t: 'hact', a: 'ram', x: Math.floor(tx), y: Math.floor(ty), d: dir<0?-1:1 });
+			return true;
+		},
 		unboard(){
 			if(state !== 'live' || !conn) return false;
 			conn.send({ t: 'hact', a: 'unboard' });
@@ -2920,6 +2925,7 @@ const ghostClient = (function(){
 		_heroUnboard: () => heroIntents.unboard(),
 		_heroRow: (dir, strong) => heroIntents.row(dir, strong !== false),
 		_heroTp: (dir) => heroIntents.tp(dir),
+		_heroRam: (tx, ty, dir) => heroIntents.ram(tx, ty, dir),
 		_heroAntenna: (k, tier, unique) => heroIntents.antenna(k, tier, unique),
 		_heroGfx: (x, y, glyph, dir) => heroIntents.gfx(x, y, glyph, dir),
 		_heroGravExtract: (tx, ty) => heroIntents.gravExtract(tx, ty),

@@ -1965,6 +1965,25 @@ const ghostHost = (function(){
 			}
 			return;
 		}
+		if(pl.a === 'ram'){
+			// The guest spends its own Shift energy locally; the shared-world write
+			// still requires host-tracked collision speed, direction and adjacency.
+			if(t - (b.lastHeroRamAt || 0) < NET.HERO_RULES.RAM_MS) return;
+			b.lastHeroRamAt = t;
+			const tx=Math.floor(Number(pl.x)), ty=Math.floor(Number(pl.y));
+			if(!Number.isFinite(tx) || !Number.isFinite(ty)){
+				entry.peer.send({ t: 'hact', a: 'ram', ok: false, reason: 'target' });
+				return;
+			}
+			let res=null;
+			try{
+				res=bridge.ghostHeroRamLightWood
+					? bridge.ghostHeroRamLightWood(tx,ty,{x:b.x,y:b.y,vx:b.vx,vy:b.vy,w:NET.PLAY_RULES.BODY_W,h:NET.PLAY_RULES.BODY_H},pl.d<0?-1:1)
+					: null;
+			}catch(e){ res={ok:false, reason:'error'}; }
+			entry.peer.send({t:'hact',a:'ram',ok:!!(res&&res.ok),reason:(res&&res.reason)||null,x:tx,y:ty});
+			return;
+		}
 		if(pl.a === 'antenna'){
 			// antenna active power: the guest only NAMES the active (+ its tier) —
 			// duration and cooldown come from the HOST's own antennas.js table, so a

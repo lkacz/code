@@ -228,7 +228,7 @@ export const AMMO_BUNDLES=[
   {id:'arrows', label:'Strzały (wszystkie tiery)', amount:200,
     keys:['arrowWood','arrowStone','arrowObsidian','arrowDiamond','arrowIridium','arrowHardwood','arrowCarbon','arrowGrapple']},
   {id:'thrown', label:'Rzuty (wszystkie rodzaje)', amount:200,
-    keys:['snowball','toxicSnowball','waterBalloon','gasGrenade','stickyBomb','frostFlask','molotov','sand','water']},
+    keys:['snowball','toxicSnowball','waterBalloon','gasGrenade','stickyBomb','antipersonnelMine','fragmentationMine','frostFlask','molotov','sand','water']},
   {id:'stones', label:'Kamienie do rzucania (ladder)', amount:200,
     keys:['throwingStone','throwingStoneGranite','throwingStoneBasalt','throwingStoneObsidian','throwingStoneDiamond','throwingStoneMeteorite']},
   {id:'bouncy', label:'Kulki kauczukowe i smołowe', amount:200,

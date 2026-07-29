@@ -429,7 +429,9 @@ assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_balloon', 'seventh press 
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_gas', 'eighth press = gas grenades');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_frost', 'ninth press = frost flasks');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_spit', 'tenth press = damaging saliva');
-assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sand', 'eleventh press = damage-free sand utility');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_ap_mine', 'eleventh press = damage-free antipersonnel mine deployment');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_frag_mine', 'twelfth press = damage-free fragmentation mine deployment');
+assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_sand', 'thirteenth press = damage-free sand utility');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'bow_wood', 'rotation wraps back to the bow');
 // Session memory: after leaving for melee, the ranged key returns to the LAST
 // USED ranged weapon instead of restarting at the strongest.
@@ -444,7 +446,7 @@ INV.restore(shortcutMemory,{persist:false,silent:true});
 INV.unequip('weapon');
 assert.equal(INV.selectedWeaponForCategory('bow').id, 'throw_stone', 'saved ranged slot content survives reload while tools are active');
 assert.equal(INV.cycleWeaponCategory('bow').id, 'throw_stone', 'first press after reload restores without advancing');
-const THROW_IDS=['throw_stone','throw_toxic','throw_sticky','throw_snowball','throw_molotov','throw_balloon','throw_gas','throw_frost','throw_sand','throw_spit'];
+const THROW_IDS=['throw_stone','throw_toxic','throw_sticky','throw_snowball','throw_molotov','throw_balloon','throw_gas','throw_frost','throw_ap_mine','throw_frag_mine','throw_sand','throw_spit'];
 INV.setShortcut('bow_wood', false);
 THROW_IDS.forEach(id => INV.setShortcut(id, false));
 INV.unequip('weapon');

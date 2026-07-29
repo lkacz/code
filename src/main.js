@@ -18,6 +18,7 @@ import { pumps as PUMPS } from './engine/pumps.js';
 import { steamMachines as STEAM_MACHINES } from './engine/steam_machines.js';
 import { canPlaceLadderFixture, ladderConnections } from './engine/ladders.js';
 import { applyHorizontalMovement, applyJumpArcControl, surfaceTraction } from './engine/movement.js';
+import { canRamLightWood, rubberBounceKey, rubberSideBounceVelocity, rubberTopBounceVelocity } from './engine/tree_impacts.js';
 import { BUILD_STROKE_CELL_LIMIT, rasterizeTileLine } from './engine/build_stroke.js';
 import { applyDevToolsFlag, debugShortcutsEnabled } from './engine/debug_shortcuts.js';
 import './engine/input_mode.js'; // stamps data-input-mode on <html>; touch clusters gate off it
@@ -889,6 +890,8 @@ let turboFx=0, turboSparkT=0;
 let turboRechargePauseT=0;
 let turboEnergyHoldSpent=0;
 let turboEnergyHoldExhausted=false;
+let rubberBounceLock=null; // one automatic return per approach; prevents same-point trampoline loops
+let lightWoodRamMsgAt=0;
 let underwaterEnergyShockMsgAt=0;
 let heroDefendPointerId=null;
 let heroDefendHeld=false;
@@ -5681,6 +5684,8 @@ const RECIPES=[
 	{id:'frost_flasks', name:'Lodowe fiolki x4', cost:{snow:2}, make(){ inv.frostFlask+=4; msg('Lodowe fiolki +4 - rozpryskuja mroz (komb: mokry cel -> brya lodu)'); }},
 	{id:'molotovs', name:'Koktajle Molotowa x3', cost:{coal:2, wood:1}, make(){ inv.molotov+=3; msg('Koktajle Molotowa +3 - ognisty rozprysk, podpala teren'); }},
 	{id:'sticky_bombs', name:'Lepkie bomby x2', cost:{clay:1, coal:1}, make(){ inv.stickyBomb+=2; msg('Lepkie bomby +2 - przyklejaja sie i wybuchaja po chwili'); }},
+	{id:'antipersonnel_mines', name:'Miny przeciwpiechotne x3', cost:{steel:1, coal:1, clay:1}, make(){ inv.antipersonnelMine+=3; msg('Miny przeciwpiechotne +3 - rzut w slocie 3; po upadku uzbrajaja sie i reaguja na kazdego, kto nadepnie'); }},
+	{id:'fragmentation_mines', name:'Miny odlamkowe x2', cost:{steel:2, coal:1}, make(){ inv.fragmentationMine+=2; msg('Miny odlamkowe +2 - krater i odlamki; obrazenia rosna blizej wybuchu'); }},
 	// Kauczuk: amunicja odbijajaca sie (weapons.js weaponType 'bouncy'). Kulki sa
 	// tanie i czesto do odzyskania, bo cala wartosc broni siedzi w rykoszecie.
 	{id:'rubber_balls', name:'Kulki kauczukowe x12', cost:{rubber:2}, make(){ inv.rubberBall+=12; msg('Kulki kauczukowe +12 - odbijaja sie od scian i wrogow; czesc mozna podniesc po strzale'); }},
@@ -5846,6 +5851,8 @@ const CRAFT_RECIPE_META={
 	frost_flasks:{group:'weapons',icon:'🧊',out:'frostFlask',amount:4,desc:'Rozprysk mrozu — na mokrym celu zamraza go w bryle lodu.'},
 	molotovs:{group:'weapons',icon:'🔥',out:'molotov',amount:3,desc:'Ognisty rozprysk: podpala trafione cele i latwopalny teren.'},
 	sticky_bombs:{group:'weapons',icon:'🧨',out:'stickyBomb',amount:2,desc:'Klei sie do scian i mobow; krotki lont, maly krater.'},
+	antipersonnel_mines:{group:'weapons',icon:'💣',out:'antipersonnelMine',amount:3,tint:'#77818a',desc:'Rzucana mina ze slotu 3. Po upadku uzbraja sie; bohater, mob, towarzysz lub inna istota moze ja uruchomic. Wybuch zostawia krater o promieniu 3 pol.'},
+	fragmentation_mines:{group:'weapons',icon:'💥',out:'fragmentationMine',amount:2,tint:'#c88945',desc:'Mina z dodatkowym pierscieniem odlamkow. Cele przy samej detonacji dostaja najwieksze obrazenia, dalsze wyraznie mniejsze.'},
 	rubber_balls:{group:'weapons',icon:'🔴',out:'rubberBall',amount:12,tint:'#e0533f',desc:'Ubity kauczuk: kulka odbija sie od scian i wrogow, tracac sile z kazdym odbiciem. Czesc lezy potem na ziemi do podniesienia.'},
 	gravity_gun:{group:'weapons',icon:'🌀',tint:'#b48cff',desc:'Bron z materii swiata: LPM wyrywa blok (czas i energia rosna z twardoscia), PPM nim ciska. Kamien ogłusza, szklo tnie do krwi, liscie oslepiaja, kauczuk sie odbija, zloty pien placi dziesieciokrotnie. Bardzo zarloczne na energie.'},
 	bouncer_pistol:{group:'weapons',icon:'🔫',tint:'#e0533f',desc:'Slaby pojedynczy strzal, ale rykoszet siega tam, gdzie luk nie dosiegnie: za rog, w glab korytarza, przez cala grupe wrogow.'},
@@ -13147,6 +13154,60 @@ function measureHeroPile(){
 	try{ if(TREES && TREES.heroRestingLoad) w+=TREES.heroRestingLoad().weight; }catch(e){}
 	return w;
 }
+function rubberImpactIsLocked(axis,x,y){
+	if(!rubberBounceLock || rubberBounceLock.axis!==axis) return false;
+	// Side impacts lock the whole slim trunk column: falling by one cell after the
+	// first rebound must not turn another bark tile into a fresh perpetual bounce.
+	if(axis==='x') return rubberBounceLock.x===Math.floor(x);
+	return rubberBounceLock.key===rubberBounceKey(x,y);
+}
+function rememberRubberImpact(axis,x,y,dir){
+	rubberBounceLock={
+		axis,
+		x:Math.floor(x),
+		y:Math.floor(y),
+		key:rubberBounceKey(x,y),
+		dir:dir<0?-1:1
+	};
+}
+function rearmRubberSideImpact(input){
+	if(!rubberBounceLock || rubberBounceLock.axis!=='x') return;
+	const farEnough=Math.abs(player.x-(rubberBounceLock.x+0.5))>player.w/2+0.75;
+	const steeringAway=input===0 || Math.sign(input)!==rubberBounceLock.dir;
+	if(farEnough && steeringAway) rubberBounceLock=null;
+}
+function rubberFullJumpVelocity(){
+	const gear=(MM.activeModifiers && Number(MM.activeModifiers.jumpPowerMult))||1;
+	const speed=Math.max(0.5,Number(window.playerSpeedMultiplier)||2);
+	return MOVE.JUMP*gear*speed*Math.sqrt(socialBoostMult('jump'));
+}
+function playRubberImpactFeedback(x,y){
+	try{ if(AUDIO && AUDIO.play) AUDIO.play('jump',{x:x+0.5,y:y+0.5}); }catch(e){}
+}
+function tryRamLightWoodCollision(x,y,dir,impactVelocity,turboActive){
+	if(!canRamLightWood(getTile(x,y),turboActive,impactVelocity)) return false;
+	if(MM.ghostHeroIntents){
+		const now=performance.now();
+		const ramKey=Math.floor(x)+','+Math.floor(y);
+		if(player._lightWoodRamKey!==ramKey || !(player._lightWoodRamAt>now-700)){
+			player._lightWoodRamKey=ramKey;
+			player._lightWoodRamAt=now;
+			if(MM.ghostHeroIntents.ram) MM.ghostHeroIntents.ram(x,y,dir);
+		}
+		return false; // the host's tile diff opens the path after validating the hit
+	}
+	const felled=!!(TREES && TREES.startTreeFall && TREES.startTreeFall(getTile,setTile,dir,x,y));
+	if(!felled) return false;
+	rubberBounceLock=null;
+	noteSaveActivity();
+	const now=performance.now();
+	if(now-lightWoodRamMsgAt>1200){
+		lightWoodRamMsgAt=now;
+		msg('Lekkie drzewo pada pod energetycznym uderzeniem!');
+	}
+	try{ if(AUDIO && AUDIO.play) AUDIO.play('break',{x:x+0.5,y:y+0.5}); }catch(e){}
+	return true;
+}
 function updateHeroCrush(dt){
 	if(deathTravelFx) return;
 	if(!crushSeeded){
@@ -13217,6 +13278,7 @@ function physics(dt){
 	const moveControl=movementControlState();
 	let input=moveControl.x;
 	if(input!==0) player.facing=Math.sign(input);
+	rearmRubberSideImpact(input);
 	// Skradanie (Ctrl — Shift is already turbo): move at a crawl and you emit no
 	// footfall AND creatures spot you at half range (engine/noise.js). The cost is
 	// real speed, so sneaking past is a decision, not a free win.
@@ -13396,6 +13458,10 @@ function physics(dt){
 	const waterJumpSupport = groundedSolidInWater || sideSolidInWater || boatDeckInWater || boatContactInWater;
 	const swimUpInput = inWater && jumpNow && !diveInput && !waterJumpSupport;
 	const jumpPressedNow = jumpNow && !jumpPrev;
+	// An automatic rubber-tree return rearms only after a deliberate new jump
+	// from rest. Its own ballistic arc therefore lands once and settles instead
+	// of bouncing forever with successively smaller impacts.
+	if(jumpPressedNow && player.onGround && rubberBounceLock && rubberBounceLock.axis==='y') rubberBounceLock=null;
 	const quicksandState = (TERRAIN_TRAPS && TERRAIN_TRAPS.updateHeroQuicksand)
 		? TERRAIN_TRAPS.updateHeroQuicksand(dt,player,getTile,setTile,{jumpPressed:jumpPressedNow,jumpHeld:jumpNow,input})
 		: null;
@@ -13579,7 +13645,7 @@ function physics(dt){
 		const steps=Math.min(12, Math.max(1, Math.ceil(maxDisp/0.4)));
 		const sdt=dt/steps;
 		for(let i=0;i<steps;i++){
-			const px=player.x; player.x += player.vx*sdt; collide('x',px);
+			const px=player.x; player.x += player.vx*sdt; collide('x',px,{turboActive});
 			const py=player.y; player.y += player.vy*sdt; collide('y',py);
 			if(player.vx===0 && player.vy===0) break;
 		}
@@ -13637,7 +13703,8 @@ function ghostBodySolidAt(x,y,axis,probe,openTrapdoor){
 // diagonally out of a pile. OVER_EPS keeps the 0.001 resting margin from
 // reading as an overlap.
 const COLLIDE_OVER_EPS=1e-4;
-function collide(axis, prevC){
+function collide(axis, prevC, opts){
+	opts=opts||{};
 	const w=player.w/2, h=player.h/2;
 	if(axis==='x'){
 		const prev=(typeof prevC==='number' && isFinite(prevC)) ? prevC : player.x;
@@ -13647,16 +13714,36 @@ function collide(axis, prevC){
 		const minX=Math.floor(player.x-w), maxX=Math.floor(player.x+w), minY=Math.floor(player.y-h), maxY=Math.floor(player.y+h);
 		// Resolve against the least-penetrating tile only; applying every tile in scan
 		// order could push the player out one side and back into a neighbour.
-		let target=player.x, hit=false;
+		let target=player.x, hit=false, hitTile=null;
 		for(let y=minY;y<=maxY;y++){
 			for(let x=minX;x<=maxX;x++){
 				if(!solidAt(x,y,axis)) continue;
 				if(prevR>x+COLLIDE_OVER_EPS && prevL<x+1-COLLIDE_OVER_EPS) continue; // embedded before the move
-				if(dir>0){ const cand=x - w - 0.001; if(!hit || cand<target) target=cand; hit=true; }
-				else if(dir<0){ const cand=x + 1 + w + 0.001; if(!hit || cand>target) target=cand; hit=true; }
+				if(dir>0){ const cand=x - w - 0.001; if(!hit || cand<target){ target=cand; hitTile={x,y}; } hit=true; }
+				else if(dir<0){ const cand=x + 1 + w + 0.001; if(!hit || cand>target){ target=cand; hitTile={x,y}; } hit=true; }
 			}
 		}
-		if(hit){ player.x=target; player.vx=0; }
+		if(hit){
+			const impactVx=Number(player.vx)||0;
+			const hitId=hitTile?getTile(hitTile.x,hitTile.y):T.AIR;
+			if(hitTile && tryRamLightWoodCollision(hitTile.x,hitTile.y,dir,impactVx,opts.turboActive===true)){
+				// The trunk has become a rotating tree body, so this grid collision
+				// no longer exists. Keep most of the charge and continue through it.
+				player.vx=impactVx*0.72;
+				return;
+			}
+			player.x=target;
+			const rubberVx=(hitId===T.RUBBER_WOOD && hitTile && !rubberImpactIsLocked('x',hitTile.x,hitTile.y))
+				? rubberSideBounceVelocity(impactVx)
+				: 0;
+			if(rubberVx){
+				player.vx=rubberVx;
+				rememberRubberImpact('x',hitTile.x,hitTile.y,dir);
+				playRubberImpactFeedback(hitTile.x,hitTile.y);
+			} else {
+				player.vx=0;
+			}
+		}
 	} else {
 		const prev=(typeof prevC==='number' && isFinite(prevC)) ? prevC : player.y;
 		const moved=player.y-prev;
@@ -13677,6 +13764,21 @@ function collide(axis, prevC){
 		}
 		if(hit){
 			player.y=target; player.vy=0; if(landed) player.onGround=true;
+			const landingId=landingTile?getTile(landingTile.x,landingTile.y):T.AIR;
+			if(landed && landingTile && landingId===T.RUBBER_WOOD && !rubberImpactIsLocked('y',landingTile.x,landingTile.y)){
+				const rubberVy=rubberTopBounceVelocity(landingImpact,rubberFullJumpVelocity());
+				if(rubberVy){
+					player.vy=rubberVy;
+					player.onGround=false;
+					coyoteT=0;
+					jumpBufferT=0;
+					rememberRubberImpact('y',landingTile.x,landingTile.y,1);
+					playRubberImpactFeedback(landingTile.x,landingTile.y);
+				}
+			} else if(landed && landingTile && landingId!==T.RUBBER_WOOD && rubberBounceLock && rubberBounceLock.axis==='y'){
+				// A different landing ends the previous rubber-tree contact episode.
+				rubberBounceLock=null;
+			}
 			if(landed && landingTile && getTile(landingTile.x,landingTile.y)===T.SPRING_PLATFORM && SPRING_PLATFORMS && SPRING_PLATFORMS.launchHero){
 				const launched=SPRING_PLATFORMS.launchHero(player,landingTile.x,landingTile.y,getElectricNetworkTile,{dynamo:DYNAMO,teleporters:TELEPORTERS});
 				if(launched){
@@ -21004,9 +21106,22 @@ MM.ghostBridge={
 		const ok=TELEPORTERS.tryTeleport(proxy,getTile,{});
 		return ok ? {ok:true, x:proxy.x, y:proxy.y, vx:proxy.vx, vy:proxy.vy} : {ok:false};
 	},
-	// HOST-side: mech boarding for hero guests — the guest may take any pilotless,
-	// unridden hull within the module's own board radius of its tracked body;
-	// the cab then drives with rider-grade handling on the guest's streamed keys
+	// HOST-side validation for a full-hero guest ramming light wood. Shift energy
+	// belongs to the guest's hero state; the host protects the shared world by
+	// requiring its tracked body to be adjacent, moving hard toward this exact
+	// LIGHT_WOOD cell, then invoking the same whole-tree fall used by solo.
+	ghostHeroRamLightWood:(tx,ty,body,dir)=>{
+		if(!body || getTile(tx,ty)!==T.LIGHT_WOOD) return {ok:false, reason:'tile'};
+		const hitDir=dir<0?-1:1;
+		const vx=Number(body.vx)||0;
+		if(!canRamLightWood(T.LIGHT_WOOD,true,vx) || Math.sign(vx)!==hitDir) return {ok:false, reason:'speed'};
+		const edgeX=hitDir>0 ? body.x+(body.w||HERO_BODY_W)/2 : body.x-(body.w||HERO_BODY_W)/2;
+		if(Math.abs(edgeX-(hitDir>0?tx:tx+1))>0.65 || Math.abs((ty+0.5)-body.y)>1.2) return {ok:false, reason:'contact'};
+		const ok=!!(TREES && TREES.startTreeFall && TREES.startTreeFall(getTile,setTile,hitDir,tx,ty));
+		if(ok) noteSaveActivity();
+		return {ok, reason:ok?null:'tree'};
+	},
+	// Mech boarding remains a separate host-authoritative handoff.
 	ghostHeroBoard:(gid,body)=>((MECHS&&MECHS.guestBoardNearest)?MECHS.guestBoardNearest(gid,body):{ok:false, reason:'no-mechs'}),
 	ghostHeroUnboard:(gid)=>((MECHS&&MECHS.guestUnboard)?MECHS.guestUnboard(gid):null),
 	// HOST-side: a hero guest's oar stroke — resolved against the boat under ITS

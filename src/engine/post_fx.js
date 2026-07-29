@@ -773,20 +773,18 @@ export function collectCanopyGaps(opts){
 	const x0 = Math.floor(opts.x0), x1 = Math.floor(opts.x1);
 	const n = x1 - x0 + 1;
 	if(!(n > 0) || !(maxBeams > 0)) return out;
-	// pass 1 — one probe per column. Two rows matter and they are NOT the same
-	// row: the crown (topmost canopy tile) says how tall the tree is, while the
-	// UNDERSIDE (first canopy tile going up from the ground) is where a shaft
-	// enters shaded air and therefore where it becomes visible.
-	const surfs = new Array(n), tops = new Array(n), bots = new Array(n);
+	// pass 1 — one probe per column. The crown (topmost canopy tile) anchors the
+	// aperture: sunlight starts between the upper leaves, then stays visible as
+	// it crosses the shaded air below. GAP_ROOF_MIN excludes low undergrowth.
+	const surfs = new Array(n), tops = new Array(n);
 	for(let i = 0; i < n; i++){
 		const x = x0 + i;
 		const surf = opts.surfaceHeight(x);
-		surfs[i] = surf; tops[i] = null; bots[i] = null;
+		surfs[i] = surf; tops[i] = null;
 		if(!Number.isFinite(surf)) continue;
 		for(let dy = GAP_ROOF_MIN; dy <= GAP_CANOPY_PROBE; dy++){
 			if(!opts.isCanopy(opts.getTile(x, surf - dy))) continue;
 			const y = surf - dy;
-			if(bots[i] === null) bots[i] = y;
 			tops[i] = y;
 		}
 	}
@@ -808,7 +806,7 @@ export function collectCanopyGaps(opts){
 				out.push({
 					x0: x0 + i, x1: x0 + end, groundX, groundY,
 					topY: Math.min(tops[left], tops[right]),
-					mouthY: (bots[left] + bots[right]) / 2,
+					mouthY: (tops[left] + tops[right]) / 2,
 					cover, weight,
 					jitterW: godRayJitter(x0 + i, 1), jitterA: godRayJitter(x0 + i, 2)
 				});
@@ -835,6 +833,9 @@ export const GODRAY_SPRITE_H = 128;
 export const GODRAY_SCAN_MS = 400;    // re-scan cadence; a forest roof does not move
 export const GODRAY_MAX_BEAMS = 24;   // fixed cap — never a frame-time reaction
 export const GODRAY_LEAN = 0.55;      // shaft tilt as a fraction of the shadow skew
+export const GODRAY_MOUTH_MIN_TILES = 0.82;
+export const GODRAY_MOUTH_MAX_TILES = 2.5;
+export const GODRAY_MOUTH_GAP_SCALE = 0.82;
 // How far up-sun the wedge's apex sits, in tiles. This is a PERSPECTIVE
 // distance, not the real one: it sets how fast a shaft widens. 14 tiles gives a
 // typical 12-tile beam a foot ~1.85x its mouth — plainly spreading, still
@@ -850,6 +851,24 @@ export const GODRAY_SPREADS = Object.freeze([1.25, 1.5, 1.8, 2.2, 2.7]);
 export const GODRAY_TINTS = Object.freeze(['255,248,220', '255,234,178', '255,209,142']);
 const GODRAY_CROSS_STOPS = Object.freeze([-1, -0.85, -0.7, -0.55, -0.4, -0.25, -0.1, 0, 0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1]);
 
+// Horizontal travel of a downward ray. Positive means its foot lands to the
+// RIGHT of its mouth: the morning sun is on screen-left, so this must be
+// positive. Canvas rotation maps a positive angle to a LEFT-moving downward
+// vector, hence the deliberately negated angle returned alongside it.
+export function godRayDirection(time){
+	const travel = Math.max(-1.15, Math.min(1.15, shadowParams(time).skew * GODRAY_LEAN));
+	return { travel, angle: -Math.atan(travel) };
+}
+
+// Keep the light opening readable between the upper leaves. It remains narrower
+// than a broad aperture and its deterministic jitter prevents a row of clones,
+// but a one-cell opening no longer collapses into an almost point-sized source.
+export function godRayMouthWidthTiles(gapTiles, jitter){
+	const gap = Number.isFinite(gapTiles) ? Math.max(0, gapTiles) : 0;
+	const j = Number.isFinite(jitter) ? Math.max(0, Math.min(1, jitter)) : 0.5;
+	return Math.max(GODRAY_MOUTH_MIN_TILES, Math.min(GODRAY_MOUTH_MAX_TILES, gap * GODRAY_MOUTH_GAP_SCALE * (0.9 + 0.2 * j)));
+}
+
 // Along the shaft: 0 at the canopy mouth, 1 where it lands. Brightest at the
 // mouth and progressively fainter with distance (the beam scatters out of
 // itself), with BOTH ends eased so neither terminates in a visible line.
@@ -862,7 +881,7 @@ const GODRAY_CROSS_STOPS = Object.freeze([-1, -0.85, -0.7, -0.55, -0.4, -0.25, -
 // enough for the spread to read.
 export function godRayProfile(v){
 	if(!(v >= 0) || v > 1) return 0;
-	const mouth = smooth01(v / 0.14);        // emerges from the leaves
+	const mouth = smooth01(v / 0.08);        // emerges quickly between the upper leaves
 	const foot = smooth01((1 - v) / 0.12);   // dissolves before the ground
 	return mouth * foot * (0.38 + 0.62 * (1 - v));
 }
@@ -934,6 +953,7 @@ export const SLIT_PROBE_SIDE = 4;      // and how far to EACH SIDE of the beam
 export const SLIT_MOUTH_WALK = 4;      // deepest bore the mouth walk resolves
 export const LAMP_SPREADS = Object.freeze([1.6, 2.1, 2.8, 3.6, 4.6]);
 export const LAMP_SCAN_MS = 400;       // openings move only when the world does
+export const LAMP_SHAFT_BACKTRACK = 1; // begin at the source-facing edge of the mouth cell
 // Peak, before darkness and distance take their cut — and they take most of it:
 // a torch five tiles behind its hole keeps ~0.39 of this. Calibrated against the
 // peak luminance god-rays-qa reads off the framebuffer, after the duplicate-face
@@ -947,6 +967,25 @@ export function slitFalloff(distTiles){
 	const d = Number.isFinite(distTiles) ? Math.max(0, distTiles) : 0;
 	const k = d / SLIT_FALLOFF_TILES;
 	return 1 / (1 + k * k);
+}
+
+// The aperture scanner owns the EXIT face because that is the stable identity
+// of a bore. Rendering starts one tile back along the same ray, at the
+// source-facing edge of the mouth cell. Adding that tile to the length preserves
+// the exact far endpoint instead of pulling the whole shaft toward the lamp.
+export function lampShaftRenderGeometry(s){
+	const dirX = Number.isFinite(s && s.dirX) ? s.dirX : 0;
+	const dirY = Number.isFinite(s && s.dirY) ? s.dirY : 0;
+	const cx = Number.isFinite(s && s.cx) ? s.cx : 0;
+	const cy = Number.isFinite(s && s.cy) ? s.cy : 0;
+	const len = Number.isFinite(s && s.len) ? Math.max(0, s.len) : 0;
+	const dist = Number.isFinite(s && s.dist) ? Math.max(0, s.dist) : 0;
+	return {
+		cx: cx - dirX * LAMP_SHAFT_BACKTRACK,
+		cy: cy - dirY * LAMP_SHAFT_BACKTRACK,
+		len: len + LAMP_SHAFT_BACKTRACK,
+		dist: Math.max(0.5, dist - LAMP_SHAFT_BACKTRACK)
+	};
 }
 
 // Openings near a light source: runs of at most SLIT_MAX_SPAN light-passing
@@ -2321,11 +2360,10 @@ const api = {
 			godRayKey = key; godRayScanAt = now;
 		}
 		if(!godRayBeams.length) return 0;
-		const p = shadowParams(time);
 		const visibleAt = typeof opts.visibleAt === 'function' ? opts.visibleAt : null;
 		// One lean for the whole frame: the sun is one sun.
-		const lean = Math.max(-1.15, Math.min(1.15, p.skew * GODRAY_LEAN));
-		const ang = Math.atan(lean);
+		const direction = godRayDirection(time);
+		const ang = direction.angle;
 		const cos = Math.cos(ang);
 		const tintIdx = arc > 0.72 ? 0 : (arc > 0.40 ? 1 : 2);
 		let drawn = 0;
@@ -2355,10 +2393,9 @@ const api = {
 			}
 			const spr = beamSpriteFor(GODRAY_SPREADS[si], GODRAY_TINTS[tintIdx]);
 			if(!spr) continue;   // a bucket that failed to bake must not drop the others
-			// The mouth is deliberately narrower than the gap that made it: what
-			// the eye reads as the shaft is the bright core, not the full width
-			// of the aperture.
-			const mouthW = Math.max(TILE * 0.45, Math.min(TILE * 1.7, (b.x1 - b.x0 + 1) * TILE * 0.5 * (0.84 + 0.32 * b.jitterW)));
+			// A visible opening between the upper leaves, still bounded so a broad
+			// gap cannot turn the shaft into a floodlight.
+			const mouthW = godRayMouthWidthTiles(b.x1 - b.x0 + 1, b.jitterW) * TILE;
 			const footW = mouthW * GODRAY_SPREADS[si];
 			const cxPx = (b.x0 + b.x1 + 1) * 0.5 * TILE;
 			ctx.globalAlpha = alpha * b.weight * (0.80 + 0.40 * b.jitterA);
@@ -2420,10 +2457,11 @@ const api = {
 		for(let i = 0; i < lampSlits.length; i++){
 			const s = lampSlits[i];
 			if(visibleAt && !visibleAt(Math.floor(s.cx), Math.floor(s.cy))) continue;
-			const len = s.len * TILE;
+			const ray = lampShaftRenderGeometry(s);
+			const len = ray.len * TILE;
 			// The apex is the LAMP, so the spread is the real ratio of distances —
 			// no invented perspective distance is needed here, unlike the sun.
-			const spread = (s.dist + s.len) / s.dist;
+			const spread = (ray.dist + ray.len) / ray.dist;
 			let si = 0;
 			for(let k = 1; k < LAMP_SPREADS.length; k++){
 				if(Math.abs(LAMP_SPREADS[k] - spread) < Math.abs(LAMP_SPREADS[si] - spread)) si = k;
@@ -2435,11 +2473,11 @@ const api = {
 			// The sprite grows along +Y, so rotate its axis onto the light's.
 			const ang = Math.atan2(s.dirY, s.dirX) - Math.PI / 2;
 			ctx.globalAlpha = Math.min(0.85, LAMP_ALPHA * gain * s.weight);
-			ctx.translate(s.cx * TILE, s.cy * TILE);
+			ctx.translate(ray.cx * TILE, ray.cy * TILE);
 			ctx.rotate(ang);
 			ctx.drawImage(spr, -footW * 0.5, 0, footW, len);
 			ctx.rotate(-ang);
-			ctx.translate(-s.cx * TILE, -s.cy * TILE);
+			ctx.translate(-ray.cx * TILE, -ray.cy * TILE);
 			drawn++;
 		}
 		ctx.restore();

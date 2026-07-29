@@ -39,11 +39,12 @@ const {
 	bloomSourceFor, collectBloomEmitters, BLOOM_MIN_LEVEL, BLOOM_MAX_EMITTERS,
 	heroSheenEnvSample, heroMirrorCurve, shadowParams,
 	wetGroundStep, collectCanopyGaps, collectIceRuns,
-	collectLightSlits, slitClearPath, slitFalloff, slitRayBlocked, slitRayReach,
-	SLIT_MAX_SPAN, SLIT_RADIUS, SLIT_MAX, SLIT_MIN_LEVEL, SLIT_MIN_DARK, SLIT_ALIGN_MIN, SLIT_MOUTH_WALK, LAMP_SPREADS,
-	godRayWeight, godRayJitter, godRayProfile, godRayCross,
+	collectLightSlits, slitClearPath, slitFalloff, slitRayBlocked, slitRayReach, lampShaftRenderGeometry,
+	SLIT_MAX_SPAN, SLIT_RADIUS, SLIT_MAX, SLIT_MIN_LEVEL, SLIT_MIN_DARK, SLIT_ALIGN_MIN, SLIT_MOUTH_WALK, LAMP_SPREADS, LAMP_SHAFT_BACKTRACK,
+	godRayWeight, godRayJitter, godRayProfile, godRayCross, godRayDirection, godRayMouthWidthTiles,
 	GAP_COVER_MIN, GAP_COVER_SPAN, GAP_MAX_WIDTH, GAP_CANOPY_PROBE, GAP_ROOF_MIN,
 	GODRAY_SPREADS, GODRAY_TINTS, GODRAY_MAX_BEAMS, GODRAY_SUN_TILES, GODRAY_LEAN,
+	GODRAY_MOUTH_MIN_TILES, GODRAY_MOUTH_MAX_TILES,
 	emissiveRgb, normalizeGlow, trailSampleDue, trailBroken, trailTaper,
 	EMISSIVE_MAX, TRAIL_PTS, TRAIL_SAMPLE_MS, TRAIL_BREAK_PX, TRAIL_RETRACT_MS,
 	heatSourceFor, heatPlumeTiles, heatAmpPx, heatEnvelope, heatOffsetPx, buildHeatBands,
@@ -317,16 +318,16 @@ assert.equal(gaps[0].groundY, 20, 'beam lands on the surface');
 const treeless = collectCanopyGaps({ x0: 20, x1: 40, getTile: () => T.AIR, surfaceHeight: flatSurf, isCanopy: t => t === T.LEAF });
 assert.equal(treeless.length, 0, 'open plains cast no beams (a gap needs canopy on both sides)');
 assert.ok(Number.isFinite(gaps[0].groundX), 'beam remembers which column produced its landing row (fog probe target)');
-// The MOUTH is the roof's underside, not the crown: a shaft becomes visible
-// where it enters shaded air, and starting it at the treetops is what left the
-// old beams hanging in open sky with a bright horizontal cut across the top.
+// The MOUTH follows the upper leaves around the aperture. Its baked profile
+// still begins at zero alpha, so starting high does not restore the old bright
+// horizontal cut.
 assert.equal(gaps[0].mouthY, 15, 'a one-row canopy puts crown and underside on the same row');
 const thick = new Map();
 for(const cx of [0, 1, 2, 6, 7, 8]) for(const cy of [13, 14, 15]) thick.set(cx + ',' + cy, T.LEAF);
 const thickGaps = collectCanopyGaps({ x0: 0, x1: 8, getTile: (x, y) => thick.get(x + ',' + y) ?? T.AIR, surfaceHeight: flatSurf, isCanopy: t => t === T.LEAF });
 assert.equal(thickGaps.length, 1, 'a thick roof still yields its one gap');
 assert.equal(thickGaps[0].topY, 13, 'topY is the CROWN (highest leaf)');
-assert.equal(thickGaps[0].mouthY, 15, 'mouthY is the UNDERSIDE (lowest leaf) — where the shaft enters shaded air');
+assert.equal(thickGaps[0].mouthY, 13, 'the shaft starts beside the UPPER leaves and crosses the opening from there');
 // Cover: how enclosed the site is. A sunbeam is lit air, invisible against a
 // bright sky, so enclosure IS the beam's strength — this is the gate that stops
 // shafts appearing over open ground.
@@ -380,6 +381,7 @@ assert.equal(godRayProfile(-0.1), 0, 'outside the shaft there is no shaft');
 assert.equal(godRayProfile(1.4), 0, 'past the foot there is no shaft');
 assert.ok(godRayProfile(0.2) > godRayProfile(0.5), 'a shaft is brightest near its source');
 assert.ok(godRayProfile(0.5) > godRayProfile(0.8), 'and fades progressively along its length');
+assert.ok(godRayProfile(0.08) > 0.8, 'the shaft becomes readable close to the upper leaves instead of pinching into a long point');
 // Across the shaft: a soft bell, symmetric, zero at both edges — no rim.
 assert.equal(godRayCross(0), 1, 'the core is full strength');
 assert.equal(godRayCross(1), 0, 'the edge is nothing');
@@ -393,6 +395,18 @@ assert.equal(GODRAY_TINTS.length, 3, 'three sun tints: high sun, golden hour, ho
 assert.equal(GODRAY_MAX_BEAMS, 24, 'the beam cap is a fixed constant');
 assert.ok(GODRAY_SUN_TILES > 0, 'the apparent sun distance sets how fast a shaft widens');
 assert.ok(GODRAY_LEAN > 0 && GODRAY_LEAN < 1, 'a shaft leans with the sun, less steeply than the shadow it belongs to');
+const morningRay = godRayDirection({ tDay: 0.15, isDay: true });
+const noonRay = godRayDirection({ tDay: 0.5, isDay: true });
+const eveningRay = godRayDirection({ tDay: 0.85, isDay: true });
+assert.ok(morningRay.travel > 0 && morningRay.angle < 0, 'morning sun at screen-left sends a downward ray to screen-right');
+assert.ok(Math.abs(noonRay.travel) < 1e-12 && Math.abs(noonRay.angle) < 1e-12, 'a noon ray falls vertically');
+assert.ok(eveningRay.travel < 0 && eveningRay.angle > 0, 'evening sun at screen-right sends a downward ray to screen-left');
+assert.ok(-Math.sin(morningRay.angle) * 10 > 0, 'canvas rotation preserves the intended morning direction instead of inverting it');
+assert.ok(-Math.sin(eveningRay.angle) * 10 < 0, 'canvas rotation also follows the setting sun');
+assert.equal(godRayMouthWidthTiles(0, 0), GODRAY_MOUTH_MIN_TILES, 'even a tiny aperture keeps a visible mouth');
+assert.ok(godRayMouthWidthTiles(1, 0.5) >= 0.82, 'a one-tile aperture is no longer pinched into a half-tile point');
+assert.ok(godRayMouthWidthTiles(3, 0.5) > godRayMouthWidthTiles(1, 0.5), 'a wider opening produces a wider source');
+assert.equal(godRayMouthWidthTiles(99, 1), GODRAY_MOUTH_MAX_TILES, 'the source width remains bounded');
 // The whole point of the apex model: the foot is wider than the mouth, and by a
 // bounded amount. Crepuscular rays are very nearly parallel — they only LOOK
 // like they fan out — so the spread must stay a shaft, never a cone.
@@ -430,6 +444,12 @@ assert.ok(Math.abs(slits[0].cx - 11) < 1e-9, 'the shaft leaves from the EXIT fac
 assert.ok(Math.abs(slits[0].cy - 5.5) < 1e-9, 'and from the middle of its run');
 assert.ok(slits[0].dirX > 0.999 && Math.abs(slits[0].dirY) < 1e-9, 'it travels away from the lamp, straight out through the slitWall');
 assert.ok(Math.abs(slits[0].dist - 2.5) < 1e-9, 'the apex is the LAMP, two and a half tiles behind the mouth — that is what makes the wedge open hard');
+const slitRender = lampShaftRenderGeometry(slits[0]);
+assert.equal(LAMP_SHAFT_BACKTRACK, 1, 'the visible shaft begins exactly one block before the exit face');
+assert.ok(Math.abs(slitRender.cx - 10) < 1e-9, 'the shaft begins at the source-facing edge of the slit block');
+assert.ok(Math.abs(slitRender.cy - 5.5) < 1e-9, 'backtracking preserves the aperture row');
+assert.ok(Math.abs(slitRender.dist - 1.5) < 1e-9, 'perspective distance follows the earlier start');
+assert.ok(Math.abs((slitRender.cx + slits[0].dirX * slitRender.len) - (slits[0].cx + slits[0].dirX * slits[0].len)) < 1e-9, 'the far end stays fixed when the mouth moves back');
 assert.equal(slits[0].color, '255,176,84', 'a shaft is the colour of the light that threw it');
 assert.ok(slits[0].len >= 2, 'the beam reaches into the open air outside');
 assert.ok(slits[0].weight > 0.5, 'a bright lamp close behind a window, opening onto full pitchDark, is a strong shaft');
@@ -460,6 +480,7 @@ const roofSlits = collectLightSlits({ emitters: [{ x: 10, y: 5, t: T.TORCH, leve
 assert.equal(roofSlits.length, 1, 'a hole in a roof is an opening too');
 assert.equal(roofSlits[0].axis, 1, 'its run lies along x, so the light goes along y');
 assert.ok(roofSlits[0].dirY < -0.999, 'and it goes UP, away from the lamp below');
+assert.ok(Math.abs(lampShaftRenderGeometry(roofSlits[0]).cy - 4) < 1e-9, 'a vertical shaft also begins on the source-facing edge of its slit block');
 assert.equal(SLIT_MAX_SPAN, 3, 'an opening is at most three tiles across');
 assert.ok(SLIT_RADIUS > 0 && SLIT_MAX > 0 && SLIT_MIN_LEVEL > 0, 'the scan is bounded by fixed caps, never by frame time');
 assert.ok(SLIT_ALIGN_MIN > 0.5 && SLIT_ALIGN_MIN < 1, 'the light must flow along the opening, not graze it');
@@ -1113,8 +1134,10 @@ assert.ok(!/moveTo|lineTo|closePath|\bfill\(\)/.test(rayBody), 'no polygon: a ha
 assert.match(rayBody, /ctx\.drawImage\(spr, -footW \* 0\.5, 0, footW, len\);/, 'one blit per beam, sized by its FOOT (the sprite bakes the mouth narrower)');
 assert.match(rayBody, /const len = h \/ cos;/, 'a leaning shaft is longer than the vertical drop it covers');
 assert.match(rayBody, /const spread = \(GODRAY_SUN_TILES \+ len \/ TILE\) \/ GODRAY_SUN_TILES;/, 'the wedge diverges from an apex placed up-sun — that is what makes it narrow at the roof and wide where it lands');
-assert.match(rayBody, /const mouthPx = b\.mouthY \* TILE/, 'the shaft starts at the canopy UNDERSIDE, not at the crown hanging in the sky');
+assert.match(rayBody, /const mouthPx = b\.mouthY \* TILE/, 'the shaft starts at the canopy aperture selected by the scan');
 assert.ok(!/b\.topY/.test(rayBody), 'the crown row no longer anchors anything the player can see');
+assert.match(rayBody, /const direction = godRayDirection\(time\);/, 'the pass uses the tested sun-relative direction model');
+assert.match(rayBody, /const mouthW = godRayMouthWidthTiles\(b\.x1 - b\.x0 \+ 1, b\.jitterW\) \* TILE;/, 'the upper opening uses the bounded wider mouth model');
 assert.match(rayBody, /ctx\.globalAlpha = alpha \* b\.weight \* \(0\.80 \+ 0\.40 \* b\.jitterA\);/, 'each beam carries its own enclosure weight and its own character');
 assert.match(rayBody, /const pad = GAP_COVER_SPAN \+ 2;/, 'the scan is padded past the view so a beam does not brighten as it scrolls in');
 assert.match(rayBody, /maxBeams: GODRAY_MAX_BEAMS/, 'the beam count is a fixed cap');
@@ -1126,7 +1149,9 @@ assert.ok(iLampFn > 0 && lampBody.length > 400, 'the lamp shaft pass body was lo
 assert.ok(!/createLinearGradient|addColorStop|rgba\(/.test(lampBody), 'the shaft profile is baked — the pass builds no gradient per frame');
 assert.ok(!/moveTo|lineTo|closePath|\bfill\(\)/.test(lampBody), 'no polygon here either');
 assert.match(lampBody, /ctx\.drawImage\(spr, -footW \* 0\.5, 0, footW, len\);/, 'one blit per shaft, sized by its far end');
-assert.match(lampBody, /const spread = \(s\.dist \+ s\.len\) \/ s\.dist;/, 'the apex is the LAMP, so the spread is a real ratio of distances — no invented perspective distance');
+assert.match(lampBody, /const ray = lampShaftRenderGeometry\(s\);/, 'the draw pass moves the visible mouth to the source-facing edge of the slit');
+assert.match(lampBody, /const spread = \(ray\.dist \+ ray\.len\) \/ ray\.dist;/, 'the apex is the LAMP, so the spread uses the backtracked real distances');
+assert.match(lampBody, /ctx\.translate\(ray\.cx \* TILE, ray\.cy \* TILE\);/, 'the sprite starts from the backtracked aperture position');
 assert.match(lampBody, /const ang = Math\.atan2\(s\.dirY, s\.dirX\) - Math\.PI \/ 2;/, 'a lamp shaft points any way at all, unlike a sunbeam');
 assert.ok(!/frameMs|stressed|critical/.test(lampBody), 'lamp shafts never degrade themselves on a frame-time threshold');
 assert.match(lampBody, /max: SLIT_MAX, minLevel: SLIT_MIN_LEVEL/, 'the shaft count is a fixed cap');
@@ -1170,7 +1195,8 @@ assert.match(slitBody, /if\(d2 < 1 \|\| d2 > R \* R\) continue;/, 'only the lamp
 const iGapFn = postFxSrc.indexOf('export function collectCanopyGaps(');
 const gapBody = postFxSrc.slice(iGapFn, postFxSrc.indexOf('\n}', iGapFn));
 assert.ok(iGapFn > 0 && gapBody.length > 400, 'the canopy scan body was located');
-assert.match(gapBody, /if\(bots\[i\] === null\) bots\[i\] = y;\n\t\t\ttops\[i\] = y;/, 'one probe per column yields both the underside and the crown');
+assert.match(gapBody, /for\(let dy = GAP_ROOF_MIN; dy <= GAP_CANOPY_PROBE; dy\+\+\)\{[\s\S]*tops\[i\] = y;/, 'one bounded probe per column yields the crown row');
+assert.ok(!/\bbots\b/.test(gapBody), 'the obsolete underside array is gone now that the aperture follows the upper leaves');
 assert.ok(!/surfaceHeight\(end \+ 1\)|surfaceHeight\(x - 1\)/.test(gapBody), 're-probing the flanks is gone — the spans are computed once and reused');
 assert.match(gapBody, /const weight = godRayWeight\(cover\);/, 'enclosure decides the beam, in the scan, not at draw time');
 

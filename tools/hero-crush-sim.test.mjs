@@ -261,7 +261,7 @@ assert.equal(crushTickDamage(1e6), CRUSH_TUNING.DMG_MAX, 'tick damage is capped'
 {
   const src=readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(src, /updateHeroCrush\(dt\);/, 'physics runs the burial resolver every frame');
-  assert.match(src, /collide\('x',px\)/, 'x collision receives the pre-move span');
+  assert.match(src, /collide\('x',px,\{turboActive\}\)/, 'x collision receives the pre-move span and paid turbo state');
   assert.match(src, /collide\('y',py\)/, 'y collision receives the pre-move span');
   assert.match(src, /continue; \/\/ embedded before the move/, 'embedded tiles are excluded from collision snapping');
   assert.match(src, /noteTileBuriesHero\(tx,ty,next\)/, 'world tile changes feed the burial set');

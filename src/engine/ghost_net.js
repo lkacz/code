@@ -137,7 +137,7 @@ export function duelAskKey(fromGid, toGid){ return JSON.stringify([fromGid, toGi
 // damage envelope). A modified hero client can gild its own trophy case; it still
 // cannot write a single illegal tile or one-shot a boss.
 export const HERO_KEY = 'mm_ghost_hero_v1';
-export const HERO_ACTIONS = ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'antenna', 'gfx', 'drop', 'gvx', 'gvt'];
+export const HERO_ACTIONS = ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'ram', 'antenna', 'gfx', 'drop', 'gvx', 'gvt'];
 export function validHeroAction(a){ return HERO_ACTIONS.includes(a); }
 export const HERO_RULES = {
 	REACH: 6,        // solo MINE/PLACE reach is 5; +1 tolerance for pose-stream lag
@@ -155,6 +155,7 @@ export const HERO_RULES = {
 	ROW_MS: 250,     // per-guest floor between oar strokes
 	BOARD_MS: 400,   // per-guest floor between mech board/unboard intents
 	TP_MS: 1200,     // per-guest floor between teleporter jumps (matches the pad cooldown)
+	RAM_MS: 650,     // one light-wood collision episode; host also validates tracked speed/contact
 	ANTENNA_MS: 1500, // per-guest floor between antenna-power intents (real cooldown is per-active, host-side)
 	GFX_MS: 700,     // per-guest floor between soot-graffiti paints (glyphs are whitelisted host-side)
 	GRAV_EXTRACT_MS: 250, // per-guest floor between gravity-gun extractions (the carried tile id is HOST truth)

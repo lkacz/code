@@ -214,8 +214,8 @@ assert.ok(NET.modeAllows('hero', 'play') && NET.modeAllows('hero', 'full') && NE
 assert.ok(!NET.modeAllows('play', 'hero'), 'play is below hero');
 // hero-mode contract: the guest player state is guest-local truth; the world is
 // protected here — actions, rates and envelopes
-assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'antenna', 'gfx', 'drop', 'gvx', 'gvt'],
-	'the fifteen hero world-intents');
+assert.deepEqual(NET.HERO_ACTIONS, ['mine', 'place', 'dmg', 'pickup', 'use', 'shoot', 'row', 'board', 'unboard', 'tp', 'ram', 'antenna', 'gfx', 'drop', 'gvx', 'gvt'],
+	'the sixteen hero world-intents');
 assert.equal(NET.HERO_RULES.ANTENNA_MS, 1500, 'antenna intent rate floor pinned (per-active cooldown lives host-side)');
 assert.equal(NET.HERO_RULES.GFX_MS, 700, 'soot-graffiti intent rate floor pinned (glyph whitelist lives host-side)');
 assert.equal(NET.HERO_RULES.GRAV_EXTRACT_MS, 250, 'gravity extract floor pinned (the carried tile id is HOST truth)');
@@ -1298,6 +1298,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 {
 	const FLOOR_OF = { mine: 'MINE_MS', place: 'PLACE_MS', dmg: 'DMG_MS', pickup: 'PICKUP_MS',
 		use: 'USE_MS', shoot: 'SHOOT_MS', row: 'ROW_MS', board: 'BOARD_MS', unboard: 'BOARD_MS', tp: 'TP_MS',
+		ram: 'RAM_MS',
 		antenna: 'ANTENNA_MS', gfx: 'GFX_MS', drop: 'DROP_MS',
 		gvx: 'GRAV_EXTRACT_MS', gvt: 'GRAV_THROW_MS' };
 	for(const a of NET.HERO_ACTIONS){
