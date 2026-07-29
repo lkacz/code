@@ -343,8 +343,22 @@ const discovery = (function(){
     });
   }
   function reset(){ seen.clear(); persist(); }
+  function snapshot(){ return {v:1,list:[...seen]}; }
+  function restore(src){
+    if(!src || !Array.isArray(src.list)) return false;
+    const next=new Set();
+    const count=Math.min(src.list.length,PROFILE_SCAN_CAP);
+    for(let i=0;i<count && next.size<CATALOG_COUNT;i++){
+      const id=src.list[i];
+      if(typeof id==='string' && CATALOG_SET.has(id)) next.add(id);
+    }
+    seen.clear();
+    for(const id of next) seen.add(id);
+    persist();
+    return true;
+  }
 
-  const api = { note, noteBiome, has, count, list, total, label, progress, entries, CATALOG, HINTS, BIOME_DISCOVERY_IDS, DISCOVERY_XP, reset };
+  const api = { note, noteBiome, has, count, list, total, label, progress, entries, CATALOG, HINTS, BIOME_DISCOVERY_IDS, DISCOVERY_XP, reset, snapshot, restore };
   MM.discovery = api;
   return api;
 })();

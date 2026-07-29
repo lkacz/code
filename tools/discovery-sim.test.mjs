@@ -63,6 +63,12 @@ assert.equal(p.count, 2, 'progress counts found entries');
 assert.equal(p.total, discovery.total(), 'progress exposes the catalog size');
 assert.ok(p.found.some(f => f.id === 'react_freeze' && /lodu/i.test(f.label)), 'progress lists catalog labels, not raw ids');
 assert.ok(discovery.HINTS.jewel_drop && /przedmiot/i.test(discovery.HINTS.jewel_drop.hint), 'rare jewel discovery has a non-spoiling journal hint');
+const discoveryCheckpoint=discovery.snapshot();
+discovery.note('sandstorm','x');
+assert.equal(discovery.has('sandstorm'),true);
+assert.equal(discovery.restore(discoveryCheckpoint),true,'journal can return to an in-memory timeline checkpoint');
+assert.equal(discovery.has('sandstorm'),false,'branch-only discovery is removed on rewind');
+assert.equal(JSON.parse(discoveryStore.mm_discoveries_v1).includes('sandstorm'),false,'rewound journal is persisted');
 
 // --- entering each surface biome is a one-shot discovery -------------------
 {

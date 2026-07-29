@@ -1227,11 +1227,38 @@ window.MM = window.MM || {};
       if(!piece) continue;
       loose.push({x:piece.x,y:piece.y,t:piece.t,dir:piece.dir,hBudget:piece.hBudget,windCarry:piece.windCarry||0});
     }
-    return {v:4,debris,identities,leafLitter,loose};
+    const rotating=fallingTrees.map(tree=>({
+      pivotX:tree.pivotX,pivotY:tree.pivotY,dir:tree.dir,angle:tree.angle,omega:tree.omega,
+      tiles:Array.isArray(tree.tiles)?tree.tiles.map(tile=>({rx:tile.rx,ry:tile.ry,ox:tile.ox,oy:tile.oy,t:tile.t})):[]
+    }));
+    const unstableStanding=[...unstableTreeTiles].slice(0,TREE_DEBRIS_PERSIST_CAP);
+    const unstableFallen=[...unstableFallenTreeTiles].slice(0,TREE_DEBRIS_PERSIST_CAP);
+    const complete=fallenTreeTiles.size<=TREE_DEBRIS_PERSIST_CAP
+      && tileTreeIds.size<=TREE_IDENTITY_PERSIST_CAP
+      && seasonalLeafLitter.size<=TREE_LEAF_LITTER_PERSIST_CAP
+      && fallingBlocks.length<=TREE_LOOSE_PERSIST_CAP
+      && unstableTreeTiles.size<=TREE_DEBRIS_PERSIST_CAP
+      && unstableFallenTreeTiles.size<=TREE_DEBRIS_PERSIST_CAP;
+    return {
+      v:4,complete,
+      truncated:complete?undefined:{
+        debris:Math.max(0,fallenTreeTiles.size-TREE_DEBRIS_PERSIST_CAP),
+        identities:Math.max(0,tileTreeIds.size-TREE_IDENTITY_PERSIST_CAP),
+        leafLitter:Math.max(0,seasonalLeafLitter.size-TREE_LEAF_LITTER_PERSIST_CAP),
+        loose:Math.max(0,fallingBlocks.length-TREE_LOOSE_PERSIST_CAP)
+      },
+      debris,identities,leafLitter,loose,rotating,unstableStanding,unstableFallen,
+      fallStepAccum:Number.isFinite(fallStepAccum)?fallStepAccum:0,
+      elapsed:Number.isFinite(treeElapsedSeconds)?treeElapsedSeconds:0,
+      auditCursor:Number.isFinite(areaAuditCursor)?areaAuditCursor:0
+    };
   }
   function restore(state,getTile){
     clearTreeIdentityMaps();
     resetVolatileState();
+    treeElapsedSeconds=state&&Number.isFinite(state.elapsed)?Math.max(0,state.elapsed):0;
+    areaAuditCursor=state&&Number.isFinite(state.auditCursor)?Math.max(0,Math.floor(state.auditCursor)):0;
+    fallStepAccum=state&&Number.isFinite(state.fallStepAccum)?Math.max(0,state.fallStepAccum):0;
     const loose=state && Array.isArray(state.loose) ? state.loose : [];
     for(let i=0, n=Math.min(loose.length,TREE_LOOSE_PERSIST_CAP); i<n; i++){
       const piece=restoredFallingPiece(loose[i]);
@@ -1270,6 +1297,27 @@ window.MM = window.MM || {};
       markTreeTile(entry[1],x,y);
       queueStandingTreeCheck(x,y);
     }
+    const rotating=state && Array.isArray(state.rotating) ? state.rotating : [];
+    for(let i=0;i<Math.min(rotating.length,MAX_FALLING_TREES);i++){
+      const raw=rotating[i];
+      if(!raw || !Number.isFinite(raw.pivotX) || !Number.isFinite(raw.pivotY) || !Array.isArray(raw.tiles)) continue;
+      const tiles=raw.tiles.filter(tile=>tile && Number.isFinite(tile.rx) && Number.isFinite(tile.ry) && Number.isFinite(tile.ox) && Number.isFinite(tile.oy) && fallsAsTreeDebris(tile.t))
+        .map(tile=>({rx:tile.rx,ry:tile.ry,ox:Math.floor(tile.ox),oy:Math.floor(tile.oy),t:tile.t}));
+      if(!tiles.length) continue;
+      fallingTrees.push({
+        pivotX:raw.pivotX,pivotY:raw.pivotY,dir:normalizeDir(raw.dir)||1,
+        angle:Number.isFinite(raw.angle)?raw.angle:0,omega:Number.isFinite(raw.omega)?raw.omega:0,tiles
+      });
+    }
+    const restoreQueue=(target,list,cap)=>{
+      if(!Array.isArray(list)) return;
+      for(let i=0;i<Math.min(list.length,cap);i++){
+        const pos=parsePersistedTreeKey(list[i]);
+        if(pos) target.add(pos.k);
+      }
+    };
+    restoreQueue(unstableTreeTiles,state&&state.unstableStanding,TREE_DEBRIS_PERSIST_CAP);
+    restoreQueue(unstableFallenTreeTiles,state&&state.unstableFallen,TREE_DEBRIS_PERSIST_CAP);
   }
   function updateFallingPieces(getTile,setTile,dt){
     if(!fallingBlocks.length) return;

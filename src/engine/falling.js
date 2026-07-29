@@ -2343,8 +2343,23 @@ window.MM = window.MM || {};
       if(kk) protectedOut.push(kk);
       if(protectedOut.length>=PROTECTED_SAVE_CAP) break;
     }
+    const complete=active.length<=ACTIVE_RIGID_CAP
+      && sandActive.length<=3000
+      && unstable.size<=6000
+      && manualCityBuilt.size<=20000
+      && playerBuilt.size<=PLAYER_BUILT_SAVE_CAP
+      && settledRubble.size<=22000
+      && protectedBuilds.size<=PROTECTED_SAVE_CAP;
     return {
       v:5,
+      complete,
+      truncated:complete?undefined:{
+        queue:Math.max(0,unstable.size-6000),
+        built:Math.max(0,manualCityBuilt.size-20000),
+        playerBuilt:Math.max(0,playerBuilt.size-PLAYER_BUILT_SAVE_CAP),
+        debris:Math.max(0,settledRubble.size-22000),
+        protected:Math.max(0,protectedBuilds.size-PROTECTED_SAVE_CAP)
+      },
       active:active.map(b=>restoredRigid({x:b.x,y:b.yFloat,type:b.type,vy:b.vy,windCarry:b.windCarry||0,rubble:!!b.rubble})).filter(Boolean).map(b=>({x:b.x,y:b.yFloat,type:b.type,vy:b.vy,windCarry:b.windCarry||0,rubble:!!b.rubble})),
       sand:sandActive.map(s=>restoredSand({x:s.x,y:s.yFloat,vy:s.vy,windCarry:s.windCarry||0})).filter(Boolean).map(s=>({x:s.x,y:s.yFloat,vy:s.vy,windCarry:s.windCarry||0})),
       queue:[...unstable].map(parseSavedKey).filter(Boolean).slice(0,6000),

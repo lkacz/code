@@ -11710,6 +11710,22 @@ const mobs = (function(){
       attackCd:clampFinite(m.attackCd,0,0,60)
     };
     if(finiteNum(m.soot)&&m.soot>0) out.soot=+clampFinite(m.soot,0,0,1).toFixed(3);
+    if(m.status && typeof m.status==='object'){
+      const status={};
+      for(const id of Object.keys(STATUS)){
+        const s=m.status[id];
+        if(!s || !finiteNum(s.t) || !(s.t>0)) continue;
+        const rec={
+          t:+clampFinite(s.t,0,0,120).toFixed(3),
+          dps:+clampFinite(s.dps,0,0,10000).toFixed(3),
+          acc:+clampFinite(s.acc,0,0,10).toFixed(3)
+        };
+        if(typeof s.source==='string') rec.source=s.source.slice(0,64);
+        if(typeof s.cause==='string') rec.cause=s.cause.slice(0,64);
+        status[id]=rec;
+      }
+      if(Object.keys(status).length) out.status=status;
+    }
     if(finiteNum(m.waterTopY)) out.waterTopY=m.waterTopY;
     if(finiteNum(m.desiredDepth)) out.desiredDepth=m.desiredDepth;
     if(finiteNum(m.scale)) out.scale=clampFinite(m.scale,1,0.35,3);
@@ -11803,6 +11819,50 @@ const mobs = (function(){
     // the golden sprinter is a transient event creature: its _g state isn't saved,
     // so restoring it would produce a broken husk — the visit just ends instead
     return { v:6, list: mobs.map(serializeMob).filter(Boolean), aggro:{mode:'rel', m:rel}, golden:goldenSnapshot(), goldGuardAreas:goldGuardDaySnapshot(), xpFatigue:{mode:'day',m:serializeXpFatigue()} }; }
+  function cloneTemporalCombatRecord(src){
+    const out={};
+    if(!src || typeof src!=='object') return out;
+    // Combat records are deliberately data-only. Copying target/player references
+    // would retain the discarded branch and can introduce circular snapshots.
+    for(const [key,value] of Object.entries(src)){
+      if(typeof value==='number' && Number.isFinite(value)) out[key]=value;
+      else if(typeof value==='string' || typeof value==='boolean') out[key]=value;
+    }
+    return out;
+  }
+  function temporalSnapshot(){
+    return {
+      v:1,
+      complete:true,
+      population:serialize(),
+      projectiles:mobProjectiles.map(cloneTemporalCombatRecord),
+      lasers:mobLasers.map(cloneTemporalCombatRecord)
+    };
+  }
+  function temporalRestore(src){
+    if(!src || src.v!==1 || src.complete===false || !src.population || !Array.isArray(src.projectiles) || !Array.isArray(src.lasers)) return false;
+    deserialize(src.population);
+    mobProjectiles.length=0;
+    for(const raw of src.projectiles.slice(0,MOB_PROJ_CAP)){
+      const p=cloneTemporalCombatRecord(raw);
+      if(!finiteCoord(p.x) || !finiteCoord(p.y) || !finiteNum(p.vx) || !finiteNum(p.vy)) continue;
+      p.t=clampFinite(p.t,0,0,4);
+      p.spin=finiteNum(p.spin)?p.spin:0;
+      p.dmg=clampFinite(p.dmg,0,0,100000);
+      mobProjectiles.push(p);
+    }
+    mobLasers.length=0;
+    for(const raw of src.lasers.slice(0,MOB_LASER_CAP)){
+      const l=cloneTemporalCombatRecord(raw);
+      if(!finiteCoord(l.x1) || !finiteCoord(l.y1) || !finiteCoord(l.x2) || !finiteCoord(l.y2)) continue;
+      l.t=clampFinite(l.t,0,0,10);
+      l.life=clampFinite(l.life,0.08,0.01,10);
+      mobLasers.push(l);
+    }
+    metrics.projectiles=mobProjectiles.length;
+    metrics.lasers=mobLasers.length;
+    return true;
+  }
   function deserialize(data){ // clear
     for(const m of mobs) removeFromGrid(m); mobs.length=0; // reset live counts before rebuild
     mobDeathFx.length=0;
@@ -11836,6 +11896,21 @@ const mobs = (function(){
         m.spawnT=clampFinite(r.spawnT,performance.now(),0,Number.MAX_SAFE_INTEGER);
         m.attackCd=clampFinite(r.attackCd,0,0,60);
         if(finiteNum(r.soot)) m.soot=clampFinite(r.soot,0,0,1);
+        if(r.status && typeof r.status==='object'){
+          const status={};
+          for(const id of Object.keys(STATUS)){
+            const raw=r.status[id];
+            if(!raw || !finiteNum(raw.t) || !(raw.t>0)) continue;
+            status[id]={
+              t:clampFinite(raw.t,0,0,120),
+              dps:clampFinite(raw.dps,0,0,10000),
+              acc:clampFinite(raw.acc,0,0,10)
+            };
+            if(typeof raw.source==='string') status[id].source=raw.source.slice(0,64);
+            if(typeof raw.cause==='string') status[id].cause=raw.cause.slice(0,64);
+          }
+          if(Object.keys(status).length) m.status=status;
+        }
         m._smokeTint=0;
         if(finiteNum(r.scale)) m.scale=clampFinite(r.scale,1,0.35,3);
         if(finiteNum(r.speedMul)) m.speedMul=clampFinite(r.speedMul,1,0.1,4);
@@ -12183,7 +12258,7 @@ const mobs = (function(){
         teleporterRetaliations:mobs.filter(m=>m&&finiteCoord(m._teleporterTargetX)&&finiteCoord(m._teleporterTargetY)).map(m=>({id:m.id,x:m._teleporterTargetX,y:m._teleporterTargetY,until:m._teleporterTargetUntil||0,state:m.state||''}))
       };
     }
-  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, ghostRoster, ghostApplyRoster, ghostLerp, thermalTargets, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, forEachLive, natureMetrics:()=>({...natureStats}), _debugNature:{naturePass, natureDriveStep, natureStormOmen, natureWaterNear, natureColdSnap, forcePass:()=>{ natureAt=0; }}, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), goldGuardAreaState:()=>Object.assign(goldGuardDaySnapshot(),{liveDwarfs:countSpecies('GOLD_DWARF_GUARD'),liveDragons:countSpecies('GOLD_DRAGON'),maxLiveDwarfs:GOLD_DWARF_MAX_LIVE}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugPiranhas:()=>({coastProfile:piranhaCoastProfile,coastalRange:PIRANHA_COASTAL_RANGE,coastalCore:PIRANHA_COASTAL_CORE,offshoreDensity:PIRANHA_OFFSHORE_DENSITY}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,
+  const api = { update, draw, attackAt, damageAt, collideBoat, collideMech, igniteAt, igniteRadius, poisonAt, poisonRadius, chillAt, chillRadius, wetAt, wetRadius, statusAt, statusRadius, douseRadius, shockAquaticRadius, blastRadius, healRadiationRain, applyStatus, hasStatus, STATUS, serialize, deserialize, temporalSnapshot, temporalRestore, ghostRoster, ghostApplyRoster, ghostLerp, thermalTargets, setAggro, speciesAggro, isHostile:isMobHostile, notifyTempleDisturbed, forceSpawn, spawnSeasonalHallmark, spawnGolden, nearestLiving, nearestHostileLiving, isLiving, abduct, forEachLive, natureMetrics:()=>({...natureStats}), _debugNature:{naturePass, natureDriveStep, natureStormOmen, natureWaterNear, natureColdSnap, forcePass:()=>{ natureAt=0; }}, goldenState:()=>({acc:GOLDEN.acc, visits:GOLDEN.visits, period:GOLDEN.PERIOD_DAYS*GOLDEN.DAY_SEC}), goldGuardAreaState:()=>Object.assign(goldGuardDaySnapshot(),{liveDwarfs:countSpecies('GOLD_DWARF_GUARD'),liveDragons:countSpecies('GOLD_DRAGON'),maxLiveDwarfs:GOLD_DWARF_MAX_LIVE}), species: Object.keys(SPECIES), registerSpecies, metrics:()=>metrics, diagnose, freezeSpawns, clearAll, _debugSpecies:()=>SPECIES, _debugEcology:()=>({hallmarks:Object.assign({},SEASON_HALLMARK_SPECIES), factor:seasonalSpeciesFactor}), _debugPiranhas:()=>({coastProfile:piranhaCoastProfile,coastalRange:PIRANHA_COASTAL_RANGE,coastalCore:PIRANHA_COASTAL_CORE,offshoreDensity:PIRANHA_OFFSHORE_DENSITY}), _debugDeathFx:debugDeathFx, _debugCombat:debugCombat,
     _debugProgression:{heroProfile:heroProgressionProfile,threatProfile:heroThreatProfile,mobPower:mobCombatPower,challenge:mobChallengeProfile,multiplier:challengeXpMultiplier,levelGraceMultiplier:levelGraceXpMultiplier,tier:challengeTier,progressionFloor:challengeProgressionFloor,xpNeed:heroXpNeed,TRIVIAL_RATIO:XP_TRIVIAL_RATIO,FATIGUE_GRACE_KILLS:XP_FATIGUE_GRACE_KILLS}
   };
   MM.mobs = api;

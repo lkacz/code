@@ -28,6 +28,13 @@ window.MM = window.MM || {};
   const modifiedChunks = new Set();
   const infrastructure = new Map(); // "x,y" -> overlay tile stack (wire / copper cable / water pipe / ladders)
   const constructionBackground = new Map(); // "x,y" -> passable building support/decor tile
+  // Foreground writes use section-level copy-on-write: a busy minute of water,
+  // gases and falling blocks costs one compact Uint8Array per touched section,
+  // not a Map entry + coordinate strings for every flowing cell.
+  const TEMPORAL_SECTION_CAP=2048;
+  const TEMPORAL_OVERLAY_CAP=40000;
+  let temporalJournal=null;
+  let temporalRestoring=false;
   const isChestTile=t=>t===T.CHEST_COMMON||t===T.CHEST_UNCOMMON||t===T.CHEST_RARE||t===T.CHEST_EPIC||t===T.CHEST_LEGENDARY;
   const chestTierForTile=t=>t===T.CHEST_LEGENDARY?'legendary':t===T.CHEST_EPIC?'epic':t===T.CHEST_RARE?'rare':t===T.CHEST_UNCOMMON?'uncommon':'common';
   function stripChestTiles(arr){
@@ -359,6 +366,39 @@ window.MM = window.MM || {};
   }
   function ck(x){ return 'c'+x; }
   function key(x,y){ return Math.floor(x)+','+Math.floor(y); }
+  function invalidateTemporalJournal(reason){
+    if(!temporalJournal || temporalJournal.invalid) return;
+    temporalJournal.invalid=true;
+    temporalJournal.reason=String(reason||'invalid');
+  }
+  function rememberTemporalChunkMeta(cx,sy){
+    if(!temporalJournal || temporalRestoring || temporalJournal.invalid) return;
+    const ref=normalizeChunkRef({cx,sy});
+    if(!ref || temporalJournal.chunkMeta.has(ref.key)) return;
+    temporalJournal.chunkMeta.set(ref.key,{
+      key:ref.key,
+      id:ref.base ? Math.floor(ref.cx) : ref.key,
+      hadVersion:versions.has(ref.key),
+      version:versions.get(ref.key)||0,
+      modified:modifiedChunks.has(ref.base ? Math.floor(ref.cx) : ref.key)
+    });
+  }
+  function rememberTemporalOverlay(layer,x,y,old){
+    if(!temporalJournal || temporalRestoring || temporalJournal.invalid) return;
+    const k=layer+':'+key(x,y);
+    if(temporalJournal.overlays.has(k)) return;
+    if(temporalJournal.overlays.size>=temporalJournal.overlayCap) return invalidateTemporalJournal('overlay-cap');
+    rememberTemporalChunkMeta(Math.floor(x/CHUNK_W),sectionYFor(y));
+    temporalJournal.overlays.set(k,{layer,x:Math.floor(x),y:Math.floor(y),old:Array.isArray(old)?old.slice():old});
+  }
+  function rememberTemporalSection(cx,sy,arr){
+    if(!temporalJournal || temporalRestoring || temporalJournal.invalid) return;
+    const k=ckSection(cx,sy);
+    if(temporalJournal.sections.has(k)) return;
+    if(temporalJournal.sections.size>=temporalJournal.sectionCap) return invalidateTemporalJournal('section-cap');
+    rememberTemporalChunkMeta(cx,sy);
+    temporalJournal.sections.set(k,{cx,sy,old:arr.slice()});
+  }
   function tileIndex(x,y){ return y*CHUNK_W+x; }
   function getTileRaw(arr,lx,y){ return arr[tileIndex(lx,y)]; }
   function isLadderInfrastructureTile(t){ return t===T.LADDER || t===T.BEDROCK_LADDER; }
@@ -2404,6 +2444,7 @@ window.MM = window.MM || {};
     else if(isLadderInfrastructureTile(item) && old.some(isLadderInfrastructureTile)) next=old.slice();
     else next=old.includes(item) ? old.slice() : old.concat(item);
     if(old.length===next.length && old.every((t,i)=>t===next[i])) return false;
+    rememberTemporalOverlay('infrastructure',x,y,old);
     if(!next.length) infrastructure.delete(k);
     else infrastructure.set(k,next);
     notifyInfrastructureChanged(x,y,old,next);
@@ -2428,6 +2469,7 @@ window.MM = window.MM || {};
     const k=key(x,y);
     const old=getConstructionBackground(x,y);
     if(old===item) return false;
+    rememberTemporalOverlay('background',x,y,constructionBackground.has(k)?constructionBackground.get(k):undefined);
     if(item===T.AIR){
       if(genBackgroundAt(x,y)!==T.AIR) constructionBackground.set(k,T.AIR); // tombstone over generated backdrop
       else constructionBackground.delete(k);
@@ -2455,6 +2497,7 @@ window.MM = window.MM || {};
       }catch(e){}
       return;
     }
+    x=Math.floor(x);
     const cx=Math.floor(x/CHUNK_W);
     const lx=((x%CHUNK_W)+CHUNK_W)%CHUNK_W;
     y=Math.floor(y);
@@ -2464,6 +2507,7 @@ window.MM = window.MM || {};
     const idx=tileIndex(lx,ly);
     if(arr[idx]===v) return;
     const old=arr[idx];
+    rememberTemporalSection(cx,sy,arr);
     arr[idx]=v;
     if(old===T.TELEPORTER || v===T.TELEPORTER) noteNeverParkEligibilityChanged();
     notifyTileChanged(x,y,old,v);
@@ -2566,7 +2610,82 @@ window.MM = window.MM || {};
     }
     markOverlaySections(touchedSections);
   }
-  function clearWorld(){ try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); parked.clear(); peekParkCache.clear(); evictWork=null; evictPending=false; evictRetrySize=-1; evictRetryRequested=false; lastRevivedKey=null; liveChunkAddEpoch=0; versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function clearWorld(){ temporalJournal=null; temporalRestoring=false; try{ if(MM.trees && MM.trees.resetIdentities) MM.trees.resetIdentities(); }catch(e){} world.clear(); sectionViews.clear(); parked.clear(); peekParkCache.clear(); evictWork=null; evictPending=false; evictRetrySize=-1; evictRetryRequested=false; lastRevivedKey=null; liveChunkAddEpoch=0; versions.clear(); modifiedChunks.clear(); infrastructure.clear(); constructionBackground.clear(); generatedBackground.clear(); genBgInvalidate(); heightCache.clear(); lakeLevels.clear(); surfaceTempleCache.clear(); if(WG.clearCaches) WG.clearCaches(); }
+  function beginTemporalCheckpoint(opts){
+    if(temporalJournal) return false;
+    const sectionCap=Math.max(16,Math.min(8192,Math.floor(Number(opts&&opts.sectionCap)||TEMPORAL_SECTION_CAP)));
+    const overlayCap=Math.max(256,Math.min(100000,Math.floor(Number(opts&&opts.overlayCap)||TEMPORAL_OVERLAY_CAP)));
+    temporalJournal={sections:new Map(),overlays:new Map(),chunkMeta:new Map(),sectionCap,overlayCap,invalid:false,reason:''};
+    return true;
+  }
+  function commitTemporalCheckpoint(){
+    if(!temporalJournal) return false;
+    temporalJournal=null;
+    return true;
+  }
+  function restoreTemporalCheckpoint(){
+    const journal=temporalJournal;
+    if(!journal || journal.invalid) return false;
+    temporalRestoring=true;
+    try{
+      for(const rec of journal.sections.values()){
+        const current=ensureSection(rec.cx,rec.sy);
+        if(!current || current.length!==rec.old.length){ invalidateTemporalJournal('section-shape'); return false; }
+        const originY=sectionOriginY(rec.sy);
+        let changed=false, teleporterChanged=false;
+        for(let i=0;i<current.length;i++){
+          const old=rec.old[i], next=current[i];
+          if(old===next) continue;
+          const lx=i%CHUNK_W, ly=Math.floor(i/CHUNK_W);
+          const x=rec.cx*CHUNK_W+lx, y=originY+ly;
+          current[i]=old;
+          changed=true;
+          if(old===T.TELEPORTER || next===T.TELEPORTER) teleporterChanged=true;
+          notifyTileChanged(x,y,next,old);
+          try{ if(MM.onTileRenderChanged) MM.onTileRenderChanged(x,y,next,old); }catch(e){}
+        }
+        if(changed) markModifiedChunk(rec.cx,null,rec.sy);
+        if(teleporterChanged) noteNeverParkEligibilityChanged();
+      }
+      const records=[...journal.overlays.values()].reverse();
+      for(const rec of records){
+        if(rec.layer==='infrastructure'){
+          const k=key(rec.x,rec.y);
+          const current=normalizeInfrastructureStack(infrastructure.get(k));
+          const old=normalizeInfrastructureStack(rec.old);
+          if(old.length) infrastructure.set(k,old.slice()); else infrastructure.delete(k);
+          notifyInfrastructureChanged(rec.x,rec.y,current,old);
+          markModifiedChunk(Math.floor(rec.x/CHUNK_W),null,sectionYFor(rec.y));
+          try{ if(MM.onTileRenderChanged) MM.onTileRenderChanged(rec.x,rec.y,T.AIR,T.AIR); }catch(e){}
+        }else if(rec.layer==='background'){
+          const k=key(rec.x,rec.y);
+          if(rec.old===undefined) constructionBackground.delete(k);
+          else constructionBackground.set(k,rec.old);
+          markModifiedChunk(Math.floor(rec.x/CHUNK_W),null,sectionYFor(rec.y));
+          try{ if(MM.onTileRenderChanged) MM.onTileRenderChanged(rec.x,rec.y,T.AIR,T.AIR); }catch(e){}
+        }
+      }
+      // The discarded branch must not permanently pin otherwise generated
+      // chunks in save storage or ratchet render versions on every successful
+      // rewind. Restore metadata only after all world-layer notifications run.
+      for(const rec of journal.chunkMeta.values()){
+        if(rec.hadVersion) versions.set(rec.key,rec.version);
+        else versions.delete(rec.key);
+        if(rec.modified) modifiedChunks.add(rec.id);
+        else modifiedChunks.delete(rec.id);
+      }
+    }finally{
+      temporalRestoring=false;
+      temporalJournal=null;
+    }
+    return true;
+  }
+  function temporalCheckpointState(){
+    if(!temporalJournal) return {active:false,valid:false,cells:0,sections:0,overlayCells:0,estimatedBytes:0,cap:TEMPORAL_SECTION_CAP,reason:''};
+    const sections=temporalJournal.sections.size, overlayCells=temporalJournal.overlays.size, chunks=temporalJournal.chunkMeta.size;
+    return {active:true,valid:!temporalJournal.invalid,cells:sections+overlayCells,sections,overlayCells,
+      chunks,estimatedBytes:sections*SECTION_SIZE+overlayCells*32+chunks*32,cap:temporalJournal.sectionCap,reason:temporalJournal.reason};
+  }
   // Shared prologue for both restore paths: validate the reference against this
   // world's geometry and normalize the payload. Chest blocks from old saves are
   // removed rather than converted — only fresh mob/reward drops make chests now.
@@ -2682,6 +2801,10 @@ window.MM = window.MM || {};
   worldAPI.restoreInfrastructure = restoreInfrastructure;
   worldAPI.snapshotConstructionBackground = snapshotConstructionBackground;
   worldAPI.restoreConstructionBackground = restoreConstructionBackground;
+  worldAPI.beginTemporalCheckpoint = beginTemporalCheckpoint;
+  worldAPI.commitTemporalCheckpoint = commitTemporalCheckpoint;
+  worldAPI.restoreTemporalCheckpoint = restoreTemporalCheckpoint;
+  worldAPI.temporalCheckpointState = temporalCheckpointState;
   worldAPI.isInfrastructureTile = isInfrastructureTile;
   worldAPI.isConstructionBackgroundTile = isConstructionBackgroundTile;
   worldAPI.clear = clearWorld;

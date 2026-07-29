@@ -739,7 +739,15 @@ import { damageBlastCreatures } from './explosion_damage.js';
       .filter(c=>c && c.n>0 && finiteTile(c.x,c.y))
       .sort((a,b)=>(a.x-b.x)||(a.y-b.y))
       .map(c=>({x:c.x,y:c.y,n:Math.max(1,Math.min(50,Math.floor(c.n||0))),age:+Math.max(0,Number.isFinite(c.age)?c.age:0).toFixed(3)}));
-    return {v:2,list,condensate:condensateList};
+    const complete=active.size<=MAX_ACTIVE && condensate.size<=CONDENSATE_CAP;
+    return {
+      v:2,complete,
+      truncated:complete?undefined:{
+        active:Math.max(0,active.size-MAX_ACTIVE),
+        condensate:Math.max(0,condensate.size-CONDENSATE_CAP)
+      },
+      list,condensate:condensateList
+    };
   }
   function restore(data,getTile,setTile){
     reset();

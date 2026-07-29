@@ -452,6 +452,9 @@ window.MM = window.MM || {};
     splashIn:(o)=>synthLanding({...o,tile:T.WATER,surface:'water'}),
     splashOut:(o)=>{ noise({...o,dur:0.11,peak:0.035,fLo:520,fHi:2400,f1:1900,send:0.035}); },
     grave:  (o)=>{ tone({...o,type:'sine',f0:196,f1:98,dur:0.5,peak:0.2,send:0.35}); tone({...o,type:'sine',f0:294,f1:147,dur:0.55,peak:0.08,delay:0.03,send:0.35}); },
+    temporalArm:(o)=>{ duck(0.72,0.55); [262,392,659].forEach((f,i)=>tone({...o,type:'sine',f0:f,f1:f*1.5,dur:.42,peak:.075,delay:i*.07,send:.42,priority:true})); noise({...o,dur:.34,peak:.022,fLo:4800,fHi:11000,ftype:'highpass',send:.3}); },
+    temporalRewind:(o)=>{ duck(0.42,1.1); tone({...o,type:'sawtooth',f0:1480,f1:74,dur:1.18,peak:.12,bend:.92,send:.48,priority:true}); tone({...o,type:'sine',f0:2093,f1:131,dur:1.05,peak:.08,bend:.85,send:.52,priority:true}); noise({...o,dur:1.1,peak:.05,fLo:7800,fHi:260,ftype:'bandpass',priority:true}); },
+    temporalReturn:(o)=>{ duck(0.62,.7); [196,392,784,1568].forEach((f,i)=>tone({...o,type:'sine',f0:f,f1:f*1.008,dur:.58,peak:.09,delay:i*.045,send:.5,priority:true})); noise({...o,dur:.4,peak:.025,fLo:5200,fHi:12000,ftype:'highpass',send:.35}); },
     thud:   (o)=>{ if(throttled('thud',120,o)) return; noise({...o,dur:0.09,peak:0.16,fLo:90,fHi:280,ftype:'lowpass',buf:'brown'}); tone({...o,type:'sine',f0:140,f1:60,dur:0.1,peak:0.1}); },
     fire:   (o)=>{ if(throttled('fire',140,o)) return; noise({...o,dur:0.25,peak:0.08,fLo:250,fHi:1100,ftype:'lowpass'});
                    noise({...o,dur:0.03,peak:0.05,fLo:rand(900,1800),fHi:rand(2000,3400),delay:rand(0.02,0.09)});

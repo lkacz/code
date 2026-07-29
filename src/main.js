@@ -91,6 +91,7 @@ import { survival as SURVIVAL } from './engine/survival.js';
 import { discovery as DISCOVERY } from './engine/discovery.js';
 import { houseHealing as HOUSE_HEALING } from './engine/house_healing.js';
 import { sectionAwareRespawnPoint, usesSurfaceRespawnRoute } from './engine/respawn_travel.js';
+import { createTemporalEchoController } from './engine/temporal_echo.js';
 import { audio as AUDIO, RADIO_STATIONS } from './engine/audio.js';
 import { ufo as UFO } from './engine/ufo.js';
 import { tasks as TASKS } from './engine/tasks.js';
@@ -2687,6 +2688,79 @@ function validHealingShelterRecords(){
 loadRespawnTotemsFromStorage();
 loadHealingSheltersFromStorage();
 let grave=null; const GRAVE_KEY='mm_grave_v1';
+const TEMPORAL_ECHO=createTemporalEchoController({durationSeconds:60,cooldownSeconds:180});
+const TEMPORAL_COOLDOWN_KEY='mm_temporal_echo_cooldown_v1';
+const TEMPORAL_PENDING_KEY='mm_temporal_echo_pending_v1';
+const TEMPORAL_COOLDOWN_MS=180000;
+function temporalStorageRead(key){
+	for(const storage of [localStorage,typeof sessionStorage!=='undefined'?sessionStorage:null]){
+		if(!storage) continue;
+		try{ const raw=storage.getItem(key); if(raw!=null) return raw; }catch(e){}
+	}
+	return null;
+}
+function temporalStorageWrite(key,value){
+	const raw=JSON.stringify(value);
+	let written=false, lastError=null;
+	for(const storage of [localStorage,typeof sessionStorage!=='undefined'?sessionStorage:null]){
+		if(!storage) continue;
+		try{ storage.setItem(key,raw); written=true; }catch(e){ lastError=e; }
+	}
+	if(!written){
+		try{ window.__mmTemporalStorageError=String(lastError&&lastError.message||lastError||'storage unavailable'); }catch(e){}
+	}
+	return written;
+}
+function temporalStorageRemove(key){
+	for(const storage of [localStorage,typeof sessionStorage!=='undefined'?sessionStorage:null]){
+		if(!storage) continue;
+		try{ storage.removeItem(key); }catch(e){}
+	}
+}
+let temporalCooldownUntil=0;
+try{
+	const raw=JSON.parse(temporalStorageRead(TEMPORAL_COOLDOWN_KEY)||'null');
+	if(raw && Number.isFinite(Number(raw.until))){
+		// Corrupt or hand-edited storage must not lock the mechanic indefinitely.
+		// A legitimate persisted lock can never extend beyond one full cooldown
+		// from this boot.
+		temporalCooldownUntil=Math.max(0,Math.min(Number(raw.until),Date.now()+TEMPORAL_COOLDOWN_MS));
+	}
+	const pending=JSON.parse(temporalStorageRead(TEMPORAL_PENDING_KEY)||'null');
+	if(pending && pending.v===1){
+		// A tab killed inside an unresolved branch must not turn reload into a free
+		// death undo. This runs before the async saved-world seed is loaded, so the
+		// marker is intentionally account-wide just like the cooldown record.
+		temporalCooldownUntil=Math.max(temporalCooldownUntil,Date.now()+TEMPORAL_COOLDOWN_MS);
+	}
+	temporalStorageRemove(TEMPORAL_PENDING_KEY);
+	if(temporalCooldownUntil>Date.now()) temporalStorageWrite(TEMPORAL_COOLDOWN_KEY,{v:1,until:temporalCooldownUntil});
+	else temporalStorageRemove(TEMPORAL_COOLDOWN_KEY);
+}catch(e){}
+let temporalRewindFx=null;
+function temporalPersistentCooldownSeconds(){
+	const remaining=(temporalCooldownUntil-Date.now())/1000;
+	if(remaining>0) return remaining;
+	if(temporalCooldownUntil){
+		temporalCooldownUntil=0;
+		temporalStorageRemove(TEMPORAL_COOLDOWN_KEY);
+	}
+	return 0;
+}
+function temporalEchoState(){
+	const state=TEMPORAL_ECHO.state();
+	const cooldown=Math.max(state.cooldown,temporalPersistentCooldownSeconds());
+	return cooldown===state.cooldown ? state : Object.freeze({...state,cooldown});
+}
+function temporalEchoActive(){ return temporalEchoState().active; }
+function rememberTemporalPending(payload){
+	temporalStorageWrite(TEMPORAL_PENDING_KEY,{v:1,seed:WORLDGEN.worldSeed,at:Date.now(),cause:String(payload&&payload.cause||'damage')});
+}
+function clearTemporalPending(){ temporalStorageRemove(TEMPORAL_PENDING_KEY); }
+function persistTemporalCooldown(){
+	temporalCooldownUntil=Math.max(temporalCooldownUntil,Date.now()+TEMPORAL_COOLDOWN_MS);
+	temporalStorageWrite(TEMPORAL_COOLDOWN_KEY,{v:1,until:temporalCooldownUntil});
+}
 function cleanGraveRecord(src){
 	if(!src || typeof src!=='object' || !Number.isFinite(Number(src.x)) || !Number.isFinite(Number(src.y)) || !worldYInBounds(Number(src.y)) || src.seed!==WORLDGEN.worldSeed || !src.res || typeof src.res!=='object') return null;
 	const res={};
@@ -2698,7 +2772,7 @@ function cleanGraveRecord(src){
 	return {x:Math.floor(Number(src.x)),y:Math.floor(Number(src.y)),res,seed:WORLDGEN.worldSeed};
 }
 try{ const raw=localStorage.getItem(GRAVE_KEY); if(raw) grave=cleanGraveRecord(JSON.parse(raw)); }catch(e){}
-function saveGrave(){ try{ if(grave) localStorage.setItem(GRAVE_KEY, JSON.stringify(grave)); else localStorage.removeItem(GRAVE_KEY); }catch(e){} }
+function saveGrave(){ if(temporalEchoActive()) return; try{ if(grave) localStorage.setItem(GRAVE_KEY, JSON.stringify(grave)); else localStorage.removeItem(GRAVE_KEY); }catch(e){} }
 function snapshotGrave(){
 	const clean=cleanGraveRecord(grave);
 	return clean ? Object.assign({v:1},clean) : null;
@@ -2726,6 +2800,164 @@ let heroDeathSlowMotionStart=0;
 let heroDeathSlowMotionUntil=0;
 let simulationClockMs=(typeof performance!=='undefined' && performance.now) ? performance.now() : Date.now();
 window.__mmSimulationTimeMs=simulationClockMs;
+function temporalEchoEligible(cause){
+	const state=temporalEchoState();
+	if(state.phase!=='idle' || state.cooldown>0 || MM.ghostMode || MM.ghostHeroIntents) return false;
+	if(/^inner_/.test(String(cause||'')) || cause==='alien_invasion') return false;
+	if(MM.challenge && MM.challenge.isIronman && MM.challenge.isIronman()) return false;
+	const bodies=Array.isArray(MM.coopBodies)?MM.coopBodies:[];
+	return !bodies.some(b=>b && !b.dead);
+}
+function captureTemporalEcho(cause){
+	if(!temporalEchoEligible(cause) || !WORLD || !WORLD.beginTemporalCheckpoint) return false;
+	try{ cancelPendingSaveWork(); }catch(e){}
+	if(!WORLD.beginTemporalCheckpoint({sectionCap:2048,overlayCap:40000})) return false;
+	try{
+		const data=buildSaveObject({lightweight:true,storeChunkCount:modifiedChunkIds().length,auditChunkIds:[]});
+		const payload={
+			cause:String(cause||'damage'),
+			death:{x:player.x,y:player.y,vx:player.vx,vy:player.vy},
+			data,
+			runtime:captureWorldTransitionRuntime(),
+			status:HERO_STATUS&&HERO_STATUS.snapshot?HERO_STATUS.snapshot():null,
+			discovery:DISCOVERY&&DISCOVERY.snapshot?DISCOVERY.snapshot():null,
+			mobs:MOBS&&MOBS.temporalSnapshot?MOBS.temporalSnapshot():null,
+			weapons:WEAPONS&&WEAPONS.temporalSnapshot?WEAPONS.temporalSnapshot():null,
+			bosses:BOSSES&&BOSSES.temporalSnapshot?BOSSES.temporalSnapshot():null
+		};
+		const incomplete=Object.entries(payload.data||{}).find(([,value])=>value&&typeof value==='object'&&value.complete===false);
+		const missingCritical=!payload.data || ['player','water','trees','falling','mobs'].some(key=>payload.data[key]==null);
+		if(missingCritical || !payload.runtime || !payload.status || !payload.discovery || !payload.mobs || payload.mobs.complete===false || !payload.weapons || !payload.bosses || incomplete) throw new Error('temporal snapshot incomplete');
+		if(!TEMPORAL_ECHO.arm(payload)) throw new Error('temporal snapshot refused');
+		rememberTemporalPending(payload);
+		return true;
+	}catch(e){
+		try{ WORLD.commitTemporalCheckpoint(); }catch(_e){}
+		console.warn('Temporal echo unavailable',e);
+		return false;
+	}
+}
+function restoreTemporalSystem(api,data,extra){
+	if(data==null || !api || typeof api.restore!=='function') return true;
+	try{ return api.restore(data,...(extra||[]))!==false; }catch(e){ console.warn('Temporal restore failed',e); return false; }
+}
+function restoreTemporalEchoPayload(payload){
+	const d=payload&&payload.data;
+	if(!d || !WORLD || !WORLD.restoreTemporalCheckpoint || !WORLD.restoreTemporalCheckpoint()) return false;
+	let ok=true;
+	const restore=(api,value,extra)=>{ ok=restoreTemporalSystem(api,value,extra)&&ok; };
+	restore(BACKGROUND,d.background);
+	restore(WATER,d.water,[getTile,setTile]);
+	try{ restoreRespawnTotems(d.respawnTotems); restoreHealingShelters(d.healingShelters); }catch(e){ ok=false; }
+	restore(TREES,d.trees,[getTile]);
+	restore(FALLING,d.falling);
+	restore(MEAT,d.meat,[getTile]);
+	restore(DROPS,d.drops);
+	restore(GASES,d.gases,[getTile,setTile]);
+	restore(SMOKE,d.smoke,[getTile]);
+	restore(FIRE,d.fire,[getTile]);
+	restore(BOATS,d.boats);
+	restore(MECHS,d.mechs,[getTile]);
+	restore(CAVE_IN,d.caveIn); restore(FOREST,d.forest); restore(ATTENTION,d.attention); restore(KILN,d.kiln);
+	restore(WIND,d.wind); restore(WORLD_SIM,d.worldSim); restore(SEASONS,d.seasons); restore(CLOUDS,d.clouds);
+	restore(DYNAMO,d.dynamo,[getTile]); restore(SOLAR,d.solar,[getTile]);
+	if(d.furnishingsPower!=null && FURNISHINGS&&FURNISHINGS.restorePower) try{ ok=FURNISHINGS.restorePower(d.furnishingsPower,getTile)!==false&&ok; }catch(e){ ok=false; }
+	restore(TELEPORTERS,d.teleporters,[getTile]); restore(PUMPS,d.pumps,[getTile]); restore(STEAM_MACHINES,d.steamMachines,[getTile]);
+	restore(TURRETS,d.turrets,[getTile]); restore(SPRING_PLATFORMS,d.springPlatforms,[getTile]); restore(VENDING,d.vending,[getTile]);
+	restore(VOLCANO,d.volcano,[getTile]); restore(ATOMIC_WINTER,d.atomicWinter,[getTile]);
+	restore(GUARDIANS,d.guardians,[getTile]); restore(UNDERGROUND,d.undergroundBoss); restore(SKY_GUARDIAN,d.skyGuardian);
+	restore(AFTERMATH,d.guardianAftermath); restore(CENTER_GUARDIAN,d.centerGuardian); restore(STORY_PROGRESSION,d.storyProgression);
+	restore(METEORITES,d.meteorites); restore(COMPANIONS,d.companions,[getTile]); restore(GENERATED_NPCS,d.generatedNpcs);
+	restore(NPCS,d.npcs); restore(UFO,d.ufo); restore(TASKS,d.tasks); restore(PROGRESS,d.progress); restore(PLANTS,d.plants); restore(GRAFFITI,d.graffiti);
+	if(d.fog!=null && FOG&&FOG.importSeen) try{ FOG.importSeen(Array.isArray(d.fog)?d.fog:d.fog.seen); if(FOG.setRevealAll) FOG.setRevealAll(!!d.fog.revealAll); }catch(e){ ok=false; }
+	if(d.invasions!=null && INVASIONS&&INVASIONS.restore) try{ ok=INVASIONS.restore(d.invasions,getTile,setTile)!==false&&ok; }catch(e){ ok=false; }
+	if(payload.mobs && MOBS&&MOBS.temporalRestore) try{ ok=MOBS.temporalRestore(payload.mobs)!==false&&ok; }catch(e){ ok=false; }
+	else if(d.mobs!=null && MOBS&&MOBS.deserialize) try{ ok=MOBS.deserialize(d.mobs)!==false&&ok; }catch(e){ ok=false; }
+	try{
+		restoreInventory(d.inv);
+		restoreCraftingAvailability(d.crafting);
+		restoreHotbar(d.hotbar||{tool:d.player.tool});
+		restoreEquipment(d.equipment);
+		restorePlayerState(d.player);
+		// Both capacities are derived from progress/equipment, not serialized on
+		// the player. Recompute them before granting the full-health rewind.
+		applyProgressHp();
+		applyHeroEnergyCapacity();
+	}catch(e){ ok=false; }
+	try{ if(WEAPONS&&WEAPONS.temporalRestore&&payload.weapons) ok=WEAPONS.temporalRestore(payload.weapons)&&ok; }catch(e){ ok=false; }
+	try{ if(BOSSES&&BOSSES.temporalRestore&&payload.bosses) ok=BOSSES.temporalRestore(payload.bosses)&&ok; }catch(e){ ok=false; }
+	try{ if(payload.runtime) ok=restoreWorldTransitionRuntimeSnapshot(payload.runtime)&&ok; }catch(e){ ok=false; }
+	try{ if(HERO_STATUS&&HERO_STATUS.restore&&payload.status) ok=HERO_STATUS.restore(payload.status)&&ok; }catch(e){ ok=false; }
+	try{ if(DISCOVERY&&DISCOVERY.restore&&payload.discovery) ok=DISCOVERY.restore(payload.discovery)&&ok; }catch(e){ ok=false; }
+	restoreGrave(d.grave);
+	player.hp=player.maxHp;
+	player.hpInvul=performance.now()+1500;
+	player.vx=Number(payload.death.vx)||0; player.vy=Number(payload.death.vy)||0;
+	player.hurtFlashUntil=0;
+	centerOnPlayer();
+	updateInventory(); updateHotbarCounts();
+	return ok;
+}
+function collapseTemporalEcho(reason,notice){
+	const state=temporalEchoState();
+	if(state.phase==='idle') return false;
+	try{ if(WORLD&&WORLD.commitTemporalCheckpoint) WORLD.commitTemporalCheckpoint(); }catch(e){}
+	TEMPORAL_ECHO.collapse(reason);
+	clearTemporalPending();
+	temporalRewindFx=null;
+	if(grave && grave.echo){
+		delete grave.echo;
+		if(!grave.res || !Object.keys(grave.res).length){ if(getTile(grave.x,grave.y)===T.GRAVE) setTile(grave.x,grave.y,T.AIR); grave=null; }
+	}
+	saveGrave(); saveState();
+	if(notice) msg(notice);
+	return true;
+}
+function beginTemporalRewind(){
+	const state=temporalEchoState();
+	const checkpoint=WORLD&&WORLD.temporalCheckpointState?WORLD.temporalCheckpointState():null;
+	if(!checkpoint || !checkpoint.valid) return false;
+	if(state.phase!=='racing' || !TEMPORAL_ECHO.beginRewind()) return false;
+	temporalRewindFx={t:0,dur:1.35,restored:false,payload:state.payload,from:{x:player.x,y:player.y},to:{...state.payload.death}};
+	releaseGameplayInput();
+	try{ if(AUDIO&&AUDIO.play) AUDIO.play('temporalRewind'); }catch(e){}
+	return true;
+}
+function updateTemporalEcho(dt){
+	if(temporalRewindFx){
+		const fx=temporalRewindFx;
+		fx.t+=Math.max(0,dt||0);
+		if(!fx.restored && fx.t>=fx.dur*0.52){
+			fx.restored=true;
+			const ok=restoreTemporalEchoPayload(fx.payload);
+			if(!ok){ console.warn('Temporal echo restored with degraded subsystem fidelity'); window.__mmTemporalRestoreDegraded=true; }
+			TEMPORAL_ECHO.finishRewind();
+			persistTemporalCooldown();
+			clearTemporalPending();
+			saveGrave(); saveState();
+			try{ if(AUDIO&&AUDIO.play) AUDIO.play('temporalReturn'); }catch(e){}
+			msg('⏳ Chwila odzyskana — wracasz z pełnym zdrowiem');
+		}
+		if(fx.t>=fx.dur) temporalRewindFx=null;
+		return true;
+	}
+	const state=temporalEchoState();
+	if(state.phase==='racing'){
+		const checkpoint=WORLD&&WORLD.temporalCheckpointState?WORLD.temporalCheckpointState():null;
+		if(!checkpoint || !checkpoint.valid){
+			collapseTemporalEcho('checkpoint-invalid','⌛ Echo czasu pękło — świat zmienił się zbyt mocno');
+			return false;
+		}
+		const event=TEMPORAL_ECHO.update(dt);
+		if(event&&event.type==='expired') collapseTemporalEcho('expired','⌛ Minuta minęła — ta linia czasu stała się rzeczywistością');
+	}else TEMPORAL_ECHO.update(dt);
+	return false;
+}
+MM.temporalEcho={
+	state:temporalEchoState,
+	// Local-only QA seam: production builds cannot bypass grave contact.
+	debugRewind:()=>debugShortcutsEnabled() ? beginTemporalRewind() : false
+};
 function configuredSimulationTimeScale(){
 	const scale=Number(window.__simulationTimeScale);
 	return Number.isFinite(scale) ? Math.max(SIMULATION_TIME_SCALE_MIN,Math.min(SIMULATION_TIME_SCALE_MAX,scale)) : 1;
@@ -3011,6 +3243,11 @@ function finishDeathTravelRespawn(){
 	try{ if(PARTICLES && PARTICLES.spawnEnergyAbsorb) PARTICLES.spawnEnergyAbsorb(to.x*TILE,to.y*TILE,player.x*TILE,(player.y-0.08)*TILE,1.2,{quick:true,hue:'gold'}); }catch(e){}
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('charge'); }catch(e){}
 	updateInventory();
+	if(temporalEchoState().phase==='armed'){
+		TEMPORAL_ECHO.beginRace();
+		msg('⏳ Echo śmierci: masz 60 sekund, by dotknąć nagrobka');
+		try{ if(AUDIO&&AUDIO.play) AUDIO.play('temporalArm'); }catch(e){}
+	}
 	return true;
 }
 function updateDeathTravelFx(dt){
@@ -3290,6 +3527,9 @@ function notifyInvasionMining(tId,tx,ty){
 window.heroDied=function(cause){
 	if(deathTravelFx) return;
 	if(immunityMode){ player.hp=player.maxHp; return; }
+	const echoWasActive=temporalEchoActive();
+	if(echoWasActive) collapseTemporalEcho('second-death','⌛ Drugą śmiercią zatrzasnąłeś tę linię czasu');
+	const echoArmed=!echoWasActive && captureTemporalEcho(cause);
 	beginHeroDeathSlowMotion();
 	// finale.js keeps the lifetime deaths tally off this event
 	try{ window.dispatchEvent(new CustomEvent('mm-hero-died',{detail:{cause:String(cause||'damage')}})); }catch(e){}
@@ -3331,11 +3571,12 @@ window.heroDied=function(cause){
 		}
 	}
 	const res={}; let any=false;
+	const previousGrave=grave;
 	for(const k of RESOURCE_KEYS){
 		const half=Math.floor((inv[k]||0)/2);
 		if(half>0){ res[k]=half; inv[k]-=half; any=true; }
 	}
-	if(any){
+	if(any || echoArmed){
 		let gx=Math.round(player.x); let gy=Math.round(player.y);
 		const here=getTile(gx,gy);
 		if(here!==T.AIR && here!==T.WATER && getTile(gx,gy-1)===T.AIR) gy=gy-1;
@@ -3345,10 +3586,19 @@ window.heroDied=function(cause){
 			const spot=nearestOpenGraveCell(gx,gy);
 			if(spot){ gx=spot.x; gy=spot.y; }
 		}
-		grave={x:gx, y:gy, res, seed:WORLDGEN.worldSeed}; saveGrave();
+		grave={x:gx, y:gy, res, seed:WORLDGEN.worldSeed,echo:echoArmed}; saveGrave();
 		const t=getTile(gx,gy);
 		if(isReplaceableNaturalOpenTile(t,false)) setTile(gx,gy,T.GRAVE);
-		msg('☠ Zginąłeś — połowa zasobów czeka w nagrobku ('+gx+', '+gy+')');
+		if(getTile(gx,gy)!==T.GRAVE){
+			// Never advertise an objective the player cannot complete. If even the
+			// bounded open-cell search fails, refund the split and preserve the old
+			// grave marker instead of silently deleting half the inventory.
+			for(const k in res) if(typeof inv[k]==='number') inv[k]+=res[k];
+			grave=previousGrave;
+			if(echoArmed) collapseTemporalEcho('grave-unreachable','⌛ Echo nie znalazło bezpiecznego miejsca — zasoby zostały zwrócone');
+			else { saveGrave(); msg('☠ Brak miejsca na nagrobek — zasoby zostały zwrócone'); }
+		}else if(echoArmed) msg('⏳ Śmierć zostawiła Echo Chwili ('+gx+', '+gy+')');
+		else msg('☠ Zginąłeś — połowa zasobów czeka w nagrobku ('+gx+', '+gy+')');
 	} else {
 		msg('☠ Zginąłeś – respawn');
 	}
@@ -3357,7 +3607,7 @@ window.heroDied=function(cause){
 	startDeathTravelFx(cause);
 };
 function nearestOpenGraveCell(cx,cy){
-	for(let r=1;r<=6;r++){
+	for(let r=1;r<=10;r++){
 		for(let dy=-r;dy<=r;dy++){
 			for(let dx=-r;dx<=r;dx++){
 				if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue; // ring perimeter only
@@ -3371,6 +3621,7 @@ function nearestOpenGraveCell(cx,cy){
 }
 function tryOpenGraveAt(tx,ty){
 	if(getTile(tx,ty)!==T.GRAVE) return false;
+	if(grave && grave.echo && grave.x===tx && grave.y===ty && temporalEchoState().phase==='racing') return beginTemporalRewind();
 	if(!setForegroundConfirmed(tx,ty,T.AIR)) return false;
 	if(grave && grave.x===tx && grave.y===ty && grave.res){
 		const got=[];
@@ -4427,6 +4678,7 @@ function buildSaveObject(opts){
 }; }
 function saveGameCore(manual){
 	if(_saveWritesBlocked){ if(manual) msg('Zapis zablokowany: najpierw odzyskaj zapis lub rozpocznij nową warstwę'); return false; }
+	if(temporalEchoActive()){ if(manual) msg('Zapis wstrzymany do rozstrzygnięcia Echa Chwili'); return false; }
 	if(MM.ghostMode) return false; // ghost sessions never write saves
 	try{
 		const t0=savePerfNow();
@@ -4582,7 +4834,7 @@ function persistStoreSave(reason){
 	return _storeSaveChain;
 }
 async function persistStoreSaveNow(reason){
-	if(_saveWritesBlocked || MM.ghostMode || _startingNewGame || !storeActive()) return false;
+	if(_saveWritesBlocked || temporalEchoActive() || MM.ghostMode || _startingNewGame || !storeActive()) return false;
 	const manual=reason==='manual';
 	const snapshotRevision=_saveRevision;
 	try{
@@ -5299,7 +5551,7 @@ window.__injectSaveButtons = function(){ const menuPanel=document.getElementById
 		// Enable/disable Continue button visibility
 		continueBtn.style.display = slots.length? 'block':'none';
 	}
-	function performNamedSave(forcePrompt){ if(_saveWritesBlocked){ msg('Zapis zablokowany: najpierw wczytaj poprawny zapis lub rozpocznij nową warstwę'); return false; } const slots=loadSlots(); let initial=''; if(!forcePrompt && currentSlotId){ const cur=slots.find(s=>s.id===currentSlotId); if(cur) initial=cur.name||''; } const name=prompt('Nazwa zapisu:', initial); if(name==null) return false; const trimmed=name.trim(); let target=null; if(currentSlotId) target=slots.find(s=>s.id===currentSlotId && (trimmed==='' || s.name===trimmed)); if(!target && trimmed) target=slots.find(s=>s.name===trimmed); const perf={parts:[]}; let data,saveHash; try{ const rawCore=buildSaveObject({perf}); const serialized=timedSavePart('hash',()=>serializeHashedSave(rawCore),perf); data=serialized.json; saveHash=serialized.hash; }catch(e){ console.warn('Named save failed',e); msg('Błąd zapisu'); return false; } if(target){ try{ writeSaveSlot(slotKey(target.id), data, perf); target.time=Date.now(); if(trimmed) target.name=trimmed; target.seed=WORLDGEN.worldSeed; target.bytes=data.length; target.hash=saveHash; storeSlots(slots); currentSlotId=target.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Nadpisano '+(target.name||target.id)); refreshList(); return true; }catch(e){ msg('Błąd zapisu'); return false; } } else { const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); try{ writeSaveSlot(slotKey(id), data, perf); slots.push({id,name:trimmed||null,time:Date.now(),seed:WORLDGEN.worldSeed,bytes:data.length,hash:saveHash}); storeSlots(slots); currentSlotId=id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Zapisano '+(trimmed||id)); browser.style.display='flex'; refreshList(); return true; }catch(e){ msg('Błąd – brak miejsca?'); return false; } } }
+	function performNamedSave(forcePrompt){ if(_saveWritesBlocked){ msg('Zapis zablokowany: najpierw wczytaj poprawny zapis lub rozpocznij nową warstwę'); return false; } const slots=loadSlots(); if(temporalEchoActive()){ msg('Zapis wstrzymany do rozstrzygnięcia Echa Chwili'); return false; } let initial=''; if(!forcePrompt && currentSlotId){ const cur=slots.find(s=>s.id===currentSlotId); if(cur) initial=cur.name||''; } const name=prompt('Nazwa zapisu:', initial); if(name==null) return false; const trimmed=name.trim(); let target=null; if(currentSlotId) target=slots.find(s=>s.id===currentSlotId && (trimmed==='' || s.name===trimmed)); if(!target && trimmed) target=slots.find(s=>s.name===trimmed); const perf={parts:[]}; let data,saveHash; try{ const rawCore=buildSaveObject({perf}); const serialized=timedSavePart('hash',()=>serializeHashedSave(rawCore),perf); data=serialized.json; saveHash=serialized.hash; }catch(e){ console.warn('Named save failed',e); msg('Błąd zapisu'); return false; } if(target){ try{ writeSaveSlot(slotKey(target.id), data, perf); target.time=Date.now(); if(trimmed) target.name=trimmed; target.seed=WORLDGEN.worldSeed; target.bytes=data.length; target.hash=saveHash; storeSlots(slots); currentSlotId=target.id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Nadpisano '+(target.name||target.id)); refreshList(); return true; }catch(e){ msg('Błąd zapisu'); return false; } } else { const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6); try{ writeSaveSlot(slotKey(id), data, perf); slots.push({id,name:trimmed||null,time:Date.now(),seed:WORLDGEN.worldSeed,bytes:data.length,hash:saveHash}); storeSlots(slots); currentSlotId=id; localStorage.setItem(LAST_SLOT_KEY,currentSlotId); msg('Zapisano '+(trimmed||id)); browser.style.display='flex'; refreshList(); return true; }catch(e){ msg('Błąd – brak miejsca?'); return false; } } }
 
 	// Continue button logic
 	continueBtn.addEventListener('click',()=>{
@@ -5505,6 +5757,7 @@ function scheduleDirtySave(delay){
 function saveState(){
 	if(_startingNewGame) return;
 	if(_saveWritesBlocked) return;
+	if(typeof temporalEchoActive==='function' && temporalEchoActive()) return;
 	if(MM.ghostMode) return; // ghost sessions never write saves
 	_saveDirty=true;
 	_saveRevision++;
@@ -5586,6 +5839,7 @@ window.__mmWorldToScreen = function(wx,wy){
 	return { x:(wx-camX)*zoom*TILE, y:(wy-camY)*zoom*TILE, scale:zoom*TILE };
 };
 function flushPendingSave(){
+	if(typeof temporalEchoActive==='function' && temporalEchoActive()) collapseTemporalEcho('session-ended');
 	if(_startingNewGame){
 		// Other modules may have their own earlier pagehide handlers; purge once more
 		// after they run so no fragment of the abandoned profile survives navigation.
@@ -5611,7 +5865,7 @@ function flushPendingSave(){
 }
 window.addEventListener('pagehide',flushPendingSave);
 window.addEventListener('beforeunload',flushPendingSave);
-document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') flushPendingSave(); });
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden' && !temporalEchoActive()) flushPendingSave(); });
 
 function startNewGame(requestedSeed){
 	if(_startingNewGame) return false;
@@ -12808,6 +13062,12 @@ function restoreWorldTransitionRuntimeSnapshot(snapshot){
 	return true;
 }
 function resetWorldTransitionRuntime(){
+	try{ if(WORLD&&WORLD.commitTemporalCheckpoint) WORLD.commitTemporalCheckpoint(); }catch(e){}
+	if(temporalEchoActive()){
+		TEMPORAL_ECHO.collapse('world-transition');
+		clearTemporalPending();
+	}
+	temporalRewindFx=null;
 	deathTravelFx=null;
 	heroDeathSlowMotionStart=0;
 	heroDeathSlowMotionUntil=0;
@@ -21421,6 +21681,69 @@ if (document.readyState === 'loading') {
 let volcanoLeakWakeT=0;
 const MAX_FRAME_DT=0.05;
 let lastPowerCatchupSaveAt=0;
+let temporalHudEl=null;
+function ensureTemporalHud(){
+	if(temporalHudEl || typeof document==='undefined' || !document.body) return temporalHudEl;
+	const el=document.createElement('div');
+	el.id='temporalEchoHud';
+	el.setAttribute('role','status');
+	el.setAttribute('aria-live','polite');
+	el.style.cssText='display:none;position:fixed;z-index:19000;left:50%;top:calc(env(safe-area-inset-top,0px) + 18px);transform:translateX(-50%);min-width:250px;padding:9px 16px 10px;border:1px solid rgba(111,246,255,.72);border-radius:12px;background:linear-gradient(120deg,rgba(5,19,31,.91),rgba(33,20,51,.87));box-shadow:0 0 26px rgba(71,224,255,.28),inset 0 0 18px rgba(255,211,103,.08);color:#eaffff;text-align:center;font:700 12px/1.15 system-ui,sans-serif;letter-spacing:.08em;pointer-events:none;backdrop-filter:blur(7px)';
+	document.body.appendChild(el);
+	temporalHudEl=el;
+	return el;
+}
+function drawTemporalEchoOverlay(ts){
+	const state=temporalEchoState();
+	const active=state.phase!=='idle' || !!temporalRewindFx;
+	const hud=ensureTemporalHud();
+	if(hud){
+		hud.style.display=active?'block':'none';
+		if(active){
+			const seconds=Math.max(0,state.remaining);
+			const urgent=state.phase==='racing'&&seconds<=10;
+			hud.style.borderColor=urgent?'rgba(255,105,126,.92)':'rgba(111,246,255,.72)';
+			hud.innerHTML='<div style="font-size:10px;opacity:.72">ECHO CHWILI</div><div style="font-size:25px;letter-spacing:.03em;margin-top:2px;color:'+(urgent?'#ff8798':'#fff3b0')+'">'+
+				(state.phase==='rewinding'?'COFANIE':seconds.toFixed(1)+' s')+'</div><div style="font-size:10px;opacity:.75;margin-top:3px">'+
+				(state.phase==='armed'?'powrót do świata':state.phase==='rewinding'?'odtwarzanie fatalnej chwili':'dotknij nagrobka, aby wrócić')+'</div>';
+		}
+	}
+	if(!active) return;
+	const time=(Number(ts)||performance.now())/1000;
+	ctx.save();
+	ctx.globalCompositeOperation='screen';
+	const pulse=0.5+0.5*Math.sin(time*7);
+	const vignette=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.12,W/2,H/2,Math.max(W,H)*0.72);
+	vignette.addColorStop(0,'rgba(40,235,255,0)');
+	vignette.addColorStop(0.72,'rgba(23,98,160,'+(0.035+pulse*0.025)+')');
+	vignette.addColorStop(1,'rgba(75,18,112,'+(0.13+pulse*0.04)+')');
+	ctx.fillStyle=vignette; ctx.fillRect(0,0,W,H);
+	if(grave && (state.phase==='racing'||state.phase==='armed')){
+		const cam=currentRenderCamera();
+		const gx=(grave.x*TILE-cam.x*TILE)*zoom;
+		const gy=(grave.y*TILE-cam.y*TILE)*zoom;
+		for(let i=0;i<3;i++){
+			const r=(18+i*11+((time*22+i*13)%32))*zoom;
+			ctx.strokeStyle=i===1?'rgba(255,215,106,'+(0.42-pulse*.08)+')':'rgba(91,239,255,'+(0.5-i*.11)+')';
+			ctx.lineWidth=Math.max(1,2.2*zoom-i*.35);
+			ctx.beginPath(); ctx.arc(gx+TILE*zoom/2,gy+TILE*zoom/2,r,0,Math.PI*2); ctx.stroke();
+		}
+	}
+	if(temporalRewindFx){
+		const p=Math.min(1,temporalRewindFx.t/temporalRewindFx.dur);
+		const flash=1-Math.min(1,Math.abs(p-.52)/.22);
+		ctx.fillStyle='rgba(224,252,255,'+(flash*.72)+')'; ctx.fillRect(0,0,W,H);
+		ctx.strokeStyle='rgba(112,243,255,'+(0.9-p*.4)+')'; ctx.lineWidth=3;
+		for(let i=0;i<8;i++){
+			const r=(p*1.6+i*.11)*Math.max(W,H);
+			ctx.beginPath(); ctx.arc(W/2,H/2,r,0,Math.PI*2); ctx.stroke();
+		}
+	}
+	ctx.globalCompositeOperation='source-over';
+	ctx.fillStyle='rgba(190,247,255,.055)';
+	for(let y=((time*46)%6)-6;y<H;y+=6) ctx.fillRect(0,y,W,1);
+	ctx.restore();
+}
 function runGameFrame(totalDt,ts){
 	if(WORLD && WORLD.maintainChunkCache) WORLD.maintainChunkCache();
 	// Store-restored chunks are parked, not live: audit each one as it comes back,
@@ -21476,6 +21799,11 @@ function updateOceanHint(dt){
 }
 function runGameStep(dt,ts){
 	if(updateDeathTravelFx(dt)){
+		updateParticles(dt);
+		updateBlink(ts);
+		return;
+	}
+	if(updateTemporalEcho(dt)){
 		updateParticles(dt);
 		updateBlink(ts);
 		return;
@@ -21657,6 +21985,7 @@ let lastLoopErrAt=0; function loop(ts){
 		if(AUDIO && AUDIO.update) AUDIO.update(simulationDt);
 		const drawT=framePerfNow();
 		draw();
+		drawTemporalEchoOverlay(ts);
 		drawMs=framePerfNow()-drawT;
 		recordFramePerf(lastFrameMs,simMs,drawMs);
 		updateHoverInfo();

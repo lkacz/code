@@ -5069,6 +5069,35 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     };
   }
   function reset(){ arrows.length=0; arrowFragments.length=0; mines.length=0; mineFragments.length=0; puffs.length=0; electricBeams.length=0; flameHeatRays.length=0; blastsFx.length=0; stoneHeat.clear(); sandHeat.clear(); waterHeat.clear(); heatForgedGlass.clear(); streamFuelDebt.flame=0; streamFuelDebt.hose=0; streamFuelDebt.gas=0; bowCd=0; harpoonCd=0; meleeCd=0; electricCd=0; throwCd=0; bouncyCd=0; bossAcc=0; explodeCd=0; heroFlameHitCd=0; iridiumPierces=0; ultCharge=1; lastGetTile=null; lastSetTile=null; swing.t=0; swing.form='sword'; swing.charge=0; heldActionFx.kind=''; heldActionFx.started=0; heldActionFx.until=0; heldActionFx.power=0; heldActionFx.serial=0; grav.channel=null; grav.heldTid=0; grav.throwAtMs=0; resetBowCharge(); resetSpearCharge(); }
+  function temporalClone(value){
+    if(typeof structuredClone==='function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+  function temporalSnapshot(){
+    return {
+      v:1,
+      arrays:{arrows:temporalClone(arrows),arrowFragments:temporalClone(arrowFragments),mines:temporalClone(mines),mineFragments:temporalClone(mineFragments),
+        puffs:temporalClone(puffs),electricBeams:temporalClone(electricBeams),flameHeatRays:temporalClone(flameHeatRays),blastsFx:temporalClone(blastsFx)},
+      maps:{stoneHeat:[...stoneHeat],sandHeat:[...sandHeat],waterHeat:[...waterHeat],heatForgedGlass:[...heatForgedGlass]},
+      scalars:{bowCd,harpoonCd,meleeCd,electricCd,throwCd,bouncyCd,bossAcc,explodeCd,heroFlameHitCd,iridiumPierces,ultCharge},
+      streamFuelDebt:{...streamFuelDebt},swing:{...swing},heldActionFx:{...heldActionFx},grav:temporalClone(grav),
+      bowCharge:{...bowCharge},spearCharge:{...spearCharge}
+    };
+  }
+  function temporalRestore(src){
+    if(!src || src.v!==1 || !src.arrays || !src.scalars) return false;
+    for(const [target,name] of [[arrows,'arrows'],[arrowFragments,'arrowFragments'],[mines,'mines'],[mineFragments,'mineFragments'],
+      [puffs,'puffs'],[electricBeams,'electricBeams'],[flameHeatRays,'flameHeatRays'],[blastsFx,'blastsFx']]){
+      target.splice(0,target.length,...temporalClone(Array.isArray(src.arrays[name])?src.arrays[name]:[]));
+    }
+    for(const [target,name] of [[stoneHeat,'stoneHeat'],[sandHeat,'sandHeat'],[waterHeat,'waterHeat'],[heatForgedGlass,'heatForgedGlass']]){
+      target.clear(); for(const entry of (src.maps&&Array.isArray(src.maps[name])?src.maps[name]:[])) target.set(entry[0],entry[1]);
+    }
+    ({bowCd,harpoonCd,meleeCd,electricCd,throwCd,bouncyCd,bossAcc,explodeCd,heroFlameHitCd,iridiumPierces,ultCharge}=src.scalars);
+    Object.assign(streamFuelDebt,src.streamFuelDebt||{}); Object.assign(swing,src.swing||{}); Object.assign(heldActionFx,src.heldActionFx||{});
+    Object.assign(grav,src.grav||{}); Object.assign(bowCharge,src.bowCharge||{}); Object.assign(spearCharge,src.spearCharge||{});
+    return true;
+  }
 
   // --- ghost mirror: the hero's weapons, seen from the cheap seats ------------
   // A watcher runs the full renderer but no simulation, so its weapons module
@@ -5332,7 +5361,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   }
   MM.weapons={fireHeld,releaseHeld,cancelHeld,fireUlt,update,draw,drawHeld,drawWorldLight,drawHeroReflection,lightSource:weaponLightSource,notifyMeleeSwing,reset,explodeAt,spawnGasCloud,spawnExternalStream,
     coopMeleeAt,spawnCoopArrow,spawnHeroProjectile,
-    ghostFxState,ghostApplyFx,ghostStepFx,
+    ghostFxState,ghostApplyFx,ghostStepFx,temporalSnapshot,temporalRestore,
     arrowInfo,setArrowPref,fuelInfo,thrownInfo,stoneInfo,bouncyInfo,hudStatus,addUltCharge,
     gravityInfo,setGravHeld,spawnGravityProjectile,
     metrics:()=>({arrows:arrows.length,arrowFragments:arrowFragments.length,mines:mines.length,mineFragments:mineFragments.length,puffs:puffs.length,electricBeams:electricBeams.length,arrowAmmo:arrowAmmoCounts(),harpoonAmmo:resourceCount('harpoonBolt'),bouncyAmmo:bouncyAmmoCount(),ultCharge,bowCharge:bowChargeStatus(),spearCharge:spearChargeStatus(),stoneHeat:stoneHeat.size,stoneHeatMax:stoneHeatMaxRatio(),sandHeat:sandHeat.size,sandHeatMax:sandHeatMaxRatio(),waterHeat:waterHeat.size,waterHeatMax:waterHeatMaxRatio(),iridiumPierces}),

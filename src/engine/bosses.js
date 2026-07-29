@@ -2409,9 +2409,30 @@ window.MM = window.MM || {};
     if(typeof o==='object' && typeof o.isDay==='boolean') cycleOverride=o;
   }
   function _debug(){ return {monsters, debris, fallingBodyBlocks, blasts, projectiles, spawnTimer, lastIsDay}; }
+  function temporalClone(value){
+    if(typeof structuredClone==='function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+  function temporalSnapshot(){
+    return {v:1,monsters:temporalClone(monsters),debris:temporalClone(debris),fallingBodyBlocks:temporalClone(fallingBodyBlocks),
+      blasts:temporalClone(blasts),projectiles:temporalClone(projectiles),spawnTimer,lastIsDay,spawnedTotal,killedTotal};
+  }
+  function temporalRestore(src){
+    if(!src || src.v!==1) return false;
+    monsters=temporalClone(Array.isArray(src.monsters)?src.monsters:[]);
+    debris.splice(0,debris.length,...temporalClone(Array.isArray(src.debris)?src.debris:[]));
+    fallingBodyBlocks.splice(0,fallingBodyBlocks.length,...temporalClone(Array.isArray(src.fallingBodyBlocks)?src.fallingBodyBlocks:[]));
+    blasts.splice(0,blasts.length,...temporalClone(Array.isArray(src.blasts)?src.blasts:[]));
+    projectiles.splice(0,projectiles.length,...temporalClone(Array.isArray(src.projectiles)?src.projectiles:[]));
+    spawnTimer=Number.isFinite(Number(src.spawnTimer))?Number(src.spawnTimer):CFG.INITIAL_DELAY;
+    lastIsDay=typeof src.lastIsDay==='boolean'?src.lastIsDay:null;
+    spawnedTotal=Math.max(0,Number(src.spawnedTotal)||0);
+    killedTotal=Math.max(0,Number(src.killedTotal)||0);
+    return true;
+  }
 
   MM.bosses={update, draw, drawHUD, attackAt, mineAt, mineTarget, damageAt, partAt, resolvePartTarget, forceSpawn, killNearest, collideHero, clearAll, reset, metrics,
-             nearestForAbduction, nearestForTurret, targetsForTurret, abduct, setCycleOverride, heatSources, config:CFG, _debug};
+             nearestForAbduction, nearestForTurret, targetsForTurret, abduct, setCycleOverride, heatSources, temporalSnapshot, temporalRestore, config:CFG, _debug};
   // weakened-matrix registry adapter (shared boss_status helper): splats and
   // streams reach roaming bosses through MM.bossStatus.applyRadius
   try{

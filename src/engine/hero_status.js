@@ -175,8 +175,16 @@ window.MM = window.MM || {};
   function clearAll(){
     st.wet=0; st.chill=0; st.burn=0; st.burnDps=0; st.burnAcc=0; st.frozen=0; st.refreezeLock=0;
   }
+  function snapshot(){ return {...st}; }
+  function restore(src){
+    if(!src || typeof src!=='object') return false;
+    for(const k of ['wet','chill','burn','burnDps','burnAcc','frozen','refreezeLock']){
+      st[k]=Math.max(0,Number.isFinite(Number(src[k])) ? Number(src[k]) : 0);
+    }
+    return true;
+  }
 
-  MM.heroStatus={apply, update, has, isFrozen, moveMult, damageInMult, list, clearAll, TUNING, _state:st,
+  MM.heroStatus={apply, update, has, isFrozen, moveMult, damageInMult, list, clearAll, snapshot, restore, TUNING, _state:st,
     createState, applyTo, updateState, isFrozenState, moveMultOf, damageInMultOf};
 })();
 
