@@ -68,7 +68,12 @@ const storyProgression = (function(){
     lastTaskIds: []
   };
 
-  function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
+  function say(t){
+    try{
+      if(MM.smartFeed && MM.smartFeed.story) MM.smartFeed.story(t);
+      else if(root.msg) root.msg(t);
+    }catch(e){}
+  }
   function tasksApi(){ return MM.tasks || null; }
   function heartsNow(){
     try{ if(MM.progress && MM.progress.guardianHearts) return MM.progress.guardianHearts() || {}; }catch(e){}

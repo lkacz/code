@@ -3,7 +3,7 @@
 // (forced ritual-style storm lays UNSTABLE_SAND dunes under the caps, yellow
 // haze + hero slowdown), the unified hero status system (wet/burn/chill/frozen
 // + electric conduction), the weakened boss matrix helper registry, the
-// Ekwipunek discovery tab (??? masking + progress + XP award) and the new
+// Atlas Wiedzy tab (masked entries + bounded progress view + XP award) and the new
 // audio registry names — driven over CDP against the real game in headless
 // Edge (real requestAnimationFrame). Fails on ANY console error.
 //
@@ -140,17 +140,20 @@ const SCENE = `(async()=>{
 	document.getElementById('openInv').click();
 	await sleep(400);
 	const tabs=[...document.querySelectorAll('#invTabs .invTabBtn')];
-	const discTab=tabs.find(b=>b.textContent.includes('Odkrycia'));
+	const discTab=tabs.find(b=>b.textContent.includes('Wiedza'));
 	if(discTab) discTab.click();
 	await sleep(400);
 	const cards=[...document.querySelectorAll('#invGrid .invResCard')];
-	const maskedCards=cards.filter(c=>c.textContent.includes('???')).length;
-	const foundCards=cards.filter(c=>c.textContent.includes('Odkryte')).length;
+	const maskedCards=cards.filter(c=>c.classList.contains('zero')).length;
+	const foundCards=cards.filter(c=>c.classList.contains('found')).length;
+	const labelsHidden=cards.filter(c=>c.classList.contains('zero'))
+		.every(c=>c.querySelector('.invResLabel')?.textContent==='Nieodkryte');
+	const navButtons=document.querySelectorAll('#invGrid .invDiscNavBtn').length;
 	const counter=(document.querySelector('.invCapacity')||{}).textContent||'';
 	document.getElementById('invClose').click();
 	await sleep(200);
 	R.discovery={total:entriesAll.length, masked:masked.length, hintSample:(masked[0]||{}).hint||'',
-		xpGain:xpAfter-xpBefore, cards:cards.length, maskedCards, foundCards, counter};
+		xpGain:xpAfter-xpBefore, cards:cards.length, maskedCards, foundCards, labelsHidden, navButtons, counter};
 
 	// --- audio registry: every new name synthesizes without throwing ---
 	let audioOk=true;
@@ -246,11 +249,12 @@ async function main(){
 		check(R.bossMatrix.chillSlow === 0.8 && R.bossMatrix.burnHalf === 0.5 && R.bossMatrix.conduct === 1.25, 'weakened tunables (0.8 / 0.5 / 1.25)');
 		check(['bosses','guardianLairs','skyGuardian','undergroundBoss'].every(s => R.bossMatrix.systems.includes(s)), 'all four boss families registered');
 		console.log('discovery journal:');
-		check(R.discovery.total >= 15, 'catalog covers the new wave (total ' + R.discovery.total + ')');
+		check(R.discovery.total >= 190, 'catalog covers the full knowledge atlas (total ' + R.discovery.total + ')');
 		check(R.discovery.xpGain === 40, 'a fresh discovery paid +40 XP');
-		check(R.discovery.cards === R.discovery.total, 'Ekwipunek tab renders every catalog entry');
-		check(R.discovery.maskedCards > 0 && R.discovery.maskedCards === R.discovery.cards - R.discovery.foundCards, '??? masking matches the found split');
-		check(/🧪 \d+\/\d+/.test(R.discovery.counter), 'progress counter shows n/total (' + R.discovery.counter + ')');
+		check(R.discovery.cards > 0 && R.discovery.cards <= 30, 'default Atlas view stays bounded (' + R.discovery.cards + ' cards)');
+		check(R.discovery.maskedCards > 0 && R.discovery.maskedCards === R.discovery.cards - R.discovery.foundCards && R.discovery.labelsHidden, 'unknown knowledge stays masked');
+		check(R.discovery.navButtons >= 10, 'Atlas exposes scalable trail navigation (' + R.discovery.navButtons + ' buttons)');
+		check(/🧠 \d+\/\d+/.test(R.discovery.counter), 'knowledge counter shows n/total (' + R.discovery.counter + ')');
 		console.log('audio:');
 		check(R.audioOk, 'new registry names play without throwing');
 		console.log('console:');

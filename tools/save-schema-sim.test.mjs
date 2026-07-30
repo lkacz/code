@@ -332,7 +332,7 @@ assert.match(src, /BEDROCK_PICK_MAX_DURABILITY=10/, 'bedrock pickaxe has the req
 assert.match(src, /function isOceanBasinBedrockAt\(tx,ty,t\)\{[\s\S]*WORLDGEN\.oceanSealTop/, 'ocean basin bedrock is detected by column seal metadata');
 assert.match(src, /function canMineBedrockWithCurrentTool\(t,tx,ty\)\{[\s\S]*!isOceanBasinBedrockAt\(tx,ty,t\)/, 'bedrock mining is gated to the active mother pickaxe and excludes ocean basin jackets');
 assert.match(src, /function canMineTileWithCurrentTool\(t,tx,ty\)\{ return !isUnmineableTile\(t\) \|\| canMineBedrockWithCurrentTool\(t,tx,ty\); \}/, 'mining centralizes unmineable tile checks with coordinate-aware bedrock-pick exceptions');
-assert.match(src, /if\(!canMineTileWithCurrentTool\(t,tx,ty\)\)\{ if\(!quiet\) msg\(unmineableReason\(t,tx,ty\)\); return false; \}/, 'cursor mining rejects unmineable tiles before timers start');
+assert.match(src, /if\(!canMineTileWithCurrentTool\(t,tx,ty\)\)\{[\s\S]{0,420}if\(!quiet\) msg\(unmineableReason\(t,tx,ty\)\);\s*return false;\s*\}/, 'cursor mining rejects unmineable tiles before timers start');
 assert.match(src, /if\(t===T\.AIR \|\| !canMineTileWithCurrentTool\(t,mineTx,mineTy\)\)/, 'instant break cannot bypass unmineable tiles');
 assert.match(src, /if\(info\.unmineable && !canMineBedrockWithCurrentTool\(tId,mineTx,mineTy\)\) return false;/, 'breakMinedTile refuses unmineable terrain except the coordinate-aware bedrock pickaxe path');
 // Tool flags: ONE list, five consumers. The Lotnia was added to the live object
@@ -440,7 +440,11 @@ assert.match(indexSrc, /id="taskStatus"/, 'task tracker panel has a dedicated st
 assert.match(indexSrc, /id="taskListPanel"[^>]*role="dialog"/, 'task tracker opens an accessible full task list');
 assert.match(indexSrc, /id="taskList"/, 'task tracker has a dedicated host for every active task');
 assert.match(indexSrc, /czerwona strzałka prowadzi właśnie do niego/, 'task list explains priority pointer behavior');
-assert.match(src, /TASKS\.setContext\(\{onChange:saveState\}\)/, 'task priority and discard choices request save persistence');
+assert.match(
+  src,
+  /function onTaskFeedChange\(change\)\{[\s\S]{0,120}saveState\(\);[\s\S]*TASKS\.setContext\(\{onChange:onTaskFeedChange\}\)/,
+  'task feed integration preserves save persistence for priority and discard choices'
+);
 assert.match(src, /function resetWorldTransitionRuntime\(\)[\s\S]*undoStack\.length=0;[\s\S]*HERO_STATUS\.clearAll\(\)[\s\S]*FISHING\.reset\(\)[\s\S]*SANDSTORM\.reset\(\)/, 'one world-transition boundary clears undo, hero status, fishing, and sandstorm state');
 assert.match(src, /SURVIVAL\.resetDrowning\(drowningState\)[\s\S]*SURVIVAL\.resetWaterPressure\(waterPressureState\)[\s\S]*SURVIVAL\.resetThermal\(thermalState\)/, 'world transitions clear accumulated survival damage and exposure');
 assert.match(src, /loadSaveCandidate\(raw,\{ignoreCritical:true,transactional:true,persistAsMain:true\}\)/, 'named and continue loads use the transactional candidate path');

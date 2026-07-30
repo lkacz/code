@@ -5,6 +5,21 @@ import { readFile } from 'node:fs/promises';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
+const guardianPrinciples = [];
+const learnedGuardianPrinciples = new Set();
+const guardianPrincipleIds = {
+  fire_torch_cooled:'guardian_fire_water_window',
+  ice_silence_opened:'guardian_ice_listens_to_silence'
+};
+globalThis.MM.discovery = {
+  has(id){ return learnedGuardianPrinciples.has(id); },
+  observe(type,payload){
+    guardianPrinciples.push({type,payload});
+    const id=payload && guardianPrincipleIds[payload.kind];
+    if(id) learnedGuardianPrinciples.add(id);
+    return id||null;
+  }
+};
 globalThis.localStorage = {getItem(){ return null; }, setItem(){}, removeItem(){}};
 globalThis.msg = ()=>{};
 globalThis.damageHero = (amount)=>{ if(globalThis.player) globalThis.player.hp-=amount; };
@@ -367,6 +382,11 @@ for(let snow=0;snow<3;snow++){
 assert.ok(nara.hp<=naraStartHp-50,'three humble snowballs deal visibly heavy secret-weapon damage');
 assert.equal(nara.torchLit,false,'three snowballs cool and extinguish Nara coal torch');
 assert.ok(nara.vulnerableT>=6,'extinguishing the torch opens a generous readable damage window');
+const firePrinciple=guardianPrinciples.find(e=>e.type==='guardian_principle' && e.payload.kind==='fire_torch_cooled');
+assert.ok(firePrinciple,'extinguishing Nara torch emits the confirmed guardian principle');
+assert.equal(firePrinciple.payload.actor,'local-hero','Nara principle credits the acting local hero');
+assert.equal(firePrinciple.payload.coolant,'snowball','Nara principle records the coolant that actually opened the window');
+assert.deepEqual(firePrinciple.payload.target,{x:nara.x,y:nara.y},'Nara principle points at the affected guardian');
 const dousedHp=nara.hp;
 assert.equal(guardianLairs.damageAt(Math.floor(nara.x),Math.floor(nara.y),25,{kind:'arrow',weaponType:'bow',source:'hero'}),true,'ordinary weapons can hit during the doused window');
 assert.ok(nara.hp<dousedHp-24,'doused Nara takes normal weapon damage');
@@ -512,6 +532,10 @@ for(let step=0;step<55;step++) guardianLairs.update(0.05,globalThis.player,world
 assert.equal(sile.sealed,false,'briefly not attacking opens Sile heartglass on real time even while chilled');
 assert.ok(sile.listeningT>=6.8,'successful listening opens a generous readable answer window');
 assert.ok(guardianLairs._debug().effects.some(e=>e.type==='choirListen'),'opening the choir produces a bespoke five-ring listening effect');
+const icePrinciple=guardianPrinciples.find(e=>e.type==='guardian_principle' && e.payload.kind==='ice_silence_opened');
+assert.ok(icePrinciple,'finishing Sile silence emits the confirmed guardian principle');
+assert.equal(icePrinciple.payload.actor,'local-hero','Sile principle credits the listening local hero');
+assert.ok(icePrinciple.payload.quietSeconds>=2.6 && icePrinciple.payload.windowSeconds>=6.8,'Sile principle records the completed silence and opened answer window');
 const openHp=sile.hp;
 guardianLairs.damageAt(Math.floor(sile.x),Math.floor(sile.y),20,{kind:'arrow',weaponType:'bow',source:'hero'});
 const ordinaryOpenDamage=openHp-sile.hp;
@@ -539,6 +563,7 @@ assert.equal(sile.sealed,true,'repeated impatience keeps the choir sealed');
 assert.equal(sile.quietT,0,'each premature hit visibly restarts the listening solution');
 for(let step=0;step<55;step++) guardianLairs.update(0.05,globalThis.player,world.getTile,world.setTile);
 assert.equal(sile.sealed,false,'a second deliberate pause reopens the choir');
+assert.equal(guardianPrinciples.filter(e=>e.payload.kind==='ice_silence_opened').length,1,'known Sile principle does not emit again on later listening windows');
 
 const cratersBeforeSileDeath=meteorites.metrics().craters;
 const bestWeaponBeforeIceReward=Math.max(...ownedWeapons.map(scoreItem));

@@ -113,6 +113,68 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
 
 {
   reset();
+  const observations=[];
+  MM.discovery={
+    has:()=>false,
+    observe:(type,payload)=>{ observations.push({type,payload}); return null; }
+  };
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'north',getTile);
+  teleporters._debug.debugCharge(0,10,teleporters._debug.TRAVEL_COST,getTile);
+  const player={x:0.5,y:10.5,w:0.7,h:0.95,vx:8,vy:3,energy:0,maxEnergy:80};
+  const speedBefore=Math.hypot(player.vx,player.vy);
+  assert.equal(teleporters.tryTeleport(player,getTile,{actor:'host-for-guest'}),true,'direct hero teleport succeeds for the discovery event contract');
+  assert.equal(observations.length,1,'a successful hero teleport emits one discovery observation');
+  assert.equal(observations[0].type,'teleport_completed','hero teleport uses the shared completed-teleport event');
+  assert.deepEqual(observations[0].payload,{
+    entity:'hero',
+    entryDir:'west',
+    exitDir:'north',
+    moving:true,
+    speedBefore,
+    speedAfter:speedBefore,
+    target:{x:player.x,y:player.y},
+    actor:'host-for-guest'
+  },'hero teleport observation reports exact directions, preserved speed, destination and caller actor');
+  const refused={x:0.5,y:10.5,w:0.7,h:0.95,vx:8,vy:0,energy:0,maxEnergy:80};
+  assert.equal(teleporters.tryTeleport(refused,getTile,{actor:'local-hero'}),false,'a cooling-down entry refuses another hero');
+  assert.equal(observations.length,1,'a refused hero teleport emits no discovery observation');
+  delete MM.discovery;
+}
+
+{
+  reset();
+  const learned=new Set([
+    'teleport_pair_transports',
+    'teleport_rotates_momentum',
+    'teleport_transports_projectiles'
+  ]);
+  let observeCalls=0;
+  MM.discovery={
+    has:id=>learned.has(id),
+    observe:()=>{ observeCalls++; return null; }
+  };
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'east',getTile);
+  teleporters._debug.debugCharge(0,10,teleporters._debug.TRAVEL_COST,getTile);
+  const player={x:0.5,y:10.5,w:0.7,h:0.95,vx:4,vy:0,energy:0,maxEnergy:80};
+  assert.equal(teleporters.tryTeleport(player,getTile,{}),true,'known portal rules do not affect travel');
+  assert.equal(observeCalls,0,'a complete portal journal skips observe');
+  learned.clear(); // temporal restore changes discovery state, not module identity
+  teleporters.update(1,{x:100,y:10,w:0.7,h:0.95,vx:0,vy:0},getTile,()=>{},{});
+  teleporters._debug.debugCharge(0,10,teleporters._debug.TRAVEL_COST,getTile);
+  Object.assign(player,{x:0.5,y:10.5,vx:4,vy:0,_teleporterCooldown:0});
+  assert.equal(teleporters.tryTeleport(player,getTile,{}),true,'portal remains usable after a knowledge rewind');
+  assert.equal(observeCalls,1,'rewound portal knowledge invalidates the completion cache');
+  delete MM.discovery;
+}
+
+{
+  reset();
   setTile(0,10,T.TELEPORTER);
   setTile(12,10,T.TELEPORTER);
   teleporters.setOrientationAt(0,10,'north',getTile);
@@ -136,6 +198,38 @@ assert.equal(INFO[T.DYNAMO].powerSource,true,'dynamo is a cable power source end
   assert.deepEqual({x:shot._teleporterExitX,y:shot._teleporterExitY},{x:12,y:10},'a teleported projectile remembers the exit that nearby creatures can retaliate against');
   assert.equal(teleporters.metrics().storedEnergy,0,'one ordinary projectile spends the configured teleporter projectile cost');
   assert.equal(teleporters.metrics().projectileTeleports,1,'projectile portal transfers are observable in runtime metrics');
+}
+
+{
+  reset();
+  const observations=[];
+  MM.discovery={
+    has:()=>false,
+    observe:(type,payload)=>{ observations.push({type,payload}); return null; }
+  };
+  setTile(0,10,T.TELEPORTER);
+  setTile(12,10,T.TELEPORTER);
+  teleporters.setOrientationAt(0,10,'west',getTile);
+  teleporters.setOrientationAt(12,10,'north',getTile);
+  teleporters._debug.debugCharge(0,10,teleporters._debug.PROJECTILE_TRAVEL_COST,getTile);
+  const shot={x:0.5,y:10.5,vx:8,vy:3,life:2,coopOwner:'guest-1'};
+  const speedBefore=Math.hypot(shot.vx,shot.vy);
+  assert.equal(teleporters.tryTeleportProjectile(shot,getTile,{actor:'local-hero'}),true,'a guest-owned projectile can traverse a charged portal');
+  assert.equal(observations.length,1,'a successful projectile teleport emits one discovery observation');
+  assert.deepEqual(observations[0],{
+    type:'teleport_completed',
+    payload:{
+      entity:'projectile',
+      entryDir:'west',
+      exitDir:'north',
+      moving:true,
+      speedBefore,
+      speedAfter:speedBefore,
+      target:{x:shot.x,y:shot.y},
+      actor:'remote-hero'
+    }
+  },'guest projectile observation preserves momentum and cannot teach the host profile');
+  delete MM.discovery;
 }
 
 {
@@ -756,6 +850,7 @@ assert.match(uiSrc, /Przewod \+20/, 'teleporter debug panel includes a copper-wi
 const ghostHostSrc = await readFile(new URL('../src/engine/ghost_host.js', import.meta.url), 'utf8');
 const ghostClientSrc = await readFile(new URL('../src/engine/ghost_client.js', import.meta.url), 'utf8');
 assert.match(ghostHostSrc, /const loot=Array\.isArray\(res\.loot\)[\s\S]*?NET\.pouchAdd\(b\.pouch,row\.key,row\.n\)/, 'co-op host credits the exact validated salvage rows to the remote hero pouch');
-assert.match(ghostClientSrc, /pl\.a === 'mine' && pl\.ok && Array\.isArray\(pl\.loot\)[\s\S]*?bridge\.ghostHeroGain\(row\.key,row\.n\|\|1\)/, 'co-op client applies explicit teleporter salvage instead of rerunning the complete-tile drop');
+assert.match(ghostClientSrc, /pl\.a === 'mine' && pl\.ok\)\{[\s\S]*?if\(Array\.isArray\(pl\.loot\)\)\{[\s\S]*?bridge\.ghostHeroGain\(row\.key,row\.n\|\|1\)/, 'co-op client applies explicit teleporter salvage instead of rerunning the complete-tile drop');
+assert.match(ghostClientSrc, /if\(pl\.tid\) reportHeroMineDiscovery\(pl\.tid,pl\.x,pl\.y,heroAckDiscoveryFacts\(pl\)\)/, 'explicit salvage still reports the one confirmed mining fact to the acting guest');
 
 console.log('teleporter-sim: all assertions passed');

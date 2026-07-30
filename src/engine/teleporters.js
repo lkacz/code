@@ -60,6 +60,11 @@ import { isHeroPassableTile } from './material_physics.js';
     west:Object.freeze({x:-1,y:0,label:'lewo'}),
     north:Object.freeze({x:0,y:-1,label:'gora'})
   });
+  const TELEPORT_DISCOVERY_IDS=Object.freeze([
+    'teleport_pair_transports',
+    'teleport_rotates_momentum',
+    'teleport_transports_projectiles'
+  ]);
   // Discovery-only cadence: placements register instantly via onTileChanged and
   // stepping on a teleporter registers via tryTeleport, so this sweep only picks
   // up worldgen/chunk-load machines. At 0.45s it burned ~70k tile lookups per
@@ -87,6 +92,8 @@ import { isHeroPassableTile } from './material_physics.js';
   let copperHeatCursor = 0;
   let copperHeatEvents = 0;
   let projectileTeleports = 0;
+  let teleportDiscoveryApi = null;
+  let teleportDiscoveriesComplete = false;
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
@@ -99,6 +106,39 @@ import { isHeroPassableTile } from './material_physics.js';
   function finiteNonNegative(n,fallback=0){
     const value=Number(n);
     return Number.isFinite(value) && value>=0 ? value : fallback;
+  }
+  function movementSpeed(entity){
+    return Math.hypot(Number(entity && entity.vx)||0,Number(entity && entity.vy)||0);
+  }
+  function allTeleportDiscoveriesKnown(d){
+    if(!d || typeof d.has!=='function') return false;
+    try{
+      return d.has(TELEPORT_DISCOVERY_IDS[0])
+        && d.has(TELEPORT_DISCOVERY_IDS[1])
+        && d.has(TELEPORT_DISCOVERY_IDS[2]);
+    }catch(e){ return false; }
+  }
+  function observeTeleportCompleted(payload){
+    try{
+      const d=MM.discovery;
+      if(!d || typeof d.observe!=='function') return;
+      if(d!==teleportDiscoveryApi){
+        teleportDiscoveryApi=d;
+        teleportDiscoveriesComplete=false;
+      }
+      // Echo Chwili can restore the journal without recreating this module.
+      // Validate the completion cache so rewound knowledge can be earned again.
+      if(teleportDiscoveriesComplete && allTeleportDiscoveriesKnown(d)) return;
+      teleportDiscoveriesComplete=false;
+      if(allTeleportDiscoveriesKnown(d)){
+        teleportDiscoveriesComplete=true;
+        return;
+      }
+      const learned=d.observe('teleport_completed',payload);
+      if(learned && allTeleportDiscoveriesKnown(d)){
+        teleportDiscoveriesComplete=true;
+      }
+    }catch(e){}
   }
   function isTeleporter(t){ return t===T.TELEPORTER; }
   function normalizeDir(dir){ return DIR_VEC[dir] ? dir : 'east'; }
@@ -1303,6 +1343,7 @@ import { isHeroPassableTile } from './material_physics.js';
     if(!dest) return false;
     const outputDir=normalizeDir(dest.dir);
     const pos=projectileExitPosition(target,outputDir,projectile);
+    const speedBefore=movementSpeed(projectile);
     const velocity=transformVelocity(projectile.vx,projectile.vy,m.dir,outputDir);
     const defaultCost=opts.stream ? STREAM_TRAVEL_COST : PROJECTILE_TRAVEL_COST;
     const cost=Math.max(0.05,Number.isFinite(opts.cost)?Number(opts.cost):defaultCost);
@@ -1324,6 +1365,16 @@ import { isHeroPassableTile } from './material_physics.js';
     m.pulse=1;
     dest.pulse=1;
     projectileTeleports++;
+    observeTeleportCompleted({
+      entity:'projectile',
+      entryDir:normalizeDir(m.dir),
+      exitDir:outputDir,
+      moving:speedBefore>ENTRY_SPEED_MIN,
+      speedBefore,
+      speedAfter:Math.hypot(velocity.vx,velocity.vy),
+      target:{x:pos.x,y:pos.y},
+      actor:projectile.coopOwner ? 'remote-hero' : String(opts.actor||'local-hero')
+    });
     return true;
   }
   function damageAt(x,y,amount,getTile,setTile,opts){
@@ -1437,6 +1488,7 @@ import { isHeroPassableTile } from './material_physics.js';
     if(!dest) return false;
     const outputDir=normalizeDir(dest.dir);
     const pos=exitPosition(target,outputDir,player,getTile);
+    const speedBefore=movementSpeed(player);
     const velocity=transformVelocity(player.vx,player.vy,m.dir,outputDir);
     let spent=spendTravelEnergy(m,getTile,opts,player);
     if(!spent) spent=bunkerFailsafeSpent(hit,target,getTile);
@@ -1461,6 +1513,16 @@ import { isHeroPassableTile } from './material_physics.js';
       if(MM.audio && MM.audio.play) MM.audio.play('charge');
       if(MM.ui && MM.ui.msg) MM.ui.msg(spent.emergency ? 'Awaryjny powrot z bunkra UFO' : 'Teleport: wyjscie w '+DIR_VEC[outputDir].label);
     }catch(e){}
+    observeTeleportCompleted({
+      entity:'hero',
+      entryDir:normalizeDir(m.dir),
+      exitDir:outputDir,
+      moving:speedBefore>ENTRY_SPEED_MIN,
+      speedBefore,
+      speedAfter:Math.hypot(velocity.vx,velocity.vy),
+      target:{x:pos.x,y:pos.y},
+      actor:String((opts && opts.actor)||'local-hero')
+    });
     return true;
   }
   function update(dt,player,getTile,_setTile,opts){
@@ -1753,6 +1815,8 @@ import { isHeroPassableTile } from './material_physics.js';
     copperHeatCursor=0;
     copperHeatEvents=0;
     projectileTeleports=0;
+    teleportDiscoveryApi=null;
+    teleportDiscoveriesComplete=false;
     networkRev++;
     invalidateTeleporterSearch();
     scanT=0;

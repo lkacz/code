@@ -137,7 +137,7 @@ window.MM = window.MM || {};
     pools.set(K(x,y),{x,y,heat,seenAt:nowMs()});
     if(!noted){
       noted=true;
-      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('hot_spring','Gorące źródło! Lawa grzeje kamień, kamień grzeje wodę.'); }catch(e){}
+      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('hot_spring','Gorące źródło! Lawa grzeje kamień, kamień grzeje wodę.',{source:'geothermal',target:{x:x+0.5,y:y+0.5}}); }catch(e){}
     }
   }
   function poolScan(px,getTile){

@@ -337,8 +337,9 @@ const drops = (function(){
     // A dedicated clear bell is deliberately unlike combat noise: the player
     // should learn this sound after hearing it once, even off-screen.
     try{ if(MM.audio && MM.audio.play) MM.audio.play('jewel',{x:d.x,y:d.y,priority:true}); }catch(e){}
-    try{ if(typeof window.msg==='function') window.msg('💎 JEWEL! '+style.label+' wypadł z przeciwnika!'); }catch(e){}
-    try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('jewel_drop','Z potężnego przeciwnika wypadł jewel do trwałego ulepszania przedmiotów!'); }catch(e){}
+    let discovered=false;
+    try{ if(MM.discovery && MM.discovery.note) discovered=MM.discovery.note('jewel_drop','Z potężnego przeciwnika wypadł jewel do trwałego ulepszania przedmiotów!',{source:'drop',target:{x:d.x,y:d.y}}); }catch(e){}
+    if(!discovered) try{ if(typeof window.msg==='function') window.msg('💎 JEWEL! '+style.label+' wypadł z przeciwnika!'); }catch(e){}
   }
   function spawnJewel(x,y,key,opts){
     const style=JEWEL_STYLE[key]; if(!style) return null;
@@ -355,8 +356,9 @@ const drops = (function(){
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(px,py,d.tier); }catch(e){}
     try{ if(MM.audio && MM.audio.play) MM.audio.play(isHighTier(d.tier)?'golden':'chest',{x:d.x,y:d.y}); }catch(e){}
     if(isHighTier(d.tier)){
-      try{ if(typeof window.msg==='function') window.msg(d.tier==='legendary' ? '🌟 Legendarny łup spadł na ziemię!' : '✨ Coś wyjątkowego upadło na ziemię!'); }catch(e){}
-      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('epic_drop','Epicki łup ogłasza się słupem światła — nie da się go przegapić!'); }catch(e){}
+      let discovered=false;
+      try{ if(MM.discovery && MM.discovery.note) discovered=MM.discovery.note('epic_drop','Epicki łup ogłasza się słupem światła — nie da się go przegapić!',{source:'drop',target:{x:d.x,y:d.y}}); }catch(e){}
+      if(!discovered) try{ if(typeof window.msg==='function') window.msg(d.tier==='legendary' ? '🌟 Legendarny łup spadł na ziemię!' : '✨ Coś wyjątkowego upadło na ziemię!'); }catch(e){}
     }
   }
   // "Better than worn": the drop outclasses the item the hero actually WEARS
@@ -910,8 +912,9 @@ const drops = (function(){
     out.source='volcano';
     out._lavaGraceT=2.5; // the newborn gift must clear the lava it rose from
     sacrificeDry=0;
-    try{ if(typeof window.msg==='function') window.msg('🌋 Wulkan przyjął ofiarę — coś wystrzeliło z krateru!'); }catch(e){}
-    try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('volcano_sacrifice','Wulkan przyjął ofiarę i oddał z nawiązką!'); }catch(e){}
+    let discovered=false;
+    try{ if(MM.discovery && MM.discovery.note) discovered=MM.discovery.note('volcano_sacrifice','Wulkan przyjął ofiarę i oddał z nawiązką!',{source:'volcano',target:{x:d.x,y:d.y}}); }catch(e){}
+    if(!discovered) try{ if(typeof window.msg==='function') window.msg('🌋 Wulkan przyjął ofiarę — coś wystrzeliło z krateru!'); }catch(e){}
     return out;
   }
   // Lava eats dropped loot — walk into the volcano for your prize or lose it.

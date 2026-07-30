@@ -44,6 +44,12 @@ import { T } from '../constants.js';
   let ctxHooks = null;           // {onInventoryChange, onChange}
 
   function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
+  function observe(type, payload){
+    try{
+      const d = MM.discovery;
+      if(d && typeof d.observe === 'function') d.observe(type, payload);
+    }catch(e){}
+  }
   function playSound(id,x,y){
     try{
       if(MM.audio && MM.audio.play) MM.audio.play(id,Number.isFinite(x)&&Number.isFinite(y)?{x,y}:undefined);
@@ -92,6 +98,13 @@ import { T } from '../constants.js';
     splash(S.x, 140);
     if(ctxHooks && ctxHooks.onInventoryChange){ try{ ctxHooks.onInventoryChange(); }catch(e){} }
     if(ctxHooks && ctxHooks.onChange){ try{ ctxHooks.onChange(); }catch(e){} }
+    const discoveryFact={
+      fish:f.id,
+      golden:!!f.golden,
+      target:{x:S.x,y:S.y}
+    };
+    observe('fish_caught', discoveryFact);
+    if(f.golden) observe('golden_fish_caught', discoveryFact);
     reset();
   }
   function beginPullPhase(){

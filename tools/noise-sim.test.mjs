@@ -25,6 +25,10 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   assert.equal(N.heardBy(400, 0), null, 'a tap does not carry across the world');
   assert.equal(N.emit(0, 0, 'nonsense', 1), 0, 'unknown causes emit nothing');
   assert.equal(N.emit(NaN, 0, 'mine', 1), 0, 'a non-finite point emits nothing');
+
+  N.reset();
+  N.emit(0, 0, 'sprint', 1, {actor:'remote-hero'});
+  assert.equal(N.heardBy(2,0).actor,'remote-hero','sound ownership survives through the hearing field for co-op attribution');
 }
 
 // ------------------------------------------------------------- hardness scale
@@ -182,7 +186,8 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
     'sight acquires, pursue only retains');
   assert.match(mainSrc, /NOISE\.emitMovement\(player\)/, 'the hero announces its own movement');
   assert.match(mainSrc, /for\(const b of bodies\) NOISE\.emitMovement\(b\)/, 'and so does every coop body');
-  assert.match(mainSrc, /NOISE\.emit\(tx\+0\.5, ty\+0\.5, 'mine'/, 'mining emits through the shared break hook');
+  assert.match(mainSrc, /NOISE\.emit\(\s*tx\+0\.5,\s*ty\+0\.5,\s*'mine'/, 'mining emits through the shared break hook');
+  assert.match(mainSrc, /stripForegroundForCarry\(tx,ty,tId,'host-for-guest'\)/, 'guest mining noise is attributed away from the host knowledge profile');
   const wSrc = await fs.readFile(new URL('../src/engine/weapons.js', import.meta.url), 'utf8');
   assert.match(wSrc, /MM\.noise\.emit\(a\.x,a\.y,'decoy',1\)/, 'a thrown stone is a decoy');
   const xSrc = await fs.readFile(new URL('../src/engine/explosion_damage.js', import.meta.url), 'utf8');

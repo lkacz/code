@@ -518,7 +518,9 @@ assert.ok(/MMR\.ghostMode = true;/.test(clientSrc), 'client stamps MM.ghostMode 
 assert.ok(/NET\.parseWatch\(location\.search, location\.hash\)/.test(clientSrc), 'watch param + invite secret come from the URL (search + #fragment)');
 assert.ok(!/localStorage\.setItem\((?!'mm_ghost_(name|avatar)_v1'|NET\.PROG_KEY|NET\.GID_KEY|NET\.GID_LEASE_KEY|NET\.LOOK_KEY|NET\.HERO_KEY|RESUME_CACHE_KEY)/.test(clientSrc),
 	'client persists nothing but its own profile, stable identity/lease, hero state and bounded room recovery proof');
-assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc) && /allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY, NET\.HERO_KEY, RESUME_CACHE_KEY\]\)/.test(clientSrc),
+const storageAllowBlock=clientSrc.slice(clientSrc.indexOf('const allow = new Set(['),clientSrc.indexOf('const origSet = Storage.prototype.setItem'));
+assert.ok(/Storage\.prototype\.setItem = function/.test(clientSrc)
+	&& ['mm_ghost_name_v1','mm_ghost_avatar_v1','mm_discoveries_v1','NET.PROG_KEY','NET.GID_KEY','NET.GID_LEASE_KEY','NET.LOOK_KEY','NET.HERO_KEY','RESUME_CACHE_KEY'].every(key=>storageAllowBlock.includes(key)),
 	'ghost mode locks down ALL localStorage writes (side stores like dynamic loot must not leak into the watcher’s own world)');
 // hardening pins (post-review): hostile hosts, transport races, throttling floods
 assert.ok(/function esc\(s\)/.test(clientSrc) && /esc\(hostName\)/.test(clientSrc),
@@ -1119,8 +1121,10 @@ for(const gate of authorityGates){
 assert.ok(/entry\.level = Math\.max\(1, Math\.min\(NET\.PROG\.MAX_LEVEL, Math\.floor\(pl\.lvl\)\)\)/.test(hostSrc),
 	'the claimed level is clamped and used for display only');
 // client: persists in the WATCHER's own browser — that is what survives a reload
-assert.ok(/allow = new Set\(\['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET\.PROG_KEY, NET\.GID_KEY, NET\.GID_LEASE_KEY, NET\.LOOK_KEY, NET\.HERO_KEY, RESUME_CACHE_KEY\]\)/.test(clientSrc),
+assert.ok(storageAllowBlock.includes('mm_ghost_name_v1') && storageAllowBlock.includes('mm_discoveries_v1'),
 	'the ghost profile is on the storage allowlist (the lockdown would otherwise silently drop it)');
+assert.ok(/MMR\.discovery\.observe\('teleport_completed'/.test(clientSrc),
+	'a full-hero guest records its own confirmed portal knowledge, which the allowlist now persists with its XP');
 assert.ok(/localStorage\.setItem\(NET\.PROG_KEY, JSON\.stringify\(prog\)\)/.test(clientSrc) && /function loadProgress\(\)/.test(clientSrc),
 	'the career is written to and read from the watcher’s own localStorage');
 assert.ok(/if\(!NET\.validDeed\(pl\.k\)\) return;[\s\S]{0,400}bankDeeds\(\[\{ k: pl\.k, n: pl\.n \}\]/.test(clientSrc), 'the client banks host-minted deeds only');
@@ -1177,7 +1181,8 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'hero teleporter placement carries only a host-whitelisted cardinal opening into persisted machine state');
 	assert.ok(/ghostHeroTeleport\(\{ x: b\.x, y: b\.y, vx: b\.vx, vy: b\.vy/.test(hostSrc)
 		&& /a: 'tp', ok: true,[^\n]*vx: \+b\.vx\.toFixed\(2\), vy: \+b\.vy\.toFixed\(2\)/.test(hostSrc)
-		&& /p\.vx = Number\.isFinite\(pl\.vx\) \? \+pl\.vx : 0;[\s\S]{0,80}p\.vy = Number\.isFinite\(pl\.vy\) \? \+pl\.vy : 0;/.test(clientSrc),
+		&& /p\.vx = Number\.isFinite\(pl\.vx\) \? \+pl\.vx : 0;[\s\S]{0,80}p\.vy = Number\.isFinite\(pl\.vy\) \? \+pl\.vy : 0;/.test(clientSrc)
+		&& /tryTeleport\(proxy,getTile,\{actor:'host-for-guest'\}\)/.test(mainSrc),
 		'hero teleport acknowledgements preserve host-derived velocity on the guest');
 	assert.ok(/return \{ t: 'infra', data, bg, tp \};/.test(hostSrc)
 		&& /bridge\.restoreTeleporters\(pl\.tp\)/.test(clientSrc),
@@ -1282,8 +1287,13 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/ghostHeroGain:\(key,qty\)=>\{/.test(mainSrc) && /RESOURCE_DEFS\.find\(r=>r\.key===key\)/.test(mainSrc),
 		'the pickup yield credits guest inventory through a whitelisted key');
 	assert.ok(/if\(MM\.ghostHeroIntents\) return MM\.ghostHeroIntents\.use\(tx,ty\);/.test(mainSrc)
-		&& /if\(info && info\.chestTier\) return \{ok:!!tryOpenChestAt\(tx,ty\)\};/.test(mainSrc),
+		&& /if\(info && info\.chestTier\)\{[\s\S]{0,800}chestSpawned:receipt\?/.test(mainSrc),
 		'chest tiles open via the use intent — the HOST runs its real chest pipeline');
+	assert.ok(/ghostHeroChestOpened/.test(mainSrc)
+		&& /chestTier: \(res && typeof res\.chestTier==='string'\)/.test(hostSrc)
+		&& /chestSpawned: Math\.max/.test(hostSrc)
+		&& /ghostHeroChestOpened\(pl\.chestTier,pl\.x,pl\.y,pl\.chestSpawned,pl\.chestItems\)/.test(clientSrc),
+		'the acknowledged chest tier and physical-loot receipt teach the acting guest without crediting the host');
 	// vending: the machine is WORLD economy — the vend runs host-side with a
 	// CAPTURING loot sink and the ack banks the roll into the guest inventory
 	assert.ok(/tId===T\.VENDING_MACHINE && VENDING && VENDING\.vendAt/.test(mainSrc)
@@ -1355,8 +1365,31 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 		'the failed placement ack forwards its exact coordinate to pending-ownership settlement');
 	const heroPlaceBridge=mainSrc.slice(mainSrc.indexOf('ghostHeroPlaceAt:(tx,ty,tid,layer,body,dir,claim)=>'),
 		mainSrc.indexOf('ghostHeroDamage:(x,y,amt,kind)=>'));
-	assert.ok(/setForegroundConfirmed\(tx,ty,id\)[\s\S]*noteSaveActivity\(\);\s*saveState\(\);\s*return \{ok:true, tid:id\};/.test(heroPlaceBridge),
+	assert.ok(/setForegroundConfirmed\(tx,ty,id\)[\s\S]*noteSaveActivity\(\);\s*saveState\(\);\s*return \{\s*ok:true,\s*tid:id,\s*layer:'foreground'/.test(heroPlaceBridge),
 		'a confirmed guest world placement marks the host save dirty before success is returned');
+	const heroMineBridge=mainSrc.slice(mainSrc.indexOf('ghostHeroMineAt:(tx,ty,claim)=>'),
+		mainSrc.indexOf('ghostHeroGravExtract:(tx,ty)=>'));
+	const guestDiscoveryBridge=mainSrc.slice(mainSrc.indexOf('ghostHeroDiscoveryFacts:(tid,detail)=>'),
+		mainSrc.indexOf('ghostHeroChestOpened:(tier,x,y,spawned,itemCount)=>'));
+	assert.ok(/ghostHeroDiscoveryFacts:\(tid,detail\)=>discoveryAckFactsForTile\(tid,detail\)/.test(guestDiscoveryBridge)
+		&& !/noteDiscoveryFact|noteMinedDiscovery|notePlacedDiscovery/.test(heroMineBridge+heroPlaceBridge),
+		'host validation returns read-only facts and never teaches the host about a guest action');
+	assert.ok(/facts:mineOk\?heroDiscoveryFactsForAck\(res\.tid,\{/.test(hostSrc)
+		&& /facts:placeOk\?heroDiscoveryFactsForAck\(tid,\{/.test(hostSrc)
+		&& /l:mineLayer/.test(hostSrc)
+		&& /l:confirmedLayer/.test(hostSrc),
+		'every accepted mine/place ACK carries a host-confirmed layer and bounded discovery facts');
+	assert.ok(/function reportHeroMineDiscovery\(tid,x,y,facts\)/.test(clientSrc)
+		&& /if\(Array\.isArray\(pl\.loot\)\)\{[\s\S]{0,500}else if\(pl\.tid\)[\s\S]{0,300}reportHeroMineDiscovery\(pl\.tid,pl\.x,pl\.y,heroAckDiscoveryFacts\(pl\)\)/.test(clientSrc),
+		'explicit loot arrays and ordinary tile awards converge on one guest-only mining discovery callback');
+	assert.ok(/ghostHeroMined:\(tid,x,y,rawFacts\)=>\{/.test(mainSrc)
+		&& /noteMinedDiscovery\(id,tx,ty,facts\?facts\.layer:'foreground',null,facts\)/.test(mainSrc)
+		&& /bridge\.ghostHeroPlaced\(pl\.tid,pl\.x,pl\.y,pl\.l,heroAckDiscoveryFacts\(pl\)\)/.test(clientSrc),
+		'the acting guest consumes confirmed mining and placement facts through its existing discovery hooks');
+	assert.ok(/facts:heroDiscoveryFactsForAck\(T\.OBSERVER_REPLICA,\{/.test(hostSrc)
+		&& /tx\.discoveryFacts=outcome\.facts/.test(clientSrc)
+		&& /reportHeroMineDiscovery\(tx\.tid,tx\.x,tx\.y,tx\.discoveryFacts\|\|null\)/.test(clientSrc),
+		'durable observer placement/recovery replays retain the same guest discovery acknowledgement contract');
 	// --- drop verb: the inverse of pickup, and the guest-to-guest trade path ----
 	// hero mode = the guest's pouch is its own truth, so the ack only CONFIRMS and
 	// the guest debits itself; play mode = zero trust, so the host takes from the

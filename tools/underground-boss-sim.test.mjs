@@ -6,6 +6,21 @@ import { performance } from 'node:perf_hooks';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
+const guardianPrinciples = [];
+const learnedGuardianPrinciples = new Set();
+const guardianPrincipleIds = {
+  earth_gas_repels:'guardian_earth_fears_gas',
+  earth_cairn_releases_damage:'guardian_earth_cairn_memory'
+};
+globalThis.MM.discovery = {
+  has(id){ return learnedGuardianPrinciples.has(id); },
+  observe(type,payload){
+    guardianPrinciples.push({type,payload});
+    const id=payload && guardianPrincipleIds[payload.kind];
+    if(id) learnedGuardianPrinciples.add(id);
+    return id||null;
+  }
+};
 globalThis.localStorage = {getItem(){ return null; }, setItem(){}, removeItem(){}};
 globalThis.msg = ()=>{};
 globalThis.damageHero = (amount)=>{ if(globalThis.player) globalThis.player.hp-=amount; };
@@ -160,6 +175,11 @@ assert.equal(undergroundBoss.damageAt(Math.floor(core.x), Math.floor(core.y), 24
 assert.ok(core.hp <= gasFearHp-55, 'gas deals amplified damage to the underground boss core');
 assert.ok(core.gasFearT > 0, 'underground boss records a temporary fear of gas');
 assert.ok(core.mode==='windup' || core.mode==='burrow', 'gas makes the excavator prepare to dive away');
+const gasPrinciple=guardianPrinciples.find(e=>e.type==='guardian_principle' && e.payload.kind==='earth_gas_repels');
+assert.ok(gasPrinciple,'a confirmed gas panic emits the earth guardian principle');
+assert.equal(gasPrinciple.payload.actor,'local-hero','gas panic principle credits the acting local hero');
+assert.ok(gasPrinciple.payload.fearSeconds>=undergroundBoss.config.GAS_FEAR_SECONDS-0.01,'gas panic principle records the real fear window');
+assert.deepEqual(gasPrinciple.payload.target,{x:core.x,y:core.y},'gas panic principle points at Nyxolith');
 assert.equal(dbg.forceEmerge(), true, 'debug can re-open the damage window after gas fear');
 core.gasFearT = 0;
 const exposedHp = core.hp;
@@ -290,6 +310,11 @@ assert.ok(cairns[0].hp<hpBeforeCairn,'memory cairns lose health through the shar
 const surveyorBeforeRelease=surveyor.hp;
 assert.equal(undergroundBoss.damageAt(Math.floor(cairns[0].x),Math.floor(cairns[0].y),9999),true,'a memory cairn can be shattered');
 assert.ok(surveyor.hp<surveyorBeforeRelease,'shattering a cairn releases banked damage back into Mara');
+const cairnPrinciple=guardianPrinciples.find(e=>e.type==='guardian_principle' && e.payload.kind==='earth_cairn_releases_damage');
+assert.ok(cairnPrinciple,'released buried damage emits the memory-cairn principle');
+assert.equal(cairnPrinciple.payload.actor,'local-hero','memory-cairn principle credits the acting local hero');
+assert.ok(cairnPrinciple.payload.amount>0,'memory-cairn principle only reports a real positive damage release');
+assert.deepEqual(cairnPrinciple.payload.target,{x:cairns[0].x,y:cairns[0].y},'memory-cairn principle points at the shattered cairn');
 
 // The personal stage, its puzzle reserve, and its supporting figures survive save/load.
 undergroundBoss.damageAt(Math.floor(surveyor.x),Math.floor(surveyor.y),80,{kind:'melee',source:'hero'});

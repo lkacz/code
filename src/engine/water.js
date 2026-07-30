@@ -124,6 +124,20 @@ window.MM = window.MM || {};
   let overlayFullRenders = 0;
 
   function k(x,y){ return x+","+y; }
+  function observeTransition(change,x,y,extra){
+    try{
+      const d=MM.discovery;
+      if(!d || typeof d.observe!=='function') return;
+      const id=change==='air_to_water'?'water_fills_space':
+        (change==='sand_to_mud'?'water_makes_mud':
+          (change==='clay_to_wet_clay'?'water_wets_clay':''));
+      if(id && typeof d.has==='function' && d.has(id)) return;
+      d.observe('tile_transition',Object.assign({
+        change,
+        target:{x:x+0.5,y:y+0.5}
+      },extra||{}));
+    }catch(e){}
+  }
   // Hot-path sets (active/next/pressureSeeds) use packed numeric LPK keys: 'x,y'
   // strings allocated per mark/neighbor were thousands of short-lived allocations
   // per tick under flow, and their lexicographic sort dominated the tick order cost.
@@ -450,7 +464,12 @@ window.MM = window.MM || {};
       return;
     }
     if(units>=UNITS) partial.delete(kk); else partial.set(kk,units);
-    if(cur!==T.WATER) writeExternalTile(x,y,T.WATER,getTile,setTile);
+    if(cur!==T.WATER){
+      writeExternalTile(x,y,T.WATER,getTile,setTile);
+      if(cur===T.AIR && getSafe(getTile,x,y,T.STONE)===T.WATER){
+        observeTransition('air_to_water',x,y,{source:'water_flow'});
+      }
+    }
   }
   // moveUnits: transfer n units between two cells; volume-conserving by construction.
   // Caller guarantees the source holds >=n and the destination has capacity for n.
@@ -631,6 +650,9 @@ window.MM = window.MM || {};
     setUnits(water.x,water.y,0,getTile,setTile);
     setTile(rec.x,rec.y,T.MUD);
     notifySolidMaterialChange(rec.x,rec.y,T.SAND,T.MUD,getTile,setTile);
+    if(getSafe(getTile,rec.x,rec.y,T.AIR)===T.MUD){
+      observeTransition('sand_to_mud',rec.x,rec.y,{source:'water_contact'});
+    }
     wetSand.delete(k(rec.x,rec.y));
     if(dryMud.size<MATERIAL_QUEUE_CAP) dryMud.set(k(rec.x,rec.y),{x:rec.x,y:rec.y,dry:0});
     wakeWaterCell(water.x,water.y,true);
@@ -647,6 +669,9 @@ window.MM = window.MM || {};
     setUnits(water.x,water.y,0,getTile,setTile);
     setTile(rec.x,rec.y,T.WET_CLAY);
     notifySolidMaterialChange(rec.x,rec.y,T.CLAY,T.WET_CLAY,getTile,setTile);
+    if(getSafe(getTile,rec.x,rec.y,T.AIR)===T.WET_CLAY){
+      observeTransition('clay_to_wet_clay',rec.x,rec.y,{source:'water_contact'});
+    }
     wetClay.delete(k(rec.x,rec.y));
     if(dryClay.size<MATERIAL_QUEUE_CAP) dryClay.set(k(rec.x,rec.y),{x:rec.x,y:rec.y,dry:0});
     wakeWaterCell(water.x,water.y,true);

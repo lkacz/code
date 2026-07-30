@@ -68,7 +68,12 @@ assert.ok(arcXp[4] >= 2 * arcXp[3], 'the finale pays out like a finale');
 const { discovery } = await import('../src/engine/discovery.js');
 await import('../src/engine/progress.js');
 const milestoneXp = [...progressSrc.matchAll(/xp:(\d+)/g)].reduce((a, m) => a + Number(m[1]), 0);
-const discoveryXp = discovery.total() * discovery.DISCOVERY_XP;
+const discoveryXp = discovery.TOTAL_DISCOVERY_XP;
+assert.equal(
+  discoveryXp,
+  discovery.entries().reduce((sum,entry)=>sum+entry.xp,0),
+  'structured discovery economy sums the per-tier catalog rewards'
+);
 const structured = milestoneXp + discoveryXp;
 globalThis.player = {xp: structured};
 const level = MM.progress.level().level;

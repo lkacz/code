@@ -19,6 +19,27 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function finiteTile(x,y){ return Number.isFinite(x) && Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
+  function transitionChange(oldTile,newTile){
+    if((oldTile===T.FROZEN_DIRT && newTile===T.DIRT) ||
+       (oldTile===T.FROZEN_SAND && newTile===T.SAND) ||
+       (oldTile===T.FROZEN_CLAY && newTile===T.CLAY)) return 'frozen_to_thawed';
+    return '';
+  }
+  function observeTransition(change,cell,opts){
+    if(!change) return;
+    try{
+      const d=MM.discovery;
+      if(d && typeof d.observe==='function'){
+        d.observe('tile_transition',{
+          change,
+          from:cell.oldTile,
+          to:cell.newTile,
+          source:String(opts && opts.source || 'world_reaction'),
+          target:{x:cell.x+0.5,y:cell.y+0.5}
+        });
+      }
+    }catch(e){}
+  }
   function getSafe(getTile,x,y,fallback){
     try{ return typeof getTile==='function' ? getTile(x,y) : fallback; }catch(e){ return fallback; }
   }
@@ -152,19 +173,29 @@ import { T, WORLD_H, WORLD_MIN_Y, WORLD_MAX_Y } from '../constants.js';
       if(nextTile==null || oldTile===nextTile) continue;
       setTile(cell.x,cell.y,nextTile);
       notifyTileChanged(cell.x,cell.y,oldTile,nextTile,getTile,setTile);
-      changed.push({x:cell.x,y:cell.y,oldTile,newTile:nextTile});
+      const change={x:cell.x,y:cell.y,oldTile,newTile:nextTile};
+      changed.push(change);
+      if(getSafe(getTile,cell.x,cell.y,oldTile)===nextTile){
+        observeTransition(transitionChange(oldTile,nextTile),change,opts);
+      }
     }
     if(!changed.length) return null;
+    const cx=changed.reduce((a,c)=>a+c.x,0)/changed.length;
+    const cy=changed.reduce((a,c)=>a+c.y,0)/changed.length;
     try{
-      const cx=changed.reduce((a,c)=>a+c.x,0)/changed.length;
-      const cy=changed.reduce((a,c)=>a+c.y,0)/changed.length;
       const tile=MM.TILE||20;
       if(MM.particles && MM.particles.spawnSparks) MM.particles.spawnSparks((cx+0.5)*tile,(cy+0.5)*tile,'rare',18);
       else if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((cx+0.5)*tile,(cy+0.5)*tile,'rare');
       if(MM.audio && MM.audio.play) MM.audio.play('charge',{x:cx+0.5,y:cy+0.5});
     }catch(e){}
     if(recipe.discovery){
-      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note(recipe.discovery, recipe.discoveryMsg||''); }catch(e){}
+      try{
+        if(MM.discovery && MM.discovery.note) MM.discovery.note(
+          recipe.discovery,
+          recipe.discoveryMsg||'',
+          {source:'world_reaction',target:{x:cx+0.5,y:cy+0.5}}
+        );
+      }catch(e){}
     }
     return {recipe:recipe.id, stimulus:recipe.stimulus, anchor:match.anchor, changed};
   }

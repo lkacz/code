@@ -85,6 +85,16 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
   function key(x,y){ return x+','+y; }
+  function observeTransition(change,x,y,extra){
+    try{
+      const d=MM.discovery;
+      if(!d || typeof d.observe!=='function') return;
+      d.observe('tile_transition',Object.assign({
+        change,
+        target:{x:x+0.5,y:y+0.5}
+      },extra||{}));
+    }catch(e){}
+  }
   function finiteTile(_x,y){ return Number.isFinite(y) && y>=WORLD_TOP && y<WORLD_BOTTOM; }
   function flammableAt(getTile,x,y){
     if(!finiteTile(x,y)) return false;
@@ -113,6 +123,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     // Snow-dusted turf dries back to plain grass (no meltwater in a thin cover)
     if(t===T.GRASS_SNOW){
       setTile(x,y,T.GRASS);
+      if(getTile(x,y)===T.GRASS) observeTransition('frozen_to_thawed',x,y,{from:t,to:T.GRASS,source:'heat'});
       return true;
     }
     // Permafrost unbinds into its diggable base soil
@@ -120,6 +131,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     if(thawed!=null){
       setTile(x,y,thawed);
       try{ if(MM.fallingSolids && MM.fallingSolids.afterPlacement) MM.fallingSolids.afterPlacement(x,y); }catch(e){}
+      if(getTile(x,y)===thawed) observeTransition('frozen_to_thawed',x,y,{from:t,to:thawed,source:'heat'});
       return true;
     }
     if(t!==T.SNOW && t!==T.ICE && t!==T.TOXIC_SNOW) return false;
@@ -131,6 +143,9 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     }
     try{ if(MM.water && MM.water.disturb) MM.water.disturb(x,80); }catch(e){}
     try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(x,y); }catch(e){}
+    if(getTile(x,y)===T.WATER){
+      observeTransition(t===T.ICE?'ice_to_water':'snow_to_water',x,y,{from:t,to:T.WATER,source:'heat'});
+    }
     return true;
   }
   function cookAt(x,y,getTile,setTile){
@@ -141,6 +156,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     burning.delete(key(x,y));
     setTile(x,y,T.BAKED_MEAT);
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((x+0.5)*TILE_PX,(y+0.5)*TILE_PX,'common'); }catch(e){}
+    if(getTile(x,y)===T.BAKED_MEAT) observeTransition('meat_to_baked',x,y,{from:T.MEAT,to:T.BAKED_MEAT,source:'heat'});
     return true;
   }
   function applyHeatReaction(x,y,getTile,setTile){
@@ -879,7 +895,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         L.waterT=0.22+Math.random()*0.12;
         if(getTile(L.x,L.y)!==T.LAVA){ lavaSet.delete(k); continue; }
         if(lavaTouchesWater(L,getTile)){
-          if(!authoritativeBodyBlocksCell(L.x,L.y)){ setTile(L.x,L.y,T.OBSIDIAN); lavaSet.delete(k); }
+          if(!authoritativeBodyBlocksCell(L.x,L.y)){
+            setTile(L.x,L.y,T.OBSIDIAN);
+            if(getTile(L.x,L.y)===T.OBSIDIAN) observeTransition('lava_to_obsidian',L.x,L.y,{from:T.LAVA,to:T.OBSIDIAN,source:'water_contact'});
+            lavaSet.delete(k);
+          }
           continue;
         }
       }
@@ -907,7 +927,11 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         if(getTile(L.x,L.y)!==T.LAVA){ lavaSet.delete(k); continue; }
         // water contact hardens (checked each tick — steam rises from the boundary)
         if(lavaTouchesWater(L,getTile)){
-          if(!authoritativeBodyBlocksCell(L.x,L.y)){ setTile(L.x,L.y,T.OBSIDIAN); lavaSet.delete(k); }
+          if(!authoritativeBodyBlocksCell(L.x,L.y)){
+            setTile(L.x,L.y,T.OBSIDIAN);
+            if(getTile(L.x,L.y)===T.OBSIDIAN) observeTransition('lava_to_obsidian',L.x,L.y,{from:T.LAVA,to:T.OBSIDIAN,source:'water_contact'});
+            lavaSet.delete(k);
+          }
           continue;
         }
         let nx=L.x, ny=L.y, moved=false, clone=false;
@@ -952,6 +976,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           if(getTile(L.x,L.y)!==T.LAVA) lavaSet.delete(k);
           else if(!authoritativeBodyBlocksCell(L.x,L.y)){
             setTile(L.x,L.y,T.OBSIDIAN); // re-validate both tile and body before converting
+            if(getTile(L.x,L.y)===T.OBSIDIAN) observeTransition('lava_cool',L.x,L.y,{from:T.LAVA,to:T.OBSIDIAN,source:'air_cooling'});
             lavaSet.delete(k);
           } else L.coolT=0.25; // retry after the body leaves; never delete the live lava entry
         }

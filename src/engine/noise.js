@@ -68,15 +68,16 @@ export function radiusFor(cause, strength){
 
 // Record a sound at a point. Returns the radius actually emitted (0 = ignored),
 // so callers can skip follow-up work when a sound was rejected.
-export function emit(x, y, cause, strength){
+export function emit(x, y, cause, strength, options){
   const r = radiusFor(cause, strength);
   if(!(r > 0)) return 0;
   // validate the RAW input: num() would quietly coerce NaN to 0 and place a
   // phantom sound at the origin
   const px = Number(x), py = Number(y);
   if(!Number.isFinite(px) || !Number.isFinite(py)) return 0;
-  const n = ring[head] || (ring[head] = { x: 0, y: 0, r: 0, at: 0, cause: '' });
+  const n = ring[head] || (ring[head] = { x: 0, y: 0, r: 0, at: 0, cause: '', actor: 'world' });
   n.x = px; n.y = py; n.r = r; n.at = clock; n.cause = String(cause || '');
+  n.actor=String(options&&options.actor||'world').slice(0,32);
   head = (head + 1) % CFG.RING;
   lastNoise = n;
   return r;
@@ -121,7 +122,15 @@ export function heardBy(x, y, opts){
     const score = (1 - Math.sqrt(d2) / reach) * n.r * (1 - age / CFG.TTL);
     if(score > bestScore){ bestScore = score; best = n; }
   }
-  return best ? { x: best.x, y: best.y, cause: best.cause, r: best.r, score: bestScore } : null;
+  return best ? {
+    x: best.x,
+    y: best.y,
+    cause: best.cause,
+    r: best.r,
+    score: bestScore,
+    at: best.at,
+    actor: best.actor||'world'
+  } : null;
 }
 
 // How visible a body is right now. Slow movement halves the range it is spotted
@@ -158,7 +167,14 @@ export function emitMovement(body){
   const stride = sprinting ? CFG.STRIDE_SPRINT : CFG.STRIDE_WALK;
   if(clock - (body._stepAt || -Infinity) < stride) return 0;
   body._stepAt = clock;
-  return emit(body.x, body.y, sprinting ? 'sprint' : 'step', sprinting ? 1 : 0.75);
+  const remote=!!(body.gid || body.coopOwner || body.kind==='coop');
+  return emit(
+    body.x,
+    body.y,
+    sprinting ? 'sprint' : 'step',
+    sprinting ? 1 : 0.75,
+    {actor:remote?'remote-hero':'local-hero'}
+  );
 }
 
 // A creature is unaware when it has neither seen nor heard you AND has not yet

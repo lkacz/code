@@ -108,7 +108,12 @@ window.MM = window.MM || {};
 
   function playerRef(){ return (typeof window!=='undefined' && window.player)||null; }
   function notify(){ try{ window.dispatchEvent(new CustomEvent('mm-progress-change')); }catch(e){} }
-  function say(t){ try{ if(window.msg) window.msg(t); }catch(e){} }
+  function say(t){
+    try{
+      if(MM.smartFeed && MM.smartFeed.notify) MM.smartFeed.notify('achievement',t);
+      else if(window.msg) window.msg(t);
+    }catch(e){}
+  }
   function markSeasonalTrophies(inv){
     if(!inv || typeof inv!=='object') return false;
     let changed=false;
@@ -395,7 +400,6 @@ window.MM = window.MM || {};
     if(L>state.lastLevel){
       const gained=Math.max(1,L-state.lastLevel);
       state.lastLevel=L; save();
-      say('⬆ Poziom '+L+'! Punkt umiejętności do wydania (I → Bohater)');
       try{ if(MM.audio && MM.audio.play) MM.audio.play('levelup'); }catch(e){}
       try{ window.dispatchEvent(new CustomEvent('mm-skill-point-gained',{detail:{level:L,points:points(),gained}})); }catch(e){}
       notify();

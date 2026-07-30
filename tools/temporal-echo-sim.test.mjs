@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createTemporalEchoController } from '../src/engine/temporal_echo.js';
+import { createTemporalCycleRewind, temporalCycleAt } from '../src/engine/temporal_sky_rewind.js';
 
 const echo=createTemporalEchoController({durationSeconds:60,cooldownSeconds:180});
 assert.equal(echo.state().phase,'idle');
@@ -23,6 +24,14 @@ assert.equal(echo.arm({}),false);
 echo.update(0.1);
 assert.equal(echo.arm({}),true);
 
+const daylightPlan=createTemporalCycleRewind(0.32,0.14);
+assert.ok(Math.abs(daylightPlan.distance-0.18)<1e-9);
+assert.ok(Math.abs(temporalCycleAt(daylightPlan,0)-0.32)<1e-9);
+assert.ok(Math.abs(temporalCycleAt(daylightPlan,1)-0.14)<1e-9);
+const midnightPlan=createTemporalCycleRewind(0.05,0.95);
+assert.ok(Math.abs(midnightPlan.distance-0.1)<1e-9,'sky rewind crosses midnight backwards');
+assert.ok(temporalCycleAt(midnightPlan,0.5)<0.05 || temporalCycleAt(midnightPlan,0.5)>0.95,'mid-rewind sky travels through midnight');
+
 const main=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 const world=readFileSync(new URL('../src/engine/world.js',import.meta.url),'utf8');
 const mobs=readFileSync(new URL('../src/engine/mobs.js',import.meta.url),'utf8');
@@ -38,14 +47,19 @@ assert.match(main,/pending && pending\.v===1[\s\S]*temporalCooldownUntil=Math\.m
 assert.match(main,/persistTemporalCooldown\(\)[\s\S]*TEMPORAL_COOLDOWN_MS/, 'successful rewind cooldown survives reload');
 assert.match(main,/resetWorldTransitionRuntime\(\)[\s\S]*clearTemporalPending\(\)/, 'intentional world transitions clear the crash marker');
 assert.match(main,/finishDeathTravelRespawn\(\)[\s\S]*TEMPORAL_ECHO\.beginRace/);
-assert.match(main,/tryOpenGraveAt\(tx,ty\)[\s\S]*beginTemporalRewind/);
+assert.match(main,/function tryOpenGraveAt\(tx,ty\)[\s\S]*activeTemporalGraveAt\(tx,ty\)[\s\S]*wejdź w jego światło[\s\S]*return true/, 'tools cannot trigger the spirit remotely; they teach physical contact');
+assert.doesNotMatch(main,/function tryOpenGraveAt\(tx,ty\)\{[\s\S]{0,260}beginTemporalRewind/, 'grave interaction no longer bypasses the contact objective');
 assert.match(main,/function breakMinedTile\(\)[\s\S]*tId===T\.GRAVE\) return tryOpenGraveAt/, 'finishing a grave mining action resolves the grave instead of deleting its tile');
 assert.match(main,/function repairTemporalGrave\(\)[\s\S]*setTile\(grave\.x,grave\.y,T\.GRAVE\)[\s\S]*collapseTemporalEcho\('grave-lost'/, 'external grave destruction self-heals or fails closed');
 assert.match(main,/function updateTemporalEcho\(dt\)[\s\S]*state\.phase==='racing'[\s\S]*repairTemporalGrave\(\)/, 'the racing loop enforces the grave objective invariant');
+assert.match(main,/function playerTouchesTemporalSpirit\(\)[\s\S]*activeTemporalGraveAt[\s\S]*return px1>=sx0/, 'the spirit has a generous body-contact volume');
+assert.match(main,/playerTouchesTemporalSpirit\(\) && beginTemporalRewind\(\)/, 'touching the spirit automatically starts the rewind');
 assert.match(main,/findGroundedGraveCell\(cx,cy,[\s\S]*isSupport:isObjectFootingTile/, 'death markers require physical footing instead of freezing in open air');
 assert.match(main,/t===T\.GRAVE && !activeTemporalSpiritAt\(wx,y\)[\s\S]*drawGraveTile/, 'the temporal interaction anchor never bakes a floating stone marker');
 assert.match(main,/function drawTemporalEchoSpirit\([\s\S]*Clock halo[\s\S]*Temporal motes/, 'the Echo target is a distinct animated spirit');
-assert.match(main,/function refreshGraveMarkerVisual\([\s\S]*entry\.version=-1[\s\S]*chunkRenderDirty\.delete/, 'a surviving resource grave is rebaked when the spirit expires');
+assert.match(main,/function forfeitTemporalEscrow\(\)[\s\S]*grave=null[\s\S]*refreshGraveMarkerVisual/, 'an expired spirit leaves a visually refreshed but untracked empty gravestone');
+assert.match(main,/function collapseTemporalEcho\(reason,notice\)[\s\S]*forfeitTemporalEscrow\(\)[\s\S]*saveGrave\(\); saveState\(\)/, 'every failed Echo resolution destroys its escrow before persistence');
+assert.match(main,/event&&event\.type==='expired'[\s\S]*zasoby z Echa przepadły[\s\S]*pusty nagrobek/, 'the timeout clearly communicates permanent resource loss');
 assert.match(main,/kind:'spirit'/, 'the QA contract identifies the new target presentation');
 assert.match(main,/restoreTemporalEchoPayload\(payload\)[\s\S]*restoreTemporalCheckpoint\(\)[\s\S]*player\.hp=player\.maxHp[\s\S]*hpInvul/);
 assert.match(main,/restoreTemporalEchoPayload\(payload\)[\s\S]*DISCOVERY\.restore\(payload\.discovery\)/, 'branch-only discoveries are rolled back with their XP');
@@ -55,6 +69,11 @@ assert.match(main,/function saveState\(\)[\s\S]*temporalEchoActive\(\)\) return/
 assert.match(main,/function drawTemporalEchoOverlay\(ts\)[\s\S]*globalCompositeOperation='screen'/);
 assert.match(main,/function drawTemporalEchoOverlay\(ts\)[\s\S]*createRadialGradient/);
 assert.match(main,/function drawTemporalEchoOverlay\(ts\)[\s\S]*COFANIE/);
+assert.match(main,/STAWKA: '\+escrow\+' ZASOBÓW — PRZEPADNĄ PO CZASIE/, 'the HUD makes the resource stakes explicit');
+assert.match(main,/function temporalSkyRewindFor\(payload\)[\s\S]*createTemporalCycleRewind/, 'rewind captures a backwards celestial route from the current sky to the death sky');
+assert.match(main,/function applyTemporalSkyRewind\(fx,progress\)[\s\S]*BACKGROUND\.importState/, 'the real background clock is animated during rewind');
+assert.match(main,/function drawTemporalCelestialRewindTrail\(fx,pulse\)[\s\S]*_debugCelestialCyclePosition/, 'the sun or moon gains readable reverse-motion afterimages');
+assert.match(main,/Po śmierci utracone zasoby przejmuje Duch Chwili — dotknij go przed końcem odliczania, aby odzyskać depozyt i cofnąć świat/, 'help teaches contact, the deadline, escrow recovery and rewind');
 assert.match(world,/TEMPORAL_SECTION_CAP=2048/);
 assert.match(world,/function rememberTemporalSection[\s\S]*arr\.slice\(\)/, 'terrain uses section-level copy-on-write');
 assert.match(world,/function invalidateTemporalJournal[\s\S]*temporalJournal\.invalid=true/);

@@ -29,6 +29,7 @@ assert.match(indexHtml, /#craft \.craftList\{[^}]*overflow-y:auto/, 'crafting re
 assert.match(inventoryUiSrc, /const MODAL_LAYER_BASE=2000/, 'modal windows share one high dynamic layer range');
 assert.match(inventoryUiSrc, /function raise\(id,el\)[\s\S]*layerOrder\.push\(id\);\s*restack\(\)/, 'opening an existing or new window moves it to the top of the modal order');
 assert.match(inventoryUiSrc, /MM\.modalInput\.push\('inventory',overlay\)/, 'the hero center registers its concrete overlay with the modal stack');
+assert.match(inventoryUiSrc, /count!==undefined && count!==null && count!==''\?' '\+count:''/, 'Atlas category buttons display their found/total text counters');
 assert.match(mainSrc, /document\.body\.appendChild\(pausePanel\)[\s\S]*document\.body\.appendChild\(keybindPanel\)[\s\S]*document\.body\.appendChild\(radioPanel\)/, 'game dialogs share the body stacking context instead of being trapped inside #ui');
 assert.match(mainSrc, /MM\.modalInput\.raise\('pause',panel\)/, 'the pause window enters the opening-order stack');
 assert.match(mainSrc, /MM\.modalInput\.raise\('keybind',panel\)/, 'the keybind window rises above the pause window that opened it');
@@ -388,7 +389,8 @@ assert.ok(dirtyCmp.equippedDelta > 0, 'new weapon shows upgrade over equipped we
 assert.ok(mainSrc.includes('function notifyFreshLoot(fresh)'), 'fresh loot has a brief comparison notification hook');
 assert.ok(mainSrc.includes('INV.compareItem(it.id)'), 'fresh loot notification reuses inventory comparison data');
 assert.ok(mainSrc.includes('cmp.equippedComparable && cmp.equippedDelta!=null'), 'fresh loot notification reports the equipped-item delta when comparable');
-assert.ok(mainSrc.includes("msg('Nowy przedmiot: '+lootNoticeName(top.item)+lootNoticeSuffix(top.cmp)+extra)"), 'fresh loot notification shows item name plus worn-item difference');
+assert.equal(mainSrc.includes("msg('Nowy przedmiot:"), false, 'ordinary gear does not duplicate the unified inventory feed in the central message lane');
+assert.ok(mainSrc.includes('showUpgradeNotice(row.item)'), 'real upgrades retain their richer actionable comparison card');
 assert.ok(mainSrc.includes('notifyFreshLoot(fresh);'), 'fresh inbox additions trigger the loot comparison notification');
 INV.unequip('weapon');
 INV.markSeen('battery_dynamic');

@@ -2183,7 +2183,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
           if(MM.mobs && MM.mobs.shockAquaticRadius){
             const res=MM.mobs.shockAquaticRadius(x,y,4.5,{damage:Math.max(6,dmg*4),getTile:tileGetter,source:'hero',cause:'electric_water',naturalDeath:false});
             if(res && res.hit>0){
-              try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('electric_water','Prąd elektryzuje całą taflę wody!'); }catch(e2){}
+              try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('electric_water','Prąd elektryzuje całą taflę wody!',{source:'electric_weapon',target:{x,y}}); }catch(e2){}
             }
           }
         }catch(e){}
@@ -2430,7 +2430,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     }
     try{ if(MM.gases && MM.gases.consumeRadius) consumed += MM.gases.consumeRadius('fuel',wx,wy,3,getTile,setTile); }catch(e){}
     const R=(opts.radius && Number.isFinite(opts.radius)) ? Math.max(0.8,Math.min(4,opts.radius)) : 2.2+Math.min(1.6, consumed*0.06);
-    try{ if(MM.discovery && MM.discovery.note && consumed>0) MM.discovery.note('gas_boom','Obłok gazu można zdetonować ogniem!'); }catch(e){}
+    try{ if(MM.discovery && MM.discovery.note && consumed>0) MM.discovery.note('gas_boom','Obłok gazu można zdetonować ogniem!',{source:'gas_ignition',target:{x:wx,y:wy}}); }catch(e){}
     const bx=Math.round(wx), by=Math.round(wy);
     // crater: soft tiles blasted out; precious and blast-resistant tiles survive
     const Ri=Math.ceil(R);
@@ -3285,7 +3285,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         try{ if(MM.water && MM.water.onTileChanged) MM.water.onTileChanged(x,y,getTile); }catch(e){}
         try{ if(MM.clouds && MM.clouds.injectVapor) MM.clouds.injectVapor(x,1); }catch(e){}
         emitSteam(x+0.5,y+0.25,3,getTile,setTile);
-        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('water_boil','Płomień gotuje wodę w parę!'); }catch(e){}
+        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('water_boil','Płomień gotuje wodę w parę!',{source:'flame_heat',target:{x:x+0.5,y:y+0.25}}); }catch(e){}
       } else {
         waterHeat.set(k,h);
       }
@@ -3320,7 +3320,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         stoneHeat.delete(k);
         if(FIRE && FIRE.noteLava) FIRE.noteLava(x,y);
         try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(x,y); }catch(e){}
-        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('stone_melt','Długi płomień topi kamień w lawę!'); }catch(e){}
+        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('stone_melt','Długi płomień topi kamień w lawę!',{source:'flame_heat',target:{x:x+0.5,y:y+0.5}}); }catch(e){}
       } else {
         stoneHeat.set(k,h);
       }
@@ -3355,7 +3355,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
         heatForgedGlass.set(k,{x,y,cool:HEAT_FORGED_GLASS_GRACE});
         sandHeat.delete(k);
         try{ if(MM.fallingSolids && MM.fallingSolids.onTileRemoved) MM.fallingSolids.onTileRemoved(x,y); }catch(e){}
-        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('sand_glass','Rozgrzany piasek wytapia się w szkło!'); }catch(e){}
+        try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('sand_glass','Rozgrzany piasek wytapia się w szkło!',{source:'flame_heat',target:{x:x+0.5,y:y+0.5}}); }catch(e){}
       } else {
         sandHeat.set(k,h);
       }

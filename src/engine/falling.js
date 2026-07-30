@@ -94,6 +94,12 @@ window.MM = window.MM || {};
   let getTile = null, setTile = null;
   function init(gt, st){ getTile = gt; setTile = st; }
   const key = (x,y)=>x+','+y;
+  function observe(type,payload){
+    try{
+      const d=window.MM && MM.discovery;
+      if(d && typeof d.observe==='function') d.observe(type,payload);
+    }catch(e){}
+  }
   function normalizedWorldCell(x,y){
     if(!finiteX(x) || !Number.isFinite(y)) return null;
     x=Math.floor(x); y=Math.floor(y);
@@ -428,7 +434,7 @@ window.MM = window.MM || {};
       }
     }catch(e){}
   }
-  function spawnSand(x,y){ sandActive.push({x,yFloat:y,vy:0,wet:false,windCarry:0}); }
+  function spawnSand(x,y){ sandActive.push({x,yFloat:y,vy:0,wet:false,windCarry:0,rolled:false}); }
   function isSettledRubble(x,y){
     const k=key(x,y);
     if(!settledRubble.has(k)) return false;
@@ -639,7 +645,8 @@ window.MM = window.MM || {};
       yFloat:Math.max(WORLD_TOP,Math.min(WORLD_BOTTOM-1,raw.y)),
       vy:Number.isFinite(raw.vy)?Math.max(-120,Math.min(120,raw.vy)):0,
       windCarry:Number.isFinite(raw.windCarry)?Math.max(-4,Math.min(4,raw.windCarry)):0,
-      wet:false
+      wet:false,
+      rolled:!!raw.rolled
     };
   }
   function dropY(x,y){
@@ -877,6 +884,10 @@ window.MM = window.MM || {};
   }
   function breakFragile(x,y){
     queueAroundSettle(x,y);
+    observe('fragile_shatter',{
+      material:'glass',
+      target:{x:Number(x)+0.5,y:Math.floor(Number(y))+0.5}
+    });
     try{
       const p=window.MM && MM.particles;
       if(p && p.spawnSplash){
@@ -965,7 +976,7 @@ window.MM = window.MM || {};
     markQuiet(x,y);
     return true;
   }
-  function settleSand(sx,fromY,force){
+  function settleSand(sx,fromY,force,rolledBefore){
     let x=Math.floor(sx);
     if(!Number.isFinite(x)) x=0;
     let y=dropY(x,fromY);
@@ -998,6 +1009,10 @@ window.MM = window.MM || {};
     notifyGasChange(x,y,was,T.SAND);
     if(was===T.WATER) notifyWater(x,y);
     queueAroundSettle(x,y);
+    observe('falling_sand',{
+      rolled:!!rolledBefore || x!==originX,
+      target:{x:x+0.5,y:y+0.5}
+    });
     return y;
   }
   function structuralRollLimit(type){
@@ -1621,6 +1636,16 @@ window.MM = window.MM || {};
     if(!seen.has(virtualKey)) return {ok:false, reason:'Brak podparcia'};
     const componentKeys=new Set(component.map(c=>key(c.x,c.y)));
     const componentByKey=new Map(component.map(c=>[key(c.x,c.y),c]));
+    const belowKey=key(px,py+1);
+    const targetFooting=py+1>=WORLD_BOTTOM ||
+      (!componentKeys.has(belowKey) && isBuildFoundationTile(virtualSupportTile(px,py+1)));
+    const targetSide=[-1,1].some(dir=>{
+      const sideKey=key(px+dir,py);
+      return !componentKeys.has(sideKey) && isBuildAnchorTile(virtualSupportTile(px+dir,py));
+    });
+    const aboveKey=key(px,py-1);
+    const targetCeiling=!componentKeys.has(aboveKey) && isBuildAnchorTile(virtualSupportTile(px,py-1));
+    const support=targetFooting?'footing':(targetCeiling?'ceiling':(targetSide?'side':'network'));
     const supports=[];
     for(const c of component){
       let mult=0;
@@ -1642,7 +1667,7 @@ window.MM = window.MM || {};
     const failing=overstressedBuiltCells(component,stable,new Set());
     if(failing.some(c=>key(c.x,c.y)===virtualKey)) return {ok:false, reason:'Za duze naprezenie', pressureCells};
     if(failing.length) return {ok:false, reason:'Konstrukcja peknie', pressureCells};
-    return {ok:true, applies:true, pressureCells};
+    return {ok:true, applies:true, pressureCells, support};
   }
   function buildStressRatio(c,budget){
     if(!Number.isFinite(budget)) return 0;
@@ -1774,6 +1799,14 @@ window.MM = window.MM || {};
       released.push(c);
     }
     releaseBackgroundCluster(released);
+    if(released.length){
+      const first=released[0];
+      observe('structure_collapse',{
+        built:true,
+        count:released.length,
+        target:{x:first.x+0.5,y:first.y+0.5}
+      });
+    }
     return true;
   }
   function processPlayerBuiltAt(sx,sy,processed){
@@ -1885,13 +1918,21 @@ window.MM = window.MM || {};
     // Anything that sat on the cluster (sand, diamonds) is now unsupported
     for(const c of falling) queueAroundRemoval(c.x,c.y);
     releaseBackgroundCluster(falling);
+    if(falling.length){
+      const first=falling[0];
+      observe('structure_collapse',{
+        built:false,
+        count:falling.length,
+        target:{x:first.x+0.5,y:first.y+0.5}
+      });
+    }
     return falling.length>0;
   }
 
   // Freeze in-flight material into tiles so it can never be lost. Sand gets a
   // granular side-roll here too; otherwise autosave can turn a cascade into a chimney.
-  function dropToRest(x, fromY, type, rubble){
-    if(type===T.SAND) return settleSand(x,fromY,true);
+  function dropToRest(x, fromY, type, rubble, rolled){
+    if(type===T.SAND) return settleSand(x,fromY,true,rolled);
     if(isFragileFalling(type)) return breakFragile(x,fromY);
     if(rubble && isRubbleTrackedMaterial(type)) return settleRubble(x,fromY,type,true);
     let y=clampY(fromY);
@@ -1919,7 +1960,7 @@ window.MM = window.MM || {};
       const grains=[...sandActive].sort((a,b)=>b.yFloat-a.yFloat);
       sandActive.length=0;
       for(const s of grains){
-        if(dropToRest(s.x, s.yFloat, T.SAND)===BODY_REST) sandActive.push(s);
+        if(dropToRest(s.x, s.yFloat, T.SAND,false,s.rolled)===BODY_REST) sandActive.push(s);
       }
     }
   }
@@ -1962,7 +2003,7 @@ window.MM = window.MM || {};
     for(const b of active) if(dockedOnBody(b)) hoverClaims.add(key(b.x,Math.floor(b.yFloat)));
     for(const s of sandActive) if(dockedOnBody(s)) hoverClaims.add(key(s.x,Math.floor(s.yFloat)));
     // Overload guard: a pathological cascade can't accumulate unbounded entities
-    if(sandActive.length>3000){ const excess=sandActive.splice(0, sandActive.length-3000).sort((a,b)=>b.yFloat-a.yFloat); for(const s of excess) dropToRest(s.x, s.yFloat, T.SAND); }
+    if(sandActive.length>3000){ const excess=sandActive.splice(0, sandActive.length-3000).sort((a,b)=>b.yFloat-a.yFloat); for(const s of excess) dropToRest(s.x, s.yFloat, T.SAND,false,s.rolled); }
     if(active.length>ACTIVE_RIGID_CAP){
       const excess=active.splice(0, active.length-ACTIVE_RIGID_CAP).sort((a,b)=>b.yFloat-a.yFloat);
       for(const b of excess) dropToRest(b.x,b.yFloat,b.type,b.rubble);
@@ -2001,6 +2042,12 @@ window.MM = window.MM || {};
         // roll/stack target may land on the hero even when settledAt did not — hover, never bury
         const rest=(b.rubble && isRubbleTrackedMaterial(b.type)) ? settleRubble(b.x,settledAt,b.type) : occupy(b.x,settledAt,b.type);
         if(rest===BODY_REST){ restOnBody(b,b.x,settledAt); continue; }
+        const rx=(rest && Number.isFinite(rest.x)) ? rest.x : b.x;
+        const ry=(rest && Number.isFinite(rest.y)) ? rest.y : settledAt;
+        observe('falling_block',{
+          tile:b.type,
+          target:{x:rx+0.5,y:ry+0.5}
+        });
         active.splice(i,1);
       }
     }
@@ -2042,11 +2089,11 @@ window.MM = window.MM || {};
             const ws=windSpeedAt(s.x+0.5,yi);
             if(Math.abs(ws)>1.0) dir=ws<0?-1:1;
           }
-          s.x+=dir; s.yFloat=yi+0.05; if(s.vy>8) s.vy=8; continue;
+          s.x+=dir; s.rolled=true; s.yFloat=yi+0.05; if(s.vy>8) s.vy=8; continue;
         }
       }
       if(bodyBlocks(s.x,yi)){ restOnBody(s,s.x,yi); continue; }
-      if(settleSand(s.x,yi)===BODY_REST){ restOnBody(s,s.x,yi); continue; } // roll target landed on a body
+      if(settleSand(s.x,yi,false,s.rolled)===BODY_REST){ restOnBody(s,s.x,yi); continue; } // roll target landed on a body
       sandActive.splice(i,1);
     }
   }
@@ -2361,7 +2408,7 @@ window.MM = window.MM || {};
         protected:Math.max(0,protectedBuilds.size-PROTECTED_SAVE_CAP)
       },
       active:active.map(b=>restoredRigid({x:b.x,y:b.yFloat,type:b.type,vy:b.vy,windCarry:b.windCarry||0,rubble:!!b.rubble})).filter(Boolean).map(b=>({x:b.x,y:b.yFloat,type:b.type,vy:b.vy,windCarry:b.windCarry||0,rubble:!!b.rubble})),
-      sand:sandActive.map(s=>restoredSand({x:s.x,y:s.yFloat,vy:s.vy,windCarry:s.windCarry||0})).filter(Boolean).map(s=>({x:s.x,y:s.yFloat,vy:s.vy,windCarry:s.windCarry||0})),
+      sand:sandActive.map(s=>restoredSand({x:s.x,y:s.yFloat,vy:s.vy,windCarry:s.windCarry||0,rolled:!!s.rolled})).filter(Boolean).map(s=>({x:s.x,y:s.yFloat,vy:s.vy,windCarry:s.windCarry||0,rolled:!!s.rolled})),
       queue:[...unstable].map(parseSavedKey).filter(Boolean).slice(0,6000),
       built,
       playerBuilt:playerBuiltOut,

@@ -42,6 +42,7 @@ import { gearForge as GEAR_FORGE } from './engine/gear_forge.js';
 import { gravityGun as GRAVITY_GUN } from './engine/gravity_gun.js';
 import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engine/crafting.js';
 import { createInventoryFeedback } from './engine/inventory_feedback.js';
+import { createSmartFeed } from './engine/smart_feed.js';
 import { createSingleNoticeQueue } from './engine/single_notice_queue.js';
 import { furnishings as FURNISHINGS } from './engine/furnishings.js';
 import { observerReplicas as OBSERVER_REPLICAS } from './engine/observer_replicas.js';
@@ -94,6 +95,7 @@ import { discovery as DISCOVERY } from './engine/discovery.js';
 import { houseHealing as HOUSE_HEALING } from './engine/house_healing.js';
 import { sectionAwareRespawnPoint, usesSurfaceRespawnRoute } from './engine/respawn_travel.js';
 import { createTemporalEchoController } from './engine/temporal_echo.js';
+import { createTemporalCycleRewind, temporalCycleAt } from './engine/temporal_sky_rewind.js';
 import { audio as AUDIO, RADIO_STATIONS } from './engine/audio.js';
 import { ufo as UFO } from './engine/ufo.js';
 import { tasks as TASKS } from './engine/tasks.js';
@@ -135,6 +137,7 @@ import { ghostHost as GHOST_HOST } from './engine/ghost_host.js';
 import { ghostClient as GHOST_CLIENT } from './engine/ghost_client.js';
 import './engine/party_hud.js'; // co-op roster + off-screen teammate arrows (MM.partyHud)
 import { createRenderHealth, blitProbe as renderBlitProbe, HINTS as RENDER_HINTS } from './engine/render_health.js';
+import { prioritizeVisibleRenderSections } from './engine/render_cache_scheduler.js';
 import { postFx as POST_FX } from './engine/post_fx.js';
 import { shadowParams, reliefLightVector, reliefFaceShade, reliefKeyDir, reliefAlphaBucket,
 	RELIEF_FACE_NX, RELIEF_FACE_NY, RELIEF_HI_ALPHA, RELIEF_SH_ALPHA, RELIEF_MIN_MAG,
@@ -752,6 +755,84 @@ function setTile(x,y,v){
 	// which world.js fires for every real change regardless of the caller
 	WORLD.setTile(x,y,v);
 }
+function noteDiscoveryFact(type,detail){
+	try{
+		return DISCOVERY&&typeof DISCOVERY.observe==='function'
+			? DISCOVERY.observe(type,detail||{})
+			: null;
+	}catch(e){ return null; }
+}
+const DISCOVERY_ORE_TILES=new Set([
+	T.DIAMOND,T.COAL,T.GOLD_ORE,T.SILVER_ORE,T.TIN_ORE,T.IRIDIUM,
+	T.METEORIC_IRON,T.RADIOACTIVE_ORE,T.ANTIMATTER_CRYSTAL
+]);
+const DISCOVERY_PRECIOUS_TILES=new Set([T.DIAMOND,T.GOLD_ORE,T.SILVER_ORE,T.IRIDIUM]);
+function discoveryMaterialForTile(id){
+	if(id===T.WATER) return 'water';
+	if(id===T.SAND || id===T.UNSTABLE_SAND || id===T.FROZEN_SAND || id===T.QUICKSAND) return 'sand';
+	if(id===T.STONE) return 'stone';
+	if(id===T.CLAY || id===T.WET_CLAY || id===T.FROZEN_CLAY) return 'clay';
+	if(id===T.COAL) return 'coal';
+	if(id===T.TORCH) return 'torch';
+	if(id===T.LADDER || id===T.BEDROCK_LADDER) return 'ladder';
+	if(id===T.GLASS) return 'glass';
+	if(id===T.PIT_PROP) return 'pit_prop';
+	return String((INFO[id]&&INFO[id].drop)||'tile');
+}
+function discoveryTileFacts(id,extra){
+	const info=INFO[id]||{};
+	return Object.assign({
+		tile:id,
+		material:discoveryMaterialForTile(id),
+		hardness:Math.max(0,Number(info.hp)||0),
+		hasDrop:!!(info.drop || (Array.isArray(info.drops)&&info.drops.length)),
+		ore:!!info.ore || DISCOVERY_ORE_TILES.has(id),
+		precious:DISCOVERY_PRECIOUS_TILES.has(id),
+		meteorite:!!info.meteorite,
+		machine:!!info.machine,
+		door:!!info.door || !!info.trapdoor,
+		powerSource:!!info.powerSource,
+		powerCable:!!info.powerCable || !!info.conductor,
+		powerDevice:!!info.powerDevice,
+		fluidDevice:!!info.fluidPipe || !!info.fluidPump || !!info.waterDevice
+	},extra||{});
+}
+function normalizedDiscoveryLayer(layer){
+	if(layer==='overlay') return 'overlay';
+	if(layer==='background' || layer==='bg') return 'background';
+	return 'foreground';
+}
+function discoveryAckFactsForTile(id,detail){
+	const src=detail&&typeof detail==='object'?detail:{};
+	const base=discoveryTileFacts(Number(id)|0);
+	const support=typeof src.support==='string' ? src.support.slice(0,24) : 'other';
+	return {
+		layer:normalizedDiscoveryLayer(src.layer),
+		support,
+		replacedWater:!!src.replacedWater,
+		hasDrop:typeof src.hasDrop==='boolean' ? src.hasDrop : !!base.hasDrop,
+		material:String(base.material||'tile').slice(0,24),
+		hardness:Math.max(0,Math.min(10000,Number(base.hardness)||0)),
+		ore:!!base.ore,
+		precious:!!base.precious,
+		meteorite:!!base.meteorite
+	};
+}
+function confirmedGuestDiscoveryFacts(raw){
+	if(!raw || typeof raw!=='object') return null;
+	const facts={
+		layer:normalizedDiscoveryLayer(raw.layer),
+		support:typeof raw.support==='string' ? raw.support.slice(0,24) : 'other',
+		replacedWater:!!raw.replacedWater
+	};
+	if(typeof raw.hasDrop==='boolean') facts.hasDrop=raw.hasDrop;
+	if(typeof raw.material==='string') facts.material=raw.material.slice(0,24);
+	if(Number.isFinite(Number(raw.hardness))) facts.hardness=Math.max(0,Math.min(10000,Number(raw.hardness)));
+	if(typeof raw.ore==='boolean') facts.ore=raw.ore;
+	if(typeof raw.precious==='boolean') facts.precious=raw.precious;
+	if(typeof raw.meteorite==='boolean') facts.meteorite=raw.meteorite;
+	return facts;
+}
 // world.js invokes this after every non-transient tile change AND its version
 // bump — including engines that call world.setTile directly (plants, trees,
 // seasons). Recording the dirty band here keeps chunk-cache redraws partial;
@@ -1172,6 +1253,92 @@ function drawWorldNumbers(){
 			ctx.fillText(n.text,0,0);
 		}
 		ctx.restore();
+	}
+	ctx.restore();
+}
+const discoveryReducedMotionQuery=typeof matchMedia==='function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+function drawDiscoveryObservationFx(){
+	if(!discoveryObservationFx.length || !player) return;
+	const now=performance.now();
+	const reducedMotion=!!(discoveryReducedMotionQuery && discoveryReducedMotionQuery.matches);
+	const eyeX=player.x*TILE;
+	const eyeY=(player.y-player.h*0.62)*TILE;
+	ctx.save();
+	ctx.lineCap='round';
+	ctx.lineJoin='round';
+	for(let i=discoveryObservationFx.length-1;i>=0;i--){
+		const fx=discoveryObservationFx[i];
+		const age=now-fx.start;
+		if(age>=fx.duration){
+			discoveryObservationFx.splice(i,1);
+			continue;
+		}
+		const p=Math.max(0,Math.min(1,age/fx.duration));
+		const appear=Math.min(1,age/180);
+		const fade=p>0.70?Math.max(0,(1-p)/0.30):1;
+		const intensity=Math.max(0.4,Math.min(1,Number(fx.intensity)||1));
+		const alpha=appear*fade*intensity;
+		const color=fx.color||'#ffd66e';
+		const target=fx.target;
+		const targetVisible=target && worldFxVisible(Math.floor(target.x),Math.floor(target.y));
+		if(targetVisible){
+			const tx=target.x*TILE, ty=target.y*TILE;
+			const dx=tx-eyeX, dy=ty-eyeY;
+			const dist=Math.hypot(dx,dy);
+			if(dist>TILE*1.15 && age<1900){
+				const rayFade=Math.max(0,1-age/1900);
+				ctx.save();
+				ctx.globalAlpha=alpha*rayFade*0.76;
+				ctx.strokeStyle=color;
+				ctx.lineWidth=Math.max(1.2,TILE*0.055);
+				ctx.setLineDash([Math.max(3,TILE*0.22),Math.max(3,TILE*0.18)]);
+				ctx.lineDashOffset=reducedMotion?0:-age*0.018;
+				ctx.beginPath();
+				ctx.moveTo(eyeX,eyeY);
+				ctx.lineTo(tx,ty);
+				ctx.stroke();
+				ctx.restore();
+			}
+			const ringPhase=reducedMotion?0.18:(age%850)/850;
+			const ringR=TILE*(0.32+ringPhase*(0.52+0.20*intensity));
+			ctx.save();
+			ctx.globalAlpha=alpha*(1-ringPhase)*0.86;
+			ctx.strokeStyle=color;
+			ctx.lineWidth=Math.max(1.4,TILE*0.07);
+			ctx.beginPath();
+			ctx.arc(tx,ty,ringR,0,Math.PI*2);
+			ctx.stroke();
+			ctx.globalAlpha=alpha*0.85;
+			ctx.fillStyle=color;
+			ctx.beginPath();
+			ctx.arc(tx,ty,Math.max(2,TILE*0.10),0,Math.PI*2);
+			ctx.fill();
+			ctx.restore();
+		}
+		if(age<1750){
+			const q=Math.max(0,Math.min(1,age/1750));
+			const bob=reducedMotion?0:Math.sin(age*0.014)*TILE*0.08;
+			const by=eyeY-TILE*(0.95+q*0.18)+bob;
+			const r=TILE*(0.31+0.11*intensity+(1-q)*0.05);
+			ctx.save();
+			ctx.globalAlpha=alpha*Math.max(0,1-Math.max(0,(q-0.72)/0.28));
+			ctx.shadowColor=color;
+			ctx.shadowBlur=reducedMotion?0:TILE*0.75;
+			ctx.fillStyle='rgba(7,12,20,.92)';
+			ctx.strokeStyle=color;
+			ctx.lineWidth=Math.max(1.5,TILE*0.08);
+			ctx.beginPath();
+			ctx.arc(eyeX,by,r,0,Math.PI*2);
+			ctx.fill();
+			ctx.stroke();
+			ctx.shadowBlur=0;
+			ctx.fillStyle=color;
+			ctx.font='950 '+Math.max(12,Math.round(TILE*(0.52+0.20*intensity)))+'px system-ui, sans-serif';
+			ctx.textAlign='center';
+			ctx.textBaseline='middle';
+			ctx.fillText('!',eyeX,by+1);
+			ctx.restore();
+		}
 	}
 	ctx.restore();
 }
@@ -1624,6 +1791,13 @@ if(typeof window!=='undefined' && window.addEventListener){
 	window.addEventListener('mm-skill-point-gained',ev=>{
 		const d=(ev && ev.detail) || {};
 		const gained=Math.max(1,Math.min(99,Math.round(Number(d.gained)||1)));
+		try{
+			SMART_FEED.notify('achievement','Nowy punkt umiejętności czeka w Centrum bohatera.',{
+				title:'AWANS BOHATERA',
+				context:gained>1 ? '+'+gained+' punkty umiejętności' : '+1 punkt umiejętności',
+				priority:76
+			});
+		}catch(e){}
 		heroJoyUntil=Math.max(heroJoyUntil,performance.now()+1800);
 		triggerHeroBodyRecoil('strike',player.facing||1,0.85+Math.min(0.55,gained*0.12));
 		try{
@@ -1798,6 +1972,13 @@ function recordTurboEnergyUse(amount){
 	const spent=Math.max(0,Number(amount)||0);
 	if(!(spent>0) || turboEnergyHoldExhausted) return 0;
 	turboEnergyHoldSpent+=spent;
+	try{
+		if(DISCOVERY&&DISCOVERY.note) DISCOVERY.note(
+			'energy_sprint',
+			'Energia napędza turbo — biegniesz szybciej i skaczesz wyżej!',
+			{source:'hero_turbo',target:{x:player.x,y:player.y-player.h*0.45}}
+		);
+	}catch(e){}
 	return spent;
 }
 function reportTurboEnergyUse(lockUntilRelease){
@@ -2259,16 +2440,156 @@ function drawInventoryFeedbackThumbnail(canvas,entry){
 	g.fillText(glyph,40,42);
 	return true;
 }
+const SMART_FEED=createSmartFeed({
+	host:document.getElementById('smartFeed'),
+	minInterval:2000,
+	maxPending:32,
+	maxHistory:24,
+	onPromote:onSmartFeedPromote,
+	onUrgent:showSmartFeedUrgent
+});
+const announcedFeedTasks=new Set();
+const MAX_ANNOUNCED_FEED_TASKS=256;
+function rememberAnnouncedFeedTask(id){
+	announcedFeedTasks.add(id);
+	while(announcedFeedTasks.size>MAX_ANNOUNCED_FEED_TASKS){
+		const oldest=announcedFeedTasks.values().next().value;
+		announcedFeedTasks.delete(oldest);
+	}
+}
+MM.smartFeed=SMART_FEED;
+if(ATTENTION && ATTENTION.setNotifier){
+	ATTENTION.setNotifier(text=>SMART_FEED.notify('omen',text,{dedupeKey:'attention:'+String(text)}));
+}
+function inventoryFeedContext(entry){
+	if(entry && entry.cause==='death'){
+		if(entry.deathCause==='alien_invasion') return 'po śmierci — inwazja Obcych';
+		if(entry.deathCause==='molekin_invasion') return 'po śmierci — inwazja kretoludzi';
+		return entry.direction==='gain'?'odzyskane po śmierci':'utracone po śmierci';
+	}
+	return entry && entry.direction==='loss'?'ubyło z ekwipunku':'trafiło do ekwipunku';
+}
+function inventoryFeedItem(entry){
+	const glyph=(entry.preview&&entry.preview.icon)||inventoryFeedbackGlyph(entry.key)||(entry.type==='gear'?'✦':'◆');
+	return {name:entry.name,delta:entry.delta,icon:glyph,color:entry.color};
+}
+function publishInventoryFeedEntry(entry){
+	if(!entry) return false;
+	const rows=entry.type==='batch' ? entry.entries : [entry];
+	const gains=rows.filter(item=>item.delta>0).length;
+	const losses=rows.filter(item=>item.delta<0).length;
+	const title=gains===rows.length?'ZDOBYTO':losses===rows.length?'UTRACONO':'ZMIANY EKWIPUNKU';
+	const context=entry.type==='batch'
+		? (entry.cause==='death' ? inventoryFeedContext(entry) : rows.length+' pozycji')
+		: inventoryFeedContext(entry);
+	return SMART_FEED.push({
+		kind:'inventory',
+		title,
+		icon:entry.cause==='death'?'◇':'▣',
+		accent:entry.color||'#9fb8d1',
+		priority:entry.cause==='death'?62:46,
+		context,
+		items:rows.map(inventoryFeedItem)
+	});
+}
+let discoveryObservationFx=[];
+function clearDiscoveryObservationFx(){ discoveryObservationFx=[]; }
+function showSmartFeedUrgent(text){
+	if(MM.ui && typeof MM.ui.msgImmediate==='function'){
+		MM.ui.msgImmediate(text);
+		return;
+	}
+	const node=document.getElementById('messages');
+	if(!node) return;
+	node.textContent=String(text||'');
+	clearTimeout(showSmartFeedUrgent._timer);
+	showSmartFeedUrgent._timer=setTimeout(()=>{ node.textContent=''; },4000);
+}
+function resetActivityPresentation(){
+	clearDiscoveryObservationFx();
+	announcedFeedTasks.clear();
+	if(SMART_FEED && SMART_FEED.clear) SMART_FEED.clear();
+}
+function discoveryFeedContext(category,target){
+	let text=String(category||'Atlas wiedzy');
+	if(!target || !player) return text;
+	const dx=target.x-player.x, dy=target.y-player.y;
+	const distance=Math.round(Math.hypot(dx,dy));
+	if(distance<2) return text+' · tuż przy bohaterze';
+	const horizontal=Math.abs(dx)>=Math.abs(dy);
+	const direction=horizontal ? (dx<0?'w lewo':'w prawo') : (dy<0?'nad tobą':'pod tobą');
+	return text+' · '+distance+' bloków '+direction;
+}
+function onSmartFeedPromote(notice){
+	if(!notice || notice.kind!=='discovery') return;
+	notice.context=discoveryFeedContext(notice.context,notice.target);
+	if(notice.presentation==='collection') return;
+	const stage=String(notice.stage||'discovery');
+	const isBreakthrough=stage==='discovery';
+	if(isBreakthrough){
+		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest'); }catch(e){}
+	}
+	discoveryObservationFx.unshift({
+		id:String(notice.dedupeKey||notice.id||''),
+		start:performance.now(),
+		duration:isBreakthrough?4200:(stage==='insight'?2900:1900),
+		intensity:isBreakthrough?1:(stage==='insight'?0.78:0.56),
+		target:notice.target,
+		color:String(notice.accent||'#ffd66e')
+	});
+	if(discoveryObservationFx.length>4) discoveryObservationFx.length=4;
+}
+function onDiscoveryEarned(event){
+	const d=(event&&event.detail)||{};
+	const stage=['observation','insight','discovery'].includes(d.stage)?d.stage:'discovery';
+	const collection=!!d.collection;
+	const presentation=collection
+		? {title:'NOWY WPIS W ATLASIE',priority:42,holdFor:2100}
+		: stage==='observation'
+			? {title:'NOWA OBSERWACJA',priority:58,holdFor:2400}
+			: stage==='insight'
+				? {title:'NOWE SPOSTRZEŻENIE',priority:82,holdFor:3300}
+				: {title:'NOWE ODKRYCIE',priority:100,holdFor:4200};
+	const target=d.target && Number.isFinite(Number(d.target.x)) && Number.isFinite(Number(d.target.y))
+		? {x:Number(d.target.x),y:Number(d.target.y)}
+		: null;
+	SMART_FEED.push({
+		kind:'discovery',
+		stage,
+		presentation:collection?'collection':'knowledge',
+		title:presentation.title,
+		text:String(d.text||d.label||'Nowa obserwacja'),
+		tier:String(d.tierLabel||d.tier||''),
+		context:String(d.category||'Atlas wiedzy'),
+		xp:Math.max(0,Math.round(Number(d.xp)||0)),
+		icon:String(d.icon||'!'),
+		accent:String(d.color||'#ffd66e'),
+		priority:presentation.priority,
+		holdFor:presentation.holdFor,
+		dedupeKey:collection?'discovery:atlas-stamps':'discovery:'+String(d.id||''),
+		target
+	});
+	if(event && event.cancelable) event.preventDefault();
+	try{ updateHelpDiscoveries(); }catch(e){}
+	try{
+		noteSaveActivity();
+		saveState();
+	}catch(e){}
+}
+window.addEventListener('mm-discovery-earned',onDiscoveryEarned);
 const INVENTORY_FEEDBACK=createInventoryFeedback({
 	eventTarget:window,
-	host:document.getElementById('inventoryFeed'),
+	host:null,
 	resourceDefs:RESOURCE_DEFS,
 	specialDefs:INVENTORY_FEEDBACK_TOOL_DEFS,
 	tierColors:(MM.inventory&&MM.inventory.TIER_COLORS)||{},
 	getResourceCount:key=>inv[key],
 	getSpecialCount:key=>inv.tools&&inv.tools[key]?1:0,
 	getItems:()=>MM.inventory&&MM.inventory.bagItems?MM.inventory.bagItems():[],
-	drawThumbnail:drawInventoryFeedbackThumbnail
+	drawThumbnail:drawInventoryFeedbackThumbnail,
+	publish:publishInventoryFeedEntry,
+	pollInterval:850,
+	itemsAreSnapshots:true
 });
 MM.inventoryFeedback=INVENTORY_FEEDBACK;
 // Hotbar (slots triggered by keys 5..9, 0 — keys 1..4 belong to the weapon shortcuts)
@@ -2914,6 +3235,23 @@ function restoreTemporalEchoPayload(payload){
 	updateInventory(); updateHotbarCounts();
 	return ok;
 }
+function temporalEscrowResourceCount(){
+	if(!grave || !grave.echo || !grave.res || typeof grave.res!=='object') return 0;
+	let total=0;
+	for(const key of RESOURCE_KEYS) total+=Math.max(0,Math.floor(Number(grave.res[key])||0));
+	return total;
+}
+function forfeitTemporalEscrow(){
+	if(!grave || !grave.echo) return {lost:0,marker:null};
+	const marker={x:grave.x,y:grave.y};
+	const lost=temporalEscrowResourceCount();
+	// Keep the GRAVE world tile as a readable consequence, but deliberately
+	// remove its tracked payload. Mining it later follows the existing
+	// "Pusty nagrobek" path and can never pay out after the deadline.
+	grave=null;
+	refreshGraveMarkerVisual(marker.x,marker.y);
+	return {lost,marker};
+}
 function collapseTemporalEcho(reason,notice){
 	const state=temporalEchoState();
 	if(state.phase==='idle') return false;
@@ -2921,14 +3259,36 @@ function collapseTemporalEcho(reason,notice){
 	TEMPORAL_ECHO.collapse(reason);
 	clearTemporalPending();
 	temporalRewindFx=null;
-	if(grave && grave.echo){
-		const visual={x:grave.x,y:grave.y};
-		delete grave.echo;
-		if(!grave.res || !Object.keys(grave.res).length){ if(getTile(grave.x,grave.y)===T.GRAVE) setTile(grave.x,grave.y,T.AIR); grave=null; }
-		else refreshGraveMarkerVisual(visual.x,visual.y);
-	}
+	const forfeited=forfeitTemporalEscrow();
 	saveGrave(); saveState();
-	if(notice) msg(notice);
+	if(notice) msg(notice+(forfeited.lost>0?' Utracono '+forfeited.lost+' zasobów.':''));
+	if(reason==='expired' && forfeited.lost>0){
+		noteDiscoveryFact('temporal_echo_expired',{
+			lost:forfeited.lost,
+			target:forfeited.marker
+		});
+	}
+	return true;
+}
+function temporalSkyRewindFor(payload){
+	const from=BACKGROUND&&BACKGROUND.snapshot?BACKGROUND.snapshot():null;
+	const to=payload&&payload.data&&payload.data.background;
+	if(!from || !to || !Number.isFinite(Number(from.cycleT)) || !Number.isFinite(Number(to.cycleT))) return null;
+	return {
+		from:{...from},
+		to:{...to},
+		plan:createTemporalCycleRewind(from.cycleT,to.cycleT),
+		progress:0,
+		currentCycleT:Number(from.cycleT)
+	};
+}
+function applyTemporalSkyRewind(fx,progress){
+	if(!fx || !fx.sky || !BACKGROUND || !BACKGROUND.importState) return false;
+	const p=Math.max(0,Math.min(1,Number(progress)||0));
+	const cycleT=temporalCycleAt(fx.sky.plan,p);
+	fx.sky.progress=p;
+	fx.sky.currentCycleT=cycleT;
+	BACKGROUND.importState({...fx.sky.from,cycleT});
 	return true;
 }
 function beginTemporalRewind(){
@@ -2936,25 +3296,62 @@ function beginTemporalRewind(){
 	const checkpoint=WORLD&&WORLD.temporalCheckpointState?WORLD.temporalCheckpointState():null;
 	if(!checkpoint || !checkpoint.valid) return false;
 	if(state.phase!=='racing' || !TEMPORAL_ECHO.beginRewind()) return false;
-	temporalRewindFx={t:0,dur:1.35,restored:false,payload:state.payload,from:{x:player.x,y:player.y},to:{...state.payload.death}};
+	temporalRewindFx={
+		t:0,
+		dur:2.2,
+		restoreAt:0.72,
+		restored:false,
+		payload:state.payload,
+		escrowResources:temporalEscrowResourceCount(),
+		from:{x:player.x,y:player.y},
+		to:{...state.payload.death},
+		sky:temporalSkyRewindFor(state.payload)
+	};
 	releaseGameplayInput();
 	try{ if(AUDIO&&AUDIO.play) AUDIO.play('temporalRewind'); }catch(e){}
 	return true;
+}
+function playerTouchesTemporalSpirit(){
+	if(!grave || !activeTemporalGraveAt(grave.x,grave.y) || !player) return false;
+	const px0=Number(player.x)||0, py0=Number(player.y)||0;
+	const px1=px0+Math.max(0.1,Number(player.w)||HERO_BODY_W);
+	const py1=py0+Math.max(0.1,Number(player.h)||HERO_BODY_H);
+	const sx0=grave.x+0.08, sx1=grave.x+0.92;
+	const sy0=grave.y-0.62, sy1=grave.y+1.02;
+	return px1>=sx0 && px0<=sx1 && py1>=sy0 && py0<=sy1;
 }
 function updateTemporalEcho(dt){
 	if(temporalRewindFx){
 		const fx=temporalRewindFx;
 		fx.t+=Math.max(0,dt||0);
-		if(!fx.restored && fx.t>=fx.dur*0.52){
+		const restoreAt=Math.max(0.5,Math.min(0.9,Number(fx.restoreAt)||0.72));
+		if(!fx.restored) applyTemporalSkyRewind(fx,Math.min(1,fx.t/(fx.dur*restoreAt)));
+		if(!fx.restored && fx.t>=fx.dur*restoreAt){
 			fx.restored=true;
 			const ok=restoreTemporalEchoPayload(fx.payload);
 			if(!ok){ console.warn('Temporal echo restored with degraded subsystem fidelity'); window.__mmTemporalRestoreDegraded=true; }
+			// Session history from the abandoned branch would otherwise claim
+			// that rewound losses/discoveries still happened.
+			resetActivityPresentation();
 			TEMPORAL_ECHO.finishRewind();
 			persistTemporalCooldown();
 			clearTemporalPending();
 			saveGrave(); saveState();
 			try{ if(AUDIO&&AUDIO.play) AUDIO.play('temporalReturn'); }catch(e){}
-			msg('⏳ Chwila odzyskana — wracasz z pełnym zdrowiem');
+			// The rewind deliberately restores the discovery snapshot captured
+			// before death. Re-submit only the facts the player genuinely retained
+			// by completing the loop, then award the final temporal principle.
+			const echoResources=Math.max(0,Number(fx.escrowResources)||0);
+			noteDiscoveryFact('hero_died',{costly:true,resourcesAtRisk:echoResources});
+			noteDiscoveryFact('temporal_echo_started',{resources:echoResources,target:heroDiscoveryTarget()});
+			noteDiscoveryFact('temporal_echo_timer_seen',{seconds:60,target:heroDiscoveryTarget()});
+			noteDiscoveryFact('temporal_echo_recovered',{
+				resources:echoResources,
+				worldRestored:!!ok,
+				fullHealth:player.hp>=player.maxHp,
+				target:heroDiscoveryTarget()
+			});
+			msg('⏳ Chwila i utracone zasoby odzyskane — wracasz z pełnym zdrowiem');
 		}
 		if(fx.t>=fx.dur) temporalRewindFx=null;
 		return true;
@@ -2964,11 +3361,12 @@ function updateTemporalEcho(dt){
 		if(!repairTemporalGrave()) return false;
 		const checkpoint=WORLD&&WORLD.temporalCheckpointState?WORLD.temporalCheckpointState():null;
 		if(!checkpoint || !checkpoint.valid){
-			collapseTemporalEcho('checkpoint-invalid','⌛ Echo czasu pękło — świat zmienił się zbyt mocno');
+			collapseTemporalEcho('checkpoint-invalid','⌛ Echo czasu pękło — jego depozyt przepadł, a pozostał pusty nagrobek.');
 			return false;
 		}
+		if(playerTouchesTemporalSpirit() && beginTemporalRewind()) return true;
 		const event=TEMPORAL_ECHO.update(dt);
-		if(event&&event.type==='expired') collapseTemporalEcho('expired','⌛ Minuta minęła — ta linia czasu stała się rzeczywistością');
+		if(event&&event.type==='expired') collapseTemporalEcho('expired','⌛ Minuta minęła — zasoby z Echa przepadły. Pozostał pusty nagrobek.');
 	}else TEMPORAL_ECHO.update(dt);
 	return false;
 }
@@ -2976,7 +3374,8 @@ MM.temporalEcho={
 	state:temporalEchoState,
 	target:()=>grave&&grave.echo?Object.freeze({x:grave.x,y:grave.y,kind:'spirit'}):null,
 	// Local-only QA seam: production builds cannot bypass grave contact.
-	debugRewind:()=>debugShortcutsEnabled() ? beginTemporalRewind() : false
+	debugRewind:()=>debugShortcutsEnabled() ? beginTemporalRewind() : false,
+	debugExpire:()=>debugShortcutsEnabled() ? collapseTemporalEcho('expired','') : false
 };
 function configuredSimulationTimeScale(){
 	const scale=Number(window.__simulationTimeScale);
@@ -3265,7 +3664,7 @@ function finishDeathTravelRespawn(){
 	updateInventory();
 	if(temporalEchoState().phase==='armed'){
 		TEMPORAL_ECHO.beginRace();
-		msg('⏳ Echo śmierci: masz 60 sekund, by dotknąć nagrobka');
+		msg('⏳ Echo Chwili: masz 60 sekund, by dotknąć ducha i odzyskać zasoby. Potem przepadną.');
 		try{ if(AUDIO&&AUDIO.play) AUDIO.play('temporalArm'); }catch(e){}
 	}
 	return true;
@@ -3510,7 +3909,7 @@ function notifyInvasionWeaponUse(item, detail){
 		weaponName:it && (it.name || it.id)
 	}, detail||{}));
 }
-function notifyInvasionMining(tId,tx,ty){
+function notifyInvasionMining(tId,tx,ty,actor='local-hero'){
 	// Sound (engine/noise.js): every break in the game passes through here, so it
 	// is the one emitter point for mining noise. Loudness scales with the tile's
 	// own hardness — which is what finally makes 150 INFO.hp values MEAN something:
@@ -3518,7 +3917,13 @@ function notifyInvasionMining(tId,tx,ty){
 	try{
 		if(NOISE && NOISE.emit){
 			const hp=(INFO[tId] && Number(INFO[tId].hp)) || 6;
-			NOISE.emit(tx+0.5, ty+0.5, 'mine', Math.max(0.25, Math.min(1.8, hp/22)));
+			NOISE.emit(
+				tx+0.5,
+				ty+0.5,
+				'mine',
+				Math.max(0.25, Math.min(1.8, hp/22)),
+				{actor}
+			);
 		}
 	}catch(e){}
 	// Zawał (engine/cave_in.js): the same strike that makes noise also shakes the
@@ -3543,16 +3948,27 @@ function notifyInvasionMining(tId,tx,ty){
 	});
 }
 // Central death handler (mobs/bosses/lava/explosions all route here): half of every
-// resource is left behind in a gravestone tile — click it to recover the loss.
+// resource enters the death marker. An armed Echo is a timed escrow; ordinary
+// graves retain the legacy click-to-recover path when Echo is unavailable.
 window.heroDied=function(cause){
 	if(deathTravelFx) return;
 	if(immunityMode){ player.hp=player.maxHp; return; }
 	const echoWasActive=temporalEchoActive();
-	if(echoWasActive) collapseTemporalEcho('second-death','⌛ Drugą śmiercią zatrzasnąłeś tę linię czasu');
+	if(echoWasActive) collapseTemporalEcho('second-death','⌛ Drugą śmiercią rozbiłeś Echo — jego zasoby przepadły.');
 	const echoArmed=!echoWasActive && captureTemporalEcho(cause);
 	beginHeroDeathSlowMotion();
 	// finale.js keeps the lifetime deaths tally off this event
-	try{ window.dispatchEvent(new CustomEvent('mm-hero-died',{detail:{cause:String(cause||'damage')}})); }catch(e){}
+	const deathCause=String(cause||'damage');
+	const resourcesAtRisk=RESOURCE_KEYS.reduce((sum,key)=>sum+Math.floor(Math.max(0,Number(inv[key])||0)/2),0);
+	const storyDeath=/^inner_/.test(deathCause);
+	const costlyDeath=!MM.ghostHeroIntents && !storyDeath && (echoWasActive || echoArmed || resourcesAtRisk>0);
+	try{ window.dispatchEvent(new CustomEvent('mm-hero-died',{detail:{
+		cause:deathCause,
+		costly:costlyDeath,
+		echoArmed:!!echoArmed,
+		echoCollapsed:!!echoWasActive,
+		resourcesAtRisk
+	}})); }catch(e){}
 	if(HERO_STATUS && HERO_STATUS.clearAll) HERO_STATUS.clearAll(); // death sheds every elemental status
 	player.hurtFlashUntil=Math.max(player.hurtFlashUntil||0, performance.now()+HURT_FLASH_MS);
 	// A hero-mode GUEST dies by its own law MINUS the grave: the grave is a WORLD
@@ -3613,7 +4029,12 @@ window.heroDied=function(cause){
 			grave=previousGrave;
 			if(echoArmed) collapseTemporalEcho('grave-unreachable','⌛ Echo nie znalazło bezpiecznego miejsca — zasoby zostały zwrócone');
 			else { saveGrave(); msg('☠ Brak miejsca na nagrobek — zasoby zostały zwrócone'); }
-		}else if(echoArmed) msg('⏳ Śmierć zostawiła Echo Chwili ('+gx+', '+gy+')');
+		}else if(echoArmed){
+			msg('⏳ Duch Chwili przechowuje utracone zasoby ('+gx+', '+gy+'). Dotknij go przed upływem minuty.');
+			const target={x:gx+0.5,y:gy+0.5};
+			noteDiscoveryFact('temporal_echo_started',{resources:temporalEscrowResourceCount(),target});
+			noteDiscoveryFact('temporal_echo_timer_seen',{seconds:60,target});
+		}
 		else msg('☠ Zginąłeś — połowa zasobów czeka w nagrobku ('+gx+', '+gy+')');
 	} else {
 		msg('☠ Zginąłeś – respawn');
@@ -3680,7 +4101,11 @@ function repairTemporalGrave(){
 function tryOpenGraveAt(tx,ty){
 	if(activeTemporalGraveAt(tx,ty)){
 		if(!repairTemporalGrave()) return false;
-		return beginTemporalRewind();
+		if(!tryOpenGraveAt._spiritNoticeAt || performance.now()-tryOpenGraveAt._spiritNoticeAt>1800){
+			tryOpenGraveAt._spiritNoticeAt=performance.now();
+			msg('⏳ Ducha Chwili nie otwiera się narzędziem — wejdź w jego światło');
+		}
+		return true;
 	}
 	if(getTile(tx,ty)!==T.GRAVE) return false;
 	if(!setForegroundConfirmed(tx,ty,T.AIR)) return false;
@@ -5319,7 +5744,7 @@ function applyGameData(data,opts){
 		if(transactional) saveCriticalState('load',true);
 		settleSaveSchedulerAfterLoad(schedulerState,true);
 		publishLoadReport({ok:true,stage:'complete',version:preflight.version,migratedFrom:preflight.migratedFrom||null,warnings:preflight.warnings||[],restored:true});
-		try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); }catch(e){}
+		try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); resetActivityPresentation(); }catch(e){}
 		return true;
 	}catch(e){
 		let rolledBack=false;
@@ -6569,6 +6994,13 @@ function doCraft(r,count){
 	}
 	if(!made) return;
 	CRAFT_MODEL.recordCraft(r.id, made);
+	noteDiscoveryFact('crafted',{
+		recipe:String(r.id||''),
+		group:recipeGroup(r),
+		output:String(r.out||r.id||''),
+		count:made,
+		target:{x:player.x,y:player.y-player.h*0.35}
+	});
 	craftFlashId=r.id;
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('craft'); }catch(e){}
 	updateInventory();
@@ -7702,8 +8134,8 @@ function beginChunkCacheFrame(){
 	chunkCacheDeferredThisFrame=0;
 	chunkCachePartialRebuiltThisFrame=0;
 }
-function canRebuildChunkCache(entry,currentVersion){
-	if(!entry || (entry.version===currentVersion && !entry.edgeStale)) return false;
+function canRebuildChunkCache(entry,currentVersion,hasPixelDirty){
+	if(!entry || (entry.version===currentVersion && !entry.edgeStale && !hasPixelDirty)) return false;
 	if(entry.version<0){
 		chunkCacheRebuiltThisFrame++;
 		if(chunkCacheRebuildBudget>0) chunkCacheRebuildBudget--;
@@ -10283,16 +10715,16 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 		// chunks farthest from the current view so a long trek can't accumulate them forever
 		trimChunkCanvasCache(Number.isFinite(centerCx)?centerCx:cx, CHUNK_CANVAS_MAX_KEEP-1, sy);
 		const c=document.createElement('canvas'); c.width=CHUNK_W*TILE; c.height=sectionH*TILE; const cctx=c.getContext('2d'); cctx.imageSmoothingEnabled=false; entry={canvas:c,ctx:cctx,version:-1,sy,chests:[],doorways:[],spec:[],relief:[]}; chunkCanvases.set(key,entry); }
-	const currentVersion=WORLD.chunkVersion(cx,sy); if(entry.version===currentVersion && !entry.edgeStale){ chunkRenderDirty.delete(key); return; }
+	const currentVersion=WORLD.chunkVersion(cx,sy); const dirty=chunkRenderDirty.get(key); const hasPixelDirty=!!(dirty && (dirty.full || dirty.min<=dirty.max)); if(entry.version===currentVersion && !entry.edgeStale && !hasPixelDirty){ chunkRenderDirty.delete(key); return; }
 	// Version-only sync: the shared base-section version moved but no pixels in
 	// THIS section changed (empty dirty band) — adopt the version, skip repainting
 	if(entry.version>=0 && !entry.edgeStale){
-		const d0=chunkRenderDirty.get(key);
+		const d0=dirty;
 		if(d0 && !d0.full && d0.min>d0.max && d0.baseVersion===entry.version && d0.version===currentVersion){
 			entry.version=currentVersion; chunkRenderDirty.delete(key); return;
 		}
 	}
-	if(entry.version>=0 && METEORITES && METEORITES.isChunkBusy && METEORITES.isChunkBusy(cx)){ chunkCacheDeferredThisFrame++; return; } if(!canRebuildChunkCache(entry,currentVersion)) return; const cctx=entry.ctx; const dirty=chunkRenderDirty.get(key); const partial=!!(entry.version>=0 && dirty && !dirty.full && dirty.baseVersion===entry.version && dirty.version===currentVersion && dirty.min<=dirty.max);
+	if(entry.version>=0 && METEORITES && METEORITES.isChunkBusy && METEORITES.isChunkBusy(cx)){ chunkCacheDeferredThisFrame++; return; } if(!canRebuildChunkCache(entry,currentVersion,hasPixelDirty)) return; const cctx=entry.ctx; const partial=!!(entry.version>=0 && dirty && !dirty.full && dirty.baseVersion===entry.version && dirty.version===currentVersion && dirty.min<=dirty.max);
 	const __bakeT0=performance.now();
 	const redrawY0=partial?Math.max(0,dirty.min|0):0;
 	const redrawY1=partial?Math.min(sectionH-1,dirty.max|0):sectionH-1;
@@ -11107,14 +11539,21 @@ function drawWorldVisible(sx,sy,viewX,viewY,opts){ opts=opts||{}; const minChunk
 	const visibleChunkCount=(maxChunk-minChunk+1)*Math.max(1,maxSection-minSection+1);
 	const visibleChunks=[], visibleChunkSeen=new Set();
 	const fallingAuditChunks=[], fallingAuditChunkSeen=new Set();
+	const visibleRenderSections=[];
 	beginChunkCacheFrame();
 	for(let cx=minChunk; cx<=maxChunk; cx++){
 		for(let section=minSection; section<=maxSection; section++){
-			drawChunkToCache(cx,section,centerChunk);
+			visibleRenderSections.push({cx,section});
 			if(!fallingAuditChunkSeen.has(cx)){ fallingAuditChunkSeen.add(cx); fallingAuditChunks.push(cx); }
 			if(isBaseWorldSection(section) && !visibleChunkSeen.has(cx)){ visibleChunkSeen.add(cx); visibleChunks.push(cx); }
 		}
 	}
+	// Dirty terrain near the hero must win the small per-frame rebuild budget.
+	// A fixed left-to-right scan let a continuously changing ocean/falling section
+	// spend the only slow-frame slot forever, leaving mined tunnels and boss craters
+	// logically open but visually solid until another event forced a full rebake.
+	prioritizeVisibleRenderSections(visibleRenderSections,centerChunk,centerSection);
+	for(const ref of visibleRenderSections) drawChunkToCache(ref.cx,ref.section,centerChunk);
 	if(FALLING && FALLING.auditChunks) FALLING.auditChunks(fallingAuditChunks);
 	trimChunkCanvasCache(centerChunk, visibleChunkCount+6, centerSection);
 	// Draw whole chunks that intersect view (avoids per-tile seams)
@@ -12396,8 +12835,14 @@ function updateHelpDiscoveries(){
 	if(!el || !MM.discovery || !MM.discovery.progress) return;
 	normalizeLegacyHelpDebugCopy();
 	const p=MM.discovery.progress();
-	const names=p.found.map(f=>f.label).join(' • ');
-	el.textContent='🧪 Odkrycia '+p.count+'/'+p.total+(p.count?': '+names:' — eksperymentuj z żywiołami, bronią i światem!')+
+	const stages=p.stages||{};
+	const recent=Array.isArray(p.recent)?p.recent.map(f=>f.label).join(' • '):'';
+	el.textContent='🧠 Wiedza '+p.count+'/'+p.total+
+		' · obserwacje '+(stages.observation||0)+
+		' · spostrzeżenia '+(stages.insight||0)+
+		' · odkrycia '+(stages.discovery||0)+
+		' · karty Atlasu '+(p.collectionCount||0)+'/'+(p.collectionTotal||0)+
+		(recent?' · ostatnie: '+recent:' — obserwuj skutki działań i eksperymentuj ze światem!')+
 		' ⸺ 🌙 '+visionShortcutLabel()+': noktowizja/termowizja z założonych gogli · 🧭 wisiorek-kompas wskazuje odkryte skarby · F3/G/;/M/P/J/K/L/V/O działają tylko przy otwartym panelu deweloperskim ⸺ ';
 }
 function normalizeLegacyHelpDebugCopy(){
@@ -12410,6 +12855,14 @@ function normalizeLegacyHelpDebugCopy(){
 		node.textContent=node.textContent.replace(
 			'M (Mapa) odsłania mgłę, N przełącza minimapę, B pauzuje. G (Bóg) natychmiastowe kopanie. C centruje kamerę.',
 			'N przełącza minimapę, B pauzuje, C centruje kamerę. F3/M/G/; i pozostałe skróty testowe działają wyłącznie przy otwartym panelu deweloperskim 🛠.'
+		);
+		node.textContent=node.textContent.replace(
+			'Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać.',
+			'Po śmierci utracone zasoby przejmuje Duch Chwili — dotknij go przed końcem odliczania, aby odzyskać depozyt i cofnąć świat. Po czasie pozostaje pusty nagrobek.'
+		);
+		node.textContent=node.textContent.replace(
+			'wpis w Dzienniku Odkryć (+40 XP)',
+			'wpis w Dzienniku Odkryć (20–120 XP zależnie od złożoności)'
 		);
 	}
 	help.dataset.debugCopyNormalized='1';
@@ -13230,6 +13683,109 @@ window.addEventListener('keydown',e=>{ if(isEditableTarget(e.target) || modalInp
 // Fizyka
 // Movement constants imported from canonical constants module
 let jumpPrev=false; let swimBuoySmooth=0; let wasInWater=false; let bubbleAcc=0; let swimWakeAcc=0;
+// Runtime-only observation samplers turn continuous movement into a few
+// meaningful, confirmed facts. They never award XP themselves and deliberately
+// ignore teleports / respawns, so a location jump cannot masquerade as travel.
+let discoveryMoveDistance=0;
+let discoverySwimStrokeT=0;
+let discoveryLastSurface='';
+let discoveryLastDepthZone='';
+let discoveryLastDepthCell='';
+let discoveryHeadCovered=false;
+let discoveryNight=false;
+let discoveryRain=false;
+let discoveryGliderOpenT=0;
+let discoveryGliderWindSeen=false;
+let discoveryGliderThermalSeen=false;
+function resetHeroDiscoveryRuntime(){
+	discoveryMoveDistance=0;
+	discoverySwimStrokeT=0;
+	discoveryLastSurface='';
+	discoveryLastDepthZone='';
+	discoveryLastDepthCell='';
+	discoveryHeadCovered=false;
+	discoveryNight=false;
+	discoveryRain=false;
+	discoveryGliderOpenT=0;
+	discoveryGliderWindSeen=false;
+	discoveryGliderThermalSeen=false;
+}
+function heroDiscoveryTarget(){
+	return {x:Number(player.x)||0,y:Number(player.y)||0};
+}
+function heroDiscoverySurface(tile){
+	if(tile===T.MUD) return 'mud';
+	if(tile===T.ICE || tile===T.MOTHER_ICE || tile===T.THIN_ICE) return 'ice';
+	return '';
+}
+function heroDiscoveryDepthZone(){
+	let surface=null;
+	try{ if(WORLDGEN && WORLDGEN.surfaceHeight) surface=Number(WORLDGEN.surfaceHeight(Math.floor(player.x))); }catch(e){}
+	if(!Number.isFinite(surface)) return '';
+	const relative=player.y-surface;
+	if(relative<=-WORLD_SECTION_H*0.72) return 'sky';
+	if(relative>=WORLD_SECTION_H) return 'deep';
+	if(relative>=3) return 'underground';
+	return 'surface';
+}
+function noteHeroDiscoveryTravel(fromX,fromY,inWater,dt,activeSwim){
+	const dx=player.x-fromX, dy=player.y-fromY;
+	const distance=Math.hypot(dx,dy);
+	if(Number.isFinite(distance) && distance<=3){
+		discoveryMoveDistance+=distance;
+		let steps=0;
+		while(discoveryMoveDistance>=1 && steps++<4){
+			discoveryMoveDistance-=1;
+			noteDiscoveryFact('hero_moved',{
+				cell:Math.floor(player.x)+','+Math.floor(player.y),
+				quiet:!!player.quiet,
+				sprinting:!player.quiet && Math.hypot(Number(player.vx)||0,Number(player.vy)||0)>=
+					(Number(NOISE&&NOISE.CFG&&NOISE.CFG.SPRINT_SPEED)||5.4),
+				target:heroDiscoveryTarget()
+			});
+		}
+	} else {
+		discoveryMoveDistance=0;
+	}
+	if(inWater && activeSwim){
+		discoverySwimStrokeT+=Math.max(0,Number(dt)||0);
+		if(discoverySwimStrokeT>=0.48){
+			discoverySwimStrokeT%=0.48;
+			noteDiscoveryFact('hero_swim',{target:heroDiscoveryTarget()});
+		}
+	} else {
+		discoverySwimStrokeT=Math.max(0,discoverySwimStrokeT-Math.max(0,Number(dt)||0)*0.5);
+	}
+	const surface=player.onGround ? heroDiscoverySurface(groundTileUnderPlayer()) : '';
+	const movingOnSurface=Math.abs(dx)>0.02;
+	if(!surface){
+		discoveryLastSurface='';
+	} else if(movingOnSurface && surface!==discoveryLastSurface){
+		noteDiscoveryFact('hero_surface',{surface,moving:true,target:heroDiscoveryTarget()});
+		discoveryLastSurface=surface;
+	}
+	const depthCell=Math.floor(player.x)+','+Math.floor(player.y);
+	if(depthCell!==discoveryLastDepthCell){
+		discoveryLastDepthCell=depthCell;
+		const zone=heroDiscoveryDepthZone();
+		if(zone && zone!==discoveryLastDepthZone && zone!=='surface'){
+			noteDiscoveryFact('depth_zone',{zone,target:heroDiscoveryTarget()});
+		}
+		if(zone) discoveryLastDepthZone=zone;
+	}
+}
+function sampleHeroDiscoveryEnvironment(){
+	let night=false;
+	try{
+		const time=BACKGROUND && BACKGROUND.timeInfo ? BACKGROUND.timeInfo() : (BACKGROUND&&BACKGROUND.getCycleInfo?BACKGROUND.getCycleInfo():null);
+		night=!!(time && time.isDay===false);
+	}catch(e){}
+	if(night && !discoveryNight) noteDiscoveryFact('environment_state',{night:true,target:heroDiscoveryTarget()});
+	discoveryNight=night;
+	const raining=!!heroRainWetCached;
+	if(raining && !discoveryRain) noteDiscoveryFact('environment_state',{raining:true,target:heroDiscoveryTarget()});
+	discoveryRain=raining;
+}
 const drowningState = SURVIVAL && SURVIVAL.createDrowningState ? SURVIVAL.createDrowningState() : {airless:0, damageAcc:0, warned:false};
 const underwaterEnergyState = SURVIVAL && SURVIVAL.createUnderwaterEnergyState ? SURVIVAL.createUnderwaterEnergyState() : {damageAcc:0};
 const swimChillState = SURVIVAL && SURVIVAL.createSwimChillState ? SURVIVAL.createSwimChillState() : {exposure:0, damageAcc:0, warned:false};
@@ -13307,7 +13863,14 @@ function captureWorldTransitionRuntime(){
 		houseHealing:cloneTransitionRuntimeValue(houseHealingState),
 		deathTravelFx:cloneTransitionRuntimeValue(deathTravelFx),
 		player:{vx:player.vx,vy:player.vy,onGround:!!player.onGround,jumpCount:player.jumpCount,hpInvul:player.hpInvul,hurtFlashUntil:player.hurtFlashUntil},
-		scalars:{heroDeathSlowMotionStart,heroDeathSlowMotionUntil,jumpPrev,swimBuoySmooth,wasInWater,bubbleAcc,swimWakeAcc,jumpBufferT,coyoteT,ladderReleaseT,trapdoorDropBufferT,thermalEnvAcc,thermalModeCached,heroWarmthCached,heroRainWetCached,sandSlowActive,sandMsgAt,waterPressureMsgAt,houseHealMsgAt}
+		scalars:{
+			heroDeathSlowMotionStart,heroDeathSlowMotionUntil,jumpPrev,swimBuoySmooth,wasInWater,bubbleAcc,swimWakeAcc,
+			jumpBufferT,coyoteT,ladderReleaseT,trapdoorDropBufferT,thermalEnvAcc,thermalModeCached,heroWarmthCached,heroRainWetCached,
+			sandSlowActive,sandMsgAt,waterPressureMsgAt,houseHealMsgAt,
+			discoveryMoveDistance,discoverySwimStrokeT,discoveryLastSurface,discoveryLastDepthZone,discoveryLastDepthCell,
+			discoveryHeadCovered,discoveryNight,discoveryRain,
+			discoveryGliderOpenT,discoveryGliderWindSeen,discoveryGliderThermalSeen
+		}
 	};
 }
 function restoreWorldTransitionRuntimeSnapshot(snapshot){
@@ -13332,6 +13895,17 @@ function restoreWorldTransitionRuntimeSnapshot(snapshot){
 	jumpBufferT=s.jumpBufferT; coyoteT=s.coyoteT; ladderReleaseT=s.ladderReleaseT; trapdoorDropBufferT=s.trapdoorDropBufferT;
 	thermalEnvAcc=s.thermalEnvAcc; thermalModeCached=s.thermalModeCached; heroWarmthCached=!!s.heroWarmthCached; heroRainWetCached=!!s.heroRainWetCached;
 	sandSlowActive=!!s.sandSlowActive; sandMsgAt=s.sandMsgAt; waterPressureMsgAt=s.waterPressureMsgAt; houseHealMsgAt=s.houseHealMsgAt;
+	discoveryMoveDistance=Math.max(0,Number(s.discoveryMoveDistance)||0);
+	discoverySwimStrokeT=Math.max(0,Number(s.discoverySwimStrokeT)||0);
+	discoveryLastSurface=String(s.discoveryLastSurface||'');
+	discoveryLastDepthZone=String(s.discoveryLastDepthZone||'');
+	discoveryLastDepthCell=String(s.discoveryLastDepthCell||'');
+	discoveryHeadCovered=!!s.discoveryHeadCovered;
+	discoveryNight=!!s.discoveryNight;
+	discoveryRain=!!s.discoveryRain;
+	discoveryGliderOpenT=Math.max(0,Number(s.discoveryGliderOpenT)||0);
+	discoveryGliderWindSeen=!!s.discoveryGliderWindSeen;
+	discoveryGliderThermalSeen=!!s.discoveryGliderThermalSeen;
 	houseComfortHudSignature='';
 	return true;
 }
@@ -13367,6 +13941,7 @@ function resetWorldTransitionRuntime(){
 	jumpBufferT=0; coyoteT=0; ladderReleaseT=0; trapdoorDropBufferT=0;
 	thermalEnvAcc=1; thermalModeCached='none'; heroWarmthCached=false; heroRainWetCached=false;
 	sandSlowActive=false; sandMsgAt=0; waterPressureMsgAt=0;
+	resetHeroDiscoveryRuntime();
 	resetHouseHealingRuntimeState();
 	if(FURNISHINGS && FURNISHINGS.resetRuntimeCaches) FURNISHINGS.resetRuntimeCaches();
 	if(!MM.ghostHeroIntents) clearPendingObserverPlacements();
@@ -13464,6 +14039,21 @@ function updateHouseHealing(dt){
 		notifyInvasionHeroAction('hero_heal',{amount:res.report,source:'house'});
 	}
 	if(res && res.started){
+		try{
+			if(DISCOVERY&&DISCOVERY.note) DISCOVERY.note(
+				'shelter_healing',
+				'Dach, ściany i światło zmieniają dom w bezpieczne miejsce leczenia.',
+				{source:'shelter',target:{x:player.x,y:player.y-player.h*0.35}}
+			);
+		}catch(e){}
+		const shelterStatus=res.status||{};
+		noteDiscoveryFact('home_healing',{
+			comfort:Math.max(1,Number(shelterStatus.comfortMult)||1),
+			furnishings:Math.max(0,Number(shelterStatus.furnishingCount)||0),
+			types:Math.max(0,Number(shelterStatus.furnishingTypes)||0),
+			powered:Math.max(0,Number(shelterStatus.poweredFurnishingCount)||0),
+			target:heroDiscoveryTarget()
+		});
 		const now=performance.now();
 		if(now-houseHealMsgAt>14000){
 			houseHealMsgAt=now;
@@ -13491,12 +14081,14 @@ function heroRowStroke(dir){
 	if(MM.ghostHeroIntents){
 		const strong=godMode ? true : !!(MM.heroEnergy && MM.heroEnergy.spend && MM.heroEnergy.spend(1.2));
 		MM.ghostHeroIntents.row(dir, strong);
+		noteDiscoveryFact('boat_event',{kind:'row',strong,target:heroDiscoveryTarget()});
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
 		return;
 	}
 	const res=BOATS.row(dir,{heroEnergy:MM.heroEnergy, godMode, player});
 	if(!res || !res.ok) return;
 	noteSaveActivity();
+	noteDiscoveryFact('boat_event',{kind:'row',strong:!!res.strong,target:heroDiscoveryTarget()});
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('splash'); }catch(e){}
 	if(!res.strong){
 		const now=performance.now();
@@ -13613,6 +14205,11 @@ function applyUnderwaterEnergyUseDamage(energySpent){
 	const dmg=Math.min(SURVIVAL.UNDERWATER_ENERGY_DAMAGE_MAX||10,shock.damage);
 	if(window.damageHero && window.damageHero(dmg,{cause:'underwater_energy',invulMs:420})){
 		if(SURVIVAL.consumeUnderwaterEnergyDamage) SURVIVAL.consumeUnderwaterEnergyDamage(underwaterEnergyState,dmg);
+		noteDiscoveryFact('survival_warning',{
+			kind:'underwater_energy',
+			damage:dmg,
+			target:heroDiscoveryTarget()
+		});
 		if(player.hp>0 && now-underwaterEnergyShockMsgAt>1200){
 			underwaterEnergyShockMsgAt=now;
 			msg('Energia razi pod woda!');
@@ -13671,15 +14268,25 @@ function updateUraniumCharge(dt){
 	const hw=(player.w||0.7)/2, hh=(player.h||0.95)/2;
 	const x0=Math.floor(player.x-hw)-1, x1=Math.floor(player.x+hw)+1;
 	const y0=Math.floor(player.y-hh)-1, y1=Math.floor(player.y+hh)+1;
-	let near=false;
+	let near=null;
 	for(let ty=y0; ty<=y1 && !near; ty++){
 		for(let tx=x0; tx<=x1; tx++){
 			const info=INFO[getTile(tx,ty)];
-			if(info && info.radioactive){ near=true; break; } // flaga z rejestru, nie sztywny id
+			if(info && info.radioactive){ near={x:tx+0.5,y:ty+0.5}; break; } // flaga z rejestru, nie sztywny id
 		}
 	}
 	if(!near) return;
-	player.energy=Math.min(max,(player.energy||0)+dt*0.1); // 1 energia / 10 s
+	const before=Math.max(0,Number(player.energy)||0);
+	player.energy=Math.min(max,before+dt*0.1); // 1 energia / 10 s
+	if(player.energy>before){
+		try{
+			if(DISCOVERY&&DISCOVERY.note) DISCOVERY.note(
+				'uranium_charge',
+				'Promieniotwórcza ruda powoli zasila energię bohatera.',
+				{source:'uranium',target:near}
+			);
+		}catch(e){}
+	}
 }
 function updateHeroEnergy(dt){
 	if(!(dt>0) || !isFinite(dt)) return;
@@ -13698,6 +14305,13 @@ function updateHeroEnergy(dt){
 		if(got && got.amount>0){
 			charged=addHeroEnergy(got.amount);
 			if(charged>0){
+				try{
+					if(DISCOVERY&&DISCOVERY.note) DISCOVERY.note(
+						'energy_dynamo',
+						'Dynamo przekazuje zgromadzoną energię prosto do bohatera.',
+						{source:'dynamo',target:{x:got.x+0.5,y:got.y+0.5}}
+					);
+				}catch(e){}
 				const targetIntensity=Math.max(0.25, Math.min(1.6, chargeRate/32));
 				energyChargeFx.t=0.62;
 				energyChargeFx.intensity=Math.max(energyChargeFx.intensity||0,targetIntensity);
@@ -13719,6 +14333,13 @@ function updateHeroEnergy(dt){
 		const want=Math.min(cap-(player.energy||0),HERO_SOLAR_ENERGY_PER_SEC*dt);
 		const gained=addHeroEnergy(want,{cause:'solar',source:solar,intensity:0.4});
 		if(gained>0){
+			try{
+				if(DISCOVERY&&DISCOVERY.note) DISCOVERY.note(
+					'solar_charge',
+					'Pełne słońce ładuje energię na pustyni i wysoko w koronach drzew.',
+					{source:'sunlight',target:{x:player.x,y:player.y-player.h*0.4}}
+				);
+			}catch(e){}
 			charged+=gained;
 			energyChargeFx.t=Math.max(energyChargeFx.t||0,0.30);
 			energyChargeFx.intensity=Math.max(energyChargeFx.intensity||0,0.38);
@@ -13806,6 +14427,7 @@ function tryRamLightWoodCollision(x,y,dir,impactVelocity,turboActive){
 	}
 	const felled=!!(TREES && TREES.startTreeFall && TREES.startTreeFall(getTile,setTile,dir,x,y));
 	if(!felled) return false;
+	noteDiscoveryFact('tree_fall',{target:{x:x+0.5,y:y+0.5},source:'hero_ram'});
 	rubberBounceLock=null;
 	noteSaveActivity();
 	const now=performance.now();
@@ -13881,6 +14503,8 @@ function physics(dt){
 		ensureChunks();
 		return;
 	}
+	const discoveryFromX=player.x;
+	const discoveryFromY=player.y;
 	// Horizontal input. Keyboard remains digital; the touch stick preserves its
 	// analogue magnitude so small thumb movements produce deliberate short steps.
 	const moveControl=movementControlState();
@@ -13908,7 +14532,16 @@ function physics(dt){
 		// a hero guest rows via intent and does not own the host's raft rigging.
 		const sailUpNow=moveControl.up, sailDownNow=moveControl.down;
 		if(BOATS && BOATS.raiseSail && !MM.ghostHeroIntents){
-			if(sailUpNow && !sailPrevUp){ const r=BOATS.raiseSail(true,{player}); if(r && r.ok){ msg('⛵ Żagiel w górę — łap wiatr!'); noteSaveActivity(); } }
+			if(sailUpNow && !sailPrevUp){
+				const r=BOATS.raiseSail(true,{player});
+				if(r && r.ok){
+					let wind=0;
+					try{ if(WIND && WIND.speedAt) wind=Math.abs(Number(WIND.speedAt(player.x,player.y,getTile))||0); }catch(e){}
+					msg('⛵ Żagiel w górę — łap wiatr!');
+					noteDiscoveryFact('boat_event',{kind:'sail',wind,target:heroDiscoveryTarget()});
+					noteSaveActivity();
+				}
+			}
 			if(sailDownNow && !sailPrevDown){ const r=BOATS.raiseSail(false,{player}); if(r && r.ok){ msg('Żagiel opuszczony'); noteSaveActivity(); } }
 		}
 		sailPrevUp=sailUpNow; sailPrevDown=sailDownNow;
@@ -13960,7 +14593,10 @@ function physics(dt){
 	if(SURVIVAL && SURVIVAL.updateDrowning){
 		const headCovered = waterExposure.headCovered;
 		const drown = SURVIVAL.updateDrowning(drowningState, dt, headCovered && !godMode);
-		if(drown.warn) msg('Brakuje powietrza — wynurz się!');
+		if(drown.warn){
+			msg('Brakuje powietrza — wynurz się!');
+			noteDiscoveryFact('drowning_warning',{target:heroDiscoveryTarget()});
+		}
 		else if(drown.recovered) msg('Łapiesz oddech');
 		if(drown.damage>0 && (!player.hpInvul || performance.now()>=player.hpInvul)){
 			const dmg=Math.min(12, drown.damage);
@@ -13981,6 +14617,9 @@ function physics(dt){
 		);
 		pressureVisual=pressure;
 		const now=performance.now();
+		if(pressure && pressure.warn){
+			noteDiscoveryFact('water_pressure',{warn:true,stack:waterStack,target:heroDiscoveryTarget()});
+		}
 		if(pressure && pressure.warn && player.hp>0 && now-waterPressureMsgAt>2200){
 			waterPressureMsgAt=now;
 			msg('Cisnienie wody rosnie - Twardosc zwieksza limit glebin.');
@@ -14007,7 +14646,10 @@ function physics(dt){
 		const warmBath = !!(GEOTHERMAL && GEOTHERMAL.heroInWarmWater && GEOTHERMAL.heroInWarmWater());
 		const swimming = inWater && !player.onGround && !ridingFloatingBoat && !godMode && !warmBath;
 		const chill = SURVIVAL.updateSwimChill(swimChillState, dt, swimming);
-		if(chill.warn) msg('🥶 Woda wychładza — zbuduj łódź z drewna!');
+		if(chill.warn){
+			msg('🥶 Woda wychładza — zbuduj łódź z drewna!');
+			noteDiscoveryFact('survival_warning',{kind:'water_chill',target:heroDiscoveryTarget()});
+		}
 		if(chill.damage>0 && (!player.hpInvul || performance.now()>=player.hpInvul)){
 			const dmg=Math.min(8, chill.damage);
 			if(window.damageHero(dmg, {cause:'water_chill', invulMs:600})){
@@ -14026,9 +14668,13 @@ function physics(dt){
 			thermalModeCached=godMode ? 'none' : sampleThermalMode(tileX,inWater,heroWarmthCached);
 			heroRainWetCached=!godMode && !inWater && gasSkyExposedTile(tileX, Math.floor(player.y)-1) && !!(CLOUDS && CLOUDS.isRainingAt && CLOUDS.isRainingAt(tileX));
 			sampleSandExposure(tileX);
+			sampleHeroDiscoveryEnvironment();
 		}
 		const thermal=SURVIVAL.updateThermalExposure(thermalState, dt, thermalModeCached);
-		if(thermal.warn) msg(thermal.mode==='cold' ? '🥶 Mróz przenika do kości — rozpal ogień albo znajdź schronienie!' : '🥵 Upał wysusza — schłodź się w wodzie albo w cieniu!');
+		if(thermal.warn){
+			msg(thermal.mode==='cold' ? '🥶 Mróz przenika do kości — rozpal ogień albo znajdź schronienie!' : '🥵 Upał wysusza — schłodź się w wodzie albo w cieniu!');
+			noteDiscoveryFact('survival_warning',{kind:thermal.mode,target:heroDiscoveryTarget()});
+		}
 		if(thermal.damage>0 && (!player.hpInvul || performance.now()>=player.hpInvul)){
 			const dmg=Math.min(6, thermal.damage);
 			if(window.damageHero(dmg, {cause:thermal.mode==='cold' ? 'deep_frost' : 'heat_stroke', invulMs:700})){
@@ -14073,6 +14719,20 @@ function physics(dt){
 	const quicksandState = (TERRAIN_TRAPS && TERRAIN_TRAPS.updateHeroQuicksand)
 		? TERRAIN_TRAPS.updateHeroQuicksand(dt,player,getTile,setTile,{jumpPressed:jumpPressedNow,jumpHeld:jumpNow,input})
 		: null;
+	if(inWater && !wasInWater){
+		noteDiscoveryFact('hero_water_enter',{target:heroDiscoveryTarget()});
+	}
+	if(waterExposure.headCovered && !discoveryHeadCovered){
+		noteDiscoveryFact('hero_dive',{
+			headCovered:true,
+			controlled:!!diveInput,
+			target:heroDiscoveryTarget()
+		});
+	}
+	discoveryHeadCovered=!!waterExposure.headCovered;
+	if(quicksandState && quicksandState.escaped){
+		noteDiscoveryFact('quicksand_escape',{target:heroDiscoveryTarget()});
+	}
 
 	// --- Water entry/exit splashes + dive bubbles (cosmetic only) ---
 	if(VISUAL.animations && PARTICLES){
@@ -14132,13 +14792,17 @@ function physics(dt){
 		}
 		else if(boatContactInWater && BOATS && BOATS.boardHeroFromWater && BOATS.boardHeroFromWater(player,{getTile}).ok){
 			jumpBufferT=0; coyoteT=COYOTE_TIME; swimBuoySmooth=0;
+			noteDiscoveryFact('boat_event',{kind:'boarded',target:heroDiscoveryTarget()});
 		}
 		else if((player.onGround && (!inWater || groundedSolidInWater || boatDeckInWater)) || (inWater && sideSolidInWater) || (!inWater && (godMode || (coyoteT>0 && player.jumpCount===0)))){ // primary jump (incl. coyote window after a ledge)
+			const learnedGroundJump=!inWater || groundedSolidInWater || boatDeckInWater;
 			player.vy=MOVE.JUMP * jumpMult; player.onGround=false; player.jumpCount=1; jumpBufferT=0; coyoteT=0;
+			if(learnedGroundJump) noteDiscoveryFact('hero_jump',{from:'ground',target:heroDiscoveryTarget()});
 		}
 		else if(!inWater && player.jumpCount>0 && player.jumpCount < totalAllowed){
 			// mid-air extra jump
 			player.vy=MOVE.JUMP * jumpMult; player.jumpCount++; jumpBufferT=0;
+			noteDiscoveryFact('hero_jump',{from:'air',target:heroDiscoveryTarget()});
 		}
 		else if(inWater){
 			jumpBufferT=0;
@@ -14166,6 +14830,10 @@ function physics(dt){
 		player.jumpCount=0;
 		coyoteT=COYOTE_TIME;
 		swimBuoySmooth=0;
+		if(climbDir!==0 && DISCOVERY && typeof DISCOVERY.has==='function' && !DISCOVERY.has('ladder_climb') &&
+			(!MM.ghostMode || MM.ghostHeroIntents)){
+			noteDiscoveryFact('hero_climbed',{direction:climbDir,target:heroDiscoveryTarget()});
+		}
 	} else if(inWater){
 		// Stronger buoyancy with PD control so player reliably floats at surface.
 		const time=performance.now();
@@ -14241,10 +14909,33 @@ function physics(dt){
 	// same slot as the grapple: after gravity so it overrides the fall, before the
 	// sweep so the carry is collided properly. Self-movement, no world write.
 	if(GLIDER && GLIDER.step){
-		GLIDER.step(player, dt, getTile, {
+		const gliderReport=GLIDER.step(player, dt, getTile, {
 			holdingJump: !!movementControlState().jump,
 			inWater: !!player.inWater,
 		});
+		if(gliderReport && gliderReport.open){
+			if(discoveryGliderOpenT<=0){
+				noteDiscoveryFact('glider_opened',{
+					fallSpeed:Math.max(0,Number(player.vy)||0),
+					target:heroDiscoveryTarget()
+				});
+			}
+			discoveryGliderOpenT+=Math.max(0,Number(dt)||0);
+			const wind=Math.abs(Number(gliderReport.wind)||0);
+			const lift=Math.max(0,Number(gliderReport.lift)||0);
+			if(!discoveryGliderWindSeen && discoveryGliderOpenT>=0.35 && wind>0.1){
+				discoveryGliderWindSeen=true;
+				noteDiscoveryFact('glider_wind',{wind,target:heroDiscoveryTarget()});
+			}
+			if(!discoveryGliderThermalSeen && discoveryGliderOpenT>=0.35 && lift>0.08){
+				discoveryGliderThermalSeen=true;
+				noteDiscoveryFact('glider_thermal',{lift,target:heroDiscoveryTarget()});
+			}
+		}else{
+			discoveryGliderOpenT=0;
+			discoveryGliderWindSeen=false;
+			discoveryGliderThermalSeen=false;
+		}
 	}
 
 	// Integrate & collisions — substepped so high speed multipliers / low FPS cannot tunnel through tiles
@@ -14274,6 +14965,16 @@ function physics(dt){
 	try{ if(SKY_GUARDIAN && SKY_GUARDIAN.collideHero) SKY_GUARDIAN.collideHero(player, dt); }catch(e){}
 	try{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.collideHero) CENTER_GUARDIAN.collideHero(player, dt); }catch(e){}
 
+	noteHeroDiscoveryTravel(
+		discoveryFromX,
+		discoveryFromY,
+		inWater,
+		dt,
+		inWater && !ridingFloatingBoat && (
+			Math.abs(input)>0.1 || swimUpInput || diveInput ||
+			Math.abs(player.vx)>0.7 || Math.abs(player.vy)>0.7
+		)
+	);
 	ensureChunks();
 }
 // Tiles below the world bottom act as bedrock so a mined-out bottom row can't drop the player into the void
@@ -14393,6 +15094,12 @@ function collide(axis, prevC, opts){
 					player.onGround=false;
 					coyoteT=0;
 					jumpBufferT=0;
+					noteDiscoveryFact('spring_launch',{
+						powered:!!launched.powered,
+						spent:Math.max(0,Number(launched.spent)||0),
+						source:String(launched.source||'spring'),
+						target:{x:landingTile.x+0.5,y:landingTile.y+0.5}
+					});
 					if(launched.powered) noteSaveActivity();
 					try{ if(PARTICLES && PARTICLES.spawnEnergyAbsorb) PARTICLES.spawnEnergyAbsorb((landingTile.x+0.5)*TILE,(landingTile.y+0.35)*TILE,player.x*TILE,(player.y-0.25)*TILE,launched.powered?1.25:0.45); }catch(e){}
 					try{ if(AUDIO && AUDIO.play) AUDIO.play(launched.powered?'charge':'jump'); }catch(e){}
@@ -14806,7 +15513,16 @@ function notifyTempleDisturbance(kind,tx,ty,oldTile,newTile){
 }
 // Opening chests is shared between click handling and directional mining so the ⛏️
 // button can never silently destroy a chest together with its loot.
-function tryOpenChestAt(tx,ty){
+function noteChestDiscovery(detail){
+	const fact=detail&&typeof detail==='object'?detail:{};
+	noteDiscoveryFact('chest_opened',fact);
+	const tier=String(fact.tier||'common');
+	if(tier==='rare' || tier==='epic' || tier==='legendary'){
+		noteDiscoveryFact('rare_chest_opened',fact);
+	}
+	if(tier==='legendary') noteDiscoveryFact('legendary_chest_opened',fact);
+}
+function tryOpenChestAt(tx,ty,opts){
 	const oldTile=getTile(tx,ty);
 	const info=INFO[oldTile];
 	if(!info || !info.chestTier || !CHESTS) return false;
@@ -14815,9 +15531,24 @@ function tryOpenChestAt(tx,ty){
 	if(MM.ghostHeroIntents) return MM.ghostHeroIntents.use(tx,ty);
 	const res=CHESTS.openChestAt(tx,ty);
 	if(res){
+		const discoveryFact={
+			actor:String((opts&&opts.actor)||'local-hero'),
+			tier:info.chestTier,
+			spawned:Math.max(0,Number(res.spawned)||0),
+			itemCount:Array.isArray(res.items)?res.items.length:0,
+			target:{x:tx+0.5,y:ty+0.5}
+		};
+		noteChestDiscovery(discoveryFact);
 		notifyTempleDisturbance('treasure',tx,ty,oldTile,T.AIR);
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
-		lastChestOpen={t:performance.now(),x:tx,y:ty};
+		lastChestOpen={
+			t:performance.now(),
+			x:tx,
+			y:ty,
+			tier:info.chestTier,
+			spawned:discoveryFact.spawned,
+			itemCount:discoveryFact.itemCount
+		};
 		if(!MM.onLootGained && window.updateDynamicCustomization) window.updateDynamicCustomization();
 		const CHEST_TIER_PL={common:'zwykła', uncommon:'niezwykła', rare:'rzadka', epic:'epicka', legendary:'legendarna'};
 		const tierPl=CHEST_TIER_PL[info.chestTier]||info.chestTier;
@@ -14838,8 +15569,22 @@ function tryOpenChestAt(tx,ty){
 if(CHESTS && CHESTS.setWeaponHitHandler) CHESTS.setWeaponHitHandler((tx,ty,opts)=>tryOpenChestAt(tx,ty,opts));
 if(CHESTS && CHESTS.setDroppedOpenHandler) CHESTS.setDroppedOpenHandler((drop,res)=>{
 	if(!drop || !res) return;
+	const discoveryFact={
+		tier:res.tier,
+		spawned:Math.max(0,Number(res.spawned)||0),
+		itemCount:Array.isArray(res.items)?res.items.length:0,
+		target:{x:Number(drop.x)||0,y:Number(drop.y)||0}
+	};
+	noteChestDiscovery(discoveryFact);
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:drop.x,y:drop.y}); }catch(e){}
-	lastChestOpen={t:performance.now(),x:Math.floor(drop.x),y:Math.floor(drop.y)};
+	lastChestOpen={
+		t:performance.now(),
+		x:Math.floor(drop.x),
+		y:Math.floor(drop.y),
+		tier:String(res.tier||'common'),
+		spawned:discoveryFact.spawned,
+		itemCount:discoveryFact.itemCount
+	};
 	if(!MM.onLootGained && window.updateDynamicCustomization) window.updateDynamicCustomization();
 	const tierPl=({common:'zwykła',uncommon:'niezwykła',rare:'rzadka',epic:'epicka',legendary:'legendarna'})[res.tier]||res.tier;
 	if(res.spawned>0) msg('Skrzynia '+tierPl+' wyrzuciła '+res.spawned+' przedm. — podnieś je (E / klik)!');
@@ -14961,7 +15706,15 @@ function startMineAt(tx,ty,opts){
 	const bossTarget=bossMineTargetAt(tx,ty);
 	const t=mineTileIdAt(tx,ty);
 	if(t===T.AIR || isGasTileId(t)) return false;
-	if(!canMineTileWithCurrentTool(t,tx,ty)){ if(!quiet) msg(unmineableReason(t,tx,ty)); return false; }
+	if(!canMineTileWithCurrentTool(t,tx,ty)){
+		noteDiscoveryFact('mine_blocked',discoveryTileFacts(t,{
+			reason:t===T.BEDROCK?'bedrock':'tool',
+			tool:player.tool,
+			target:{x:tx+0.5,y:ty+0.5}
+		}));
+		if(!quiet) msg(unmineableReason(t,tx,ty));
+		return false;
+	}
 	const blocked=blockedTargetReason(tx,ty);
 	if(blocked){ if(!quiet) msg(blocked); return false; }
 	if(t===T.INVASION_CACHE){ if(quiet) return false; return tryOpenInvasionCacheAt(tx,ty); }
@@ -14981,7 +15734,15 @@ function startMine(opts){
 	const bossTarget=bossMineTargetAt(tx,ty);
 	const t=mineTileIdAt(tx,ty);
 	if(t===T.AIR || isGasTileId(t)) return;
-	if(!canMineTileWithCurrentTool(t,tx,ty)){ if(!quiet) msg(unmineableReason(t,tx,ty)); return; }
+	if(!canMineTileWithCurrentTool(t,tx,ty)){
+		noteDiscoveryFact('mine_blocked',discoveryTileFacts(t,{
+			reason:t===T.BEDROCK?'bedrock':'tool',
+			tool:player.tool,
+			target:{x:tx+0.5,y:ty+0.5}
+		}));
+		if(!quiet) msg(unmineableReason(t,tx,ty));
+		return;
+	}
 	const blocked=blockedTargetReason(tx,ty);
 	if(blocked){ if(!quiet) msg(blocked); return; }
 	if(t===T.INVASION_CACHE){ tryOpenInvasionCacheAt(tx,ty); return; }
@@ -15633,6 +16394,29 @@ function breakTileByCompanion(tx,ty,expectedTile){
 	noteSaveActivity();
 	return true;
 }
+function noteMinedDiscovery(id,tx,ty,layer,drops,confirmedFacts){
+	const confirmed=confirmedGuestDiscoveryFacts(confirmedFacts);
+	const facts=confirmed?Object.assign({},confirmed):{};
+	facts.layer=confirmed ? confirmed.layer : normalizedDiscoveryLayer(layer);
+	if(!confirmed || typeof confirmed.hasDrop!=='boolean'){
+		facts.hasDrop=Array.isArray(drops)?drops.length>0:!!(INFO[id]&&INFO[id].drop);
+	}
+	const observed=discoveryTileFacts(id,Object.assign(facts,{
+		tool:player.tool,
+		depth:Math.floor(ty),
+		target:{x:tx+0.5,y:ty+0.5}
+	}));
+	noteDiscoveryFact('tile_mined',observed);
+	const hardness=Math.max(0,Number(observed.hardness)||0);
+	const strength=Math.max(0.25,Math.min(1.8,hardness/22));
+	noteDiscoveryFact('mining_noise',{
+		hardness,
+		strength,
+		radius:NOISE&&NOISE.radiusFor?NOISE.radiusFor('mine',strength):0,
+		band:hardness>=22?'hard':'soft',
+		target:observed.target
+	});
+}
 function breakMinedTile(){
 	// hero-mode guest (ghost_client sets MM.ghostHeroIntents): the break is an
 	// INTENT — the host validates it with solo-grade rules and the world change
@@ -15649,6 +16433,7 @@ function breakMinedTile(){
 		if(!removed) return false;
 		const drops=awardTileDrops(info);
 		pushUndo(mineTx,mineTy,overId,T.AIR,'breakOverlay',drops);
+		noteMinedDiscovery(overId,mineTx,mineTy,'overlay',drops);
 		updateInventory();
 		notifyInvasionMining(overId,mineTx,mineTy);
 		return true;
@@ -15670,6 +16455,7 @@ function breakMinedTile(){
 		if(!removed) return false;
 		const drops=awardTileDrops(info);
 		pushUndo(mineTx,mineTy,bgId,T.AIR,'breakBackground',drops);
+		noteMinedDiscovery(bgId,mineTx,mineTy,'background',drops);
 		wakeConstructionBackgroundChanged(mineTx,mineTy);
 		updateInventory();
 		notifyInvasionMining(bgId,mineTx,mineTy);
@@ -15690,6 +16476,7 @@ function breakMinedTile(){
 		if(!setForegroundConfirmed(mineTx,mineTy,T.WATER)) return false;
 		if(WATER && WATER.onTileChanged) WATER.onTileChanged(mineTx,mineTy,getTile);
 		pushUndo(mineTx,mineTy,tId,T.WATER,'break',null);
+		noteMinedDiscovery(tId,mineTx,mineTy,'foreground',[]);
 		return true;
 	}
 	const dropCtx=dropContextForTile(tId,mineTx,mineTy);
@@ -15712,6 +16499,7 @@ function breakMinedTile(){
 	// a pick biting into (or right under) a deep snow slope can set it off
 	if(AVALANCHE && AVALANCHE.disturb && (tId===T.SNOW || tId===T.TOXIC_SNOW || getTile(mineTx,mineTy-1)===T.SNOW)) AVALANCHE.disturb(mineTx,mineTy,1.2,getTile);
 	pushUndo(mineTx,mineTy,tId,T.AIR,'break',drops);
+	noteMinedDiscovery(tId,mineTx,mineTy,'foreground',drops);
 	if(tId===T.BEDROCK) consumeBedrockPickUse();
 	updateInventory();
 	notifyTempleDisturbance(templeKind,mineTx,mineTy,tId,T.AIR);
@@ -15748,7 +16536,7 @@ function maybeChainVeinBreak(tId){
 // NOTHING: the block rides in the gun. Matter is conserved end to end:
 // extraction pays no yield, a settled block re-enters the world as debris, and
 // only a shatter pays the tile's normal mining drop, exactly once.
-function stripForegroundForCarry(tx,ty,tId){
+function stripForegroundForCarry(tx,ty,tId,actor='local-hero'){
 	const templeKind=templeDisturbanceKindForTile(tId);
 	if(!setForegroundConfirmed(tx,ty,T.AIR)) return false;
 	if(tId===T.VENDING_MACHINE && VENDING && VENDING.onTileRemoved) VENDING.onTileRemoved(tx,ty);
@@ -15759,7 +16547,7 @@ function stripForegroundForCarry(tx,ty,tId){
 	if(FALLING && FALLING.onTileRemoved) FALLING.onTileRemoved(tx,ty);
 	if(WATER && WATER.onTileChanged) WATER.onTileChanged(tx,ty,getTile);
 	notifyTempleDisturbance(templeKind,tx,ty,tId,T.AIR);
-	notifyInvasionMining(tId,tx,ty);
+	notifyInvasionMining(tId,tx,ty,actor);
 	try{ if(MM.audio && MM.audio.play) MM.audio.play('dig',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 	return true;
 }
@@ -15828,7 +16616,11 @@ function instantBreak(){
 	if(breakMinedTile()) stopMining();
 }
 // Falling tree system (per-block physics)
-function startTreeFall(bx,by){ return TREES.startTreeFall(getTile,setTile,player.facing,bx,by); }
+function startTreeFall(bx,by){
+	const felled=!!TREES.startTreeFall(getTile,setTile,player.facing,bx,by);
+	if(felled) noteDiscoveryFact('tree_fall',{target:{x:bx+0.5,y:by+0.5},source:'hero_mining'});
+	return felled;
+}
 function updateFallingBlocks(dt){
 	const viewX=Math.ceil(W/(TILE*zoom));
 	const viewY=Math.ceil(H/(TILE*zoom));
@@ -15991,6 +16783,14 @@ function finishFoodUse(effect,result){
 		if(delta!==0) pushWorldNumber({kind:delta>0?'heal':'damage',amount:delta,x:player.x,y:player.y-player.h*0.72,target:'hero',source:'food'});
 		if(delta>0) notifyInvasionHeroAction('hero_heal',{amount:delta,source:'food',label:effect.label||'Jedzenie'});
 	}
+	noteDiscoveryFact('food_consumed',{
+		food:String(effect.key||'food'),
+		delta,
+		healing:Math.max(0,delta),
+		spoiled:effect.key==='rottenMeat',
+		cooked:effect.key==='bakedMeat',
+		target:heroDiscoveryTarget()
+	});
 	updateInventory();
 	if(result.dead && window.heroDied) window.heroDied('rotten_meat');
 	return true;
@@ -16496,29 +17296,56 @@ function canPlaceAt(tx,ty){
 		}
 	}
 	let pressureCells=null;
+	let structuralSupport='';
 	if(!chest && !godMode && id!==T.SAND && id!==T.WATER && !loosePlacement && !waterGolemDrop && !molekinMotherLavaDrop && !(furnishingPlacement && furnishingPlacement.applies) && !(observerPlacement && observerPlacement.applies)){
 		let checkedStructural=false;
 		if(FALLING && FALLING.canSupportPlacement){
 			const structural=FALLING.canSupportPlacement(tx,ty,id);
 			checkedStructural=!!(structural && structural.applies);
 			if(checkedStructural && Array.isArray(structural.pressureCells) && structural.pressureCells.length) pressureCells=structural.pressureCells;
+			if(checkedStructural && structural.ok) structuralSupport=String(structural.support||'network');
 			if(checkedStructural && !structural.ok) return {ok:false, reason:structural.reason||'Brak podparcia', pressureCells};
 		}
 		if(!checkedStructural){
 			// Fallback when the physics module is unavailable: direct footing or a wall/ceiling contact.
-			const support = isStableConstructionSupportAt(tx,ty+1)
-				|| [[1,0],[-1,0],[0,-1]].some(([dx,dy])=>isStableConstructionSupportAt(tx+dx,ty+dy));
-			if(!support) return {ok:false, reason:'Brak podparcia'};
+			const footing=isStableConstructionSupportAt(tx,ty+1);
+			const side=[[1,0],[-1,0]].some(([dx,dy])=>isStableConstructionSupportAt(tx+dx,ty+dy));
+			const ceiling=isStableConstructionSupportAt(tx,ty-1);
+			if(!footing && !side && !ceiling) return {ok:false, reason:'Brak podparcia'};
+			structuralSupport=footing?'footing':(ceiling?'ceiling':'side');
 		}
 	}
 	if(!chest && !haveBlocksFor(id)) return {ok:false, reason:'Brak bloków', pressureCells};
 	return {ok:true, id, chest, replacedWater:cur===T.WATER, pressureCells,
+		structuralSupport,
 		furnishingSupport:furnishingPlacement&&furnishingPlacement.support,
 		observerSupport:observerPlacement&&observerPlacement.support};
 }
+function notePlacedDiscovery(id,tx,ty,layer,placement){
+	const support=layer==='foreground'
+		? String((placement&&placement.structuralSupport)||'other')
+		: 'layer';
+	noteDiscoveryFact('tile_placed',discoveryTileFacts(id,{
+		layer:layer||'foreground',
+		spent:!godMode,
+		replacedWater:!!(placement&&placement.replacedWater),
+		support,
+		target:{x:tx+0.5,y:ty+0.5}
+	}));
+}
 function tryPlace(tx,ty){
 	const v=canPlaceAt(tx,ty);
-	if(!v.ok){ if(v.reason) msg(v.reason); return false; }
+	if(!v.ok){
+		if(v.reason){
+			const reason=/podpar/i.test(v.reason)?'support':(/blok/i.test(v.reason)?'blocked':'resource');
+			noteDiscoveryFact('place_blocked',{
+				reason,
+				target:{x:tx+0.5,y:ty+0.5}
+			});
+			msg(v.reason);
+		}
+		return false;
+	}
 	// hero-mode guest: local canPlaceAt above already gave instant feedback with
 	// the guest's OWN inventory; the world write itself becomes an INTENT the host
 	// re-validates (its own legality core) — the tile arrives on the stream. The
@@ -16560,11 +17387,20 @@ function tryPlace(tx,ty){
 		const placed=(BOATS && BOATS.placeWood) ? BOATS.placeWood(tx,ty,getTile,{hasSupport:!!v.boatHasSupport,water:WATER,material:v.id}) : null;
 		if(!placed || !placed.ok){ if(placed && placed.reason) msg(placed.reason); return false; }
 		consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
+		noteDiscoveryFact('boat_event',{
+			kind:placed.created?'created':'extended',
+			material:discoveryMaterialForTile(id),
+			target:{x:tx+0.5,y:ty+0.5}
+		});
 		if(placed.created) msg('⛵ Drewno nie tonie — masz tratwę! Dokładaj drewno, by ją powiększyć');
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		return true;
 	}
-	if(v.structure==='dynamo') return placeDynamoStructure(v);
+	if(v.structure==='dynamo'){
+		const placed=placeDynamoStructure(v);
+		if(placed) notePlacedDiscovery(v.id,tx,ty,'foreground',v);
+		return placed;
+	}
 	if(v.overlay){
 		const oldOver=getInfrastructureTile(tx,ty);
 		const placed=setInfrastructureConfirmed(tx,ty,id);
@@ -16572,6 +17408,7 @@ function tryPlace(tx,ty){
 		pushUndo(tx,ty,oldOver,id,'placeOverlay');
 		consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+		notePlacedDiscovery(id,tx,ty,'overlay',v);
 		return true;
 	}
 	if(v.background){
@@ -16582,6 +17419,7 @@ function tryPlace(tx,ty){
 		consumeFor(id); updateInventory(); updateHotbarCounts(); saveState();
 		wakeConstructionBackgroundChanged(tx,ty);
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+		notePlacedDiscovery(id,tx,ty,'background',v);
 		return true;
 	}
 	if(!displacePlacedWater()){ msg('Brak miejsca na wypchniecie wody'); return false; }
@@ -16626,6 +17464,7 @@ function tryPlace(tx,ty){
 	// Queue a stability check: unsupported sand starts falling, stone placed without a
 	// load path collapses as a cluster, etc. (event-driven in engine/falling.js)
 	if(FALLING && FALLING.afterPlacement) FALLING.afterPlacement(tx,ty);
+	notePlacedDiscovery(id,tx,ty,'foreground',v);
 	return true;
 }
 // Per-slot counts (not per-type ids): two slots may hold the same resource after a
@@ -17423,6 +18262,7 @@ function draw(){ // Background first
  // Final world-space occlusion. Keep this after late overlays (especially water)
  // so unexplored tiles cannot leak through the fog layer.
  drawFogOverlay(sx,sy,viewX,viewY,{camX:camRenderX,camY:camRenderY,shake:screenShake});
+ drawDiscoveryObservationFx();
  } finally {
 	 ctx.restore();
  }
@@ -17912,7 +18752,32 @@ const tutorialNpcCtx = {
 	gameDayFloat:()=>{ const m=(SEASONS && SEASONS.metrics) ? SEASONS.metrics() : null; return m && Number.isFinite(Number(m.dayFloat)) ? Number(m.dayFloat) : 1; }
 };
 if(NPCS && NPCS.setContext) NPCS.setContext(tutorialNpcCtx);
-if(TASKS && TASKS.setContext) TASKS.setContext({onChange:saveState});
+function onTaskFeedChange(change){
+	saveState();
+	const kind=String(change&&change.kind||'');
+	const task=change&&change.task;
+	if(!task || !task.id) return;
+	const id=String(task.id);
+	if(kind==='upsert' && !announcedFeedTasks.has(id)){
+		rememberAnnouncedFeedTask(id);
+		SMART_FEED.notify('task',task.title||'Nowe zadanie',{
+			title:'NOWE ZADANIE',
+			context:task.detail||'Dodano do listy zadań',
+			priority:68,
+			dedupeKey:'task:create:'+id,
+			target:task.target||null
+		});
+	}else if(kind==='complete'){
+		rememberAnnouncedFeedTask(id);
+		SMART_FEED.notify('achievement',task.title||'Zadanie ukończone',{
+			title:'ZADANIE UKOŃCZONE',
+			context:'Cel zapisany w historii',
+			priority:80,
+			dedupeKey:'task:complete:'+id
+		});
+	}else if(kind==='remove' || kind==='discard') announcedFeedTasks.delete(id);
+}
+if(TASKS && TASKS.setContext) TASKS.setContext({onChange:onTaskFeedChange});
 if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateInventory, onChange:saveState});
 // Wandering trader panel: DOM host for engine/trader.js. The module opens it
 // via the npc_system click dispatch and closes it on departure / walking away.
@@ -20492,7 +21357,7 @@ function regenWorld(){
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); }catch(e){} }
 	if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
 	resetCraftingAvailability();
-	try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); }catch(e){}
+	try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); resetActivityPresentation(); }catch(e){}
 	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Nowy świat seed '+worldSeed); }
 document.getElementById('centerBtn').addEventListener('click',()=>{ snapCameraToPlayer(); });
 document.getElementById('helpBtn').addEventListener('click',()=>toggleHelp());
@@ -21566,9 +22431,32 @@ MM.ghostBridge={
 	// inventory. Their item entitlement is therefore local, while the host still
 	// validates reach, support, occupancy and the global three-copy terrain cap.
 	ghostHeroPlacementUsesLocalEntitlement:(tid)=>(Number(tid)|0)===T.OBSERVER_REPLICA,
-	ghostHeroPlaced:(tid)=>{
-		if((Number(tid)|0)!==T.OBSERVER_REPLICA) return false;
-		msg('Atrapa aktywna - regionalna automatyka 64x70 dziala');
+	// Read-only host seam: produce the bounded causal facts carried back on an
+	// accepted mine/place ACK. It never records knowledge on the host.
+	ghostHeroDiscoveryFacts:(tid,detail)=>discoveryAckFactsForTile(tid,detail),
+	ghostHeroPlaced:(tid,x,y,layer,rawFacts)=>{
+		const id=Number(tid)|0;
+		const tx=Math.floor(Number(x)), ty=Math.floor(Number(y));
+		if(Number.isFinite(tx) && Number.isFinite(ty)){
+			const facts=confirmedGuestDiscoveryFacts(rawFacts);
+			const discoveryLayer=facts ? facts.layer : normalizedDiscoveryLayer(layer);
+			notePlacedDiscovery(id,tx,ty,discoveryLayer,{
+				replacedWater:!!(facts&&facts.replacedWater),
+				structuralSupport:facts&&facts.support
+			});
+		}
+		if(id===T.OBSERVER_REPLICA) msg('Atrapa aktywna - regionalna automatyka 64x70 dziala');
+		return true;
+	},
+	ghostHeroChestOpened:(tier,x,y,spawned,itemCount)=>{
+		const tx=Math.floor(Number(x)), ty=Math.floor(Number(y));
+		if(!Number.isFinite(tx) || !Number.isFinite(ty)) return false;
+		noteChestDiscovery({
+			tier:String(tier||'common'),
+			spawned:Math.max(0,Number(spawned)||0),
+			itemCount:Math.max(0,Number(itemCount)||0),
+			target:{x:tx+0.5,y:ty+0.5}
+		});
 		return true;
 	},
 	ghostHeroObserverPendingRestore:(rows)=>restorePendingObserverPlacements(rows),
@@ -21767,9 +22655,20 @@ MM.ghostBridge={
 	// awarding a validated break happens on the GUEST with its own drop logic —
 	// the same INFO-driven awardTileDrops the solo miner runs (bonus rolls local)
 	ghostHeroAward:(tid)=>{
-		const info=INFO[Number(tid)|0];
+		const id=Number(tid)|0;
+		const info=INFO[id];
 		if(!info) return false;
 		try{ awardTileDrops(info); updateInventory(); updateHotbarCounts(); }catch(e){ return false; }
+		return true;
+	},
+	// All accepted mining ACKs (including explicit loot arrays such as a
+	// dismantled teleporter) converge here after their local yield is banked.
+	ghostHeroMined:(tid,x,y,rawFacts)=>{
+		const id=Number(tid)|0;
+		const tx=Math.floor(Number(x)), ty=Math.floor(Number(y));
+		if(!INFO[id] || !Number.isFinite(tx) || !Number.isFinite(ty)) return false;
+		const facts=confirmedGuestDiscoveryFacts(rawFacts);
+		noteMinedDiscovery(id,tx,ty,facts?facts.layer:'foreground',null,facts);
 		return true;
 	},
 	// GUEST-side gravity ack: the host confirmed (or refused) an extraction —
@@ -21835,7 +22734,16 @@ MM.ghostBridge={
 		if(!worldCellInBounds(tx,ty)) return {ok:false, reason:'bounds'};
 		const tId=getTile(tx,ty);
 		const info=INFO[tId];
-		if(info && info.chestTier) return {ok:!!tryOpenChestAt(tx,ty)};
+		if(info && info.chestTier){
+			const ok=!!tryOpenChestAt(tx,ty,{actor:'host-for-guest'});
+			const receipt=ok && lastChestOpen.x===tx && lastChestOpen.y===ty ? lastChestOpen : null;
+			return {
+				ok,
+				chestTier:info.chestTier,
+				chestSpawned:receipt?Math.max(0,Number(receipt.spawned)||0):0,
+				chestItems:receipt?Math.max(0,Number(receipt.itemCount)||0):0
+			};
+		}
 		if(tId===T.VENDING_MACHINE && VENDING && VENDING.vendAt){
 			// the vend runs with a CAPTURING sink: world state (stock, daily draw,
 			// breakage + its lifecycle hooks) is the host's, the loot is the caller's
@@ -21869,7 +22777,7 @@ MM.ghostBridge={
 		// can never drain the host's pool), no cross-network dynamo pull. Documented
 		// limitation: a pad fed ONLY live through a wire, with zero stored charge,
 		// won't carry a guest until it banks a little.
-		const ok=TELEPORTERS.tryTeleport(proxy,getTile,{});
+		const ok=TELEPORTERS.tryTeleport(proxy,getTile,{actor:'host-for-guest'});
 		return ok ? {ok:true, x:proxy.x, y:proxy.y, vx:proxy.vx, vy:proxy.vy} : {ok:false};
 	},
 	// HOST-side validation for a full-hero guest ramming light wood. Shift energy
@@ -21950,13 +22858,13 @@ MM.ghostBridge={
 			if(prior){
 				if(prior.action!=='mine' || prior.x!==tx || prior.y!==ty) return {ok:false, reason:'qid'};
 				if(prior.ackPending) return {ok:false, reason:'pending', retry:true};
-				if(prior.durable) return {ok:true, tid:T.OBSERVER_REPLICA, layer:'fg', replayed:true};
+				if(prior.durable) return {ok:true, tid:T.OBSERVER_REPLICA, layer:'foreground', replayed:true, hasDrop:true};
 				// A failed save normally leaves AIR and only needs another commit.
 				// Temporal rewind may have restored the tile; then discard only the
 				// transient proof and execute the removal again before persisting.
 				if(getTile(tx,ty)!==T.OBSERVER_REPLICA){
 					return observerTransactionPersistenceReady()
-						? {ok:true, tid:T.OBSERVER_REPLICA, layer:'fg', replayed:true}
+						? {ok:true, tid:T.OBSERVER_REPLICA, layer:'foreground', replayed:true, hasDrop:true}
 						: {ok:false, reason:'save', retry:true};
 				}
 				OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
@@ -21967,7 +22875,7 @@ MM.ghostBridge={
 			if(claimed) return {ok:false, reason:'tile'};
 			if(!INFO[overId]) return {ok:false, reason:'tile'};
 			if(!clearInfrastructureConfirmed(tx,ty,overId)) return {ok:false, reason:'write'};
-			notifyInvasionMining(overId,tx,ty);
+			notifyInvasionMining(overId,tx,ty,'host-for-guest');
 			noteSaveActivity();
 			return {ok:true, tid:overId, layer:'overlay'};
 		}
@@ -21977,7 +22885,7 @@ MM.ghostBridge={
 			if(!INFO[bgId]) return {ok:false, reason:'tile'};
 			if(!clearConstructionBackgroundConfirmed(tx,ty)) return {ok:false, reason:'write'};
 			wakeConstructionBackgroundChanged(tx,ty);
-			notifyInvasionMining(bgId,tx,ty);
+			notifyInvasionMining(bgId,tx,ty,'host-for-guest');
 			noteSaveActivity();
 			return {ok:true, tid:bgId, layer:'background'};
 		}
@@ -22011,12 +22919,18 @@ MM.ghostBridge={
 		const teleporterPlan=tId===T.TELEPORTER && TELEPORTERS && TELEPORTERS.dismantlePlanAt
 			? TELEPORTERS.dismantlePlanAt(tx,ty,getTile)
 			: null;
-		if(!stripForegroundForCarry(tx,ty,tId)){
+		if(!stripForegroundForCarry(tx,ty,tId,'host-for-guest')){
 			if(claimed) OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
 			return {ok:false, reason:'write'};
 		}
 		noteSaveActivity();
-		return {ok:true, tid:tId, layer:'fg', loot:teleporterPlan ? teleporterPlan.drops : null};
+		return {
+			ok:true,
+			tid:tId,
+			layer:'foreground',
+			hasDrop:teleporterPlan ? !!(teleporterPlan.drops&&teleporterPlan.drops.length) : undefined,
+			loot:teleporterPlan ? teleporterPlan.drops : null
+		};
 	},
 	// hero-mode gravity extraction: reach/LOS/rate already passed host-side; this
 	// seam re-validates the MATERIAL with the same predicate solo uses, then runs
@@ -22027,7 +22941,7 @@ MM.ghostBridge={
 		const tId=getTile(tx,ty);
 		const v=GRAVITY_GUN.canCarryTile(tId);
 		if(!v.ok) return {ok:false, reason:v.reason};
-		if(!stripForegroundForCarry(tx,ty,tId)) return {ok:false, reason:'write'};
+		if(!stripForegroundForCarry(tx,ty,tId,'host-for-guest')) return {ok:false, reason:'write'};
 		noteSaveActivity();
 		return {ok:true, tid:tId};
 	},
@@ -22055,10 +22969,10 @@ MM.ghostBridge={
 			if(prior){
 				if(prior.action!=='place' || prior.x!==tx || prior.y!==ty) return {ok:false, reason:'qid'};
 				if(prior.ackPending) return {ok:false, reason:'pending', retry:true};
-				if(prior.durable) return {ok:true, tid:id, replayed:true};
+				if(prior.durable) return {ok:true, tid:id, layer:'foreground', support:'floor', replacedWater:false, replayed:true};
 				if(OBSERVER_REPLICAS.matchesTransaction(tx,ty,claim.gid,claim.qid) && getTile(tx,ty)===id){
 					return observerTransactionPersistenceReady()
-						? {ok:true, tid:id, replayed:true}
+						? {ok:true, tid:id, layer:'foreground', support:'floor', replacedWater:false, replayed:true}
 						: {ok:false, reason:'save', retry:true};
 				}
 				OBSERVER_REPLICAS.discardNonDurableTransaction(claim.gid,claim.qid);
@@ -22074,7 +22988,7 @@ MM.ghostBridge={
 			if(!v || !v.ok) return {ok:false, reason:'occupied'};
 			if(!setInfrastructureConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
 			noteSaveActivity();
-			return {ok:true, tid:id};
+			return {ok:true, tid:id, layer:'overlay', support:'layer', replacedWater:false};
 		}
 		if(layer==='background'){
 			const v=canPlaceConstructionBackgroundAt(tx,ty,id,{body});
@@ -22082,7 +22996,7 @@ MM.ghostBridge={
 			if(!setConstructionBackgroundConfirmed(tx,ty,id)) return {ok:false, reason:'write'};
 			wakeConstructionBackgroundChanged(tx,ty);
 			noteSaveActivity();
-			return {ok:true, tid:id};
+			return {ok:true, tid:id, layer:'background', support:'layer', replacedWater:false};
 		}
 		const actorBlocked=remotePlacementActorBlockedReason(body,tx,ty);
 		if(actorBlocked) return {ok:false, reason:actorBlocked==='Za daleko'?'reach':'blocked'};
@@ -22092,7 +23006,7 @@ MM.ghostBridge={
 		// transaction may replay; a fresh click at an occupied cell is rejected.
 		if(id===T.OBSERVER_REPLICA && cur===id){
 			return OBSERVER_REPLICAS.matchesTransaction(tx,ty,claim.gid,claim.qid)
-				? {ok:true, tid:id, replayed:true}
+				? {ok:true, tid:id, layer:'foreground', support:'floor', replacedWater:false, replayed:true}
 				: {ok:false, reason:'occupied'};
 		}
 		if(!isReplaceableNaturalOpenTile(cur,false)) return {ok:false, reason:'occupied'};
@@ -22102,16 +23016,19 @@ MM.ghostBridge={
 		if(body && Number.isFinite(body.x) && tx+1>body.x-(body.w||HERO_BODY_W)/2 && tx<body.x+(body.w||HERO_BODY_W)/2
 			&& ty+1>body.y-(body.h||HERO_BODY_H)/2 && ty<body.y+(body.h||HERO_BODY_H)/2) return {ok:false, reason:'self'};
 		let observerPlacement=null;
+		let structuralSupport='other';
 		if(id===T.OBSERVER_REPLICA && OBSERVER_REPLICAS && OBSERVER_REPLICAS.validatePlacement){
 			observerPlacement=OBSERVER_REPLICAS.validatePlacement(tx,ty,getTile);
 			if(!observerPlacement || !observerPlacement.ok){
 				const capFull=OBSERVER_REPLICAS.count && OBSERVER_REPLICAS.count()>=OBSERVER_REPLICAS.MAX;
 				return {ok:false, reason:(observerPlacement&&observerPlacement.code)||(capFull?'limit':'support')};
 			}
+			structuralSupport=String(observerPlacement.support||'floor');
 		}
 		if(id!==T.SAND && id!==T.WATER && !observerPlacement && FALLING && FALLING.canSupportPlacement){
 			const structural=FALLING.canSupportPlacement(tx,ty,id);
 			if(structural && structural.applies && !structural.ok) return {ok:false, reason:'support'};
+			if(structural && structural.applies && structural.ok) structuralSupport=String(structural.support||'network');
 		}
 		if(cur===T.WATER && id!==T.WATER){
 			let displaced=false;
@@ -22139,7 +23056,13 @@ MM.ghostBridge={
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('place',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		noteSaveActivity();
 		saveState();
-		return {ok:true, tid:id};
+		return {
+			ok:true,
+			tid:id,
+			layer:'foreground',
+			support:structuralSupport,
+			replacedWater:cur===T.WATER
+		};
 	},
 	// hero-mode combat (coarse H1 channel): a damage application forwarded by the
 	// guest resolves through the REAL chains at the claimed point, attributed
@@ -22269,7 +23192,7 @@ function drawTemporalEchoSpirit(screenX,groundY,time,pulse){
 	}
 	ctx.restore();
 
-	// This grounded ripple shows exactly where contact or mining resolves the Echo.
+	// This grounded ripple shows exactly where bodily contact resolves the Echo.
 	ctx.save();
 	ctx.strokeStyle='rgba(103,241,255,'+(0.42+pulse*.24)+')';
 	ctx.lineWidth=Math.max(1,unit*.045);
@@ -22278,19 +23201,69 @@ function drawTemporalEchoSpirit(screenX,groundY,time,pulse){
 	ctx.stroke();
 	ctx.restore();
 }
+function drawTemporalCelestialRewindTrail(fx,pulse){
+	if(!fx || !fx.sky || !BACKGROUND || !BACKGROUND._debugCelestialCyclePosition) return;
+	const info=BACKGROUND.getCycleInfo?BACKGROUND.getCycleInfo():null;
+	const kind=info&&info.isDay===false?'moon':'sun';
+	const color=kind==='sun'?'255,210,104':'177,226,255';
+	const seasonMetrics=SEASONS&&SEASONS.metrics?SEASONS.metrics():null;
+	const points=[];
+	const progress=Math.max(0,Math.min(1,Number(fx.sky.progress)||0));
+	for(let i=7;i>=0;i--){
+		const q=Math.max(0,progress-i*0.045);
+		const cycleT=temporalCycleAt(fx.sky.plan,q);
+		const pos=BACKGROUND._debugCelestialCyclePosition(kind,cycleT,W,H,seasonMetrics);
+		if(!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) continue;
+		points.push({x:pos.x,y:pos.y,a:1-i/9});
+	}
+	if(!points.length) return;
+	ctx.save();
+	ctx.lineCap='round';
+	ctx.strokeStyle='rgba('+color+','+(0.30+pulse*.12)+')';
+	ctx.lineWidth=Math.max(2,Math.min(W,H)*0.006);
+	ctx.beginPath();
+	for(let i=0;i<points.length;i++){
+		const pt=points[i];
+		if(i===0) ctx.moveTo(pt.x,pt.y); else ctx.lineTo(pt.x,pt.y);
+	}
+	ctx.stroke();
+	for(let i=0;i<points.length;i++){
+		const pt=points[i];
+		const r=Math.max(4,Math.min(W,H)*(0.009+i*0.002));
+		const glow=ctx.createRadialGradient(pt.x,pt.y,1,pt.x,pt.y,r*2.8);
+		glow.addColorStop(0,'rgba('+color+','+(0.13+pt.a*.38)+')');
+		glow.addColorStop(1,'rgba('+color+',0)');
+		ctx.fillStyle=glow;
+		ctx.beginPath(); ctx.arc(pt.x,pt.y,r*2.8,0,Math.PI*2); ctx.fill();
+		ctx.fillStyle='rgba('+color+','+(0.08+pt.a*.24)+')';
+		ctx.beginPath(); ctx.arc(pt.x,pt.y,r,0,Math.PI*2); ctx.fill();
+	}
+	const head=points[points.length-1];
+	ctx.strokeStyle='rgba(116,244,255,'+(0.55+pulse*.22)+')';
+	ctx.lineWidth=Math.max(1,Math.min(W,H)*0.0025);
+	for(let i=0;i<3;i++){
+		ctx.beginPath();
+		ctx.arc(head.x,head.y,Math.min(W,H)*(0.035+i*.018),-Math.PI*.25,Math.PI*(1.12+i*.1));
+		ctx.stroke();
+	}
+	ctx.restore();
+}
 function drawTemporalEchoOverlay(ts){
 	const state=temporalEchoState();
 	const active=state.phase!=='idle' || !!temporalRewindFx;
+	const rewinding=!!temporalRewindFx;
 	const hud=ensureTemporalHud();
 	if(hud){
 		hud.style.display=active?'block':'none';
 		if(active){
 			const seconds=Math.max(0,state.remaining);
 			const urgent=state.phase==='racing'&&seconds<=10;
+			const escrow=temporalEscrowResourceCount();
 			hud.style.borderColor=urgent?'rgba(255,105,126,.92)':'rgba(111,246,255,.72)';
 			hud.innerHTML='<div style="font-size:10px;opacity:.72">ECHO CHWILI</div><div style="font-size:25px;letter-spacing:.03em;margin-top:2px;color:'+(urgent?'#ff8798':'#fff3b0')+'">'+
-				(state.phase==='rewinding'?'COFANIE':seconds.toFixed(1)+' s')+'</div><div style="font-size:10px;opacity:.75;margin-top:3px">'+
-				(state.phase==='armed'?'powrót do świata':state.phase==='rewinding'?'odtwarzanie fatalnej chwili':'dotknij Ducha Chwili, aby wrócić')+'</div>';
+				(rewinding?'COFANIE':seconds.toFixed(1)+' s')+'</div><div style="font-size:10px;opacity:.82;margin-top:3px">'+
+				(state.phase==='armed'?'powrót do świata':rewinding?'niebo i świat wracają do fatalnej chwili':'dotknij Ducha: odzyskaj zasoby i chwilę')+'</div>'+
+				(!rewinding&&escrow>0?'<div style="font-size:9px;color:'+(urgent?'#ff9bac':'#ffd778')+';margin-top:4px">STAWKA: '+escrow+' ZASOBÓW — PRZEPADNĄ PO CZASIE</div>':'');
 		}
 	}
 	if(!active) return;
@@ -22317,7 +23290,9 @@ function drawTemporalEchoOverlay(ts){
 	}
 	if(temporalRewindFx){
 		const p=Math.min(1,temporalRewindFx.t/temporalRewindFx.dur);
-		const flash=1-Math.min(1,Math.abs(p-.52)/.22);
+		const restoreAt=Math.max(0.5,Math.min(0.9,Number(temporalRewindFx.restoreAt)||0.72));
+		drawTemporalCelestialRewindTrail(temporalRewindFx,pulse);
+		const flash=1-Math.min(1,Math.abs(p-restoreAt)/.18);
 		ctx.fillStyle='rgba(224,252,255,'+(flash*.72)+')'; ctx.fillRect(0,0,W,H);
 		ctx.strokeStyle='rgba(112,243,255,'+(0.9-p*.4)+')'; ctx.lineWidth=3;
 		for(let i=0;i<8;i++){
@@ -22616,13 +23591,6 @@ if(!window.__lootNoticeInit){
 		return out;
 	}
 	function lootNoticeName(it){ return it ? (it.name||it.id) : 'brak'; }
-	function lootNoticeSigned(n){ return n>0? '+'+n : String(n); }
-	function lootNoticeSuffix(cmp){
-		if(!cmp) return '';
-		if(cmp.equippedComparable && cmp.equippedDelta!=null) return ' vs noszone '+lootNoticeSigned(cmp.equippedDelta)+' Moc';
-		if(cmp.equipped) return ' - inna rola niz noszone';
-		return ' - pierwszy w slocie';
-	}
 	function lootNoticeRank(row){
 		const cmp=row && row.cmp;
 		if(!cmp) return -1;
@@ -22803,15 +23771,14 @@ if(!window.__lootNoticeInit){
 		const rows=fresh.map(it=>({item:it, cmp:INV.compareItem(it.id)})).filter(row=>row.item && row.cmp);
 		if(!rows.length) return;
 		rows.sort((a,b)=>lootNoticeRank(b)-lootNoticeRank(a));
-		const top=rows[0];
 		// Real upgrades join a FIFO queue ranked strongest-first within this drop.
 		// Only the active queue entry owns a DOM card; later finds never stack.
 		const upgrades=rows.filter(row=>isUpgradeWorthy(row.cmp));
 		let shown=0;
 		upgrades.forEach(row=>{ if(showUpgradeNotice(row.item)) shown++; });
+		// Ordinary gear is already summarized by inventory feedback. Only a real
+		// upgrade gets the richer actionable comparison card here.
 		if(shown) return;
-		const extra=fresh.length>1 ? ' (+'+(fresh.length-1)+')' : '';
-		msg('Nowy przedmiot: '+lootNoticeName(top.item)+lootNoticeSuffix(top.cmp)+extra);
 	}
 	// Gear is already in the bag when this fires (drops/chests add it, then report it),
 	// so the only job left is the signal — and only once per item.
@@ -22840,6 +23807,6 @@ window.regenWorldSameSeed = function(settings){
 	// Also remove all animals when regenerating with same seed and freeze spawns briefly
 	if(MOBS){ try{ if(MOBS.clearAll) MOBS.clearAll(); else if(MOBS.deserialize) MOBS.deserialize({v:3, list:[], aggro:{mode:'rel', m:{}}}); if(MOBS.freezeSpawns) MOBS.freezeSpawns(4000); }catch(e){} } if(godMode){ if(!_preGodInventory){ _preGodInventory={}; RESOURCE_KEYS.forEach(k=>{ _preGodInventory[k]=0; }); } RESOURCE_KEYS.forEach(k=>{ inv[k]=100; }); }
 	resetCraftingAvailability();
-	try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); }catch(e){}
+	try{ if(MM.inventoryFeedback && MM.inventoryFeedback.reset) MM.inventoryFeedback.reset(); resetActivityPresentation(); }catch(e){}
 	updateInventory({noCraftNotify:true}); updateHotbarSel(); placePlayer(true); try{ if(TUTORIAL_NPC && TUTORIAL_NPC.placeNearWorldStart) TUTORIAL_NPC.placeNearWorldStart(getTile,WORLDGEN); }catch(e){} saveState(); msg('Odświeżono świat (seed '+WORLDGEN.worldSeed+', ustawienia zmienione)'); return true; }catch(e){ console.warn('regenWorldSameSeed failed',e); return false; }}
 window.addEventListener('mm-regen-same-seed', ()=>{ if(window.regenWorldSameSeed) window.regenWorldSameSeed(); });

@@ -20,6 +20,10 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   const WIND_MIN_SPEED = 2.75;
   const WIND_RATED_SPEED = 6.2;
   const WIND_MAX_ENERGY_PER_SEC = 0.062;
+  const POWER_DISCOVERY_IDS=Object.freeze([
+    'power_generation_real',
+    'power_generation_media'
+  ]);
   const CATCHUP_MAX_SECONDS = 900;
   const VISIBLE_SCAN_INTERVAL_MS = 250;
   let visibleScanKey = '';
@@ -32,6 +36,8 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
   // finds the energy the wind earned while nobody watched.
   const WAKE_MAX_SECONDS = 3600; // output is ENERGY_CAPACITY-clamped: a big lag is safe
   let visibleScanAt = 0;
+  let powerDiscoveryApi = null;
+  let powerDiscoveriesComplete = false;
   const WORLD_TOP = Number.isFinite(WORLD_MIN_Y) ? WORLD_MIN_Y : 0;
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
 
@@ -153,6 +159,41 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
     if(medium===T.HOT_AIR || medium==='hot' || medium==='hot_air') return {kind:'hot', gain:0.42};
     return null;
   }
+  function allPowerDiscoveriesKnown(d){
+    if(!d || typeof d.has!=='function') return false;
+    try{
+      return d.has(POWER_DISCOVERY_IDS[0]) && d.has(POWER_DISCOVERY_IDS[1]);
+    }catch(e){ return false; }
+  }
+  function observePowerGenerated(medium,amount,x,y){
+    const accepted=Number(amount);
+    if(!Number.isFinite(accepted) || accepted<=0) return;
+    try{
+      const d=MM.discovery;
+      if(!d || typeof d.observe!=='function') return;
+      if(d!==powerDiscoveryApi){
+        powerDiscoveryApi=d;
+        powerDiscoveriesComplete=false;
+      }
+      // Discovery state can rewind with Echo Chwili while this module instance
+      // stays alive. Re-check the tiny pair of Set lookups before honoring the
+      // hot-path cache, otherwise a rewound card could become undiscoverable.
+      if(powerDiscoveriesComplete && allPowerDiscoveriesKnown(d)) return;
+      powerDiscoveriesComplete=false;
+      if(allPowerDiscoveriesKnown(d)){
+        powerDiscoveriesComplete=true;
+        return;
+      }
+      const learned=d.observe('power_generated',{
+        medium,
+        amount:accepted,
+        target:{x:x+0.5,y:y+0.5}
+      });
+      if(learned && allPowerDiscoveriesKnown(d)){
+        powerDiscoveriesComplete=true;
+      }
+    }catch(e){}
+  }
   function normalizeMachine(m){
     if(!m) return null;
     m.power=Math.max(0,Math.min(MAX_POWER,Number(m.power)||0));
@@ -199,17 +240,22 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
     // energy is deposited straight into that mech's battery
     if(mechOwnsSlot(x,y)){
       try{
-        if(MM.mechs && typeof MM.mechs.absorbDynamoFlow==='function' && MM.mechs.absorbDynamoFlow(x,y,src.kind,gain)) return true;
+        if(MM.mechs && typeof MM.mechs.absorbDynamoFlow==='function' && MM.mechs.absorbDynamoFlow(x,y,src.kind,gain)){
+          observePowerGenerated(src.kind,gain,x,y);
+          return true;
+        }
       }catch(e){}
       return false;
     }
     const m=ensureMachine(x,y,getTile,src.kind);
     if(!m) return false;
+    const energyBefore=Math.max(0,Number(m.energy)||0);
     m.power=Math.min(MAX_POWER, (m.power||0)+gain*18);
     m.energy=Math.min(ENERGY_CAPACITY, Math.max(0, (m.energy||0)+gain));
     m.pulse=1;
     m.lastKind=src.kind;
     kickRotor(m,gain);
+    observePowerGenerated(src.kind,Math.max(0,m.energy-energyBefore),x,y);
     return true;
   }
   function windSpeedForSlot(m,getTile){
@@ -229,11 +275,13 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
     const k=Math.max(0,Math.min(1,(sp-WIND_MIN_SPEED)/(WIND_RATED_SPEED-WIND_MIN_SPEED)));
     const energyPerSec=WIND_MAX_ENERGY_PER_SEC*k*k;
     if(energyPerSec<=0.0001) return false;
+    const energyBefore=Math.max(0,Number(m.energy)||0);
     m.power=Math.min(MAX_POWER, Math.max(m.power||0, energyPerSec*62));
     m.energy=Math.min(ENERGY_CAPACITY, Math.max(0, (m.energy||0)+energyPerSec*dt));
     m.pulse=Math.max(m.pulse||0, Math.min(0.72, 0.22+k*0.38));
     m.lastKind='wind';
     kickRotor(m,0.12+k*0.75);
+    observePowerGenerated('wind',Math.max(0,m.energy-energyBefore),m.x,m.y);
     return true;
   }
   function absorbNear(px,py,amount,getTile,radius){
@@ -562,7 +610,13 @@ import { drawEnergyGenerationLamp, isEnergyGenerating } from './power_indicator.
       });
     }
   }
-  function reset(){ machines.clear(); visibleScanKey=''; visibleScanAt=0; }
+  function reset(){
+    machines.clear();
+    visibleScanKey='';
+    visibleScanAt=0;
+    powerDiscoveryApi=null;
+    powerDiscoveriesComplete=false;
+  }
   function metrics(){
     let currentPower=0, storedEnergy=0, active=0, rotorSpeed=0;
     for(const m of machines.values()){

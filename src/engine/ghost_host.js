@@ -67,6 +67,30 @@ const ghostHost = (function(){
 	function now(){ return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
 
 	function wire(b){ bridge = b; mountEntryPoint(); }
+	function heroDiscoveryFactsForAck(tid,detail){
+		const fallback=detail&&typeof detail==='object'?detail:{};
+		let raw=null;
+		try{
+			raw=bridge&&bridge.ghostHeroDiscoveryFacts
+				? bridge.ghostHeroDiscoveryFacts(Number(tid)|0,fallback)
+				: fallback;
+		}catch(e){ raw=fallback; }
+		raw=raw&&typeof raw==='object'?raw:{};
+		const layer=raw.layer==='overlay'
+			?'overlay'
+			:(raw.layer==='background'||raw.layer==='bg'?'background':'foreground');
+		return {
+			layer,
+			support:typeof raw.support==='string'?raw.support.slice(0,24):'other',
+			replacedWater:!!raw.replacedWater,
+			hasDrop:!!raw.hasDrop,
+			material:typeof raw.material==='string'?raw.material.slice(0,24):'tile',
+			hardness:Math.max(0,Math.min(10000,Number(raw.hardness)||0)),
+			ore:!!raw.ore,
+			precious:!!raw.precious,
+			meteorite:!!raw.meteorite
+		};
+	}
 
 	function start(opts){
 		opts = opts || {};
@@ -2016,9 +2040,17 @@ const ghostHost = (function(){
 					: null;
 			}catch(e){ accepted=null; }
 			if(accepted){
-				const packet={t:'hact',a:accepted.action==='mine'?'mine':'place',ok:true,qid:observerQid,tid:T.OBSERVER_REPLICA,
+				const action=accepted.action==='mine'?'mine':'place';
+				const packet={t:'hact',a:action,ok:true,qid:observerQid,tid:T.OBSERVER_REPLICA,
 					x:Number.isSafeInteger(accepted.x)?accepted.x:Math.floor(Number(pl.x)),
-					y:Number.isSafeInteger(accepted.y)?accepted.y:Math.floor(Number(pl.y))};
+					y:Number.isSafeInteger(accepted.y)?accepted.y:Math.floor(Number(pl.y)),
+					l:'foreground',
+					facts:heroDiscoveryFactsForAck(T.OBSERVER_REPLICA,{
+						layer:'foreground',
+						support:action==='place'?'floor':'other',
+						replacedWater:false,
+						hasDrop:true
+					})};
 				if(s.heroPlaceOutcomes) s.heroPlaceOutcomes.remember(entry.gid,observerQid,packet,receivedAt);
 				entry.peer.send(packet);
 				return;
@@ -2322,7 +2354,11 @@ const ghostHost = (function(){
 				keepBody(entry);
 			}
 			entry.peer.send({ t: 'hact', a: 'use', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty,
-				loot: (res && res.loot) || null, note: (res && res.note) ? String(res.note).slice(0, 80) : null });
+				loot: (res && res.loot) || null,
+				chestTier: (res && typeof res.chestTier==='string') ? res.chestTier.slice(0,16) : null,
+				chestSpawned: Math.max(0,Math.min(64,Number(res && res.chestSpawned)||0)),
+				chestItems: Math.max(0,Math.min(64,Number(res && res.chestItems)||0)),
+				note: (res && res.note) ? String(res.note).slice(0, 80) : null });
 			return;
 		}
 		if(pl.a === 'mine'){
@@ -2353,7 +2389,20 @@ const ghostHost = (function(){
 				res._wireLoot=((res.tid|0)===T.OBSERVER_REPLICA && observerQid) ? null : loot;
 			}
 			if(res && res.retry) return;
-			const packet={ t: 'hact', a: 'mine', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid: (res && res.tid) || 0,
+			const mineOk=!!(res&&res.ok);
+			const mineLayer=res&&res.layer==='overlay'
+				?'overlay'
+				:(res&&res.layer==='background'?'background':'foreground');
+			const packet={ t: 'hact', a: 'mine', ok: mineOk, reason: (res && res.reason) || null, x: tx, y: ty, tid: (res && res.tid) || 0,
+				l:mineLayer,
+				facts:mineOk?heroDiscoveryFactsForAck(res.tid,{
+					layer:mineLayer,
+					support:'other',
+					replacedWater:false,
+					hasDrop:typeof res.hasDrop==='boolean'
+						? res.hasDrop
+						: (Array.isArray(res.loot)?res.loot.length>0:undefined)
+				}):null,
 				loot:(res && res._wireLoot) || null };
 			if(res && res.ok && (res.tid|0)===T.OBSERVER_REPLICA && observerQid){
 				persistObserverOutcome(packet);
@@ -2410,7 +2459,17 @@ const ghostHost = (function(){
 			else if(escrowDebited) NET.pouchAdd(b.pouch, key, 1);
 			keepBody(entry); // persist the debit or its exact refund before the result ack
 			if(res && res.retry) return;
-			const packet={ t: 'hact', a: 'place', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty, tid };
+			const placeOk=!!(res&&res.ok);
+			const confirmedLayer=res&&res.layer==='overlay'
+				?'overlay'
+				:(res&&res.layer==='background'?'background':'foreground');
+			const packet={ t: 'hact', a: 'place', ok: placeOk, reason: (res && res.reason) || null, x: tx, y: ty, tid,
+				l:confirmedLayer,
+				facts:placeOk?heroDiscoveryFactsForAck(tid,{
+					layer:confirmedLayer,
+					support:(res&&res.support)||'other',
+					replacedWater:!!(res&&res.replacedWater)
+				}):null };
 			if(res && res.ok && localEntitlement && observerQid){
 				persistObserverOutcome(packet);
 				return;

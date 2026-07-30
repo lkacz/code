@@ -132,12 +132,13 @@ import './inventory.js';
 
   // --- Tabs: one per item kind + resources ---
   const TABS=MM.inventory.SLOTS.map(s=>({key:s.accepts, label:INV.KIND_LABELS[s.accepts]||s.accepts, kind:s.accepts}))
-    .concat([{key:'jewels', label:'Juwele'},{key:'resources', label:'Surowce'},{key:'discovery', label:'Odkrycia'}]);
-  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', pickaxe:'⛏️', charm:'🧿', jewels:'💎', resources:'📦', discovery:'🧪'};
+    .concat([{key:'jewels', label:'Juwele'},{key:'resources', label:'Surowce'},{key:'discovery', label:'Wiedza'}]);
+  const TAB_ICONS={cape:'🧥', eyes:'👁️', outfit:'👕', weapon:'⚔️', pickaxe:'⛏️', charm:'🧿', jewels:'💎', resources:'📦', discovery:'🧠'};
   let activeTab=TABS[0];
   let searchText='';
   let tierFilter='all';
   let sortMode='power';
+  let discoveryCategory='next';
   let selectedJewelKey=null;
   let toolbarEl=null, searchInput=null, tierSelect=null, sortSelect=null, capEl=null, undoBtn=null, newReviewEl=null;
   let activeView='hero';
@@ -179,6 +180,7 @@ import './inventory.js';
 
   function setActive(tab){
     activeTab=tab;
+    if(equipmentView) equipmentView.dataset.tab=tab.key;
     tabsEl.querySelectorAll('.invTabBtn').forEach(b=>{ b.classList.toggle('sel', b.dataset.key===tab.key); });
     buildGrid();
   }
@@ -270,6 +272,8 @@ import './inventory.js';
     ensureToolbar();
     if(!toolbarEl) return;
     const itemTab=!['resources','discovery','jewels'].includes(activeTab.key);
+    const discoveryTab=activeTab.key==='discovery';
+    toolbarEl.dataset.tab=activeTab.key;
     searchInput.parentElement.style.display='';
     searchInput.placeholder=itemTab? 'Szukaj przedmiotów…  ( / )'
       : (activeTab.key==='discovery' ? 'Szukaj odkryć…  ( / )' : activeTab.key==='jewels' ? 'Szukaj juweli lub przedmiotów…  ( / )' : 'Szukaj surowców…  ( / )');
@@ -277,12 +281,14 @@ import './inventory.js';
     sortSelect.style.display=itemTab?'':'none';
     tierSelect.value=tierFilter;
     sortSelect.value=sortMode;
-    if(activeTab.key==='discovery' && MM.discovery && MM.discovery.progress){
+    capEl.style.display=discoveryTab?'none':'';
+    undoBtn.style.display=discoveryTab?'none':'';
+    if(discoveryTab && MM.discovery && MM.discovery.progress){
       // journal progress replaces the bag counter on this tab
       const dp=MM.discovery.progress();
-      capEl.textContent='🧪 '+dp.count+'/'+dp.total;
+      capEl.textContent='🧠 '+dp.count+'/'+dp.total;
       capEl.classList.remove('warn');
-      capEl.title='Odkryte sekrety świata';
+      capEl.title='Atlas wiedzy: obserwacje, spostrzeżenia i odkrycia';
     } else if(activeTab.key==='jewels'){
       const total=(INV.JEWELS||[]).reduce((sum,j)=>sum+Math.max(0,((window.inv||{})[j.key]|0)),0);
       capEl.textContent='💎 '+total;
@@ -868,47 +874,195 @@ import './inventory.js';
 
   // --- Discovery journal tab: the world's secret interactions. Found entries
   // carry their full label; unfound ones show as "???" with only the category
-  // and a foggy hint. Cards reuse the resources-grid styling.
+  // and a foggy hint. The journal can contain hundreds of rules, so it renders
+  // one selected trail at a time instead of rebuilding every card on each open.
   function buildDiscoveryGrid(){
     const wrap=document.createElement('div'); wrap.className='invResources';
-    const hint=document.createElement('div'); hint.className='invHint';
-    hint.textContent='Dziennik odkryć — sekrety świata zapisują się, gdy naprawdę się wydarzą. Każde nowe odkrycie: +'
-      +((MM.discovery && MM.discovery.DISCOVERY_XP)||40)+' XP.';
-    wrap.appendChild(hint);
     const all=(MM.discovery && MM.discovery.entries)? MM.discovery.entries():[];
-    let list=all;
-    if(searchText) list=list.filter(e=>String((e.label||'')+' '+e.cat+' '+e.hint).toLowerCase().includes(searchText));
+    const progress=(MM.discovery && MM.discovery.progress)?MM.discovery.progress():null;
+    const hint=document.createElement('div'); hint.className='invHint';
+    const tiers=(MM.discovery && MM.discovery.DISCOVERY_TIERS)||{};
+    const tierCopy=Object.values(tiers).map(t=>t.label+' +'+t.xp+' XP').join(' · ');
+    hint.textContent='Atlas wiedzy — obserwacje zapisują tylko skutki, które naprawdę wydarzyły się przy bohaterze. '
+      +(tierCopy||'Nagroda zależy od złożoności odkrycia.')+
+      ' Karty miejsc, katalogów i trofeów mają osobny licznik i nie przyznają XP.';
+    wrap.appendChild(hint);
+
+    const stageTotals={observation:0,insight:0,discovery:0};
+    for(const entry of all) if(!entry.collection) stageTotals[entry.stage]=(stageTotals[entry.stage]||0)+1;
+    const stageFound=(progress&&progress.stages)||{};
+    const summary=document.createElement('div'); summary.className='invDiscSummary';
+    [
+      ['observation','Obserwacje'],
+      ['insight','Spostrzeżenia'],
+      ['discovery','Odkrycia']
+    ].forEach(([stage,label])=>{
+      const stat=document.createElement('span');
+      stat.dataset.stage=stage;
+      const strong=document.createElement('strong');
+      strong.textContent=String(stageFound[stage]||0)+' / '+(stageTotals[stage]||0);
+      const name=document.createElement('small');
+      name.className='invDiscStageName';
+      name.textContent=label;
+      stat.append(strong,name);
+      summary.appendChild(stat);
+    });
+    if(progress && progress.collectionTotal){
+      const stat=document.createElement('span');
+      stat.dataset.stage='collection';
+      const strong=document.createElement('strong');
+      strong.textContent=String(progress.collectionCount||0)+' / '+progress.collectionTotal;
+      const name=document.createElement('small');
+      name.className='invDiscStageName';
+      name.textContent='Karty Atlasu';
+      stat.append(strong,name);
+      summary.appendChild(stat);
+    }
+    wrap.appendChild(summary);
+
+    const categories=[];
+    for(const e of all) if(!e.collection && e.cat && !categories.includes(e.cat)) categories.push(e.cat);
+    if(discoveryCategory!=='next' && discoveryCategory!=='collection' && !categories.includes(discoveryCategory)) discoveryCategory='next';
+    const nav=document.createElement('div'); nav.className='invDiscNav'; nav.setAttribute('aria-label','Ścieżki atlasu wiedzy');
+    const navButton=(key,label,count)=>{
+      const button=document.createElement('button');
+      button.type='button';
+      button.className='invDiscNavBtn';
+      button.classList.toggle('active',!searchText && discoveryCategory===key);
+      button.setAttribute('aria-pressed',String(!searchText && discoveryCategory===key));
+      button.textContent=label+(count!==undefined && count!==null && count!==''?' '+count:'');
+      button.addEventListener('click',()=>{ discoveryCategory=key; buildGrid(); });
+      nav.appendChild(button);
+    };
+    navButton('next','✦ Następne');
+    if(progress && progress.collectionTotal){
+      navButton('collection','📚 Karty',(progress.collectionCount||0)+'/'+progress.collectionTotal);
+    }
+    for(const cat of categories){
+      const rows=all.filter(e=>e.cat===cat);
+      navButton(cat,cat,rows.filter(e=>e.found).length+'/'+rows.length);
+    }
+    wrap.appendChild(nav);
+
+    let list=[];
+    if(searchText){
+      list=all.filter(e=>String((e.label||'')+' '+e.cat+' '+e.hint+' '+e.stageLabel+' '+e.tierLabel)
+        .toLowerCase().includes(searchText)).slice(0,80);
+    } else if(discoveryCategory==='next'){
+      const picked=[];
+      const pickedIds=new Set();
+      const add=entry=>{
+        if(!entry || pickedIds.has(entry.id) || picked.length>=30) return;
+        pickedIds.add(entry.id); picked.push(entry);
+      };
+      const recentIds=(progress&&Array.isArray(progress.recent))?progress.recent.map(row=>row.id):[];
+      for(const id of recentIds) add(all.find(e=>e.id===id));
+      for(const entry of all){
+        if(!entry.collection && !entry.found && entry.evidence && (entry.evidence.count>0 || entry.evidence.distinct>0)) add(entry);
+      }
+      const available=all.filter(entry=>!entry.collection && !entry.found && entry.evidence && entry.evidence.requirementsMet)
+        .sort((a,b)=>(a.stageRank-b.stageRank)||(a.tierRank-b.tierRank));
+      for(const entry of available) add(entry);
+      if(!picked.length) all.filter(entry=>!entry.collection).slice(0,24).forEach(add);
+      list=picked;
+    } else if(discoveryCategory==='collection'){
+      list=all.filter(e=>e.collection);
+    } else {
+      list=all.filter(e=>e.cat===discoveryCategory);
+    }
     if(!list.length){
       const empty=document.createElement('div'); empty.className='invEmpty';
-      empty.textContent=all.length? 'Brak odkryć pasujących do wyszukiwania' : 'Dziennik jest pusty';
+      empty.textContent=all.length? 'Brak wpisów pasujących do tego widoku' : 'Atlas jest pusty';
       wrap.appendChild(empty);
       grid.appendChild(wrap);
       return;
     }
+    const chainNames={
+      foundations:'Podstawy',movement:'Ruch',water:'Woda',terrain:'Teren',mining:'Kopanie',
+      geology:'Geologia',carbon:'Węgiel i grafen',meteor:'Meteoryty',depths:'Głębiny',
+      building:'Budowanie',structure:'Konstrukcje',building_layers:'Warstwy budowli',
+      shelter:'Schronienie',infrastructure:'Instalacje',machines:'Maszyny',gravity:'Grawitacja',
+      cave_safety:'Bezpieczne tunele',crafting:'Rzemiosło',industry:'Przemysł',combat:'Walka',
+      alchemy:'Alchemia',food:'Żywność',power:'Energia',water_network:'Sieć wodna',
+      temperature:'Temperatura',day_cycle:'Dzień i noc',weather:'Pogoda',plants:'Rośliny',
+      forest:'Las',fishing:'Wędkarstwo',sky:'Niebo',combat_elements:'Żywioły walki',
+      bosses:'Bossowie',survival:'Przetrwanie',progression:'Rozwój',loot:'Skarby',
+      steam:'Para',hero_energy:'Energia bohatera',stealth:'Skradanie',
+      survival_temperature:'Temperatura ciała',boats:'Żegluga',glider:'Lotnia',
+      spring:'Platformy sprężynowe',teleport:'Teleportacja',seasons:'Pory roku',
+      temporal_echo:'Echo Chwili'
+    };
     const cats=[];
+    const knowledgeMetaText=e=>{
+      if(e.collection) return 'Karta Atlasu · bez premii XP';
+      const stage=String(e.stageLabel||'Odkrycie');
+      const tier=String(e.tierLabel||'');
+      const same=stage.localeCompare(tier,'pl',{sensitivity:'base'})===0;
+      return stage+(tier && !same?' · złożoność: '+tier:'')+' · +'+e.xp+' XP';
+    };
     for(const e of list) if(!cats.includes(e.cat)) cats.push(e.cat);
     for(const cat of cats){
       const head=document.createElement('div'); head.className='invCatHead';
       const hl=document.createElement('span'); hl.textContent=cat;
-      head.appendChild(hl);
+      const catRows=all.filter(e=>e.cat===cat);
+      const key=document.createElement('span'); key.className='key';
+      key.textContent=catRows.filter(e=>e.found).length+'/'+catRows.length;
+      head.append(hl,key);
       wrap.appendChild(head);
       const cards=document.createElement('div'); cards.className='invResGrid';
       for(const e of list){
         if(e.cat!==cat) continue;
-        const card=document.createElement('div'); card.className='invResCard'+(e.found?'':' zero');
+        const card=document.createElement('div');
+        card.className='invResCard invDiscCard'+(e.found?' found':' zero');
+        card.dataset.discoveryTier=e.tier||'principle';
+        card.dataset.discoveryStage=e.stage||'discovery';
+        card.style.setProperty('--tier',e.color||'#7de3a8');
         const top=document.createElement('div'); top.className='invResTop';
         const dot=document.createElement('span'); dot.className='invResDot';
-        dot.style.background=e.found? '#7de3a8' : '#4a5262';
+        dot.style.background=e.found? (e.color||'#7de3a8') : '#4a5262';
         const lab=document.createElement('span'); lab.className='invResLabel';
-        lab.textContent=e.found? e.label : '???';
+        lab.textContent=e.found? e.label : 'Nieodkryte';
         lab.title=e.found? e.label : 'Jeszcze nieodkryte';
-        const cnt=document.createElement('b'); cnt.className='invResCount'; cnt.textContent=e.found?'✓':'?';
+        const cnt=document.createElement('b'); cnt.className='invResCount';
+        cnt.textContent=e.found?'✓':('+'+e.xp);
+        cnt.title=knowledgeMetaText(e);
         top.appendChild(dot); top.appendChild(lab); top.appendChild(cnt);
         card.appendChild(top);
         const sub=document.createElement('span'); sub.className='invDiscHint'+(e.found?' found':'');
-        sub.textContent=e.found? 'Odkryte' : e.hint;
+        sub.textContent=e.found
+          ? knowledgeMetaText(e)
+          : knowledgeMetaText(e)+' — '+e.hint;
         sub.title=e.found? e.label : e.hint;
         card.appendChild(sub);
+        const evidence=e.evidence;
+        if(!e.found && evidence && (
+          evidence.count>0 || evidence.distinct>0 || evidence.needed>1 ||
+          evidence.distinctNeeded>1 || !evidence.requirementsMet
+        )){
+          const proof=document.createElement('div'); proof.className='invDiscEvidence';
+          const proofText=document.createElement('span');
+          const distinctNeeded=Math.max(0,evidence.distinctNeeded||0);
+          proofText.textContent=distinctNeeded
+            ? 'Warianty '+evidence.distinct+'/'+distinctNeeded
+            : 'Dowody '+evidence.count+'/'+Math.max(1,evidence.needed||1);
+          if(!evidence.requirementsMet) proofText.textContent+=' · brak wcześniejszego tropu';
+          const meter=document.createElement('i');
+          const parts=[Math.min(1,evidence.count/Math.max(1,evidence.needed||1))];
+          if(distinctNeeded) parts.push(Math.min(1,evidence.distinct/distinctNeeded));
+          meter.style.setProperty('--discovery-proof',Math.round(Math.min(...parts)*100)+'%');
+          proof.append(proofText,meter);
+          card.appendChild(proof);
+        }
+        if(e.chain){
+          const chain=document.createElement('span');
+          chain.className='invDiscChain';
+          const required=Array.isArray(e.requires)?e.requires:[];
+          const met=required.filter(id=>all.some(row=>row.id===id && row.found)).length;
+          const fallback=String(e.chain).replace(/_/g,' ').replace(/^./,c=>c.toUpperCase());
+          chain.textContent='Ścieżka: '+(chainNames[e.chain]||fallback)
+            +(required.length?' · tropy '+met+'/'+required.length:'');
+          card.appendChild(chain);
+        }
         cards.appendChild(card);
       }
       wrap.appendChild(cards);
@@ -1575,6 +1729,7 @@ import './inventory.js';
   window.addEventListener('mm-inventory-change',refreshAll);
   window.addEventListener('mm-customization-change',refreshAll);
   window.addEventListener('mm-resources-change',()=>{ if(isOpen() && (activeTab.key==='resources'||activeTab.key==='jewels')) refreshAll(); });
+  window.addEventListener('mm-discovery-earned',()=>{ if(isOpen() && activeTab.key==='discovery') refreshAll(); });
 
   // --- Open / close / focus management ---
   let lastFocus=null;

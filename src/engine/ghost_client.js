@@ -207,7 +207,17 @@ if(WATCH && MMR){
 		// (the ghost's OWN profile is on this list: name, avatar, career and stable
 		// gid — career + gid are what make progression AND the host-kept body pouch
 		// survive a reload and a fresh invite link)
-		const allow = new Set(['mm_ghost_name_v1', 'mm_ghost_avatar_v1', NET.PROG_KEY, NET.GID_KEY, NET.GID_LEASE_KEY, NET.LOOK_KEY, NET.HERO_KEY, RESUME_CACHE_KEY]);
+		const allow = new Set([
+			'mm_ghost_name_v1',
+			'mm_ghost_avatar_v1',
+			'mm_discoveries_v1',
+			NET.PROG_KEY,
+			NET.GID_KEY,
+			NET.GID_LEASE_KEY,
+			NET.LOOK_KEY,
+			NET.HERO_KEY,
+			RESUME_CACHE_KEY
+		]);
 		const origSet = Storage.prototype.setItem;
 		const origRemove = Storage.prototype.removeItem;
 		Storage.prototype.setItem = function(k, v){
@@ -404,6 +414,27 @@ const ghostClient = (function(){
 		if(['east','south','west','north'].includes(tx.d)) packet.d=tx.d;
 		return packet;
 	}
+	function heroAckDiscoveryFacts(pl){
+		const raw=pl&&pl.facts;
+		if(!raw || typeof raw!=='object') return null; // old hosts remain compatible
+		return {
+			layer:raw.layer==='overlay'?'overlay':(raw.layer==='background'||raw.layer==='bg'?'background':'foreground'),
+			support:typeof raw.support==='string'?raw.support.slice(0,24):'other',
+			replacedWater:!!raw.replacedWater,
+			hasDrop:!!raw.hasDrop,
+			material:typeof raw.material==='string'?raw.material.slice(0,24):'tile',
+			hardness:Math.max(0,Math.min(10000,Number(raw.hardness)||0)),
+			ore:!!raw.ore,
+			precious:!!raw.precious,
+			meteorite:!!raw.meteorite
+		};
+	}
+	function reportHeroMineDiscovery(tid,x,y,facts){
+		try{
+			return !!(bridge&&bridge.ghostHeroMined
+				&& bridge.ghostHeroMined(tid,x,y,facts));
+		}catch(e){ return false; }
+	}
 	function sendHeroPlaceTransaction(tx,force){
 		if(!tx || !tx.committed || state!=='live' || !conn) return false;
 		const t=nowMs();
@@ -436,6 +467,10 @@ const ghostClient = (function(){
 		// host is allowed to compact its replay tombstone.
 		tx.receipt=true;
 		tx.lastSentAt=0;
+		if(tx.a==='mine' && !tx.announced){
+			tx.announced=true;
+			reportHeroMineDiscovery(tx.tid,tx.x,tx.y,tx.discoveryFacts||null);
+		}
 		try{
 			if(bridge && bridge.ghostHeroObserverPendingRestore) bridge.ghostHeroObserverPendingRestore(pendingObserverTransferSnapshot());
 		}catch(e){}
@@ -482,15 +517,25 @@ const ghostClient = (function(){
 		const tx=heroPlaceTx.get(pl.qid);
 		if(!tx) return false; // duplicate/foreign ack: never mint a second refund
 		if((pl.a==='mine'?'mine':'place')!==tx.a) return false;
-		const outcome={ok:!!pl.ok,reason:pl.reason||null};
+		const outcome={
+			ok:!!pl.ok,
+			reason:pl.reason||null,
+			layer:pl.l,
+			facts:heroAckDiscoveryFacts(pl)
+		};
 		if(!tx.committed){ tx.deferred=outcome; return true; } // synchronous fake transport: payment follows send()
 		if(outcome.ok){
 			if(tx.receipt) return sendHeroPlaceTransaction(tx,true);
 			const first=!tx.confirmedAt;
 			if(first) tx.confirmedAt=Date.now();
+			if(first && outcome.facts) tx.discoveryFacts=outcome.facts;
 			if(tx.a==='place' && first && !tx.announced){
 				tx.announced=true;
-				try{ if(bridge && bridge.ghostHeroPlaced) bridge.ghostHeroPlaced(tx.tid,tx.x,tx.y); }catch(e){}
+				try{
+					if(bridge && bridge.ghostHeroPlaced){
+						bridge.ghostHeroPlaced(tx.tid,tx.x,tx.y,outcome.layer||tx.l,outcome.facts);
+					}
+				}catch(e){}
 			}
 			if(tx.a==='mine') return finishHeroObserverSuccess(tx);
 			let present=!!tx.visible;
@@ -604,7 +649,15 @@ const ghostClient = (function(){
 				return false;
 			}
 			sendHeroPlaceTransaction(tx,true);
-			if(deferred) settleHeroObserverAck({a:'place',tid:tx.tid,qid:tx.qid,ok:deferred.ok,reason:deferred.reason});
+			if(deferred) settleHeroObserverAck({
+				a:'place',
+				tid:tx.tid,
+				qid:tx.qid,
+				ok:deferred.ok,
+				reason:deferred.reason,
+				l:deferred.layer,
+				facts:deferred.facts
+			});
 			return true;
 		},
 		observerVisible:observerReplicaVisible,
@@ -1274,12 +1327,16 @@ const ghostClient = (function(){
 			// hero-mode ack: a validated break awards THIS side's own drop logic,
 			// a refused placement refunds the locally spent block
 			if(hero.on){
-				if(pl.a === 'mine' && pl.ok && Array.isArray(pl.loot)){
-					for(const row of pl.loot.slice(0,8)){
-						if(row && typeof row.key==='string'){ try{ if(bridge.ghostHeroGain) bridge.ghostHeroGain(row.key,row.n||1); }catch(e){ /* fine */ } }
+				if(pl.a === 'mine' && pl.ok){
+					if(Array.isArray(pl.loot)){
+						for(const row of pl.loot.slice(0,8)){
+							if(row && typeof row.key==='string'){ try{ if(bridge.ghostHeroGain) bridge.ghostHeroGain(row.key,row.n||1); }catch(e){ /* fine */ } }
+						}
+					}else if(pl.tid){
+						try{ if(bridge.ghostHeroAward) bridge.ghostHeroAward(pl.tid); }catch(e){ /* fine */ }
 					}
+					if(pl.tid) reportHeroMineDiscovery(pl.tid,pl.x,pl.y,heroAckDiscoveryFacts(pl));
 				}
-				else if(pl.a === 'mine' && pl.ok && pl.tid){ try{ if(bridge.ghostHeroAward) bridge.ghostHeroAward(pl.tid); }catch(e){ /* fine */ } }
 				else if(pl.a === 'gvx'){
 					// the held block is guest DISPLAY truth confirmed by the host's ack
 					try{ if(bridge.ghostHeroGravHeld) bridge.ghostHeroGravHeld(pl.ok ? (pl.tid | 0) : 0); }catch(e){ /* fine */ }
@@ -1290,13 +1347,24 @@ const ghostClient = (function(){
 					try{ if(bridge.ghostHeroGravHeld) bridge.ghostHeroGravHeld(0); }catch(e){ /* fine */ }
 				}
 				else if(pl.a === 'place' && pl.ok && pl.tid){
-					try{ if(bridge.ghostHeroPlaced) bridge.ghostHeroPlaced(pl.tid,pl.x,pl.y); }catch(e){ /* fine */ }
+					try{
+						if(bridge.ghostHeroPlaced){
+							bridge.ghostHeroPlaced(pl.tid,pl.x,pl.y,pl.l,heroAckDiscoveryFacts(pl));
+						}
+					}catch(e){ /* fine */ }
 				}
 				else if(pl.a === 'place' && !pl.ok && pl.tid){
 					try{ if(bridge.ghostHeroRefund) bridge.ghostHeroRefund(pl.tid,pl.x,pl.y); }catch(e){ /* fine */ }
 					bridge.msg('🧱 Gospodarz odrzucił postawienie (' + (pl.reason || '?') + ') — surowiec wraca');
 				}
 				else if(pl.a === 'mine' && !pl.ok && pl.reason === 'chest') bridge.msg('🎁 Skrzynię otwórz kliknięciem — nie kilofem');
+				else if(pl.a === 'use' && pl.ok && pl.chestTier){
+					try{
+						if(bridge.ghostHeroChestOpened){
+							bridge.ghostHeroChestOpened(pl.chestTier,pl.x,pl.y,pl.chestSpawned,pl.chestItems);
+						}
+					}catch(e){ /* fine */ }
+				}
 				else if(pl.a === 'use' && pl.ok && Array.isArray(pl.loot)){
 					// vending: the machine's roll lands in the guest's own inventory
 					let banked = 0;
@@ -1329,9 +1397,21 @@ const ghostClient = (function(){
 				}
 				else if(pl.a === 'tp' && pl.ok && Number.isFinite(pl.x) && Number.isFinite(pl.y)){
 					const p = bridge.player;
+					const speedBefore=Math.hypot(Number(p.vx)||0,Number(p.vy)||0);
 					p.x = +pl.x; p.y = +pl.y;
 					p.vx = Number.isFinite(pl.vx) ? +pl.vx : 0;
 					p.vy = Number.isFinite(pl.vy) ? +pl.vy : 0;
+					try{
+						if(MMR && MMR.discovery && MMR.discovery.observe){
+							MMR.discovery.observe('teleport_completed',{
+								entity:'hero',
+								moving:speedBefore>0.5,
+								speedBefore,
+								speedAfter:Math.hypot(p.vx,p.vy),
+								target:{x:p.x,y:p.y}
+							});
+						}
+					}catch(e){}
 					poseLog.length = 0;
 					bridge.snapCameraToPlayer();
 					bridge.msg('🌀 Teleport!');

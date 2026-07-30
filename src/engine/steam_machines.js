@@ -403,7 +403,7 @@ import { isSolidCollisionTile } from './material_physics.js';
     if(lifting){
       j.liftT=Math.min(1,(j.liftT||0)+dt*4);
       metricsState.lifted+=dt;
-      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('steam_lift','Kolumna pary unosi wszystko nad dyszą!'); }catch(e){}
+      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('steam_lift','Kolumna pary unosi wszystko nad dyszą!',{source:'steam_jet',target:{x:j.x+0.5,y:j.y+0.5}}); }catch(e){}
     }else{
       j.liftT=Math.max(0,(j.liftT||0)-dt*2);
     }

@@ -112,9 +112,36 @@ const centerGuardian = (function(){
   const finite = (v,f)=>Number.isFinite(Number(v)) ? Number(v) : f;
   const dist2 = (ax,ay,bx,by)=>{ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; };
 
-  function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
+  function say(t,opts){
+    try{
+      if(MM.smartFeed && MM.smartFeed.world) MM.smartFeed.world(t,opts);
+      else if(root.msg) root.msg(t);
+    }catch(e){}
+  }
   function sfx(id,opts){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id,opts); }catch(e){} }
   function playerRef(){ return root.player || null; }
+  function discoveryActor(opts){
+    const explicit=String(opts && opts.actor || '');
+    if(explicit) return explicit;
+    const source=String(opts && opts.source || '').toLowerCase();
+    if(!source || source==='hero' || source==='player' || source==='local-hero') return 'local-hero';
+    if(source==='guest' || source==='coop' || source==='host-for-guest') return 'host-for-guest';
+    if(source==='watcher' || source==='remote-hero') return source;
+    return 'world';
+  }
+  function observeGuardianPrinciple(id,kind,x,y,actor,extra){
+    try{
+      const d=MM.discovery;
+      if(!d || typeof d.observe!=='function') return;
+      if(typeof d.has==='function' && d.has(id)) return;
+      d.observe('guardian_principle',Object.assign({
+        kind,
+        guardian:'mother',
+        actor:String(actor||'local-hero'),
+        target:{x:finite(x,0),y:finite(y,0)}
+      },extra||{}));
+    }catch(err){}
+  }
   function markWorldChanged(){
     try{
       if(typeof root.__mmMarkWorldChanged === 'function') root.__mmMarkWorldChanged('center_guardian');
@@ -460,7 +487,7 @@ const centerGuardian = (function(){
       state.stallStreak++;
       if(state.stallStreak>=CFG.STALL_STREAK && state.stallMsgCd<=0){
         state.stallMsgCd=CFG.STALL_MSG_CD;
-        say(LORE.stallHint || 'Lustro nie moze dotknac kogos, kto nie chce byc prawdziwy.');
+        say(LORE.stallHint || 'Lustro nie moze dotknac kogos, kto nie chce byc prawdziwy.',{urgent:true});
       }
     }
     return landed;
@@ -583,15 +610,21 @@ const centerGuardian = (function(){
     return Math.abs(x-mimic.x)<1.35 && Math.abs(y-mimic.y)<1.6;
   }
   function damageAt(tx,ty,dmg,opts){
-    void opts;
     if(state.phase!=='battle' || !mimicHitAt(tx,ty)) return false;
     const amount=clamp(Math.max(0.5,Number(dmg)||1),0.5,CFG.REFLECT_CAP_PER_HIT);
-    reflects.push({t:CFG.REFLECT_DELAY, amount, sx:mimic.x, sy:mimic.y});
+    reflects.push({
+      t:CFG.REFLECT_DELAY,
+      amount,
+      sx:mimic.x,
+      sy:mimic.y,
+      actor:discoveryActor(opts),
+      damageKind:String(opts && (opts.kind||opts.type||opts.weaponType) || 'direct')
+    });
     while(reflects.length>8) reflects.shift();
     mimic.hitFlash=0.22;
     addEffect({type:'mirror',x:mimic.x,y:mimic.y,t:0,max:0.5});
     if(state.mirrorHintIdx<(LORE.mirrorHints||[]).length){
-      say(LORE.mirrorHints[state.mirrorHintIdx]);
+      say(LORE.mirrorHints[state.mirrorHintIdx],{urgent:true});
       state.mirrorHintIdx++;
     }
     return true;
@@ -679,8 +712,18 @@ const centerGuardian = (function(){
       reflects.splice(i,1);
       const p=playerRef();
       if(!p) continue;
-      damageHero(r.amount, r.sx, r.sy, 'inner_mirror', {invulMs:520, kb:3});
+      const landed=damageHero(r.amount, r.sx, r.sy, 'inner_mirror', {invulMs:520, kb:3});
       addEffect({type:'reflect',x:p.x,y:p.y,t:0,max:0.42});
+      if(landed){
+        observeGuardianPrinciple(
+          'guardian_center_reflects_damage',
+          'center_mirror_reflects',
+          r.sx,
+          r.sy,
+          r.actor,
+          {amount:r.amount,damageKind:r.damageKind}
+        );
+      }
     }
   }
   function updateBolt(dt,p){

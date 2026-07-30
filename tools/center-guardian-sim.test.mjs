@@ -6,6 +6,19 @@ import { strict as assert } from 'assert';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
+const guardianPrinciples = [];
+const learnedGuardianPrinciples = new Set();
+globalThis.MM.discovery = {
+  has(id){ return learnedGuardianPrinciples.has(id); },
+  observe(type,payload){
+    guardianPrinciples.push({type,payload});
+    if(payload && payload.kind==='center_mirror_reflects'){
+      learnedGuardianPrinciples.add('guardian_center_reflects_damage');
+      return 'guardian_center_reflects_damage';
+    }
+    return null;
+  }
+};
 globalThis.localStorage = {getItem(){ return null; }, setItem(){}, removeItem(){}};
 const messages = [];
 globalThis.msg = t => messages.push(String(t));
@@ -117,14 +130,23 @@ const dbg = centerGuardian._debug();
 const m = dbg.mimic;
 const hpBefore = m.hp;
 const heroHpBefore = globalThis.player.hp;
+const mirrorHitOrigin = {x:m.x,y:m.y};
 assert.equal(centerGuardian.damageAt(Math.floor(m.x), Math.floor(m.y), 18, {kind:'arrow',source:'hero'}), true, 'the mirror consumes the hero\'s hit');
 assert.equal(m.hp, hpBefore, 'the mirror takes no damage from the hero');
+assert.equal(guardianPrinciples.length,0,'queuing a mirror flash is not yet evidence until reflected damage lands');
 tick(0.5);
 assert.equal(globalThis.player.hp, heroHpBefore-18, 'the blow returns to the one who dealt it');
 assert.ok(heroHits.some(h=>h.cause==='inner_mirror' && h.amount===18), 'reflection routes through the central damage entry');
 assert.ok(messages.includes(STORY_LORE.center.mirrorHints[0]), 'the first reflection teaches the rule');
+const mirrorPrinciple=guardianPrinciples.find(e=>e.type==='guardian_principle' && e.payload.kind==='center_mirror_reflects');
+assert.ok(mirrorPrinciple,'only a landed reflected blow emits the center guardian principle');
+assert.equal(mirrorPrinciple.payload.actor,'local-hero','mirror principle credits the hero whose blow returned');
+assert.equal(mirrorPrinciple.payload.amount,18,'mirror principle records the amount that actually returned');
+assert.equal(mirrorPrinciple.payload.damageKind,'arrow','mirror principle records the reflected attack kind');
+assert.deepEqual(mirrorPrinciple.payload.target,mirrorHitOrigin,'mirror principle points at the flash where the moving guardian reflected the hit');
 assert.equal(centerGuardian.attackAt(Math.floor(m.x), Math.floor(m.y), 5), true, 'melee clicks are consumed by the mirror too');
 tick(0.5);
+assert.equal(guardianPrinciples.filter(e=>e.payload.kind==='center_mirror_reflects').length,1,'known mirror principle does not emit on later reflected blows');
 
 // --- The mimic's strikes drain the mimic ---------------------------------------
 globalThis.player.hp = globalThis.player.maxHp;

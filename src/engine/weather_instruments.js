@@ -68,7 +68,7 @@ window.MM = window.MM || {};
           vanes.set(key(x,y),{x,y});
           if(!vaneNoted){
             vaneNoted=true;
-            try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('weathervane','Wiatrowskaz pokazuje żywy wiatr — planuj zamiecie i żagle.'); }catch(e){}
+            try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('weathervane','Wiatrowskaz pokazuje żywy wiatr — planuj zamiecie i żagle.',{source:'weathervane',target:{x:x+0.5,y:y+0.5}}); }catch(e){}
           }
         }
       }
@@ -128,7 +128,7 @@ window.MM = window.MM || {};
     strikesBanked++;
     if(!rodNoted){
       rodNoted=true;
-      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('lightning_rod','Piorunochron zebrał uderzenie — burza stała się żniwami.'); }catch(e){}
+      try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('lightning_rod','Piorunochron zebrał uderzenie — burza stała się żniwami.',{source:'lightning_rod',target:{x:c.x+0.5,y:c.y+0.5}}); }catch(e){}
     }
     return {banked:got, energy:c.energy};
   }

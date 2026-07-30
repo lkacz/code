@@ -3771,7 +3771,7 @@ const mobs = (function(){
           pr.vy=-Math.abs(pr.vy)*0.35-1.2;
           pr.cause='parried_'+(pr.cause||'mob_projectile');
           try{ if(MM.weapons && MM.weapons.addUltCharge) MM.weapons.addUltCharge(0.25); }catch(e){}
-          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('parry','Perfekcyjna parada odbija pociski wrogów!'); }catch(e){}
+          try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('parry','Perfekcyjna parada odbija pociski wrogów!',{source:'parry',target:{x:pr.x,y:pr.y}}); }catch(e){}
           try{ if(MM.audio && MM.audio.play) MM.audio.play('parry',{x:pr.x,y:pr.y}); }catch(e){}
           try{ const p=MM.particles; if(p && p.spawnSparks) p.spawnSparks(pr.x*(MM.TILE||20),pr.y*(MM.TILE||20),'lucky',10); }catch(e){}
         } else {
@@ -7944,7 +7944,25 @@ const mobs = (function(){
   // specs opt out with keenEars:0; sharp-eared ones widen the ear.
   if(!canSee && typeof MM!=='undefined' && MM.noise && MM.noise.heardBy){
     const heard = MM.noise.heardBy(m.x, m.y, {keen: typeof spec.keenEars==='number' ? spec.keenEars : 1});
-    if(heard){ m._investigate = {x:heard.x, y:heard.y, until:(m._investigate && m._investigate.until) || 0}; m._investigateT = 3.2; }
+    if(heard){
+      const beganInvestigation=!m._investigate;
+      m._investigate = {x:heard.x, y:heard.y, until:(m._investigate && m._investigate.until) || 0};
+      m._investigateT = 3.2;
+      if(beganInvestigation){
+        try{
+          if(MM.discovery && MM.discovery.observe){
+            MM.discovery.observe('noise_attracted_creature',{
+              heard:true,
+              cause:String(heard.cause||'sound'),
+              radius:Math.max(0,Number(heard.r)||0),
+              sourceTarget:{x:heard.x,y:heard.y},
+              target:{x:m.x,y:m.y},
+              actor:String(heard.actor||'world')
+            });
+          }
+        }catch(e){}
+      }
+    }
   }
   if(m._investigateT > 0){ m._investigateT -= dt; if(m._investigateT <= 0) m._investigate = null; }
   // Sight ACQUIRES, pursue only RETAINS. The old form (canSee || shouldPursue)
@@ -11156,7 +11174,13 @@ const mobs = (function(){
     if(opts && opts.source==='hero'){
       try{ if(MM.weapons && MM.weapons.addUltCharge) MM.weapons.addUltCharge(0.2); }catch(e){}
     }
-    try{ if(MM.discovery && MM.discovery.note) MM.discovery.note('react_'+kind, discoveryText); }catch(e){}
+    try{
+      if(MM.discovery && MM.discovery.note) MM.discovery.note(
+        'react_'+kind,
+        discoveryText,
+        {source:'status_reaction',target:{x:m.x,y:m.y}}
+      );
+    }catch(e){}
   }
   function freezeSolidMob(m,opts){
     const st=m.status || (m.status={});

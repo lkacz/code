@@ -6,6 +6,19 @@ import { performance } from 'node:perf_hooks';
 
 globalThis.window = globalThis;
 globalThis.MM = {};
+const guardianPrinciples = [];
+const learnedGuardianPrinciples = new Set();
+globalThis.MM.discovery = {
+  has(id){ return learnedGuardianPrinciples.has(id); },
+  observe(type,payload){
+    guardianPrinciples.push({type,payload});
+    if(payload && payload.kind==='air_resonators_shield'){
+      learnedGuardianPrinciples.add('guardian_air_resonator_shield');
+      return 'guardian_air_resonator_shield';
+    }
+    return null;
+  }
+};
 globalThis.localStorage = {getItem(){ return null; }, setItem(){}, removeItem(){}};
 globalThis.msg = ()=>{};
 globalThis.CustomEvent = class CustomEvent{ constructor(type,init){ this.type=type; this.detail=init && init.detail; } };
@@ -109,8 +122,14 @@ for(const l of leaflings.slice()) assert.equal(skyGuardian.damageAt(Math.floor(l
 assert.equal(dbg.activeLeaflings().length, 4, 'destroying both split leaflings doubles the pressure again');
 assert.ok(dbg.spawnLeaflings(20).length <= skyGuardian.config.LEAFLING_MAX, 'debug spawn respects the celestial leafling cap');
 assert.ok(dbg.activeLeaflings().length <= skyGuardian.config.LEAFLING_MAX, 'live celestial leaflings never exceed the cap');
-assert.equal(skyGuardian.damageAt(Math.floor(boss.x), Math.floor(boss.y), 60, {kind:'arrow',source:'hero'}), 'shield', 'resonators reroute direct damage into the shield');
+assert.equal(skyGuardian.damageAt(Math.floor(boss.x), Math.floor(boss.y), 60, {kind:'arrow',source:'coop',actor:'host-for-guest'}), 'shield', 'resonators reroute direct guest damage into the shield');
 assert.ok(boss.hp >= skyGuardian.config.BOSS_HP, 'shielded crown does not lose HP while resonators live');
+const shieldPrinciple=guardianPrinciples.find(e=>e.type==='guardian_principle' && e.payload.kind==='air_resonators_shield');
+assert.ok(shieldPrinciple,'an actually absorbed attack emits the air guardian principle');
+assert.equal(shieldPrinciple.payload.actor,'host-for-guest','resonator principle preserves guest attribution so it cannot teach the host');
+assert.equal(shieldPrinciple.payload.damageKind,'arrow','resonator principle records the absorbed attack kind');
+assert.equal(shieldPrinciple.payload.absorbedDamage,60,'resonator principle records the damage the shield rejected');
+assert.ok(shieldPrinciple.payload.resonators>0,'resonator principle confirms live shield nodes existed');
 
 assert.equal(dbg.clearResonators(), true, 'debug can clear resonators for direct combat coverage');
 skyGuardian.update(0.05, globalThis.player, world.getTile, world.setTile);

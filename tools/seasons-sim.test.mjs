@@ -500,6 +500,97 @@ seasons.setDay(21); // summer calendar start -> autumn
 unsub();
 assert.ok(events.some(e => e.type === 'seasonChanged' && e.to === 'autumn'), 'season clock emits season-change events for debug systems');
 
+{
+  const observations = [];
+  const previousDiscovery = MM.discovery;
+  const hadPlayer = Object.prototype.hasOwnProperty.call(globalThis, 'player');
+  const previousPlayer = globalThis.player;
+  const discoveryStub = {
+    observe(type, payload){ observations.push({type, payload}); },
+  };
+  MM.discovery = discoveryStub;
+  globalThis.player = {x:7.25, y:8.5};
+  try{
+    seasons.reset();
+    seasons.setDay(21);
+
+    resetTiles();
+    setTile(2, 10, T.WATER);
+    seasons.forceSeason('winter');
+    assert.equal(seasons._debug.replaceTile(2, 10, T.ICE, getTile, setTile), true,
+      'confirmed seasonal water replacement succeeds');
+
+    resetTiles();
+    setTile(3, 10, T.ICE);
+    seasons.forceSeason('spring');
+    assert.equal(seasons._debug.replaceTile(3, 10, T.WATER, getTile, setTile), true,
+      'confirmed seasonal ice replacement succeeds');
+
+    resetTiles();
+    setTile(4, 10, T.LEAF);
+    seasons.forceSeason('autumn');
+    assert.equal(seasons._debug.replaceTile(4, 10, T.AUTUMN_LEAF_ORANGE, getTile, setTile), true,
+      'confirmed autumn leaf replacement succeeds');
+
+    resetTiles();
+    setTile(5, 10, T.AUTUMN_LEAF_RED);
+    seasons.forceSeason('spring');
+    assert.equal(seasons._debug.replaceTile(5, 10, T.LEAF, getTile, setTile), true,
+      'confirmed spring leaf replacement succeeds');
+
+    const confirmedCount = observations.length;
+    assert.equal(seasons._debug.replaceTile(5, 10, T.LEAF, getTile, setTile), false,
+      'no-op seasonal replacement is rejected');
+    assert.equal(observations.length, confirmedCount,
+      'no-op seasonal replacement emits no discovery observation');
+
+    setTile(6, 10, T.WATER);
+    seasons.forceSeason('winter');
+    assert.equal(seasons._debug.replaceTile(6, 10, T.ICE, getTile, ()=>{}), false,
+      'seasonal replacement reports a rejected tile write');
+    assert.equal(observations.length, confirmedCount,
+      'rejected seasonal tile write emits no discovery observation');
+
+    setTile(7, 10, T.WATER);
+    delete MM.discovery;
+    assert.doesNotThrow(
+      () => seasons._debug.replaceTile(7, 10, T.ICE, getTile, setTile),
+      'seasonal replacement remains safe when discovery is unavailable'
+    );
+    MM.discovery = discoveryStub;
+    assert.equal(observations.length, confirmedCount,
+      'unavailable discovery service cannot create a stray observation');
+
+    assert.deepEqual(observations, [
+      {
+        type:'season_changed',
+        payload:{from:'summer', to:'autumn', season:'autumn', target:{x:7.25, y:8.5}},
+      },
+      {
+        type:'seasonal_transition',
+        payload:{season:'winter', change:'water_to_ice', target:{x:2.5, y:10.5}},
+      },
+      {
+        type:'seasonal_transition',
+        payload:{season:'spring', change:'ice_to_water', target:{x:3.5, y:10.5}},
+      },
+      {
+        type:'seasonal_transition',
+        payload:{season:'autumn', change:'leaf_to_autumn', target:{x:4.5, y:10.5}},
+      },
+      {
+        type:'seasonal_transition',
+        payload:{season:'spring', change:'leaf_regrowth', target:{x:5.5, y:10.5}},
+      },
+    ], 'season discoveries receive exact confirmed season and terrain observations');
+  } finally {
+    if(previousDiscovery === undefined) delete MM.discovery;
+    else MM.discovery = previousDiscovery;
+    if(hadPlayer) globalThis.player = previousPlayer;
+    else delete globalThis.player;
+  }
+}
+
 seasons.reset();
 assert.equal(seasons.jumpToNextTransition(), true, 'debug can jump to the next smooth season transition');
 m = seasons.metrics();

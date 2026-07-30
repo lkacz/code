@@ -225,7 +225,12 @@ window.MM = window.MM || {};
     if(h>=0.92) return 2;
     return 1;
   }
-  function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
+  function say(t,opts){
+    try{
+      if(MM.smartFeed && MM.smartFeed.world) MM.smartFeed.world(t,opts);
+      else if(typeof window!=='undefined' && window.msg) window.msg(t);
+    }catch(e){}
+  }
   function notifyXpAward(detail){
     try{
       if(typeof window!=='undefined' && typeof window.dispatchEvent==='function' && typeof CustomEvent==='function'){
@@ -252,7 +257,7 @@ window.MM = window.MM || {};
     if(typeof p.vx==='number'){ p.vx+=(p.x<srcX? -1:1)*4; p.vy=Math.min(p.vy||0,-4.5); }
     if(p.hp<=0){
       p.hp=0;
-      try{ say('Potwór cię pokonał – respawn'); p.hp=p.maxHp||100; if(window.placePlayer) window.placePlayer(true); }catch(e){}
+      try{ say('Potwór cię pokonał – respawn',{urgent:true}); p.hp=p.maxHp||100; if(window.placePlayer) window.placePlayer(true); }catch(e){}
     }
   }
   function companionTargetAt(wx,wy,range){
@@ -1280,7 +1285,7 @@ window.MM = window.MM || {};
     const bx=Math.round(m.x)+(m.core?m.core.dx:0), by=Math.round(m.y)+(m.core?m.core.dy:0);
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((bx+0.5)*(MM.TILE||20),(by+0.5)*(MM.TILE||20),'rare'); }catch(e){}
     try{ if(MM.audio && MM.audio.play) MM.audio.play('warning',{x:bx,y:by}); }catch(e){}
-    say('Serce '+m.name+' kona i puchnie od energii - uciekaj!');
+    say('Serce '+m.name+' kona i puchnie od energii - uciekaj!',{urgent:true});
     return true;
   }
   function heartHitsTerrain(getTile,x,y,r){
@@ -1736,7 +1741,7 @@ window.MM = window.MM || {};
       // neighbors is removed, even if the whole boss moves during the swing.
       for(const p of m.parts){ if(Math.abs(p.dx-m.core.dx)+Math.abs(p.dy-m.core.dy)===1) p.hitT=0.15; }
       const now=(typeof performance!=='undefined')? performance.now():0;
-      if(!m.sealMsgT || now-m.sealMsgT>1500){ m.sealMsgT=now; say('Serce '+m.name+' jest osłonięte – przebij się przez pancerz!'); }
+      if(!m.sealMsgT || now-m.sealMsgT>1500){ m.sealMsgT=now; say('Serce '+m.name+' jest osłonięte – przebij się przez pancerz!',{urgent:true}); }
       return true;
     }
     const electric=!!opts && /electric|shock|laser|lightning/.test(String(opts.element||opts.kind||opts.cause||'').toLowerCase());
@@ -1800,7 +1805,7 @@ window.MM = window.MM || {};
         // the blow glances off the plating sealing the heart — flash the armor ring
         for(const p of m.parts){ if(Math.abs(p.dx-m.core.dx)+Math.abs(p.dy-m.core.dy)===1) p.hitT=0.15; }
         const now=(typeof performance!=='undefined')? performance.now():0;
-        if(!m.sealMsgT || now-m.sealMsgT>1500){ m.sealMsgT=now; say('Serce '+m.name+' jest osłonięte – przebij się przez pancerz!'); }
+        if(!m.sealMsgT || now-m.sealMsgT>1500){ m.sealMsgT=now; say('Serce '+m.name+' jest osłonięte – przebij się przez pancerz!',{urgent:true}); }
         return true;
       }
     }

@@ -499,7 +499,15 @@ function supportedCantileverCells(t,span=25){
   fillFloor(60,-30,30);
   assert.equal(fallingSolids.canSupportPlacement(6,40,T.STONE).ok,false,'placement support check rejects a block floating in open air');
   setTile(0,50,T.STONE);
-  assert.equal(fallingSolids.canSupportPlacement(1,50,T.STONE).ok,true,'placement support check still allows a short wall-attached block');
+  const sideSupport=fallingSolids.canSupportPlacement(1,50,T.STONE);
+  assert.equal(sideSupport.ok,true,'placement support check still allows a short wall-attached block');
+  assert.equal(sideSupport.support,'side','placement preview identifies a real direct side anchor');
+  const footingSupport=fallingSolids.canSupportPlacement(1,59,T.STONE);
+  assert.equal(footingSupport.support,'footing','placement preview distinguishes direct footing from lateral bracing');
+  setTile(6,39,T.BEDROCK);
+  const ceilingSupport=fallingSolids.canSupportPlacement(6,40,T.STONE);
+  assert.equal(ceilingSupport.ok,true,'a stable ceiling can carry a hanging block');
+  assert.equal(ceilingSupport.support,'ceiling','placement preview identifies a real ceiling anchor');
 }
 
 {

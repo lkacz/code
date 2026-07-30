@@ -167,7 +167,11 @@ assert.match(wSrc, /MM\.gravityWorld/, 'weapons.js routes every world effect thr
 assert.match(mainSrc, /MM\.gravityWorld=\{/, 'the seam object exists in main.js');
 assert.match(mainSrc, /FALLING\.spawnLoose\(Math\.floor\(x\),Math\.floor\(y\),tid\|0\)/, 'a settling block goes through the falling chokepoint, not setTile');
 assert.match(mainSrc, /SOFT_DRIFTS\.seedAround\(Math\.floor\(x\), 1, mat, 6, getTile, setTile\)/, 'soft matter joins the drift layer');
-assert.match(mainSrc, /function stripForegroundForCarry\(tx,ty,tId\)\{/, 'extraction shares the mining removal lifecycle');
+assert.match(
+  mainSrc,
+  /function stripForegroundForCarry\(tx,ty,tId,actor='local-hero'\)\{/,
+  'extraction shares the mining removal lifecycle while preserving local/guest attribution'
+);
 assert.match(mainSrc, /NOISE\.emit\(x,y,'decoy',1\)/, 'a landed meat block is a real decoy (predators investigate)');
 // the coop projectile is world-inert: every landing write gates on !a.coopOwner
 assert.match(wSrc, /if\(!a\.coopOwner\)\{\n      const W=gravityWorld\(\);\n      if\(W\)\{\n        if\(mode==='drift'\)/, 'guest blocks never write the world on landing');

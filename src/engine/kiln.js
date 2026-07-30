@@ -36,6 +36,17 @@ import { T } from '../constants.js';
   let stats = { fired: 0, lit: 0 };
 
   const key = (x, y) => x + ',' + y;
+  function observeTransition(change, x, y, extra){
+    try{
+      const d = MM.discovery;
+      if(d && typeof d.observe === 'function'){
+        d.observe('tile_transition', Object.assign({
+          change,
+          target:{ x:x + 0.5, y:y + 0.5 }
+        }, extra || {}));
+      }
+    }catch(e){}
+  }
   function getSafe(getTile, x, y){
     try{ const t = getTile(x, y); return t === undefined ? T.STONE : t; }catch(e){ return T.STONE; }
   }
@@ -99,6 +110,17 @@ import { T } from '../constants.js';
       try{ res = R.apply('heat', cell.x, cell.y, getTile, setTile, { source: 'kiln' }); }catch(e){ res = null; }
       if(res && !res.charging){
         stats.fired++;
+        const changed = Array.isArray(res.changed) ? res.changed : [];
+        for(const c of changed){
+          if(c && c.oldTile === T.CLAY && c.newTile === T.BRICK && getSafe(getTile, c.x, c.y) === T.BRICK){
+            observeTransition('clay_to_brick', c.x, c.y, {
+              from:T.CLAY,
+              to:T.BRICK,
+              source:'kiln'
+            });
+            break;
+          }
+        }
         try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((cell.x + 0.5) * 20, (cell.y + 0.5) * 20, 'common'); }catch(e){}
         return true;
       }

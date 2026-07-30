@@ -119,6 +119,45 @@ assert.equal(dynamo.metrics().storedEnergy,dynamo._debug.ENERGY_CAPACITY,'stored
   assert.equal(dynamo.metrics().storedEnergy,before,'rejected flow leaves stored energy unchanged');
 }
 
+{
+  resetWorld();
+  placeDynamo(0,5);
+  const observations=[];
+  MM.discovery={
+    has:()=>false,
+    observe:(type,payload)=>{ observations.push({type,payload}); return null; }
+  };
+  assert.equal(dynamo.recordFlow(0,5,T.WATER,0,getTile),false,'rejected flow remains rejected with discovery observation enabled');
+  assert.equal(observations.length,0,'failed flow attempts do not emit power discoveries');
+  assert.equal(dynamo.recordFlow(0,5,T.WATER,1,getTile),true,'accepted water flow powers a valid dynamo');
+  assert.deepEqual(observations,[{
+    type:'power_generated',
+    payload:{medium:'water',amount:1,target:{x:0.5,y:5.5}}
+  }],'accepted flow reports the canonical medium, actual stored gain and rotor location');
+  observations.length=0;
+  dynamo.restore({v:1,list:[{x:0,y:5,power:0,energy:dynamo._debug.ENERGY_CAPACITY,lastKind:'water'}]},getTile);
+  assert.equal(dynamo.recordFlow(0,5,T.WATER,4,getTile),true,'flow can still spin a full dynamo');
+  assert.equal(observations.length,0,'a full battery that accepts no energy emits no generation observation');
+  delete MM.discovery;
+}
+
+{
+  resetWorld();
+  placeDynamo(0,5);
+  let observeCalls=0;
+  const learned=new Set(['power_generation_real','power_generation_media']);
+  MM.discovery={
+    has:id=>learned.has(id),
+    observe:()=>{ observeCalls++; return null; }
+  };
+  assert.equal(dynamo.recordFlow(0,5,T.WATER,1,getTile),true,'known generation still charges the dynamo normally');
+  assert.equal(observeCalls,0,'once both power discoveries are known, the hot flow path skips observation work');
+  learned.clear(); // Echo Chwili restored an older discovery snapshot; module lives on
+  assert.equal(dynamo.recordFlow(0,5,T.WATER,1,getTile),true,'generation continues after a knowledge rewind');
+  assert.equal(observeCalls,1,'a rewound discovery profile invalidates the completion cache');
+  delete MM.discovery;
+}
+
 // A rotated dynamo in a dam lets pressurized water pass sideways through the slot.
 resetWorld();
 placeDynamo(0,5,'vertical');
@@ -165,6 +204,24 @@ assert.equal(dynamo.metrics().storedEnergy,0,'unpressurized water produces no da
 // A vertical dynamo can also act as a small wind turbine. It only charges when
 // local exposed wind is substantial, so altitude matters and blocked intakes do
 // not produce free energy.
+{
+  resetWorld();
+  placeDynamo(0,24,'vertical');
+  wind.setOverride(5.0);
+  const observations=[];
+  MM.discovery={
+    has:()=>false,
+    observe:(type,payload)=>{ observations.push({type,payload}); return null; }
+  };
+  dynamo.update(1/60,getTile);
+  assert.equal(observations.length,1,'accepted wind energy emits one generation observation for one update');
+  assert.equal(observations[0].type,'power_generated','wind shares the power generation discovery event');
+  assert.equal(observations[0].payload.medium,'wind','wind generation reports a distinct canonical medium');
+  assert.ok(observations[0].payload.amount>0,'wind observation reports the actual positive energy accepted');
+  assert.deepEqual(observations[0].payload.target,{x:0.5,y:24.5},'wind observation points at the generating rotor');
+  delete MM.discovery;
+}
+
 resetWorld();
 placeDynamo(0,24,'vertical');
 wind.setOverride(2.4);

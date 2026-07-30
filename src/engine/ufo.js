@@ -120,7 +120,12 @@ const ufo = (function(){
   }
   function clearActive(){ craft=null; }
 
-  function say(t){ try{ if(typeof window!=='undefined' && window.msg) window.msg(t); }catch(e){} }
+  function say(t,opts){
+    try{
+      if(MM.smartFeed && MM.smartFeed.world) MM.smartFeed.world(t,opts);
+      else if(typeof window!=='undefined' && window.msg) window.msg(t);
+    }catch(e){}
+  }
   function sfx(n,o){ try{ if(MM.audio && MM.audio.play) MM.audio.play(n,o); }catch(e){} }
   function surfaceY(x, fallback){ try{ const wg=MM.worldGen; if(wg && wg.surfaceHeight) return wg.surfaceHeight(Math.round(x)); }catch(e){} return (typeof fallback==='number'? fallback : 60); }
   function burst(x,y,tier){ try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst(x*(MM.TILE||20), y*(MM.TILE||20), tier||'epic'); }catch(e){} }
@@ -388,7 +393,7 @@ const ufo = (function(){
     const mult = beaming()? CFG.BEAM_VULN : CFG.SHIELD_DR;
     const amount=Math.max(0.5,(typeof dmg==='number'&&isFinite(dmg))? dmg:1)*mult;
     craft.hp-=amount; craft.hitFlash=0.15;
-    if(!beaming() && !craft._shieldHinted){ craft._shieldHinted=true; say('🛸 Tarcza pochłania ciosy — uderzaj, gdy wiązka jest włączona!'); }
+    if(!beaming() && !craft._shieldHinted){ craft._shieldHinted=true; say('🛸 Tarcza pochłania ciosy — uderzaj, gdy wiązka jest włączona!',{urgent:true}); }
     if(craft.hp<=0) destroy();
     return true;
   }
@@ -500,7 +505,7 @@ const ufo = (function(){
         else{
           c.victim=v; c.phase='beam'; c.phaseT=0; c.charge=0;
           const what=v.kind==='boss'? 'GIGANTYCZNY OKAZ' : v.kind==='hero'? 'CIEBIE' : 'zwierzę';
-          say('🛸 Wiązka namierzyła '+what+'! (tarcza opuszczona — ognia!)');
+          say('🛸 Wiązka namierzyła '+what+'! (tarcza opuszczona — ognia!)',{urgent:true});
           sfx('beam',{x:c.x,y:c.y});
         }
       }
@@ -557,7 +562,7 @@ const ufo = (function(){
               c.carryDist=(CFG.CARRY_MIN+Math.random()*(CFG.CARRY_MAX-CFG.CARRY_MIN))*carryDistMult;
               c.carried=0;
               drainHeroEnergy(pl);
-              say('🛸 PORWANY! Obcy zabierają cię na badania...');
+              say('🛸 PORWANY! Obcy zabierają cię na badania...',{urgent:true});
             }
           }
         }

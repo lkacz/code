@@ -54,8 +54,35 @@ const skyGuardian = (function(){
   const dist2 = (ax,ay,bx,by)=>{ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; };
   const tileIndex = (lx,ly)=>ly*CHUNK_W+lx;
 
-  function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
+  function say(t,opts){
+    try{
+      if(MM.smartFeed && MM.smartFeed.world) MM.smartFeed.world(t,opts);
+      else if(root.msg) root.msg(t);
+    }catch(e){}
+  }
   function sfx(id,opts){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id,opts); }catch(e){} }
+  function discoveryActor(opts){
+    const explicit=String(opts && opts.actor || '');
+    if(explicit) return explicit;
+    const source=String(opts && opts.source || '').toLowerCase();
+    if(!source || source==='hero' || source==='player' || source==='local-hero') return 'local-hero';
+    if(source==='guest' || source==='coop' || source==='host-for-guest') return 'host-for-guest';
+    if(source==='watcher' || source==='remote-hero') return source;
+    return 'world';
+  }
+  function observeGuardianPrinciple(id,kind,e,opts,extra){
+    try{
+      const d=MM.discovery;
+      if(!d || typeof d.observe!=='function') return;
+      if(typeof d.has==='function' && d.has(id)) return;
+      d.observe('guardian_principle',Object.assign({
+        kind,
+        guardian:'air',
+        actor:discoveryActor(opts),
+        target:{x:finite(e && e.x,0),y:finite(e && e.y,0)}
+      },extra||{}));
+    }catch(err){}
+  }
   function nowMs(){
     try{ if(root.performance && typeof root.performance.now === 'function') return root.performance.now(); }catch(e){}
     try{ return Date.now(); }catch(e){ return 0; }
@@ -848,12 +875,20 @@ const skyGuardian = (function(){
     const boss=activeBoss();
     if(e.boss) rememberDamage(e,kind);
     if(e.boss && e.shielded && activeResonatorCount()>0){
+      const resonators=activeResonatorCount();
       e.hitFlash=0.12;
       addEffect({type:'shield',kind:'air',x:e.x,y:e.y,t:0,max:0.45,r:9});
       if(state.hintCd<=0){
-        say('Astrael reads the hit and routes it into the resonators.');
+        say('Astrael reads the hit and routes it into the resonators.',{urgent:true});
         state.hintCd=2.4;
       }
+      observeGuardianPrinciple(
+        'guardian_air_resonator_shield',
+        'air_resonators_shield',
+        e,
+        opts,
+        {resonators,damageKind:kind,absorbedDamage:Math.max(0.5,Number(dmg)||1)}
+      );
       return 'shield';
     }
     let amount=Math.max(0.5,Number(dmg)||1);

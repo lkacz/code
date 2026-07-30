@@ -110,7 +110,12 @@ const invasions = (function(){
   function deepCopy(v){ return JSON.parse(JSON.stringify(v)); }
   function getWorldSeed(){ try{ return (MM.worldGen && MM.worldGen.worldSeed) || 0; }catch(e){ return 0; } }
   function nowMs(){ return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
-  function say(text){ try{ if(root.msg) root.msg(text); }catch(e){} }
+  function say(text,opts){
+    try{
+      if(MM.smartFeed && MM.smartFeed.world) MM.smartFeed.world(text,opts);
+      else if(root.msg) root.msg(text);
+    }catch(e){}
+  }
   function play(name,opts){
     try{
       if(MM.audio && MM.audio.play){
@@ -3607,7 +3612,7 @@ const invasions = (function(){
       },
       onModeChange:(mode)=>{
         if(mode === 'siege'){
-          say(isMolekinTeam(team) ? 'Kretoludzie przechodza do rycia oblezniczego: rozgrzewaja oslony bohatera.' : 'Obcy przechodza do oblezenia: celuja w oslony bohatera.');
+          say(isMolekinTeam(team) ? 'Kretoludzie przechodza do rycia oblezniczego: rozgrzewaja oslony bohatera.' : 'Obcy przechodza do oblezenia: celuja w oslony bohatera.',{urgent:true});
           triggerTeamSpeech(team,'siege',{force:true,cooldown:1800,keyCooldown:9000});
         }
       }

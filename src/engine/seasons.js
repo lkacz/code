@@ -510,10 +510,31 @@ function subscribe(fn){
   return ()=>listeners.delete(fn);
 }
 
+function discoveryTarget(x, y){
+  const p = root && root.player;
+  return {
+    x: Number.isFinite(x) ? x : (p && Number.isFinite(p.x) ? p.x : 0),
+    y: Number.isFinite(y) ? y : (p && Number.isFinite(p.y) ? p.y : seaLevel()),
+  };
+}
+
+function observeDiscovery(type, payload){
+  try{
+    const discovery = root.MM && root.MM.discovery;
+    if(discovery && typeof discovery.observe === 'function') discovery.observe(type, payload);
+  }catch(e){}
+}
+
 function checkSeasonEvents(prev, next){
   if(!prev || !next) return;
   if(prev.season !== next.season){
     emit('seasonChanged', {from: prev.season, to: next.season, label: next.label});
+    observeDiscovery('season_changed', {
+      from: prev.season,
+      to: next.season,
+      season: next.season,
+      target: discoveryTarget(),
+    });
   }
 }
 
@@ -616,6 +637,13 @@ function notifyTileChanged(x, y, old, tile, getTile){
     try{ if(root.MM.fallingSolids && root.MM.fallingSolids.afterPlacement) root.MM.fallingSolids.afterPlacement(x, y); }catch(e){}
   }
 }
+function seasonalTileChange(old, tile){
+  if(old === T.WATER && tile === T.ICE) return 'water_to_ice';
+  if(old === T.ICE && tile === T.WATER) return 'ice_to_water';
+  if(old === T.LEAF && isAutumnLeaf(tile)) return 'leaf_to_autumn';
+  if(isAutumnLeaf(old) && tile === T.LEAF) return 'leaf_regrowth';
+  return '';
+}
 function replaceTile(x, y, tile, getTile, setTile){
   if(!Number.isFinite(x) || !Number.isFinite(y) || y < 0 || y >= WORLD_H) return false;
   if(typeof getTile !== 'function' || typeof setTile !== 'function') return false;
@@ -624,6 +652,14 @@ function replaceTile(x, y, tile, getTile, setTile){
   setTile(x, y, tile);
   if(getTile(x, y) !== tile) return false;
   notifyTileChanged(x, y, old, tile, getTile);
+  const change = seasonalTileChange(old, tile);
+  if(change){
+    observeDiscovery('seasonal_transition', {
+      season: currentState().season,
+      change,
+      target: discoveryTarget(x + 0.5, y + 0.5),
+    });
+  }
   return true;
 }
 function hash01(x, y, salt){
@@ -1793,6 +1829,7 @@ const api = {
     columnContext,
     diurnalTemperatureDelta,
     forceSeasonEvent,
+    replaceTile,
   },
 };
 

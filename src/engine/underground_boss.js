@@ -96,8 +96,35 @@ const undergroundBoss = (function(){
   const WORLD_BOTTOM = Number.isFinite(WORLD_MAX_Y) ? WORLD_MAX_Y : WORLD_H;
   const HAS_DEEP_WORLD = WORLD_BOTTOM > WORLD_H + 24;
 
-  function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
+  function say(t,opts){
+    try{
+      if(MM.smartFeed && MM.smartFeed.world) MM.smartFeed.world(t,opts);
+      else if(root.msg) root.msg(t);
+    }catch(e){}
+  }
   function sfx(id,opts){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id,opts); }catch(e){} }
+  function discoveryActor(opts){
+    const explicit=String(opts && opts.actor || '');
+    if(explicit) return explicit;
+    const source=String(opts && opts.source || '').toLowerCase();
+    if(!source || source==='hero' || source==='player' || source==='local-hero') return 'local-hero';
+    if(source==='guest' || source==='coop' || source==='host-for-guest') return 'host-for-guest';
+    if(source==='watcher' || source==='remote-hero') return source;
+    return 'world';
+  }
+  function observeGuardianPrinciple(id,kind,e,opts,extra){
+    try{
+      const d=MM.discovery;
+      if(!d || typeof d.observe!=='function') return;
+      if(typeof d.has==='function' && d.has(id)) return;
+      d.observe('guardian_principle',Object.assign({
+        kind,
+        guardian:'earth',
+        actor:discoveryActor(opts),
+        target:{x:finite(e && e.x,0),y:finite(e && e.y,0)}
+      },extra||{}));
+    }catch(err){}
+  }
   function nowMs(){
     try{ if(root.performance && typeof root.performance.now === 'function') return root.performance.now(); }catch(e){}
     try{ return Date.now(); }catch(e){ return 0; }
@@ -1054,7 +1081,7 @@ const undergroundBoss = (function(){
     }
     return spawned;
   }
-  function scareCoreFromGas(core,x,y,L){
+  function scareCoreFromGas(core,x,y,L,opts){
     if(!core || core.dead) return false;
     L = L || layoutFor();
     const sx=Number.isFinite(Number(x)) ? Number(x) : core.x;
@@ -1080,10 +1107,17 @@ const undergroundBoss = (function(){
       core.modeT=Math.min(finite(core.modeT,1),CFG.GAS_FEAR_BURROW_DELAY);
     }
     if(state.hintCd<=0){
-      say('Nyxolith chokes on the gas and dives for cleaner stone.');
+      say('Nyxolith chokes on the gas and dives for cleaner stone.',{urgent:true});
       state.hintCd=2.2;
     }
     sfx('dig',{x:core.x,y:core.y});
+    observeGuardianPrinciple(
+      'guardian_earth_fears_gas',
+      'earth_gas_repels',
+      core,
+      opts,
+      {fearSeconds:finite(core.gasFearT,0),source:{x:sx,y:sy}}
+    );
     return true;
   }
   function detonateBurrowBomb(h,p,getTile,setTile,L){
@@ -1216,7 +1250,7 @@ const undergroundBoss = (function(){
       const made=spawnMemoryCairn(s,L);
       s.cairnCd=made ? CFG.SURVEYOR_CAIRN_SECONDS*(s.hp/s.maxHp<0.5?0.78:1) : 2.2;
       if(made && state.hintCd<=0){
-        say('Mara backfills another memory cairn. Break it to return the damage she buried there.');
+        say('Mara backfills another memory cairn. Break it to return the damage she buried there.',{urgent:true});
         state.hintCd=3.2;
       }
     }
@@ -1757,7 +1791,7 @@ const undergroundBoss = (function(){
     }
     return granted;
   }
-  function releaseBuriedDamage(cairn){
+  function releaseBuriedDamage(cairn,opts){
     const surveyor=activeSurveyor();
     if(!surveyor || !(surveyor.buriedDamage>0)) return 0;
     const remaining=activeMemoryCairns().filter(c=>c!==cairn).length;
@@ -1769,12 +1803,19 @@ const undergroundBoss = (function(){
     surveyor.hitFlash=0.34;
     addEffect({type:'memoryRelease',kind:'earth',x:cairn.x,y:cairn.y,t:0,max:1.15,r:12,toX:surveyor.x,toY:surveyor.y});
     addEffect({type:'hit',kind:'earth',x:surveyor.x,y:surveyor.y,t:0,max:0.4,r:7});
-    say('The cairn breaks. '+Math.round(release)+' buried damage returns to Mara.');
+    say('The cairn breaks. '+Math.round(release)+' buried damage returns to Mara.',{urgent:true});
     sfx('explosion',{x:cairn.x,y:cairn.y});
+    observeGuardianPrinciple(
+      'guardian_earth_cairn_memory',
+      'earth_cairn_releases_damage',
+      cairn,
+      opts,
+      {amount:release,bossTarget:{x:surveyor.x,y:surveyor.y}}
+    );
     if(surveyor.hp<=0) defeatEntity(surveyor);
     return release;
   }
-  function defeatEntity(e){
+  function defeatEntity(e,opts){
     if(!e || e.dead) return;
     e.dead=true;
     addEffect({type:'burst',kind:'earth',x:e.x,y:e.y,t:0,max:e.boss?1.5:0.8,r:e.boss?16:7});
@@ -1793,7 +1834,7 @@ const undergroundBoss = (function(){
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('earth',e.x,e.y,{boss:true}); }catch(err){}
       try{ if(MM.drops && MM.drops.rollJewelDrop) MM.drops.rollJewelDrop(e,{boss:true,hp:e.maxHp,dmg:28,xp:560}); }catch(err){}
     }else if(e.role==='memoryCairn'){
-      releaseBuriedDamage(e);
+      releaseBuriedDamage(e,opts);
     }else if(e.role==='zombieGolem'){
       say(e.name+' rozpada sie na zgnily gruz.');
       try{ if(MM.drops && MM.drops.rollGuardianDrop) MM.drops.rollGuardianDrop('earth',e.x,e.y,{role:'zombieGolem'}); }catch(err){}
@@ -1816,7 +1857,7 @@ const undergroundBoss = (function(){
     addEffect({type:'sparks',kind:'earth',x,y,t:0,max:0.36,r:4.5});
     addEffect({type:'hit',kind:'earth',x:e.x,y:e.y,t:0,max:0.24,r:6});
     if(state.hintCd<=0){
-      say('Strzala odbija sie od pancerza Nyxolithu.');
+      say('Strzala odbija sie od pancerza Nyxolithu.',{urgent:true});
       state.hintCd=1.8;
     }
     sfx('spark',{x,y});
@@ -1830,12 +1871,12 @@ const undergroundBoss = (function(){
     if(/electric|shock|laser|lightning/.test(elemRaw)) amount*=bossElectricDamageMult(e._elemStatus);
     if(e.role==='core' && isArrowDamage(opts)) return deflectArrow(e,opts);
     if(e.role==='core' && isGasDamage(opts)){
-      scareCoreFromGas(e,opts && opts.x,opts && opts.y,layoutFor());
+      scareCoreFromGas(e,opts && opts.x,opts && opts.y,layoutFor(),opts);
       amount*=CFG.GAS_DAMAGE_MULT;
     }
     if(e.role==='core' && !coreVulnerable(e)){
       if(state.hintCd<=0){
-        say('The excavator is under the rock. Follow the fresh tunnel and hit it when it surfaces.');
+        say('The excavator is under the rock. Follow the fresh tunnel and hit it when it surfaces.',{urgent:true});
         state.hintCd=2.5;
       }
       addEffect({type:'sparks',kind:'earth',x:e.x,y:e.y,t:0,max:0.22,r:4});
@@ -1851,7 +1892,7 @@ const undergroundBoss = (function(){
       if(buried>0){
         addEffect({type:'buriedDamage',kind:'earth',x:e.x,y:e.y,t:0,max:0.75,r:7});
         if(state.hintCd<=0){
-          say('Mara backfills part of the hit. Break a memory cairn to make the buried damage return.');
+          say('Mara backfills part of the hit. Break a memory cairn to make the buried damage return.',{urgent:true});
           state.hintCd=3.0;
         }
       }
@@ -1859,7 +1900,7 @@ const undergroundBoss = (function(){
     e.hp-=amount;
     e.hitFlash=0.18;
     addEffect({type:'hit',kind:'earth',x:e.x,y:e.y,t:0,max:0.28,r:(e.radius||1)*2.2});
-    if(e.hp<=0) defeatEntity(e);
+    if(e.hp<=0) defeatEntity(e,opts);
     return true;
   }
   function entityHitScore(e,x,y,r){

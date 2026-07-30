@@ -108,9 +108,36 @@ const guardianLairs = (function(){
   function dist2(ax,ay,bx,by){ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; }
   function mulberry32(a){ a=a>>>0; return function(){ a|=0; a=(a+0x6D2B79F5)|0; let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
   function seedFor(kind,x){ return (((WG.worldSeed||1) ^ Math.imul(Math.round(x)|0, kind==='fire'?0x9e3779b1:0x85ebca6b))>>>0); }
-  function say(t){ try{ if(root.msg) root.msg(t); }catch(e){} }
+  function say(t,opts){
+    try{
+      if(MM.smartFeed && MM.smartFeed.world) MM.smartFeed.world(t,opts);
+      else if(root.msg) root.msg(t);
+    }catch(e){}
+  }
   function sfx(id,opts){ try{ if(MM.audio && MM.audio.play) MM.audio.play(id,opts); }catch(e){} }
   function playerRef(){ return root.player || null; }
+  function discoveryActor(opts){
+    const explicit=String(opts && opts.actor || '');
+    if(explicit) return explicit;
+    const source=String(opts && opts.source || '').toLowerCase();
+    if(!source || source==='hero' || source==='player' || source==='local-hero') return 'local-hero';
+    if(source==='guest' || source==='coop' || source==='host-for-guest') return 'host-for-guest';
+    if(source==='watcher' || source==='remote-hero') return source;
+    return 'world';
+  }
+  function observeGuardianPrinciple(id,kind,e,opts,extra){
+    try{
+      const d=MM.discovery;
+      if(!d || typeof d.observe!=='function') return;
+      if(typeof d.has==='function' && d.has(id)) return;
+      d.observe('guardian_principle',Object.assign({
+        kind,
+        guardian:e && e.kind || '',
+        actor:discoveryActor(opts),
+        target:{x:finite(e && e.x,0),y:finite(e && e.y,0)}
+      },extra||{}));
+    }catch(err){}
+  }
   function progressHearts(){
     try{ if(MM.progress && MM.progress.guardianHearts) return MM.progress.guardianHearts() || {}; }catch(e){}
     return {};
@@ -1109,7 +1136,7 @@ const guardianLairs = (function(){
       const y=clamp(lead.y, L.floorY-22, L.floorY-4);
       addHazard({type:'impact',kind:'fire',x,y,r:2.4+i*0.18,t:0,delay:0.82+i*0.08,life:0.36,dmg:19+i*2,source:e.id});
     }
-    say('Ignivar calls down burning stars.');
+    say('Ignivar calls down burning stars.',{urgent:true});
   }
   function spawnFireLance(e,p){
     const lead=targetPoint(p,0.72);
@@ -1177,7 +1204,7 @@ const guardianLairs = (function(){
       if(i===safe) continue;
       addHazard({type:'impact',kind:'fire',x:center+(i-2)*4.3,y:L.floorY-2,r:1.7,t:0,delay:0.92+i*0.06,life:0.32,dmg:15,source:e.id});
     }
-    say('Nara: Every blaze leaves one cool thought. Find it.');
+    say('Nara: Every blaze leaves one cool thought. Find it.',{urgent:true});
   }
   function updateTrueSelf(e,p,getTile,dt,L){
     L=L||layoutFor('fire');
@@ -1200,7 +1227,7 @@ const guardianLairs = (function(){
         e.attackCd=1.4;
         addEffect({type:'torchRelight',kind:'fire',x:e.x,y:e.y-0.7,t:0,max:1.25,r:12});
         addHazard({type:'ring',kind:'fire',x:e.x,y:e.y,r0:1.5,r1:13,t:0,delay:0.62,life:1.05,dmg:11,source:e.id,terrain:false});
-        say('Nara: Passion relights. Fortunately, so do snowballs.');
+        say('Nara: Passion relights. Fortunately, so do snowballs.',{urgent:true});
         sfx('spark',{x:e.x,y:e.y});
       }
       return;
@@ -1240,7 +1267,7 @@ const guardianLairs = (function(){
       for(let h=0;h<6;h++) setTileSafe(x,L.floorY-1-h,T.ICE,getTile,setTile,{replaceSolid:false});
       addEffect({type:'iceWall',kind:'ice',x:x+0.5,y:L.floorY-3,t:0,max:0.75,r:4});
     }
-    say('Aurex raises a maze of ice.');
+    say('Aurex raises a maze of ice.',{urgent:true});
   }
   function spawnBlizzard(e,p,L){
     L = L || layoutFor(e.kind);
@@ -1255,7 +1282,7 @@ const guardianLairs = (function(){
       const x=clamp(center+i*4.2,L.ax-47,L.ax+47);
       addHazard({type:'projectile',variant:'icicle',kind:'ice',x,y:L.floorY-30-e.rng()*7,vx:(e.rng()-0.5)*0.6,vy:12.5+e.rng()*3.5,r:0.42,t:0,life:3.4,dmg:14,source:e.id});
     }
-    say('Aurex drops an icicle curtain. The quiet gap is deliberate.');
+    say('Aurex drops an icicle curtain. The quiet gap is deliberate.',{urgent:true});
   }
 
   const SILE_BATTLE_LINES=[
@@ -1291,7 +1318,7 @@ const guardianLairs = (function(){
       const q=picks[i];
       addHazard({type:'impact',variant:'memoryEcho',kind:'ice',x:clamp(q.x,L.ax-44,L.ax+44),y:clamp(q.y,L.floorY-21,L.floorY-2),r:1.45,t:0,delay:1.05+i*0.08,life:0.3,dmg:13,source:e.id,terrain:false});
     }
-    say('Sile: The floor remembers where you were, not where you are.');
+    say('Sile: The floor remembers where you were, not where you are.',{urgent:true});
   }
   function spawnChoirGlassCanon(e,p){
     const target=p||e;
@@ -1306,7 +1333,7 @@ const guardianLairs = (function(){
   }
   function spawnChoirHushWave(e){
     addHazard({type:'ring',variant:'hush',kind:'ice',x:e.x,y:e.y,r0:2,r1:26,t:0,delay:0.62,life:1.45,dmg:12,source:e.id,terrain:false});
-    say('Sile: A hush is coming. Jump the punctuation.');
+    say('Sile: A hush is coming. Jump the punctuation.',{urgent:true});
   }
   function openChoirListening(e){
     if(!e || !e.sealed) return false;
@@ -1319,8 +1346,15 @@ const guardianLairs = (function(){
       if(h.kind==='ice' && h.source===e.id && h.type==='projectile') hazards.splice(i,1);
     }
     addEffect({type:'choirListen',kind:'ice',x:e.x,y:e.y,t:0,max:1.65,r:18});
-    say('Sile: There. You let the silence finish. Now answer while the heartglass is open.');
+    say('Sile: There. You let the silence finish. Now answer while the heartglass is open.',{urgent:true});
     sfx('spark',{x:e.x,y:e.y});
+    observeGuardianPrinciple(
+      'guardian_ice_listens_to_silence',
+      'ice_silence_opened',
+      e,
+      null,
+      {quietSeconds:finite(e.quietNeed,0),windowSeconds:finite(e.listeningT,0)}
+    );
     return true;
   }
   function closeChoirListening(e){
@@ -1331,7 +1365,7 @@ const guardianLairs = (function(){
     e.attackCd=1.15;
     addEffect({type:'choirSeal',kind:'ice',x:e.x,y:e.y,t:0,max:1.25,r:13});
     addHazard({type:'ring',variant:'hush',kind:'ice',x:e.x,y:e.y,r0:1.5,r1:13,t:0,delay:0.58,life:1.0,dmg:9,source:e.id,terrain:false});
-    say('Sile: The answer freezes again. Listening is renewable.');
+    say('Sile: The answer freezes again. Listening is renewable.',{urgent:true});
     return true;
   }
   function updateIceChoir(e,p,getTile,dt,L,clockDt){
@@ -2472,7 +2506,7 @@ const guardianLairs = (function(){
     else say('Nara: Ice reaches the torch, but snowballs make the point better.');
     e.weakHint=2.2;
   }
-  function douseNaraTorch(e){
+  function douseNaraTorch(e,opts,coolant){
     if(!e || !e.torchLit) return false;
     e.torchLit=false;
     e.vulnerableT=6.4;
@@ -2482,8 +2516,15 @@ const guardianLairs = (function(){
       if(h.kind==='fire' && h.source===e.id && h.type==='torchJet') hazards.splice(i,1);
     }
     addEffect({type:'torchDouse',kind:'fire',x:e.x,y:e.y-0.72,t:0,max:1.35,r:10});
-    say('Nara: There—the trick. Cool the torch, not the woman. Now every weapon can reach me.');
+    say('Nara: There—the trick. Cool the torch, not the woman. Now every weapon can reach me.',{urgent:true});
     sfx('spark',{x:e.x,y:e.y});
+    observeGuardianPrinciple(
+      'guardian_fire_water_window',
+      'fire_torch_cooled',
+      e,
+      opts,
+      {coolant:String(coolant||weaponElement(opts)||'coolant'),windowSeconds:finite(e.vulnerableT,0)}
+    );
     return true;
   }
   function hitIceChoir(e,dmg,opts){
@@ -2501,7 +2542,7 @@ const guardianLairs = (function(){
         addEffect({type:'choirBlock',kind:'ice',x:e.x,y:e.y,t:0,max:0.5,r:4.4});
         e.wardHint=(Number(e.wardHint)||0)-0.1;
         if(e.wardHint<=0){
-          say('Sile: Every strike restarts the silence. Wait '+e.quietNeed.toFixed(1)+' seconds; listening is the key you do not swing.');
+          say('Sile: Every strike restarts the silence. Wait '+e.quietNeed.toFixed(1)+' seconds; listening is the key you do not swing.',{urgent:true});
           e.wardHint=3.4;
         }
       }
@@ -2516,7 +2557,7 @@ const guardianLairs = (function(){
     e.hitFlash=0.22;
     addEffect({type:element==='fire'?'heartglassThaw':'hit',kind:'ice',x:e.x,y:e.y,t:0,max:0.34,r:3.8});
     if(element==='fire' && source!=='status' && e.weakHint<=0){
-      say('Sile: Fire is an excellent answer. It just was not the question that opened me.');
+      say('Sile: Fire is an excellent answer. It just was not the question that opened me.',{urgent:true});
       e.weakHint=2.3;
     }
     // Burn ticks retain elemental damage, but suppress repeated major combat
@@ -2541,7 +2582,7 @@ const guardianLairs = (function(){
       e.wardHint=(Number(e.wardHint)||0)-0.1;
       addEffect({type:'wardBlock',kind:'fire',x:e.x,y:e.y-0.45,t:0,max:0.42,r:3.2});
       if(e.wardHint<=0){
-        say('Nara: The firewall is literal. Snow is best. If you run out, spit—or try water like a civilized person.');
+        say('Nara: The firewall is literal. Snow is best. If you run out, spit—or try water like a civilized person.',{urgent:true});
         e.wardHint=3.2;
       }
       return true;
@@ -2563,7 +2604,7 @@ const guardianLairs = (function(){
       announceNaraCoolant(e,coolant);
       if(e.torchLit){
         e.frostMeter=Math.min(e.frostNeed,(Number(e.frostMeter)||0)+cooling);
-        if(e.frostMeter>=e.frostNeed) douseNaraTorch(e);
+        if(e.frostMeter>=e.frostNeed) douseNaraTorch(e,opts,coolant);
       }
       addEffect({type:'torchDouse',kind:'fire',x:e.x,y:e.y-0.5,t:0,max:0.42,r:3.4});
       noteCombatEvent({
@@ -2587,7 +2628,7 @@ const guardianLairs = (function(){
     if(e.boss){
       const mult=sidekickShieldMult(e);
       amount*=mult;
-      if(mult<0.95 && e.shieldHint<=0){ say(e.name+' is shielded by its sidekicks.'); e.shieldHint=2.5; }
+      if(mult<0.95 && e.shieldHint<=0){ say(e.name+' is shielded by its sidekicks.',{urgent:true}); e.shieldHint=2.5; }
     }
     const element=weaponElement(opts);
     // weakened elemental matrix (boss_status.js): a soaked guardian conducts

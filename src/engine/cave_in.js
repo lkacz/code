@@ -45,6 +45,12 @@ import { isSolidCollisionTile } from './material_physics.js';
   let stats = { started: 0, collapsed: 0, propped: 0 };
 
   function key(x, y){ return x + ',' + y; }
+  function observe(type, payload){
+    try{
+      const d = MM.discovery;
+      if(d && typeof d.observe === 'function') d.observe(type, payload);
+    }catch(e){}
+  }
   function inWorld(y){ return Number.isFinite(y) && y > WORLD_TOP && y < WORLD_BOTTOM; }
   function getSafe(getTile, x, y){
     try{ const t = getTile(x, y); return t === undefined ? T.STONE : t; }catch(e){ return T.STONE; }
@@ -123,6 +129,10 @@ import { isSolidCollisionTile } from './material_physics.js';
       try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((x + 0.5) * 20, (cy + 0.9) * 20, 'common'); }catch(e){}
       try{ if(root.msg) root.msg('⚠ Strop trzeszczy — podeprzyj go albo uciekaj!'); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('thud', { x, y: cy }); }catch(e){}
+      observe('cave_in_warning', {
+        span,
+        target:{ x:x + 0.5, y:cy + 0.5 }
+      });
     }
     return started;
   }
@@ -153,6 +163,11 @@ import { isSolidCollisionTile } from './material_physics.js';
       try{ if(MM.noise && MM.noise.emit) MM.noise.emit(s.x, s.y, 'blast', 0.5); }catch(e){}
       try{ if(MM.audio && MM.audio.play) MM.audio.play('thud', { x: s.x, y: s.y }); }catch(e){}
       hurtBodies(s);
+      observe('cave_in', {
+        count:dropped,
+        span:s.span,
+        target:{ x:s.x + 0.5, y:s.y + 0.5 }
+      });
     }
     return dropped;
   }
@@ -188,7 +203,14 @@ import { isSolidCollisionTile } from './material_physics.js';
     for(const [k, s] of watching){
       s.t += dt;
       // a prop planted mid-warning saves the roof — that IS the counter-play
-      if(proppedNear(s.x, s.y)){ watching.delete(k); continue; }
+      if(proppedNear(s.x, s.y)){
+        watching.delete(k);
+        observe('cave_in_prevented', {
+          span:s.span,
+          target:{ x:s.x + 0.5, y:s.y + 0.5 }
+        });
+        continue;
+      }
       if(!isNaturalRock(getSafe(getTile, s.x, s.y))){ watching.delete(k); continue; }
       if(s.t >= CFG.WARN_TIME){
         watching.delete(k);

@@ -77,12 +77,25 @@ MM.ui = (function(){
     if(!msgEl){ msgEl = document.getElementById('messages'); }
     return msgEl;
   }
-  function msg(text){
+  function msgImmediate(text){
     const el = ensureMsgEl();
     if(!el) return; // silently ignore if UI not present
     el.textContent = String(text);
     if(msgTimer) clearTimeout(msgTimer);
     msgTimer = setTimeout(()=>{ if(el) el.textContent=''; }, 4000);
+  }
+  function msg(text){
+    try{
+      const feed=MM.smartFeed;
+      if(feed && typeof feed.acceptMessage==='function' && feed.acceptMessage(text,{legacy:true})){
+        const old=ensureMsgEl();
+        if(old) old.textContent='';
+        if(msgTimer) clearTimeout(msgTimer);
+        msgTimer=0;
+        return;
+      }
+    }catch(e){ /* shared feed is optional; retain the immediate lane */ }
+    msgImmediate(text);
   }
   function updateGodButton(on){
     const b = document.getElementById('godBtn');
@@ -2975,7 +2988,7 @@ MM.ui = (function(){
     if(active) b.classList.add('pulse'); else b.classList.remove('pulse');
   }
   // public API
-  const api = { msg, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectEnergyDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, injectNoiseDebugPanel, injectWildfireDebugPanel, injectCaveInDebugPanel, injectForestDebugPanel, injectKilnDebugPanel, injectGliderDebugPanel, injectLayerDebugPanel, injectEconomyDebugPanel, injectGearDebugPanel, injectCapeDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
+  const api = { msg, msgImmediate, updateGodButton, updateImmunityButton, updateMapButton, initMenuToggle, openWorldSettings, closeWorldSettings, injectTimeSlider, injectBackgroundDebugPanel, injectHostilityDebugPanel, injectTravelDebugPanel, injectMobSpawnPanel, injectGasDebugPanel, injectDriftDebugPanel, injectSmrDebugPanel, injectNatureDebugPanel, injectInvasionDebugPanel, injectWindDebugPanel, injectSeasonDebugPanel, injectMeteorDebugPanel, injectDynamoDebugPanel, injectSolarDebugPanel, injectTeleporterDebugPanel, injectTurretDebugPanel, injectSpringPlatformDebugPanel, injectMechDebugPanel, injectEnergyDebugPanel, injectPumpDebugPanel, injectNpcDebugPanel, injectCompanionDebugPanel, injectNoiseDebugPanel, injectWildfireDebugPanel, injectCaveInDebugPanel, injectForestDebugPanel, injectKilnDebugPanel, injectGliderDebugPanel, injectLayerDebugPanel, injectEconomyDebugPanel, injectGearDebugPanel, injectCapeDebugPanel, setRadarPulsing, debugSettings:{load:readDebugSettings,set:debugSet,section:debugSection}, closeMenu: ()=>{}, openMenu: ()=>{}, toggleMenu: ()=>{}, populateMobSpawnButtons: ()=>{} };
   // expose as global msg for legacy callers
   try{ window.msg = msg; }catch(e){}
   return api;

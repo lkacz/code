@@ -1,7 +1,12 @@
-// Sequential HUD feedback for every resource, tool and carried-gear change.
-// Gameplay systems only need to keep emitting the existing inventory/resource
-// events; this module compares snapshots so old and new mutation paths behave
-// consistently without each producer having to format its own message.
+// Adaptive HUD feedback for every resource, tool and carried-gear change.
+// Short runs stay sequential and expressive. A backlog longer than five changes
+// becomes compact batches so a large loot/death transaction cannot occupy the
+// notification lane for tens of seconds. Gameplay systems only need to keep
+// emitting the existing inventory/resource events; this module compares
+// snapshots so old and new mutation paths share one presentation path.
+
+export const INVENTORY_FEEDBACK_COMPACT_THRESHOLD=5;
+export const INVENTORY_FEEDBACK_BATCH_SIZE=8;
 
 function finiteCount(value){
   const n=Number(value);
@@ -96,12 +101,45 @@ function canMerge(a,b){
     && a.deathCause===b.deathCause);
 }
 
+function compactBatch(entries){
+  const list=(Array.isArray(entries)?entries:[]).filter(Boolean);
+  const directions=new Set(list.map(entry=>entry.direction));
+  const causes=new Set(list.map(entry=>entry.cause||''));
+  const deathCauses=new Set(list.map(entry=>entry.deathCause||''));
+  const direction=directions.size===1 && list.length ? list[0].direction : 'mixed';
+  return {
+    type:'batch',
+    key:'batch',
+    name:'Zmiany ekwipunku',
+    delta:list.reduce((sum,entry)=>sum+(Number(entry.delta)||0),0),
+    direction,
+    color:direction==='gain'?'#66d695':direction==='loss'?'#e37a6d':'#79b8e8',
+    cause:causes.size===1 && list.length ? list[0].cause||'' : '',
+    deathCause:deathCauses.size===1 && list.length ? list[0].deathCause||'' : '',
+    entries:list
+  };
+}
+
+function compactTakeCount(length){
+  const count=Math.max(0,Math.floor(Number(length)||0));
+  if(count<=INVENTORY_FEEDBACK_BATCH_SIZE) return count;
+  // Avoid an eight-item card followed by a lonely one-item card.
+  if(count-INVENTORY_FEEDBACK_BATCH_SIZE===1) return INVENTORY_FEEDBACK_BATCH_SIZE-1;
+  return INVENTORY_FEEDBACK_BATCH_SIZE;
+}
+
 export function createInventoryFeedbackQueue(){
   let current=null;
   const pending=[];
+  let compactMode=false;
 
   function promote(){
-    if(!current && pending.length) current=pending.shift();
+    if(!current && pending.length){
+      if(compactMode && pending.length>1){
+        const take=compactTakeCount(pending.length);
+        current=compactBatch(pending.splice(0,take));
+      }else current=pending.shift();
+    }
     return current;
   }
   function push(entries){
@@ -112,21 +150,25 @@ export function createInventoryFeedbackQueue(){
       if(canMerge(tail,entry)) tail.delta+=entry.delta;
       else pending.push(entry);
     }
+    const queued=(current ? (current.type==='batch'?current.entries.length:1) : 0)+pending.length;
+    if(queued>INVENTORY_FEEDBACK_COMPACT_THRESHOLD) compactMode=true;
     promote();
     return state();
   }
   function finish(){
     current=null;
     promote();
+    if(!current && !pending.length) compactMode=false;
     return state();
   }
   function clear(){
     current=null;
     pending.length=0;
+    compactMode=false;
     return state();
   }
   function state(){
-    return {current, pending:pending.slice()};
+    return {current, pending:pending.slice(), compactMode};
   }
   return {push,finish,clear,state};
 }
@@ -160,9 +202,14 @@ function statusCopy(entry){
 export function createInventoryFeedback(options={}){
   const eventTarget=options.eventTarget || (typeof window!=='undefined'?window:null);
   const host=options.host || null;
+  const publish=typeof options.publish==='function' ? options.publish : null;
   const resourceDefs=Array.isArray(options.resourceDefs)?options.resourceDefs:[];
   const specialDefs=Array.isArray(options.specialDefs)?options.specialDefs:[];
   const tierColors=options.tierColors||{};
+  const visibilityDoc=options.document || (host && host.ownerDocument)
+    || (eventTarget && eventTarget.document)
+    || (typeof document!=='undefined'?document:null);
+  const pollInterval=Math.max(250,Number(options.pollInterval)||850);
   const feedbackQueue=createInventoryFeedbackQueue();
   let previous=null;
   let active=false;
@@ -188,7 +235,12 @@ export function createInventoryFeedback(options={}){
       specials[def.key]=finiteCount(value);
     }
     let items=[];
-    try{ items=cloneItems(options.getItems ? options.getItems() : []); }catch(e){ items=[]; }
+    try{
+      const raw=options.getItems ? options.getItems() : [];
+      items=options.itemsAreSnapshots===true
+        ? (Array.isArray(raw)?raw.filter(item=>item && typeof item.id==='string'):[])
+        : cloneItems(raw);
+    }catch(e){ items=[]; }
     return {resources,specials,items};
   }
 
@@ -200,6 +252,12 @@ export function createInventoryFeedback(options={}){
   }
 
   function visibleText(entry){
+    if(entry.type==='batch'){
+      return entry.entries.map(item=>{
+        const amount=(item.delta>0?'+':'−')+Math.abs(item.delta);
+        return amount+' '+item.name;
+      }).join(', ')+'.';
+    }
     const amount=Math.abs(entry.delta);
     const copy=statusCopy(entry);
     return copy.verb+' '+amount+': '+entry.name+', '+copy.context+'.';
@@ -231,6 +289,63 @@ export function createInventoryFeedback(options={}){
     return canvas;
   }
 
+  function renderBatch(row,entry,queueState){
+    row.classList.add('inventoryFeedBatch');
+    row.dataset.count=String(entry.entries.length);
+    const gains=entry.entries.filter(item=>item.delta>0).length;
+    const losses=entry.entries.length-gains;
+    const title=document.createElement('strong');
+    title.className='inventoryFeedBatchTitle';
+    title.textContent=gains===entry.entries.length
+      ? 'ZDOBYTO'
+      : losses===entry.entries.length ? 'UTRACONO' : 'ZMIANY EKWIPUNKU';
+    const count=document.createElement('span');
+    count.className='inventoryFeedBatchCount';
+    count.textContent=entry.entries.length+' POZYCJI';
+    const head=document.createElement('div');
+    head.className='inventoryFeedBatchHead';
+    head.append(title,count);
+    if(entry.cause==='death'){
+      const cause=document.createElement('span');
+      cause.className='inventoryFeedBatchCause';
+      cause.textContent=statusCopy({
+        cause:'death',
+        direction:losses?'loss':'gain',
+        deathCause:entry.deathCause
+      }).context;
+      head.appendChild(cause);
+    }
+    if(queueState.pending.length){
+      const queued=document.createElement('span');
+      queued.className='inventoryFeedBatchQueued';
+      queued.textContent='DALEJ '+queueState.pending.length;
+      head.appendChild(queued);
+    }
+
+    const list=document.createElement('div');
+    list.className='inventoryFeedBatchList';
+    const useMiniThumbs=typeof matchMedia!=='function' || !matchMedia('(max-width:619px)').matches;
+    for(const item of entry.entries){
+      const line=document.createElement('div');
+      line.className='inventoryFeedBatchItem';
+      line.dataset.direction=item.direction;
+      line.style.setProperty('--inventory-feed-item-accent',item.color||'#9fb8d1');
+      const name=document.createElement('span');
+      name.className='inventoryFeedBatchName';
+      name.textContent=item.name;
+      const amount=document.createElement('strong');
+      amount.className='inventoryFeedBatchAmount';
+      amount.textContent=(item.delta>0?'+':'−')+Math.abs(item.delta);
+      if(useMiniThumbs){
+        const thumbnail=makeThumbnail(item);
+        thumbnail.classList.add('inventoryFeedMiniThumb');
+        line.append(thumbnail,name,amount);
+      }else line.append(name,amount);
+      list.appendChild(line);
+    }
+    row.append(head,list);
+  }
+
   function renderCurrent(){
     if(!host) return;
     const queueState=feedbackQueue.state();
@@ -252,33 +367,37 @@ export function createInventoryFeedback(options={}){
     if(entry.cause) row.dataset.cause=entry.cause;
     row.style.setProperty('--inventory-feed-accent',entry.color||'#9fb8d1');
 
-    const thumbnail=makeThumbnail(entry);
-    const amount=document.createElement('strong');
-    amount.className='inventoryFeedAmount';
-    amount.textContent=(entry.delta>0?'+':'−')+Math.abs(entry.delta);
-    const copy=document.createElement('span');
-    copy.className='inventoryFeedCopy';
-    const name=document.createElement('span');
-    name.className='inventoryFeedName';
-    name.textContent=entry.name;
-    const meta=document.createElement('span');
-    meta.className='inventoryFeedMeta';
-    const status=statusCopy(entry);
-    const verb=document.createElement('b');
-    verb.className='inventoryFeedVerb';
-    verb.textContent=status.verb;
-    const context=document.createElement('span');
-    context.className='inventoryFeedContext';
-    context.textContent=status.context;
-    meta.append(verb,context);
-    if(queueState.pending.length){
-      const queued=document.createElement('span');
-      queued.className='inventoryFeedQueued';
-      queued.textContent='jeszcze '+queueState.pending.length;
-      meta.appendChild(queued);
+    if(entry.type==='batch'){
+      renderBatch(row,entry,queueState);
+    }else{
+      const thumbnail=makeThumbnail(entry);
+      const amount=document.createElement('strong');
+      amount.className='inventoryFeedAmount';
+      amount.textContent=(entry.delta>0?'+':'−')+Math.abs(entry.delta);
+      const copy=document.createElement('span');
+      copy.className='inventoryFeedCopy';
+      const name=document.createElement('span');
+      name.className='inventoryFeedName';
+      name.textContent=entry.name;
+      const meta=document.createElement('span');
+      meta.className='inventoryFeedMeta';
+      const status=statusCopy(entry);
+      const verb=document.createElement('b');
+      verb.className='inventoryFeedVerb';
+      verb.textContent=status.verb;
+      const context=document.createElement('span');
+      context.className='inventoryFeedContext';
+      context.textContent=status.context;
+      meta.append(verb,context);
+      if(queueState.pending.length){
+        const queued=document.createElement('span');
+        queued.className='inventoryFeedQueued';
+        queued.textContent='jeszcze '+queueState.pending.length;
+        meta.appendChild(queued);
+      }
+      copy.append(name,meta);
+      row.append(thumbnail,copy,amount);
     }
-    copy.append(name,meta);
-    row.append(thumbnail,copy,amount);
     host.replaceChildren(row);
     host.dataset.active='true';
     host.setAttribute('aria-label',visibleText(entry));
@@ -286,7 +405,9 @@ export function createInventoryFeedback(options={}){
     const show=()=>row.classList.add('show');
     if(typeof requestAnimationFrame==='function') requestAnimationFrame(show);
     else show();
-    const holdMs=Math.min(2200,Math.max(1350,1050+entry.name.length*14));
+    const holdMs=entry.type==='batch'
+      ? Math.min(3200,1800+entry.entries.length*130)
+      : Math.min(2200,Math.max(1350,1050+entry.name.length*14));
     holdTimer=setTimeout(()=>{
       holdTimer=0;
       row.classList.remove('show');
@@ -301,6 +422,36 @@ export function createInventoryFeedback(options={}){
     },holdMs);
   }
 
+  function deliverCurrent(){
+    if(!publish){
+      renderCurrent();
+      return;
+    }
+    // Preserve the proven >5 compacting policy, but hand completed cards to the
+    // shared feed immediately. Its own two-second reveal clock is now the only
+    // presentation clock, so two independent queues cannot drift or duplicate.
+    let guard=0;
+    while(guard++<100){
+      const queueState=feedbackQueue.state();
+      const entry=queueState.current;
+      if(!entry) break;
+      try{
+        publish(entry,queueState);
+      }catch(e){
+        // A presentation failure must not eat inventory feedback. Leave the
+        // current entry in place and fall back to the legacy renderer.
+        renderCurrent();
+        return;
+      }
+      feedbackQueue.finish();
+    }
+    visibleEntry=null;
+    if(host){
+      host.replaceChildren();
+      host.removeAttribute('data-active');
+    }
+  }
+
   function sync(detail){
     const next=readSnapshot();
     if(!previous || !active){
@@ -313,7 +464,7 @@ export function createInventoryFeedback(options={}){
     if(entries.length){
       pendingContext=null;
       feedbackQueue.push(entries);
-      renderCurrent();
+      deliverCurrent();
     }
     return entries;
   }
@@ -340,7 +491,10 @@ export function createInventoryFeedback(options={}){
   function start(){
     previous=readSnapshot();
     active=true;
-    if(!pollTimer) pollTimer=setInterval(()=>sync(),220);
+    if(!pollTimer) pollTimer=setInterval(()=>{
+      if(visibilityDoc && visibilityDoc.hidden) return;
+      sync();
+    },pollInterval);
     return api;
   }
   function reset(opts={}){

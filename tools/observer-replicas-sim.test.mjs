@@ -402,7 +402,7 @@ assert.equal(MAX_OBSERVER_REPLICAS,3,'the performance cap is explicit and immuta
     'placed replicas are dynamically drawn through fog using the hero look');
   assert.match(main,/const region=OBSERVER_REPLICAS\.regionAt\(gp\.tx,gp\.ty\)/,
     'placement preview draws the exact grid-aligned coverage region before purchase');
-  assert.match(main,/ghostHeroPlaced:\(tid\)=>/,
+  assert.match(main,/ghostHeroPlaced:\(tid,x,y,layer,rawFacts\)=>[\s\S]{0,700}if\(id===T\.OBSERVER_REPLICA\) msg\('Atrapa aktywna/,
     'a successful full-hero guest placement receives activation feedback');
   assert.match(ghostHost,/ghostHeroPlacementUsesLocalEntitlement/,
     'the host consults the narrow local-entitlement whitelist');
