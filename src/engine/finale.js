@@ -116,10 +116,63 @@ const finale = (function(){
       return Math.max(0, Math.floor(Number(d && d.completions) || 0));
     }catch(e){ return 0; }
   }
-  function addCompletion(v){
+  function savedLayerRecord(raw, fallbackLayer){
+    if(!raw || typeof raw !== 'object' || !raw.verdict || !raw.verdict.key) return null;
+    const discoveries = raw.discoveries && typeof raw.discoveries === 'object' ? raw.discoveries : {};
+    const milestones = raw.milestones && typeof raw.milestones === 'object' ? raw.milestones : {};
+    return {
+      layer: Math.max(1, Math.floor(Number(raw.layer) || fallbackLayer || 1)),
+      seed: Number.isFinite(Number(raw.seed)) ? Number(raw.seed) : 0,
+      day: Math.max(1, Math.floor(Number(raw.day) || 1)),
+      level: Math.max(1, Math.floor(Number(raw.level) || 1)),
+      deaths: Math.max(0, Math.floor(Number(raw.deaths) || 0)),
+      bossKills: Math.max(0, Math.floor(Number(raw.bossKills) || 0)),
+      discoveries: {
+        count: Math.max(0, Math.floor(Number(discoveries.count) || 0)),
+        total: Math.max(0, Math.floor(Number(discoveries.total) || 0))
+      },
+      milestones: {
+        done: Math.max(0, Math.floor(Number(milestones.done) || 0)),
+        total: Math.max(0, Math.floor(Number(milestones.total) || 0))
+      },
+      verdict: {
+        key: String(raw.verdict.key),
+        title: String(raw.verdict.title || ''),
+        note: String(raw.verdict.note || '')
+      }
+    };
+  }
+  function addCompletion(v, rep){
     try{
       if(typeof localStorage === 'undefined') return;
-      const data = {v: 1, completions: completions() + 1};
+      let previous = null;
+      try{ previous = JSON.parse(localStorage.getItem(LAYERS_KEY)); }catch(e){ previous = null; }
+      const layer = Math.max(0, Math.floor(Number(previous && previous.completions) || 0)) + 1;
+      const history = Array.isArray(previous && previous.history)
+        ? previous.history.map((row,index)=>savedLayerRecord(row,index+1)).filter(Boolean).slice(-11)
+        : [];
+      if(!history.length && previous && previous.lastVerdict && previous.lastVerdict.key && layer>1){
+        const legacy = savedLayerRecord({layer:layer-1, verdict:{
+          key:previous.lastVerdict.key,
+          title:previous.lastVerdict.title,
+          note:'Starszy raport zachował werdykt, lecz utracił szczegółowe pomiary.'
+        }},layer-1);
+        if(legacy) history.push(legacy);
+      }
+      const r = rep && typeof rep === 'object' ? rep : {};
+      const record = savedLayerRecord({
+        layer,
+        seed:r.seed,
+        day:r.day,
+        level:r.level,
+        deaths:r.deaths,
+        bossKills:r.bossKills,
+        discoveries:r.discoveries,
+        milestones:r.milestones,
+        verdict:v
+      },layer);
+      if(record) history.push(record);
+      const data = {v: 2, completions: layer, history};
       // the layer's verdict crosses worlds with the tally: the next title
       // screen greets the veteran by their last earned epithet
       if(v && v.key) data.lastVerdict = {key: String(v.key), title: String(v.title || '')};
@@ -128,12 +181,15 @@ const finale = (function(){
   }
   // Cross-world veterancy for the title screen and the credits roll.
   function layers(){
-    const out = {completions: completions()};
+    const out = {completions: completions(), history: []};
     try{
       if(typeof localStorage !== 'undefined'){
         const d = JSON.parse(localStorage.getItem(LAYERS_KEY));
         if(d && d.lastVerdict && d.lastVerdict.key){
           out.lastVerdict = {key: String(d.lastVerdict.key), title: String(d.lastVerdict.title || '')};
+        }
+        if(d && Array.isArray(d.history)){
+          out.history = d.history.map((row,index)=>savedLayerRecord(row,index+1)).filter(Boolean).slice(-12);
         }
       }
     }catch(e){ /* ignore */ }
@@ -978,7 +1034,8 @@ const finale = (function(){
     if(!state.unlocked){
       state.unlocked = true;
       persist();
-      addCompletion(verdict(report())); // exactly once per world: the layer counts as closed
+      const rep = report();
+      addCompletion(verdict(rep), rep); // exactly once per world: the layer counts as closed
     }
     syncMenuButton();
     if(!state.seen){

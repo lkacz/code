@@ -131,6 +131,7 @@ import { saveStore as SAVE_STORE } from './engine/save_store.js';
 // Far-world simulation clock: frozen far regions + closed-form catch-up on wake.
 import { worldSim as WORLD_SIM } from './engine/world_sim.js';
 import { finale as FINALE } from './engine/finale.js';
+import { layerGraves as LAYER_GRAVES } from './engine/layer_graves.js';
 // Ghost spectator mode (link-join watchers): ghost_client flips MM.ghostMode at
 // import time when the URL carries ?watch=ROOM — everything below honors it.
 import { ghostHost as GHOST_HOST } from './engine/ghost_host.js';
@@ -4715,10 +4716,41 @@ function repairTrackedGrave(){
 	});
 	return false;
 }
+function isTrackedRecoveryGraveAt(tx,ty){
+	return !!(grave && !grave.echo && Number(grave.x)===Number(tx) && Number(grave.y)===Number(ty) && grave.res);
+}
+function generatedLayerGraveLootAt(tx,ty){
+	if(!LAYER_GRAVES || !LAYER_GRAVES.lootAt) return [];
+	return LAYER_GRAVES.lootAt(WORLDGEN.worldSeed,tx,ty)
+		.filter(row=>Array.isArray(row) && RESOURCE_KEY_SET.has(row[0]) && Number(row[1])>0)
+		.map(row=>[row[0],Math.max(1,Math.min(99,Math.floor(Number(row[1])||1)))]);
+}
+function claimGeneratedLayerGraveAt(tx,ty){
+	if(getTile(tx,ty)!==T.GRAVE || isTrackedRecoveryGraveAt(tx,ty)) return null;
+	const loot=generatedLayerGraveLootAt(tx,ty);
+	if(!setForegroundConfirmed(tx,ty,T.AIR)) return null;
+	return loot;
+}
+function presentLayerGraveMemory(tx,ty,loot,actor){
+	const layers=(FINALE && FINALE.layers) ? FINALE.layers() : {completions:0,history:[]};
+	const entry=LAYER_GRAVES.entryAt(WORLDGEN.worldSeed,tx,ty,layers);
+	const memory=entry.memory;
+	const amount=(loot||[]).reduce((sum,row)=>sum+Math.max(0,Number(row&&row[1])||0),0);
+	const target={x:tx+0.5,y:ty+0.5};
+	noteDiscoveryFact('layer_grave_opened',{kind:memory.kind,resources:amount,actor:String(actor||'local-hero'),target});
+	if(memory.kind==='personal') noteDiscoveryFact('previous_layer_echo',{layer:memory.layer,resources:amount,target});
+	const labels=(loot||[]).map(row=>[RES_LABEL[row[0]]||row[0],row[1]]);
+	LAYER_GRAVES.open(entry,{loot:labels});
+	msg(memory.kind==='personal' ? '◈ Odezwał się duch jednej z twoich poprzednich warstw' : '⌁ Odczytano nagrobek pamięci symulacji');
+	try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+	return entry;
+}
 function tryOpenGraveAt(tx,ty){
 	if(getTile(tx,ty)!==T.GRAVE) return false;
-	if(!setForegroundConfirmed(tx,ty,T.AIR)) return false;
-	if(grave && grave.x===tx && grave.y===ty && grave.res){
+	// A hero guest points at the marker; only the host may remove a world tile.
+	if(MM.ghostHeroIntents) return MM.ghostHeroIntents.use(tx,ty);
+	if(isTrackedRecoveryGraveAt(tx,ty)){
+		if(!setForegroundConfirmed(tx,ty,T.AIR)) return false;
 		const got=[];
 		for(const k in grave.res){ if(typeof inv[k]==='number'){ inv[k]+=grave.res[k]; got.push(grave.res[k]+'× '+(RES_LABEL[k]||k)); } }
 		grave=null; saveGrave();
@@ -4726,7 +4758,15 @@ function tryOpenGraveAt(tx,ty){
 		msg('🪦 Odzyskano: '+got.join(', '));
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		updateInventory();
-	} else msg('🪦 Pusty nagrobek');
+		return true;
+	}
+	const loot=claimGeneratedLayerGraveAt(tx,ty);
+	if(!loot) return false;
+	for(const [key,amount] of loot) inv[key]=(inv[key]|0)+amount;
+	presentLayerGraveMemory(tx,ty,loot,'local-hero');
+	spawnBurst((tx+0.5)*TILE,(ty+0.5)*TILE,0,{color:'#8eeaff'});
+	updateInventory(); updateHotbarCounts();
+	noteSaveActivity(); saveState();
 	return true;
 }
 // Bridge for the inventory resources tab: remap a hotbar slot to a block type
@@ -7156,7 +7196,8 @@ try{
 try{ if(!MM.ghostMode && ATTENTION && ATTENTION.refresh) ATTENTION.refresh(); }catch(e){}
 function uiOverlayHold(){
 	return !!((TITLE_SCREEN && TITLE_SCREEN.isOpen && TITLE_SCREEN.isOpen()) ||
-		(FINALE && FINALE.isOpen && FINALE.isOpen()));
+		(FINALE && FINALE.isOpen && FINALE.isOpen()) ||
+		(LAYER_GRAVES && LAYER_GRAVES.isOpen && LAYER_GRAVES.isOpen()));
 }
 // --- Crafting (data-driven: a recipe is cost + effect; the panel renders itself;
 // ingredient labels come from the resource registry RES_LABEL) ---
@@ -9904,11 +9945,12 @@ function chunkTileAt(arr,cx,lx,y,originY,sectionH){
 	if(lx>=0 && lx<CHUNK_W && localY>=0 && localY<sectionH) return arr[localY*CHUNK_W+lx];
 	return getTile(cx*CHUNK_W+lx,y);
 }
-// Gravestone marker: a rounded headstone with an etched cross instead of the old
-// anonymous gray block (players kept reading their death marker as plain stone)
-function drawGraveTile(g,px,py){
+// Physical death graves keep their etched cross. Untracked worldgen graves are
+// memory archives and carry a cyan layer-rune, so their different role is visible
+// before interaction without introducing another persisted tile id.
+function drawGraveTile(g,px,py,memory){
 	g.fillStyle='#6f7480'; g.fillRect(px+2, py+TILE-4, TILE-4, 4); // plinth
-	g.fillStyle='#9aa0ab';
+	g.fillStyle=memory?'#8589a3':'#9aa0ab';
 	g.beginPath();
 	g.moveTo(px+5, py+TILE-4);
 	g.lineTo(px+5, py+7);
@@ -9917,11 +9959,19 @@ function drawGraveTile(g,px,py){
 	g.closePath(); g.fill();
 	g.strokeStyle='rgba(20,22,30,0.55)'; g.lineWidth=1; g.stroke();
 	g.fillStyle='rgba(255,255,255,0.18)'; g.fillRect(px+6, py+4, TILE-12, 2); // crown light
-	g.strokeStyle='rgba(40,44,54,0.85)'; g.lineWidth=1.5; // etched cross
-	g.beginPath();
-	g.moveTo(px+TILE/2, py+8); g.lineTo(px+TILE/2, py+TILE-7);
-	g.moveTo(px+TILE/2-3.5, py+11); g.lineTo(px+TILE/2+3.5, py+11);
-	g.stroke();
+	if(memory){
+		g.strokeStyle='rgba(135,235,255,0.95)'; g.lineWidth=1.4;
+		g.beginPath();
+		g.moveTo(px+TILE/2,py+7); g.lineTo(px+TILE/2+4,py+12);
+		g.lineTo(px+TILE/2,py+TILE-7); g.lineTo(px+TILE/2-4,py+12); g.closePath(); g.stroke();
+		g.fillStyle='rgba(136,112,255,0.72)'; g.fillRect(px+TILE/2-1,py+11,2,2);
+	}else{
+		g.strokeStyle='rgba(40,44,54,0.85)'; g.lineWidth=1.5; // etched cross
+		g.beginPath();
+		g.moveTo(px+TILE/2, py+8); g.lineTo(px+TILE/2, py+TILE-7);
+		g.moveTo(px+TILE/2-3.5, py+11); g.lineTo(px+TILE/2+3.5, py+11);
+		g.stroke();
+	}
 	g.fillStyle='rgba(86,140,70,0.8)'; g.fillRect(px+3, py+TILE-6, 4, 2); // moss tuft
 }
 function drawRespawnTotemTile(g,px,py){
@@ -11541,7 +11591,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 							isSolid(chunkTileAt(arr,cx,lx-1,y,originY,sectionH)),
 							isSolid(chunkTileAt(arr,cx,lx+1,y,originY,sectionH)));
 					}
-					if(t===T.GRAVE) drawGraveTile(cctx, lx*TILE, y*TILE);
+					if(t===T.GRAVE) drawGraveTile(cctx, lx*TILE, y*TILE,!isTrackedRecoveryGraveAt(wx,y));
 					if(t===T.RESPAWN_TOTEM) drawRespawnTotemTile(cctx, lx*TILE, y*TILE);
 					if(t===T.GLOWSHROOM) drawGlowshroomTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
 					if(t===T.VINE) drawVineTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
@@ -13139,6 +13189,7 @@ function pauseTrapKeydown(e){
 	// The finale is a modal stacked above the pause card. Its capture listener
 	// must own Tab/Escape while open; otherwise this older listener can consume
 	// the event first and move focus through controls hidden behind the report.
+	if(LAYER_GRAVES && LAYER_GRAVES.isOpen && LAYER_GRAVES.isOpen()) return;
 	if(FINALE && FINALE.isOpen && FINALE.isOpen()) return;
 	const worldSettingsOverlay=document.getElementById('worldSettingsOverlay');
 	if(worldSettingsOverlay && worldSettingsOverlay.style.display==='block'){
@@ -13285,6 +13336,7 @@ function keybindFocusableItems(){
 }
 function keybindTrapKeydown(e){
 	if(!keybindPanelVisible()) return;
+	if(LAYER_GRAVES && LAYER_GRAVES.isOpen && LAYER_GRAVES.isOpen()) return;
 	if(FINALE && FINALE.isOpen && FINALE.isOpen()) return;
 	const k=e.key.toLowerCase();
 	if(keybindCapture){
@@ -13453,6 +13505,7 @@ function renderRadioPanel(){
 }
 function radioPanelKeydown(e){
 	if(!radioPanelVisible()) return;
+	if(LAYER_GRAVES && LAYER_GRAVES.isOpen && LAYER_GRAVES.isOpen()) return;
 	if(e.key==='Escape'){
 		e.preventDefault(); e.stopImmediatePropagation(); closeRadioPanel(); return;
 	}
@@ -17183,6 +17236,7 @@ function breakMinedTile(){
 	// INTENT — the host validates it with solo-grade rules and the world change
 	// returns on the tile stream; the yield is awarded LOCALLY on the ack
 	// (guest-local player truth, host-validated world truth)
+	if(MM.ghostHeroIntents && mineTileIdAt(mineTx,mineTy)===T.GRAVE) return MM.ghostHeroIntents.use(mineTx,mineTy);
 	if(MM.ghostHeroIntents) return MM.ghostHeroIntents.mineBreak(mineTx,mineTy,mineTileIdAt(mineTx,mineTy));
 	if(mineBossTarget) return breakBossPart();
 	if(!canPhysicallyTargetTile(mineTx,mineTy)) return false;
@@ -23528,6 +23582,16 @@ MM.ghostBridge={
 				chestItems:receipt?Math.max(0,Number(receipt.itemCount)||0):0
 			};
 		}
+		if(tId===T.GRAVE){
+			// A tracked death grave belongs to the host's recovery contract. Generated
+			// graves are world lore and may be claimed by any embodied guest.
+			if(isTrackedRecoveryGraveAt(tx,ty)) return {ok:false,reason:'recovery-grave'};
+			const loot=claimGeneratedLayerGraveAt(tx,ty);
+			if(!loot) return {ok:false,reason:'grave'};
+			try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
+			noteSaveActivity(); saveState();
+			return {ok:true,memoryGrave:true,loot:loot.slice(0,8)};
+		}
 		if(tId===T.VENDING_MACHINE && VENDING && VENDING.vendAt){
 			// the vend runs with a CAPTURING sink: world state (stock, daily draw,
 			// breakage + its lifecycle hooks) is the host's, the loot is the caller's
@@ -23548,6 +23612,8 @@ MM.ghostBridge={
 		}
 		return {ok:false, reason:'use'};
 	},
+	// GUEST-side: the host validated the world claim; the guest owns its archive.
+	ghostHeroLayerGraveOpened:(tx,ty,loot)=>presentLayerGraveMemory(tx,ty,loot,'hero-guest'),
 	// HOST-side: a hero guest's teleporter jump — tryTeleport is driver-agnostic
 	// (it mutates the passed body), the pad's own energy accounting and cooldowns
 	// apply; heroEnergy is withheld so a guest can never drain the HOST's pool
@@ -23675,6 +23741,7 @@ MM.ghostBridge={
 		}
 		const tId=getTile(tx,ty);
 		if(claimed && tId!==T.OBSERVER_REPLICA) return {ok:false, reason:'tile'};
+		if(tId===T.GRAVE) return {ok:false, reason:'grave'}; // graves resolve only through the host-owned use transaction
 		if(tId===T.OBSERVER_REPLICA){
 			if(!claimed) return {ok:false, reason:'qid'};
 			if(!observerTransactionPersistenceReady()) return {ok:false, reason:'save'};

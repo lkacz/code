@@ -1099,6 +1099,22 @@ const rows=[
     trigger:{event:'temporal_echo_expired',match:{lost:{$gt:0}}}
   },
   {
+    id:'layer_graves_hold_memory',
+    label:'Stare nagrobki przechowują zasoby i urywki pamięci symulacji',
+    cat:'◈ Pamięć warstw',
+    hint:'Przeszukaj cmentarz przy jednej ze zrujnowanych świątyń…',
+    stage:'observation',tier:'observation',chain:'layer_memory',
+    trigger:{event:'layer_grave_opened',match:{resources:{$gt:0}}}
+  },
+  {
+    id:'previous_layers_leave_echoes',
+    label:'Niektóre duchy pamiętają warstwy ukończone przez tego samego gracza',
+    cat:'◈ Pamięć warstw',
+    hint:'Po zamknięciu warstwy słuchaj kolejnych nagrobków pamięci…',
+    stage:'insight',tier:'principle',chain:'layer_memory',requires:['layer_graves_hold_memory'],
+    trigger:{event:'previous_layer_echo',match:{layer:{$gt:0}}}
+  },
+  {
     id:'skill_point',
     label:'Poziomy zamieniają doświadczenie w wybór rozwoju',
     cat:'🧍 Na własnej skórze',

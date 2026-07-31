@@ -1358,12 +1358,23 @@ const ghostClient = (function(){
 					bridge.msg('🧱 Gospodarz odrzucił postawienie (' + (pl.reason || '?') + ') — surowiec wraca');
 				}
 				else if(pl.a === 'mine' && !pl.ok && pl.reason === 'chest') bridge.msg('🎁 Skrzynię otwórz kliknięciem — nie kilofem');
+				else if(pl.a === 'mine' && !pl.ok && pl.reason === 'grave') bridge.msg('◈ Nagrobek pamięci odczytaj kliknięciem — nie rozbijaj go');
 				else if(pl.a === 'use' && pl.ok && pl.chestTier){
 					try{
 						if(bridge.ghostHeroChestOpened){
 							bridge.ghostHeroChestOpened(pl.chestTier,pl.x,pl.y,pl.chestSpawned,pl.chestItems);
 						}
 					}catch(e){ /* fine */ }
+				}
+				else if(pl.a === 'use' && pl.ok && pl.memoryGrave && Array.isArray(pl.loot)){
+					// The host owns removal and loot validation; the guest owns both its
+					// hero inventory and the history used to render a personal layer echo.
+					const banked=[];
+					for(const row of pl.loot.slice(0, 8)){
+						if(!Array.isArray(row) || typeof row[0] !== 'string') continue;
+						try{ if(bridge.ghostHeroGain && bridge.ghostHeroGain(row[0],row[1]||1)) banked.push([row[0],row[1]||1]); }catch(e){ /* fine */ }
+					}
+					try{ if(bridge.ghostHeroLayerGraveOpened) bridge.ghostHeroLayerGraveOpened(pl.x,pl.y,banked); }catch(e){ /* fine */ }
 				}
 				else if(pl.a === 'use' && pl.ok && Array.isArray(pl.loot)){
 					// vending: the machine's roll lands in the guest's own inventory

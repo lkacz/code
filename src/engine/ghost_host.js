@@ -2355,6 +2355,7 @@ const ghostHost = (function(){
 			}
 			entry.peer.send({ t: 'hact', a: 'use', ok: !!(res && res.ok), reason: (res && res.reason) || null, x: tx, y: ty,
 				loot: (res && res.loot) || null,
+				memoryGrave: !!(res && res.memoryGrave),
 				chestTier: (res && typeof res.chestTier==='string') ? res.chestTier.slice(0,16) : null,
 				chestSpawned: Math.max(0,Math.min(64,Number(res && res.chestSpawned)||0)),
 				chestItems: Math.max(0,Math.min(64,Number(res && res.chestItems)||0)),

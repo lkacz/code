@@ -160,6 +160,12 @@ assert.equal(finale.layers().completions, 2, 'the same world never double-counts
 const lastVerdict = finale.layers().lastVerdict;
 assert.ok(lastVerdict && typeof lastVerdict.key === 'string' && lastVerdict.title.length > 3,
   'the closing verdict is stamped into mm_layers_v1 for the next title screen');
+const layerArchive = finale.layers().history;
+assert.equal(layerArchive.length, 2, 'each completed world leaves one bounded archive record');
+assert.deepEqual(layerArchive.map(row => row.layer), [1, 2], 'archive records retain their layer numbers');
+assert.ok(layerArchive.every(row => row.verdict && row.verdict.key && Number.isFinite(row.seed)),
+  'each archive record carries its verdict and measured world identity');
+assert.equal(JSON.parse(store.get('mm_layers_v1')).v, 2, 'the detailed archive upgrades the layer ledger to v2');
 assert.equal(finale.souvenir(), null, 'no canvas in Node: the souvenir declines gracefully');
 // Veterancy reaches the title: the splash pool grows once a layer is closed.
 const vetLine = titleScreen.pickSplash(() => 0.9999);

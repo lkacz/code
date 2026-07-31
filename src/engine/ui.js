@@ -156,7 +156,8 @@ MM.ui = (function(){
   function trapWorldSettingsFocus(e,wsOverlay){
     const visible=wsOverlay && wsOverlay.style.display!=='none' && wsOverlay.style.display!=='';
     if(!visible) return false;
-    if(window.MM && MM.finale && MM.finale.isOpen && MM.finale.isOpen()) return false;
+    if(window.MM && ((MM.finale && MM.finale.isOpen && MM.finale.isOpen())
+      || (MM.layerGraves && MM.layerGraves.isOpen && MM.layerGraves.isOpen()))) return false;
     if(e.ctrlKey || e.metaKey || e.altKey) return false;
     if(e.key==='Escape'){
       e.preventDefault(); e.stopImmediatePropagation(); closeWorldSettings(); return true;
