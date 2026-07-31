@@ -783,7 +783,9 @@ const undergroundBoss = (function(){
     addEffect({type:'burst',x:L.bossX,y:L.bossY,kind:'earth',t:0,max:1.4,r:18});
     say(state.shellBroken
       ? SPEC.finalName+' returns to the survey line. The buried damage is still on the books.'
-      : SPEC.bossName+' starts cutting tunnels beneath the alien gate.');
+      : SPEC.bossName+' starts cutting tunnels beneath the alien gate.',{
+      target:{x:L.bossX,y:L.bossY}
+    });
     sfx('explosion',{x:L.bossX,y:L.bossY});
     return true;
   }

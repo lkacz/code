@@ -6,6 +6,9 @@ export const SMART_FEED_MIN_INTERVAL_MS=2000;
 export const SMART_FEED_DISCOVERY_HOLD_MS=4200;
 export const SMART_FEED_MAX_PENDING=32;
 export const SMART_FEED_MAX_HISTORY=24;
+export const SMART_FEED_MAX_HOLD_MS=15000;
+const SMART_FEED_MAX_ITEMS=12;
+const SMART_FEED_MAX_COUNTER=1000000000;
 
 const KIND_META=Object.freeze({
   discovery:{icon:'!',title:'ODKRYCIE',accent:'#ffd66e',priority:100},
@@ -27,7 +30,16 @@ function finite(value,fallback=0){
 }
 
 function safeText(value,max=420){
-  return String(value==null?'':value).replace(/\s+/g,' ').trim().slice(0,max);
+  const budget=Math.max(0,Math.trunc(finite(max,420)));
+  if(!budget || value==null) return '';
+  const type=typeof value;
+  if(type!=='string' && type!=='number' && type!=='boolean' && type!=='bigint') return '';
+  const raw=type==='string' ? value : String(value);
+  // Whitespace normalization used to scan and allocate for the complete value
+  // before slicing it. Bound the scan itself: optional producers are a public
+  // boundary and a multi-megabyte label must not stall a gameplay frame.
+  const scanBudget=Math.max(budget+64,budget*4);
+  return raw.slice(0,scanBudget).replace(/\s+/g,' ').trim().slice(0,budget);
 }
 
 function normalizedKey(value){
@@ -66,7 +78,13 @@ function normalizeItem(item){
     name:safeText(item.name||item.label||'Przedmiot',90),
     delta,
     icon:safeText(item.icon||'',8),
-    color:safeText(item.color||'',32)
+    color:safeText(item.color||'',32),
+    // This is an inventory identity, not a tile identity. The game binding must
+    // resolve it through its own resource catalog before exposing an action.
+    resourceKey:safeText(item.resourceKey||'',96),
+    // Gear follows the same rule: retain only an opaque, bounded lookup key.
+    // The UI binding re-resolves it through MM.inventory before equipping.
+    gearId:safeText(item.gearId||'',64)
   };
 }
 
@@ -75,10 +93,13 @@ function normalizeNotice(raw,sequence,at){
   const kind=KIND_META[src.kind] ? src.kind : 'info';
   const meta=kindMeta(kind);
   const text=safeText(src.text);
-  const title=safeText(src.title||meta.title,80);
-  const rawItems=(Array.isArray(src.items)?src.items:[]).map(normalizeItem).filter(Boolean);
-  const items=rawItems.slice(0,12);
-  if(!text && !title && !items.length) return null;
+  const explicitTitle=safeText(src.title,80);
+  // Bound work before normalization. The public feed API may receive data from
+  // optional modules, so a hostile/accidental giant array must not allocate and
+  // stringify every entry merely to keep the first twelve.
+  const itemInput=Array.isArray(src.items)?src.items:[];
+  const items=itemInput.slice(0,SMART_FEED_MAX_ITEMS).map(normalizeItem).filter(Boolean);
+  if(!text && !explicitTitle && !items.length) return null;
   const target=src.target && Number.isFinite(Number(src.target.x)) && Number.isFinite(Number(src.target.y))
     ? {x:Number(src.target.x),y:Number(src.target.y)}
     : null;
@@ -86,25 +107,51 @@ function normalizeNotice(raw,sequence,at){
     id:'smart-notice-'+sequence,
     sequence,
     kind,
-    title:title||meta.title,
+    title:explicitTitle||meta.title,
     text,
     icon:safeText(src.icon||meta.icon,8),
     accent:safeText(src.accent||meta.accent,32),
     priority:Math.max(0,Math.min(200,finite(src.priority,meta.priority))),
     dedupeKey:safeText(src.dedupeKey||'',220),
-    xp:Math.max(0,Math.trunc(finite(src.xp))),
+    xp:Math.max(0,Math.min(SMART_FEED_MAX_COUNTER,Math.trunc(finite(src.xp)))),
     stage:safeText(src.stage||'',24),
     presentation:safeText(src.presentation||'',24),
     tier:safeText(src.tier||'',60),
     context:safeText(src.context||'',100),
-    count:Math.max(1,Math.trunc(finite(src.count,1))),
+    announce:src.announce!==false,
+    count:Math.max(1,Math.min(SMART_FEED_MAX_COUNTER,Math.trunc(finite(src.count,1)))),
     occurredAt:finite(src.occurredAt,at),
     createdAt:at,
-    holdFor:Math.max(0,finite(src.holdFor,kind==='discovery'?SMART_FEED_DISCOVERY_HOLD_MS:0)),
+    holdFor:Math.max(0,Math.min(
+      SMART_FEED_MAX_HOLD_MS,
+      finite(src.holdFor,kind==='discovery'?SMART_FEED_DISCOVERY_HOLD_MS:0)
+    )),
     target,
+    taskId:safeText(src.taskId||'',80),
+    discoveryId:safeText(src.discoveryId||'',96),
+    undoToken:safeText(src.undoToken||'',96),
     items,
-    omittedItems:Math.max(0,rawItems.length-items.length+Math.trunc(finite(src.omittedItems)))
+    omittedItems:Math.min(
+      SMART_FEED_MAX_COUNTER,
+      Math.max(0,itemInput.length-SMART_FEED_MAX_ITEMS)
+        +Math.max(0,Math.trunc(finite(src.omittedItems)))
+    )
   };
+}
+
+function noticeSnapshot(notice){
+  if(!notice) return null;
+  return {
+    ...notice,
+    target:notice.target ? {...notice.target} : null,
+    items:Array.isArray(notice.items) ? notice.items.map(item=>({...item})) : []
+  };
+}
+
+function pushResult(accepted,merged,notice,location){
+  const result={accepted,merged,notice:noticeSnapshot(notice)};
+  if(location) result.location=location;
+  return result;
 }
 
 export function createSmartFeedQueue(options={}){
@@ -120,40 +167,51 @@ export function createSmartFeedQueue(options={}){
 
   function push(raw,now=Date.now()){
     const at=finite(now,Date.now());
-    const notice=normalizeNotice(raw,++sequence,at);
-    if(!notice) return {accepted:false,merged:false,notice:null};
+    let notice=null;
+    try{ notice=normalizeNotice(raw,++sequence,at); }
+    catch(e){ return pushResult(false,false,null); }
+    if(!notice) return pushResult(false,false,null);
     if(notice.dedupeKey){
       const queued=pending.find(item=>item.dedupeKey===notice.dedupeKey);
       if(queued){
-        queued.count+=notice.count;
+        queued.count=Math.min(SMART_FEED_MAX_COUNTER,queued.count+notice.count);
         queued.text=notice.text||queued.text;
         queued.title=notice.title||queued.title;
         queued.stage=notice.stage||queued.stage;
         queued.presentation=notice.presentation||queued.presentation;
-        queued.xp=Math.min(1000000000,queued.xp+notice.xp);
+        queued.xp=Math.min(SMART_FEED_MAX_COUNTER,queued.xp+notice.xp);
         queued.occurredAt=notice.occurredAt;
         queued.createdAt=at;
-        if(notice.items.length){
-          queued.items=notice.items;
-          queued.omittedItems=notice.omittedItems;
-        }
-        return {accepted:true,merged:true,notice:queued,location:'pending'};
+        // Direct-action capabilities describe the newest occurrence only. Do
+        // not retain an old waypoint/task/undo token when a duplicate producer
+        // intentionally omits it.
+        queued.taskId=notice.taskId;
+        queued.discoveryId=notice.discoveryId;
+        queued.undoToken=notice.undoToken;
+        queued.target=notice.target;
+        queued.announce=notice.announce;
+        queued.items=notice.items;
+        queued.omittedItems=notice.omittedItems;
+        return pushResult(true,true,queued,'pending');
       }
       const shown=history.find(item=>item.dedupeKey===notice.dedupeKey && at-item.createdAt<=dedupeWindow);
       if(shown){
-        shown.count+=notice.count;
+        shown.count=Math.min(SMART_FEED_MAX_COUNTER,shown.count+notice.count);
         shown.text=notice.text||shown.text;
         shown.title=notice.title||shown.title;
         shown.stage=notice.stage||shown.stage;
         shown.presentation=notice.presentation||shown.presentation;
-        shown.xp=Math.min(1000000000,shown.xp+notice.xp);
+        shown.xp=Math.min(SMART_FEED_MAX_COUNTER,shown.xp+notice.xp);
         shown.occurredAt=notice.occurredAt;
         shown.createdAt=at;
-        if(notice.items.length){
-          shown.items=notice.items;
-          shown.omittedItems=notice.omittedItems;
-        }
-        return {accepted:true,merged:true,notice:shown,location:'history'};
+        shown.taskId=notice.taskId;
+        shown.discoveryId=notice.discoveryId;
+        shown.undoToken=notice.undoToken;
+        shown.target=notice.target;
+        shown.announce=notice.announce;
+        shown.items=notice.items;
+        shown.omittedItems=notice.omittedItems;
+        return pushResult(true,true,shown,'history');
       }
     }
     pending.push(notice);
@@ -161,7 +219,7 @@ export function createSmartFeedQueue(options={}){
       pending.sort((a,b)=>b.priority-a.priority || b.sequence-a.sequence);
       pending.length=maxPending;
     }
-    return {accepted:true,merged:false,notice,location:'pending'};
+    return pushResult(true,false,notice,'pending');
   }
 
   function promote(now=Date.now()){
@@ -174,7 +232,7 @@ export function createSmartFeedQueue(options={}){
     if(history.length>maxHistory) history.length=maxHistory;
     lastPromotion=at;
     lastHold=Math.max(minInterval,notice.holdFor);
-    return notice;
+    return noticeSnapshot(notice);
   }
 
   function delay(now=Date.now()){
@@ -191,8 +249,8 @@ export function createSmartFeedQueue(options={}){
 
   function state(){
     return {
-      pending:pending.slice(),
-      history:history.slice(),
+      pending:pending.map(noticeSnapshot),
+      history:history.map(noticeSnapshot),
       lastPromotion,
       lastHold,
       minInterval,
@@ -211,10 +269,21 @@ function relativeAge(createdAt,now){
   return Math.floor(seconds/60)+' min';
 }
 
-function appendInventoryItems(doc,body,items,omittedItems=0){
-  if(!items.length) return;
+function inventoryBindingDescriptor(value){
+  if(value===true) return {kind:'hotbar',compact:true};
+  if(!value || typeof value!=='object') return null;
+  const kind=value.kind;
+  if(kind!=='hotbar' && kind!=='equip' && kind!=='resource') return null;
+  return {kind,compact:value.compact===true};
+}
+
+function appendInventoryItems(doc,body,items,omittedItems=0,bindInventoryItem=null,notice=null){
+  if(!items.length) return {actionable:0,hotbar:0};
   const list=doc.createElement('div');
   list.className='smartFeedItems';
+  let actionable=0;
+  let hotbar=0;
+  let compactActions=0;
   for(const item of items){
     const row=doc.createElement('div');
     row.className='smartFeedItem';
@@ -230,6 +299,24 @@ function appendInventoryItems(doc,body,items,omittedItems=0){
     amount.className='smartFeedItemAmount';
     amount.textContent=(item.delta>0?'+':item.delta<0?'−':'')+Math.abs(item.delta);
     row.append(icon,name,amount);
+    if(bindInventoryItem){
+      let binding=null;
+      try{
+        binding=inventoryBindingDescriptor(bindInventoryItem({row,handle:icon,item,notice}));
+      }catch(e){ binding=null; }
+      if(binding){
+        actionable++;
+        row.dataset.feedActionable=binding.kind;
+        if(binding.kind==='hotbar'){
+          hotbar++;
+          row.dataset.hotbarAssignable='true';
+        }
+        if(binding.compact && compactActions<2){
+          compactActions++;
+          row.dataset.compactAction='true';
+        }
+      }
+    }
     list.appendChild(row);
   }
   body.appendChild(list);
@@ -239,6 +326,7 @@ function appendInventoryItems(doc,body,items,omittedItems=0){
     more.textContent='+'+omittedItems+' więcej';
     body.appendChild(more);
   }
+  return {actionable,hotbar};
 }
 
 export function createSmartFeed(options={}){
@@ -247,6 +335,8 @@ export function createSmartFeed(options={}){
   const clock=typeof options.now==='function' ? options.now : ()=>Date.now();
   const onPromote=typeof options.onPromote==='function' ? options.onPromote : null;
   const onUrgent=typeof options.onUrgent==='function' ? options.onUrgent : null;
+  const bindInventoryItem=typeof options.bindInventoryItem==='function' ? options.bindInventoryItem : null;
+  const bindNoticeActions=typeof options.bindNoticeActions==='function' ? options.bindNoticeActions : null;
   const queue=createSmartFeedQueue(options);
   let expanded=options.expanded===undefined ? false : !!options.expanded;
   let timer=0;
@@ -304,7 +394,16 @@ export function createSmartFeed(options={}){
       copy.textContent=notice.text;
       body.appendChild(copy);
     }
-    appendInventoryItems(doc,body,notice.items,notice.omittedItems);
+    const itemActions=appendInventoryItems(
+      doc,
+      body,
+      notice.items,
+      notice.omittedItems,
+      bindInventoryItem,
+      notice
+    );
+    if(itemActions.actionable>0) card.dataset.actionItems=String(itemActions.actionable);
+    if(itemActions.hotbar>0) card.dataset.hotbarItems=String(itemActions.hotbar);
     if(notice.context || notice.xp>0){
       const footer=doc.createElement('div');
       footer.className='smartFeedFooter';
@@ -321,6 +420,15 @@ export function createSmartFeed(options={}){
       }
       body.appendChild(footer);
     }
+    if(bindNoticeActions){
+      let actionCount=0;
+      try{
+        actionCount=Math.max(0,Math.min(12,Math.trunc(finite(
+          bindNoticeActions({card,body,notice})
+        ))));
+      }catch(e){ actionCount=0; }
+      if(actionCount>0) card.dataset.noticeActions=String(actionCount);
+    }
     if(notice.count>1){
       const count=doc.createElement('strong');
       count.className='smartFeedRepeat';
@@ -330,9 +438,56 @@ export function createSmartFeed(options={}){
     return card;
   }
 
+  function controlFocusSnapshot(active){
+    if(!active || !host || typeof host.contains!=='function' || !host.contains(active) || typeof active.closest!=='function') return null;
+    const card=active.closest('.smartFeedBubble');
+    const noticeId=card&&card.dataset ? String(card.dataset.noticeId||'') : '';
+    if(!card||!noticeId) return null;
+    const row=active.closest('.smartFeedItem');
+    if(row){
+      const rows=[...card.querySelectorAll('.smartFeedItem')];
+      const rowIndex=rows.indexOf(row);
+      const kind=active.classList&&active.classList.contains('smartFeedItemHotbar')
+        ? 'hotbar'
+        : active.classList&&active.classList.contains('smartFeedItemEquip')
+          ? 'equip'
+          : active.classList&&active.classList.contains('smartFeedItemCraft')
+            ? 'craft'
+            : '';
+      if(rowIndex>=0 && kind) return {type:'item',noticeId,rowIndex,kind};
+    }
+    if(active.classList&&active.classList.contains('smartFeedAction')){
+      return {type:'notice',noticeId,label:String(active.textContent||'')};
+    }
+    return null;
+  }
+
+  function restoreControlFocus(snapshot,stack){
+    if(!snapshot||!stack) return false;
+    const card=[...stack.querySelectorAll('.smartFeedBubble')]
+      .find(node=>node.dataset.noticeId===snapshot.noticeId);
+    if(!card) return false;
+    let target=null;
+    if(snapshot.type==='item'){
+      const row=card.querySelectorAll('.smartFeedItem')[snapshot.rowIndex];
+      if(row){
+        if(snapshot.kind==='hotbar') target=row.querySelector('.smartFeedItemHotbar');
+        else if(snapshot.kind==='equip') target=row.querySelector('.smartFeedItemEquip');
+        else if(snapshot.kind==='craft') target=row.querySelector('.smartFeedItemCraft');
+      }
+    }else if(snapshot.type==='notice'){
+      target=[...card.querySelectorAll('.smartFeedAction')]
+        .find(node=>String(node.textContent||'')===snapshot.label) || null;
+    }
+    if(!target||typeof target.focus!=='function') return false;
+    try{ target.focus({preventScroll:true}); }catch(e){ target.focus(); }
+    return true;
+  }
+
   function render(){
     if(!host || !doc || destroyed) return;
     const active=doc.activeElement;
+    const restoreControl=controlFocusSnapshot(active);
     const restoreToggleFocus=!!(active && active.classList && active.classList.contains('smartFeedToggle'));
     const restoreStackFocus=!!(active && active.classList && active.classList.contains('smartFeedStack'));
     const previousStack=host.querySelector('.smartFeedStack');
@@ -390,11 +545,13 @@ export function createSmartFeed(options={}){
         .find(card=>card.dataset.noticeId===scrollAnchor.id);
       if(anchor) stack.scrollTop=Math.max(0,anchor.offsetTop-scrollAnchor.offset);
     }
-    if(restoreToggleFocus) toggle.focus({preventScroll:true});
+    if(restoreControl){
+      if(!restoreControlFocus(restoreControl,stack)) toggle.focus({preventScroll:true});
+    }else if(restoreToggleFocus) toggle.focus({preventScroll:true});
     else if(restoreStackFocus && expanded) stack.focus({preventScroll:true});
     if(newestId){
       const latest=state.history.find(notice=>notice.id===newestId);
-      if(latest){
+      if(latest&&latest.announce!==false){
         const itemSummary=latest.items.length
           ? latest.items.slice(0,6).map(item=>(item.delta>0?'plus ':'minus ')+Math.abs(item.delta)+' '+item.name).join(', ')
             +(latest.items.length>6 || latest.omittedItems>0
@@ -478,6 +635,9 @@ export function createSmartFeed(options={}){
       dedupeKey:kind+':'+normalizedKey(text)
     },opts);
     if(urgent) notice.priority=Math.max(120,finite(notice.priority,meta.priority));
+    // The immediate HUD lane is already a live region. Keep the archival feed
+    // visual, but do not make assistive technology hear the same alert twice.
+    if(urgent&&onUrgent&&opts.announce===undefined) notice.announce=false;
     const accepted=push(notice);
     if(urgent && onUrgent){
       try{ onUrgent(safeText(text),notice); }catch(e){ /* immediate lane is optional */ }
@@ -514,6 +674,7 @@ export function createSmartFeed(options={}){
     clear,
     destroy,
     setExpanded,
+    refresh:()=>render(),
     isExpanded:()=>expanded,
     state:()=>Object.assign(queue.state(),{expanded}),
     flush:()=>pump()

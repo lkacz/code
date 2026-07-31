@@ -236,7 +236,7 @@ export function isMeteorPickSparkMaterial(t){
 export function isBlastProtectedTile(t){
   if(t===T.UFO_CONCRETE) return false;
   const info=INFO[t] || INFO[T.AIR];
-  return t===T.AIR || t===T.OBSIDIAN || t===T.DIAMOND || t===T.IRIDIUM ||
+  return t===T.AIR || t===T.GRAVE || t===T.OBSIDIAN || t===T.DIAMOND || t===T.IRIDIUM ||
     t===T.BEDROCK || t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE ||
     !!(info && (info.chestTier || info.cache || info.story || info.unmineable));
 }
@@ -244,7 +244,7 @@ export function isBlastProtectedTile(t){
 export function isMeteorProtectedTile(t){
   if(t===T.UFO_CONCRETE) return false;
   const info=INFO[t] || INFO[T.AIR];
-  return t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN ||
+  return t===T.GRAVE || t===T.ANTIGRAVITY_BEACON || t===T.METEOR_SIREN ||
     t===T.VOLCANO_MASTER_STONE || t===T.SERVANT_STONE ||
     !!(info && (info.chestTier || info.cache || info.story || info.unmineable));
 }

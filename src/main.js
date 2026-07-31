@@ -2440,13 +2440,459 @@ function drawInventoryFeedbackThumbnail(canvas,entry){
 	g.fillText(glyph,40,42);
 	return true;
 }
+const SMART_FEED_HOTBAR_KEYS=Object.freeze({'5':0,'6':1,'7':2,'8':3,'9':4,'0':5});
+const SMART_FEED_RESOURCE_DEFS=new Map(
+	RESOURCE_DEFS.filter(def=>def && def.key).map(def=>[String(def.key),def])
+);
+function smartFeedResourceDef(item){
+	if(!item || item.delta<=0 || !item.resourceKey) return null;
+	return SMART_FEED_RESOURCE_DEFS.get(String(item.resourceKey))||null;
+}
+function smartFeedPlaceableDef(item){
+	const def=smartFeedResourceDef(item);
+	return def && def.tile && T[def.tile]!=null ? def : null;
+}
+let smartFeedHotbarUndo=null;
+let smartFeedHotbarUndoSeq=0;
+let smartFeedHotbarUndoTimer=0;
+function hotbarRemapToken(){
+	smartFeedHotbarUndoSeq=(smartFeedHotbarUndoSeq+1)%1000000000;
+	return 'hotbar-'+Date.now().toString(36)+'-'+smartFeedHotbarUndoSeq.toString(36);
+}
+function removeHotbarUndoToast(){
+	clearTimeout(smartFeedHotbarUndoTimer);
+	smartFeedHotbarUndoTimer=0;
+	const old=document.getElementById('hotbarUndoToast');
+	if(!old) return;
+	// Removing the currently focused Undo button must not strand keyboard focus
+	// on <body>, especially while the inventory modal owns the focus trap.
+	if(old.contains(document.activeElement)){
+		const inventoryOverlay=document.getElementById('invOverlay');
+		const inInventory=inventoryOverlay&&inventoryOverlay.style.display==='block';
+		const fallback=inInventory
+			? inventoryOverlay.querySelector('#invClose,[aria-selected="true"],button:not([disabled])')
+			: (document.querySelector('#smartFeed .smartFeedToggle')
+				||document.getElementById('heroCenterBtn')
+				||document.getElementById('openInv'));
+		if(fallback&&fallback.focus){
+			try{ fallback.focus({preventScroll:true}); }catch(e){ fallback.focus(); }
+		}
+	}
+	old.remove();
+}
+function canUndoSmartFeedHotbar(token){
+	const rec=smartFeedHotbarUndo;
+	if(!rec || rec.token!==String(token||'') || Date.now()>rec.expiresAt) return false;
+	const order=MM.hotbar&&MM.hotbar.order?MM.hotbar.order():[];
+	const revision=MM.hotbar&&MM.hotbar.revision?MM.hotbar.revision(rec.slot):-1;
+	return order[rec.slot]===rec.nextKey && revision===rec.revision;
+}
+function undoSmartFeedHotbar(token){
+	if(!canUndoSmartFeedHotbar(token)){
+		if(smartFeedHotbarUndo && smartFeedHotbarUndo.token===String(token||'')) smartFeedHotbarUndo=null;
+		removeHotbarUndoToast();
+		if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+		msg('Nie można już cofnąć tej zmiany paska');
+		return false;
+	}
+	const rec=smartFeedHotbarUndo;
+	if(!(MM.hotbar&&MM.hotbar.assign&&MM.hotbar.assign(rec.slot,rec.previousKey))) return false;
+	smartFeedHotbarUndo=null;
+	removeHotbarUndoToast();
+	if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+	if(SMART_FEED&&SMART_FEED.notify){
+		SMART_FEED.notify('success','Przywrócono '+rec.previousLabel+' w slocie '+hotbarKeyLabel(rec.slot),{
+			title:'PASEK SZYBKIEGO WYBORU',
+			priority:56,
+			holdFor:1700,
+			dedupeKey:'hotbar-undo:'+rec.token
+		});
+	}
+	return true;
+}
+function showHotbarUndoToast(rec){
+	removeHotbarUndoToast();
+	const inventoryOverlay=document.getElementById('invOverlay');
+	// The inventory is a modal stacking context above #ui. Mount inside that
+	// modal when open so the toast stays visible and belongs to its focus trap;
+	// otherwise mount at the document root.
+	const ui=inventoryOverlay&&inventoryOverlay.style.display==='block'
+		? inventoryOverlay
+		: document.body;
+	const toast=document.createElement('div');
+	toast.id='hotbarUndoToast';
+	// Smart Feed owns the live announcement. The nearby toast is an interactive
+	// visual affordance; making both live regions would read one remap twice.
+	toast.setAttribute('role','group');
+	toast.setAttribute('aria-label','Cofnij zmianę paska szybkiego wyboru');
+	const text=document.createElement('span');
+	text.textContent='Slot '+hotbarKeyLabel(rec.slot)+': '+rec.previousLabel+' → '+rec.nextLabel;
+	const button=document.createElement('button');
+	button.type='button';
+	button.textContent='Cofnij';
+	button.addEventListener('click',()=>undoSmartFeedHotbar(rec.token));
+	toast.append(text,button);
+	ui.appendChild(toast);
+	const hotbar=document.getElementById('hotbarWrap');
+	if(hotbar){
+		const rect=hotbar.getBoundingClientRect();
+		toast.style.left=Math.max(12,Math.min(innerWidth-12,rect.left+rect.width*0.5))+'px';
+		toast.style.top=Math.max(8,rect.top-54)+'px';
+	}
+	smartFeedHotbarUndoTimer=setTimeout(()=>{
+		if(smartFeedHotbarUndo&&smartFeedHotbarUndo.token===rec.token) smartFeedHotbarUndo=null;
+		removeHotbarUndoToast();
+		if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+	},30000);
+}
+function hotbarEntryLabel(key){
+	const resource=RESOURCE_DEFS.find(def=>def&&def.tile===key);
+	if(resource) return resource.label;
+	const chest=typeof CHEST_SELECTION_META!=='undefined' && CHEST_SELECTION_META[key];
+	return chest&&chest.label ? chest.label : String(key||'pusty');
+}
+function pulseHotbarSlot(slot){
+	const el=document.querySelectorAll('#hotbarWrap .hotSlot')[slot];
+	if(!el) return;
+	el.classList.remove('hotDropSuccess');
+	void el.offsetWidth;
+	el.classList.add('hotDropSuccess');
+	setTimeout(()=>el.classList.remove('hotDropSuccess'),700);
+}
+function assignHotbarWithUndo(slot,key,label){
+	if(!(MM.hotbar&&MM.hotbar.assign&&MM.hotbar.order)) return false;
+	const before=MM.hotbar.order();
+	const previousKey=before[slot];
+	if(!previousKey) return false;
+	const nextLabel=String(label||hotbarEntryLabel(key)).replace(/\s+/g,' ').trim().slice(0,80);
+	if(previousKey===key){
+		// A no-op assignment must not erase the last real remap: the player may
+		// still legitimately undo that earlier change while the slot is unchanged.
+		// It must also stay a true no-op: assigning first used to schedule a save,
+		// rerender the bar and create another pulse timer on every key repeat.
+		if(SMART_FEED&&SMART_FEED.notify){
+			SMART_FEED.notify('info',nextLabel+' jest już w slocie '+hotbarKeyLabel(slot),{
+				title:'PASEK SZYBKIEGO WYBORU',
+				priority:34,
+				dedupeKey:'hotbar-same:'+slot+':'+key
+			});
+		}
+		return true;
+	}
+	if(!MM.hotbar.assign(slot,key)) return false;
+	pulseHotbarSlot(slot);
+	const rec={
+		token:hotbarRemapToken(),
+		slot,
+		previousKey,
+		nextKey:key,
+		previousLabel:String(hotbarEntryLabel(previousKey)).slice(0,80),
+		nextLabel,
+		revision:MM.hotbar.revision?MM.hotbar.revision(slot):-1,
+		expiresAt:Date.now()+30000
+	};
+	smartFeedHotbarUndo=rec;
+	showHotbarUndoToast(rec);
+	if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+	if(SMART_FEED&&SMART_FEED.notify){
+		SMART_FEED.notify('success','Przypisano '+nextLabel+' do slotu '+hotbarKeyLabel(slot),{
+			title:'PASEK SZYBKIEGO WYBORU',
+			priority:54,
+			holdFor:1900,
+			dedupeKey:'hotbar-remap:'+rec.token,
+			undoToken:rec.token
+		});
+	}
+	return true;
+}
+function assignSmartFeedResource(slot,item){
+	const def=smartFeedPlaceableDef(item);
+	return !!(def&&assignHotbarWithUndo(slot,def.tile,def.label));
+}
+function attachSmartFeedItemCopy(row,liveText){
+	const name=row&&row.querySelector&&row.querySelector('.smartFeedItemName');
+	if(!name) return null;
+	const wrap=document.createElement('span');
+	wrap.className='smartFeedItemCopy';
+	name.replaceWith(wrap);
+	wrap.appendChild(name);
+	const live=document.createElement('small');
+	live.className='smartFeedItemLive';
+	live.textContent=liveText||'';
+	wrap.appendChild(live);
+	return live;
+}
+function setSmartFeedResourceLive(row,def){
+	if(!row||!def) return;
+	const amount=Math.max(0,Math.floor(Number(inv[def.key])||0));
+	let live=row.querySelector('.smartFeedItemLive');
+	if(!live) live=attachSmartFeedItemCopy(row,'');
+	if(live) live.textContent='teraz ×'+Math.min(999999,amount);
+	row.classList.toggle('is-depleted',amount<=0);
+	row.dataset.resourceKey=String(def.key);
+}
+function smartFeedCraftKnown(def){
+	return !!(def&&MM.craftUI&&MM.craftUI.hasIngredientRecipes&&MM.craftUI.hasIngredientRecipes(def.key));
+}
+function addSmartFeedCraftButton(row,def){
+	if(!row||!def||!smartFeedCraftKnown(def)) return false;
+	const button=document.createElement('button');
+	button.type='button';
+	button.className='smartFeedItemCraft';
+	button.textContent='⚒';
+	button.title='Pokaż znane receptury wykorzystujące: '+def.label;
+	button.setAttribute('aria-label','Pokaż receptury wykorzystujące '+def.label);
+	button.addEventListener('click',event=>{
+		event.preventDefault();
+		event.stopPropagation();
+		const live=SMART_FEED_RESOURCE_DEFS.get(String(def.key));
+		if(!live) return;
+		if(!(MM.craftUI&&MM.craftUI.openForIngredient)) msg('Rzemiosło nie jest jeszcze dostępne');
+		else MM.craftUI.openForIngredient(live.key,{focus:true,keyboard:event.detail===0});
+	});
+	let side=row.querySelector('.smartFeedItemSide');
+	if(!side){
+		side=document.createElement('span');
+		side.className='smartFeedItemSide';
+		const amount=row.querySelector('.smartFeedItemAmount');
+		if(amount){
+			amount.replaceWith(side);
+			side.appendChild(amount);
+		}else row.appendChild(side);
+	}
+	side.appendChild(button);
+	return true;
+}
+function smartFeedGear(item){
+	if(!item||item.delta<=0||!item.gearId||!MM.inventory||!MM.inventory.getItem) return null;
+	const gear=MM.inventory.getItem(String(item.gearId));
+	if(!gear) return null;
+	const slot=MM.inventory.slotForKind&&MM.inventory.slotForKind(gear.kind);
+	return slot ? {gear,slot} : null;
+}
+function bindSmartFeedGearItem({row,handle,item}){
+	const current=smartFeedGear(item);
+	if(!current||!row||!handle) return false;
+	const {gear,slot}=current;
+	handle.classList.add('smartFeedItemEquip');
+	handle.setAttribute('role','button');
+	handle.tabIndex=0;
+	if(MM.inventoryUI&&MM.inventoryUI.drawItemThumb){
+		const canvas=document.createElement('canvas');
+		canvas.width=80; canvas.height=80;
+		canvas.className='smartFeedItemGear';
+		canvas.setAttribute('aria-hidden','true');
+		try{ MM.inventoryUI.drawItemThumb(canvas.getContext('2d'),gear); handle.replaceChildren(canvas); }catch(e){}
+	}
+	function refresh(resolved){
+		const live=arguments.length ? resolved : smartFeedGear(item);
+		const equipped=!!(live&&MM.inventory.isEquipped&&MM.inventory.isEquipped(live.gear.id));
+		const slotLabel=live&&live.slot ? (live.slot.label||MM.inventory.KIND_LABELS[live.gear.kind]||'slot') : (slot.label||'slot');
+		handle.classList.toggle('is-equipped',equipped);
+		handle.setAttribute('aria-disabled',equipped?'true':'false');
+		handle.setAttribute('aria-label',equipped?'Założono '+gear.name:'Załóż '+gear.name+' w slocie '+slotLabel);
+		handle.title=equipped?'Ten przedmiot jest już założony':'Załóż od razu: '+slotLabel;
+		let status=row.querySelector('.smartFeedItemLive');
+		if(!status) status=attachSmartFeedItemCopy(row,'');
+		if(status) status.textContent=equipped?'w użyciu':'załóż · '+slotLabel;
+		row.classList.toggle('is-equipped',equipped);
+		return {live,equipped};
+	}
+	function equip(){
+		const state=refresh();
+		if(!state.live){
+			msg('Przedmiot nie jest już dostępny');
+			if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+			return false;
+		}
+		if(state.equipped) return true;
+		if(!(MM.inventory&&MM.inventory.equip&&MM.inventory.equip(state.live.gear.id))){
+			msg('Nie udało się założyć przedmiotu');
+			return false;
+		}
+		msg('Założono: '+String(state.live.gear.name||item.name));
+		refresh();
+		return true;
+	}
+	handle.addEventListener('click',event=>{ event.preventDefault(); event.stopPropagation(); equip(); });
+	handle.addEventListener('keydown',event=>{
+		if(event.key!=='Enter'&&event.key!==' ') return;
+		event.preventDefault(); event.stopPropagation(); equip();
+	});
+	refresh(current);
+	return {kind:'equip',compact:true};
+}
+function bindSmartFeedInventoryItem({row,handle,item}){
+	const def=smartFeedResourceDef(item);
+	if(!def) return bindSmartFeedGearItem({row,handle,item});
+	setSmartFeedResourceLive(row,def);
+	const placeable=smartFeedPlaceableDef(item);
+	const hasCraft=addSmartFeedCraftButton(row,def);
+	if(!placeable||!row||!handle) return hasCraft ? {kind:'resource',compact:true} : false;
+	const amount=Math.max(1,Math.abs(Math.trunc(Number(item.delta)||0)));
+	const instruction=def.label+', zdobyto '+amount+'. Przeciągnij na slot paska 5–9 lub 0.';
+	handle.classList.add('smartFeedItemHotbar');
+	handle.setAttribute('role','button');
+	handle.setAttribute('aria-label',instruction+' Naciśnij numer slotu albo Enter, aby przypisać do aktywnego slotu.');
+	handle.tabIndex=0;
+	handle.title=instruction+' Kliknij, aby przypisać do aktywnego slotu.';
+	row.title=instruction;
+	if(MM.drawEntityTile){
+		const tile=document.createElement('canvas');
+		tile.width=20; tile.height=20;
+		tile.className='smartFeedItemTile';
+		tile.setAttribute('aria-hidden','true');
+		let drawn=false;
+		try{ drawn=!!MM.drawEntityTile(tile.getContext('2d'),T[def.tile],0,0,7,11,{preview:true}); }catch(e){ drawn=false; }
+		if(drawn) handle.replaceChildren(tile);
+	}
+	if(MM.craftDrag && MM.craftDrag.makeDraggable){
+		MM.craftDrag.makeDraggable(handle,()=>{
+			const live=smartFeedPlaceableDef(item);
+			return live ? {k:live.tile,label:live.label,col:live.color,source:'smart-feed'} : null;
+		});
+	}
+	handle.addEventListener('click',event=>{
+		event.preventDefault();
+		event.stopPropagation();
+		if(MM.craftDrag && MM.craftDrag.recentlyDragged && MM.craftDrag.recentlyDragged(handle)) return;
+		const slot=MM.hotbar && MM.hotbar.index ? MM.hotbar.index() : 0;
+		assignSmartFeedResource(slot,item);
+	});
+	handle.addEventListener('keydown',event=>{
+		if(event.repeat) return;
+		let slot=SMART_FEED_HOTBAR_KEYS[event.key];
+		if(slot===undefined && (event.key==='Enter' || event.key===' ')){
+			slot=MM.hotbar && MM.hotbar.index ? MM.hotbar.index() : 0;
+		}
+		if(slot===undefined) return;
+		event.preventDefault();
+		event.stopPropagation();
+		assignSmartFeedResource(slot,item);
+	});
+	return {kind:'hotbar',compact:true};
+}
+function smartFeedActionButton(label,icon,activate,opts){
+	const button=document.createElement('button');
+	button.type='button';
+	button.className='smartFeedAction'+(opts&&opts.tone?' '+opts.tone:'');
+	const glyph=document.createElement('span');
+	glyph.setAttribute('aria-hidden','true');
+	glyph.textContent=icon||'›';
+	const text=document.createElement('span');
+	text.textContent=label;
+	button.append(glyph,text);
+	button.addEventListener('click',event=>{
+		event.preventDefault();
+		event.stopPropagation();
+		try{ activate(); }catch(e){ console.warn('Smart feed action failed',e); }
+	});
+	return button;
+}
+function activeSmartFeedTask(id){
+	if(!id||!TASKS||!TASKS.activeList) return null;
+	return TASKS.activeList().find(task=>task&&task.id===String(id))||null;
+}
+function trackSmartFeedTask(id){
+	const task=activeSmartFeedTask(id);
+	if(!task||!TASKS.setPriority||!TASKS.setPriority(task.id)){
+		msg('To zadanie nie jest już aktywne');
+		if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+		return false;
+	}
+	if(TASKS.remove) TASKS.remove('smart_feed:waypoint');
+	msg(task.target?'Śledzisz cel: '+task.title:'Zadanie przypięte na górze listy: '+task.title);
+	if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+	return true;
+}
+function smartFeedTarget(notice){
+	const target=notice&&notice.target;
+	if(!target||!Number.isFinite(Number(target.x))||!Number.isFinite(Number(target.y))) return null;
+	return {x:Number(target.x),y:Number(target.y)};
+}
+function trackSmartFeedTarget(notice){
+	const target=smartFeedTarget(notice);
+	if(!target||!TASKS||!TASKS.upsert||!TASKS.setPriority) return false;
+	const raw=String((notice&&notice.text)||(notice&&notice.title)||'Miejsce zdarzenia').replace(/\s+/g,' ').trim();
+	const label=(raw||'Miejsce zdarzenia').slice(0,72);
+	const task=TASKS.upsert({
+		id:'smart_feed:waypoint',
+		source:'smart_feed',
+		kind:'waypoint',
+		reactivate:true,
+		title:'Miejsce: '+label,
+		detail:'Punkt zapisany z komunikatu. To miejsce zdarzenia, nie ruchomy cel.',
+		priority:96,
+		pointer:true,
+		target:{x:target.x,y:target.y,label}
+	});
+	if(!task||!TASKS.setPriority(task.id)) return false;
+	msg('Śledzisz miejsce zdarzenia');
+	if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+	return true;
+}
+function bindSmartFeedNoticeActions({body,notice}){
+	if(!body||!notice) return 0;
+	const actions=[];
+	if(notice.taskId&&activeSmartFeedTask(notice.taskId)){
+		actions.push(smartFeedActionButton('Śledź zadanie','⌖',()=>trackSmartFeedTask(notice.taskId)));
+	}
+	if(notice.discoveryId&&MM.inventoryUI&&MM.inventoryUI.openDiscovery){
+		actions.push(smartFeedActionButton('Otwórz w Atlasie','⌕',()=>{
+			if(!MM.inventoryUI.openDiscovery(String(notice.discoveryId))){
+				msg('Ten wpis nie jest już dostępny w Atlasie');
+				if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+			}
+		}));
+	}
+	if(actions.length<2 && smartFeedTarget(notice) && ['discovery','world','omen','story'].includes(notice.kind)){
+		actions.push(smartFeedActionButton('Śledź miejsce','◎',()=>trackSmartFeedTarget(notice)));
+	}
+	if(actions.length<2 && notice.undoToken&&canUndoSmartFeedHotbar(notice.undoToken)){
+		actions.push(smartFeedActionButton('Cofnij zmianę','↶',()=>undoSmartFeedHotbar(notice.undoToken),{tone:'undo'}));
+	}
+	if(!actions.length) return 0;
+	const wrap=document.createElement('div');
+	wrap.className='smartFeedActions';
+	for(const action of actions.slice(0,2)) wrap.appendChild(action);
+	body.appendChild(wrap);
+	return Math.min(2,actions.length);
+}
 const SMART_FEED=createSmartFeed({
 	host:document.getElementById('smartFeed'),
 	minInterval:2000,
 	maxPending:32,
 	maxHistory:24,
 	onPromote:onSmartFeedPromote,
-	onUrgent:showSmartFeedUrgent
+	onUrgent:showSmartFeedUrgent,
+	bindInventoryItem:bindSmartFeedInventoryItem,
+	bindNoticeActions:bindSmartFeedNoticeActions
+});
+let smartFeedLiveRefreshFrame=0;
+function refreshSmartFeedLiveItems(){
+	smartFeedLiveRefreshFrame=0;
+	const host=document.getElementById('smartFeed');
+	if(!host) return;
+	for(const row of host.querySelectorAll('.smartFeedItem[data-resource-key]')){
+		const def=SMART_FEED_RESOURCE_DEFS.get(String(row.dataset.resourceKey||''));
+		if(def) setSmartFeedResourceLive(row,def);
+	}
+}
+function scheduleSmartFeedLiveRefresh(){
+	if(smartFeedLiveRefreshFrame) return;
+	smartFeedLiveRefreshFrame=requestAnimationFrame(refreshSmartFeedLiveItems);
+}
+window.addEventListener('mm-resources-change',scheduleSmartFeedLiveRefresh);
+let smartFeedGearRefreshFrame=0;
+window.addEventListener('mm-inventory-change',event=>{
+	// Color-picker input emits both customization and inventory events on every
+	// pointer move, but colors cannot change any action shown in Smart Feed.
+	if(event&&event.detail&&event.detail.key==='color') return;
+	if(smartFeedGearRefreshFrame) return;
+	smartFeedGearRefreshFrame=requestAnimationFrame(()=>{
+		smartFeedGearRefreshFrame=0;
+		if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
+	});
 });
 const announcedFeedTasks=new Set();
 const MAX_ANNOUNCED_FEED_TASKS=256;
@@ -2471,7 +2917,14 @@ function inventoryFeedContext(entry){
 }
 function inventoryFeedItem(entry){
 	const glyph=(entry.preview&&entry.preview.icon)||inventoryFeedbackGlyph(entry.key)||(entry.type==='gear'?'✦':'◆');
-	return {name:entry.name,delta:entry.delta,icon:glyph,color:entry.color};
+	return {
+		name:entry.name,
+		delta:entry.delta,
+		icon:glyph,
+		color:entry.color,
+		resourceKey:entry.type==='resource'?entry.key:'',
+		gearId:entry.type==='gear'?entry.key:''
+	};
 }
 function publishInventoryFeedEntry(entry){
 	if(!entry) return false;
@@ -2508,6 +2961,8 @@ function showSmartFeedUrgent(text){
 function resetActivityPresentation(){
 	clearDiscoveryObservationFx();
 	announcedFeedTasks.clear();
+	smartFeedHotbarUndo=null;
+	removeHotbarUndoToast();
 	if(SMART_FEED && SMART_FEED.clear) SMART_FEED.clear();
 }
 function discoveryFeedContext(category,target){
@@ -2567,6 +3022,7 @@ function onDiscoveryEarned(event){
 		priority:presentation.priority,
 		holdFor:presentation.holdFor,
 		dedupeKey:collection?'discovery:atlas-stamps':'discovery:'+String(d.id||''),
+		discoveryId:String(d.id||''),
 		target
 	});
 	if(event && event.cancelable) event.preventDefault();
@@ -2595,6 +3051,16 @@ MM.inventoryFeedback=INVENTORY_FEEDBACK;
 // Hotbar (slots triggered by keys 5..9, 0 — keys 1..4 belong to the weapon shortcuts)
 // HOTBAR_ORDER now mutable and can include CHEST_* pseudo entries (only placeable in god mode)
 const HOTBAR_ORDER=['GRASS','SAND','STONE','WOOD','LEAF','WATER'];
+const HOTBAR_REVISIONS=Array(HOTBAR_ORDER.length).fill(0);
+function writeHotbarSlot(slot,key){
+	if(!Number.isInteger(slot)||slot<0||slot>=HOTBAR_ORDER.length) return false;
+	if(typeof key!=='string'||!Object.prototype.hasOwnProperty.call(T,key)) return false;
+	if(HOTBAR_ORDER[slot]!==key){
+		HOTBAR_ORDER[slot]=key;
+		HOTBAR_REVISIONS[slot]=(HOTBAR_REVISIONS[slot]+1)%Number.MAX_SAFE_INTEGER;
+	}
+	return true;
+}
 let hotbarIndex=0; // 0..length-1
 function hotbarKeyLabel(slot){ return slot===HOTBAR_ORDER.length-1? '0' : String(slot+5); }
 function selectedTileId(){ const name=HOTBAR_ORDER[hotbarIndex]; return T[name]; }
@@ -3015,6 +3481,64 @@ const TEMPORAL_ECHO=createTemporalEchoController({durationSeconds:60,cooldownSec
 const TEMPORAL_COOLDOWN_KEY='mm_temporal_echo_cooldown_v1';
 const TEMPORAL_PENDING_KEY='mm_temporal_echo_pending_v1';
 const TEMPORAL_COOLDOWN_MS=180000;
+const TEMPORAL_ECHO_TASK_ID='temporal_echo:return';
+const GRAVE_RETURN_TASK_ID='grave:return';
+function removeGraveReturnTask(id){
+	try{ return !!(TASKS&&TASKS.remove&&TASKS.remove(id)); }catch(e){ return false; }
+}
+function upsertGraveReturnTask(marker,echo,opts){
+	if(!marker||!TASKS||!TASKS.upsert) return null;
+	const id=echo?TEMPORAL_ECHO_TASK_ID:GRAVE_RETURN_TASK_ID;
+	// Recovery objectives are intentionally reusable. A successful rewind
+	// restores the pre-death task snapshot without emitting a remove event, so
+	// release the feed de-duplication guard explicitly before the next death.
+	if(!(opts&&opts.preserveAnnouncement)) announcedFeedTasks.delete(id);
+	removeGraveReturnTask(echo?GRAVE_RETURN_TASK_ID:TEMPORAL_ECHO_TASK_ID);
+	const target={x:Number(marker.x)+0.5,y:Number(marker.y)+0.5,label:echo?'Duch Chwili':'Nagrobek bohatera'};
+	const task=TASKS.upsert({
+		id,
+		source:echo?'temporal_echo':'grave',
+		kind:'recovery',
+		reactivate:!(opts&&opts.reactivate===false),
+		title:echo?'Wróć do Ducha Chwili':'Odzyskaj zasoby z nagrobka',
+		detail:echo?'Dotknij ducha przed upływem minuty, aby odzyskać zasoby i cofnąć chwilę.':'Nagrobek przechowuje utracone zasoby.',
+		priority:echo?100:88,
+		pointer:true,
+		target
+	});
+	if(task&&task.status==='active'&&TASKS.setPriority&&!(opts&&opts.preservePriority)) TASKS.setPriority(task.id);
+	return task;
+}
+function reconcileGraveReturnTask(){
+	if(!TASKS) return false;
+	const metrics=TASKS.metrics?TASKS.metrics():null;
+	const previousPriority=String(metrics&&metrics.priorityId||'');
+	const keepOtherPriority=!!previousPriority
+		&& previousPriority!==GRAVE_RETURN_TASK_ID
+		&& previousPriority!==TEMPORAL_ECHO_TASK_ID;
+	removeGraveReturnTask(TEMPORAL_ECHO_TASK_ID);
+	if(!grave){
+		removeGraveReturnTask(GRAVE_RETURN_TASK_ID);
+		return false;
+	}
+	let restoredState=null;
+	try{ restoredState=TASKS.state?TASKS.state():null; }catch(e){ restoredState=null; }
+	const activeGraveTask=!!(restoredState&&Array.isArray(restoredState.active)
+		&& restoredState.active.some(task=>task&&task.id===GRAVE_RETURN_TASK_ID));
+	const discardedGraveTask=!!(restoredState&&Array.isArray(restoredState.discarded)
+		&& restoredState.discarded.some(task=>task&&task.id===GRAVE_RETURN_TASK_ID));
+	// Loading a save must not undo a player's explicit task-list decision.
+	// A dismissed grave objective remains dismissed, and an already active but
+	// manually unpinned one remains unpinned. Only legacy saves missing the task
+	// entirely receive a newly selected recovery objective.
+	if(discardedGraveTask) return true;
+	// Active Echo branches are session-only and never restored from a normal
+	// save. Any persisted grave is therefore the ordinary recovery objective.
+	return !!upsertGraveReturnTask(grave,false,{
+		preservePriority:keepOtherPriority||activeGraveTask,
+		reactivate:false
+	});
+}
 function temporalStorageRead(key){
 	for(const storage of [localStorage,typeof sessionStorage!=='undefined'?sessionStorage:null]){
 		if(!storage) continue;
@@ -3227,6 +3751,7 @@ function restoreTemporalEchoPayload(payload){
 	try{ if(HERO_STATUS&&HERO_STATUS.restore&&payload.status) ok=HERO_STATUS.restore(payload.status)&&ok; }catch(e){ ok=false; }
 	try{ if(DISCOVERY&&DISCOVERY.restore&&payload.discovery) ok=DISCOVERY.restore(payload.discovery)&&ok; }catch(e){ ok=false; }
 	restoreGrave(d.grave);
+	reconcileGraveReturnTask();
 	player.hp=player.maxHp;
 	player.hpInvul=performance.now()+1500;
 	player.vx=Number(payload.death.vx)||0; player.vy=Number(payload.death.vy)||0;
@@ -3260,6 +3785,7 @@ function collapseTemporalEcho(reason,notice){
 	clearTemporalPending();
 	temporalRewindFx=null;
 	const forfeited=forfeitTemporalEscrow();
+	removeGraveReturnTask(TEMPORAL_ECHO_TASK_ID);
 	saveGrave(); saveState();
 	if(notice) msg(notice+(forfeited.lost>0?' Utracono '+forfeited.lost+' zasobów.':''));
 	if(reason==='expired' && forfeited.lost>0){
@@ -3321,6 +3847,7 @@ function playerTouchesTemporalSpirit(){
 	return px1>=sx0 && px0<=sx1 && py1>=sy0 && py0<=sy1;
 }
 function updateTemporalEcho(dt){
+	if(!repairTrackedGrave()) return false;
 	if(temporalRewindFx){
 		const fx=temporalRewindFx;
 		fx.t+=Math.max(0,dt||0);
@@ -3358,7 +3885,6 @@ function updateTemporalEcho(dt){
 	}
 	const state=temporalEchoState();
 	if(state.phase==='racing'){
-		if(!repairTemporalGrave()) return false;
 		const checkpoint=WORLD&&WORLD.temporalCheckpointState?WORLD.temporalCheckpointState():null;
 		if(!checkpoint || !checkpoint.valid){
 			collapseTemporalEcho('checkpoint-invalid','⌛ Echo czasu pękło — jego depozyt przepadł, a pozostał pusty nagrobek.');
@@ -4029,13 +4555,36 @@ window.heroDied=function(cause){
 			grave=previousGrave;
 			if(echoArmed) collapseTemporalEcho('grave-unreachable','⌛ Echo nie znalazło bezpiecznego miejsca — zasoby zostały zwrócone');
 			else { saveGrave(); msg('☠ Brak miejsca na nagrobek — zasoby zostały zwrócone'); }
-		}else if(echoArmed){
-			msg('⏳ Duch Chwili przechowuje utracone zasoby ('+gx+', '+gy+'). Dotknij go przed upływem minuty.');
-			const target={x:gx+0.5,y:gy+0.5};
-			noteDiscoveryFact('temporal_echo_started',{resources:temporalEscrowResourceCount(),target});
-			noteDiscoveryFact('temporal_echo_timer_seen',{seconds:60,target});
+		}else{
+			let supersededResources=0;
+			if(previousGrave && previousGrave!==grave){
+				for(const key of RESOURCE_KEYS){
+					supersededResources+=Math.max(0,Math.floor(Number(previousGrave.res&&previousGrave.res[key])||0));
+				}
+				// One record owns the recoverable marker. Retire its previous
+				// world tile when a new grave successfully supersedes it instead
+				// of leaving a convincing but silently empty gravestone behind.
+				// A temporal checkpoint journals this write and restores the old
+				// marker if the branch is rewound.
+				if((previousGrave.x!==grave.x||previousGrave.y!==grave.y)
+					&& getTile(previousGrave.x,previousGrave.y)===T.GRAVE){
+					setForegroundConfirmed(previousGrave.x,previousGrave.y,T.AIR);
+				}
+			}
+			const supersededNote=supersededResources>0
+				?' Poprzedni nagrobek wygasł: utracono '+supersededResources+' zasobów.'
+				:'';
+			if(echoArmed){
+				upsertGraveReturnTask(grave,true);
+				msg('⏳ Duch Chwili przechowuje utracone zasoby ('+gx+', '+gy+'). Dotknij go przed upływem minuty.'+supersededNote);
+				const target={x:gx+0.5,y:gy+0.5};
+				noteDiscoveryFact('temporal_echo_started',{resources:temporalEscrowResourceCount(),target});
+				noteDiscoveryFact('temporal_echo_timer_seen',{seconds:60,target});
+			}else{
+				upsertGraveReturnTask(grave,false);
+				msg('☠ Zginąłeś — połowa zasobów czeka w nagrobku ('+gx+', '+gy+')'+supersededNote);
+			}
 		}
-		else msg('☠ Zginąłeś — połowa zasobów czeka w nagrobku ('+gx+', '+gy+')');
 	} else {
 		msg('☠ Zginąłeś – respawn');
 	}
@@ -4076,31 +4625,83 @@ function activeTemporalGraveAt(tx,ty){
 	const state=temporalEchoState();
 	return state.phase==='racing' && activeTemporalSpiritAt(tx,ty);
 }
-function repairTemporalGrave(){
-	const state=temporalEchoState();
-	if(state.phase!=='racing' || !grave || !grave.echo) return true;
-	if(getTile(grave.x,grave.y)===T.GRAVE) return true;
-	ensureChunkAtY(Math.floor(grave.x/CHUNK_W),grave.y);
-	setTile(grave.x,grave.y,T.GRAVE);
-	if(getTile(grave.x,grave.y)===T.GRAVE){
-		if(!repairTemporalGrave._noticeAt || performance.now()-repairTemporalGrave._noticeAt>2500){
-			repairTemporalGrave._noticeAt=performance.now();
-			msg('⧖ Echo odtworzyło naruszony nagrobek');
-		}
-		return true;
+function repairTrackedGrave(){
+	if(!grave) return true;
+	if(graveHasStableGround(grave.x,grave.y)) return true;
+	const oldX=Math.floor(Number(grave.x));
+	const oldY=Math.floor(Number(grave.y));
+	const wasEcho=!!grave.echo;
+	ensureChunkAtY(Math.floor(oldX/CHUNK_W),oldY);
+
+	// Prefer the canonical cell when only the marker was erased. If its footing
+	// also disappeared, move the escrow to the nearest supported opening so an
+	// explosion or late structure pass can never leave a floating objective.
+	let target=null;
+	const oldTile=getTile(oldX,oldY);
+	if(oldTile!==T.GRAVE
+		&& isReplaceableNaturalOpenTile(oldTile,false)
+		&& worldYInBounds(oldY+1)
+		&& isObjectFootingTile(getTile(oldX,oldY+1))){
+		target={x:oldX,y:oldY};
 	}
-	// A missing objective must never leave the timer/rings running forever.
-	// Fail closed and refund the escrow if even authoritative reconstruction fails.
-	const refund=grave.res&&typeof grave.res==='object'?grave.res:null;
-	if(refund) for(const key in refund) if(typeof inv[key]==='number') inv[key]+=Math.max(0,Math.floor(Number(refund[key])||0));
+	if(!target) target=nearestOpenGraveCell(oldX,oldY);
+	if(target){
+		ensureChunkAtY(Math.floor(target.x/CHUNK_W),target.y);
+		const current=getTile(target.x,target.y);
+		const placed=current===T.GRAVE
+			|| (isReplaceableNaturalOpenTile(current,false)
+				&& setForegroundConfirmed(target.x,target.y,T.GRAVE));
+		const grounded=placed
+			&& getTile(target.x,target.y)===T.GRAVE
+			&& worldYInBounds(target.y+1)
+			&& isObjectFootingTile(getTile(target.x,target.y+1));
+		if(grounded){
+			if((target.x!==oldX || target.y!==oldY) && getTile(oldX,oldY)===T.GRAVE){
+				setForegroundConfirmed(oldX,oldY,T.AIR);
+			}
+			grave.x=target.x;
+			grave.y=target.y;
+			if(wasEcho){
+				upsertGraveReturnTask(grave,true,{
+					preservePriority:true,
+					preserveAnnouncement:true,
+					reactivate:false
+				});
+			}else reconcileGraveReturnTask();
+			saveGrave();
+			if(!repairTrackedGrave._noticeAt || performance.now()-repairTrackedGrave._noticeAt>2500){
+				repairTrackedGrave._noticeAt=performance.now();
+				msg(wasEcho?'⧖ Echo odtworzyło bezpieczny punkt zaczepienia':'⚒ Nagrobek został przeniesiony na stabilne podłoże');
+			}
+			return true;
+		}
+	}
+
+	// No tracked payload may survive without a reachable marker. This is a
+	// systemic repair failure rather than player forfeiture, so refund first,
+	// then retire both the record and its task.
+	let refund=0;
+	if(grave.res&&typeof grave.res==='object'){
+		for(const key of RESOURCE_KEYS){
+			const amount=Math.max(0,Math.floor(Number(grave.res[key])||0));
+			if(amount>0 && typeof inv[key]==='number'){ inv[key]+=amount; refund+=amount; }
+		}
+	}
 	grave=null;
-	collapseTemporalEcho('grave-lost','⚠ Echo straciło punkt zaczepienia — zasoby zostały zwrócone');
+	if(wasEcho){
+		collapseTemporalEcho('grave-lost','⚠ Echo straciło punkt zaczepienia — zasoby zostały zwrócone');
+	}else{
+		removeGraveReturnTask(GRAVE_RETURN_TASK_ID);
+		saveGrave();
+		saveState();
+		msg('⚠ Nagrobek nie mógł zostać odtworzony — zwrócono '+refund+' zasobów');
+	}
 	updateInventory();
 	return false;
 }
 function tryOpenGraveAt(tx,ty){
 	if(activeTemporalGraveAt(tx,ty)){
-		if(!repairTemporalGrave()) return false;
+		if(!repairTrackedGrave()) return false;
 		if(!tryOpenGraveAt._spiritNoticeAt || performance.now()-tryOpenGraveAt._spiritNoticeAt>1800){
 			tryOpenGraveAt._spiritNoticeAt=performance.now();
 			msg('⏳ Ducha Chwili nie otwiera się narzędziem — wejdź w jego światło');
@@ -4113,6 +4714,7 @@ function tryOpenGraveAt(tx,ty){
 		const got=[];
 		for(const k in grave.res){ if(typeof inv[k]==='number'){ inv[k]+=grave.res[k]; got.push(grave.res[k]+'× '+(RES_LABEL[k]||k)); } }
 		grave=null; saveGrave();
+		try{ if(TASKS&&TASKS.complete) TASKS.complete(GRAVE_RETURN_TASK_ID); }catch(e){}
 		msg('🪦 Odzyskano: '+got.join(', '));
 		try{ if(MM.audio && MM.audio.play) MM.audio.play('chest',{x:tx+0.5,y:ty+0.5}); }catch(e){}
 		updateInventory();
@@ -4121,9 +4723,18 @@ function tryOpenGraveAt(tx,ty){
 }
 // Bridge for the inventory resources tab: remap a hotbar slot to a block type
 MM.hotbar={
-	assign(slot,key){ if(slot<0||slot>=HOTBAR_ORDER.length) return false; if(!(key in T)) return false; HOTBAR_ORDER[slot]=key; cycleHotbar(slot); updateHotbarCounts(); return true; },
+	assign(slot,key){
+		if(!writeHotbarSlot(slot,key)) return false;
+		cycleHotbar(slot);
+		updateHotbarCounts();
+		return true;
+	},
+	remap(slot,key,label){ return assignHotbarWithUndo(slot,key,label); },
 	index:()=>hotbarIndex,
-	order:()=>HOTBAR_ORDER.slice()
+	order:()=>HOTBAR_ORDER.slice(),
+	revision:slot=>Number.isInteger(slot)&&slot>=0&&slot<HOTBAR_REVISIONS.length
+		? HOTBAR_REVISIONS[slot]
+		: -1
 };
 // Persistence key
 // --- Persistent Save System (minimal: only blocks + player position) ---
@@ -4839,10 +5450,10 @@ function restoreHotbar(src){
 	if(!src || typeof src!=='object') return;
 	if(Array.isArray(src.order)){
 		for(let i=0; i<HOTBAR_ORDER.length && i<src.order.length; i++){
-			if(typeof src.order[i]==='string' && T[src.order[i]]!=null) HOTBAR_ORDER[i]=src.order[i];
+			writeHotbarSlot(i,src.order[i]);
 		}
 	}
-	if(typeof src.index==='number' && src.index>=0 && src.index<HOTBAR_ORDER.length) hotbarIndex=src.index|0;
+	if(Number.isInteger(src.index) && src.index>=0 && src.index<HOTBAR_ORDER.length) hotbarIndex=src.index;
 	const owned=ownedPicks();
 	const savedTool=(typeof src.tool==='string' && tools[src.tool]) ? src.tool : null;
 	player.tool=(savedTool && owned.includes(savedTool)) ? savedTool : (owned.includes(player.tool)?player.tool:'basic');
@@ -5708,6 +6319,19 @@ function loadGame(opts){
 }
 function applyGameData(data,opts){
 	opts=opts||{};
+	// The temporal checkpoint and escrow form one in-memory transaction that is
+	// deliberately not serializable. Replacing the world while it is active
+	// would consume that checkpoint before a failed load could roll back. Match
+	// the save policy and leave the current branch entirely untouched.
+	if(typeof temporalEchoActive==='function' && temporalEchoActive()){
+		publishLoadReport({
+			ok:false,
+			stage:'temporal-echo-active',
+			errors:[{code:'temporal-echo-active',path:'runtime',detail:'resolve Temporal Echo before replacing the world'}],
+			summary:'world replacement paused until Temporal Echo resolves'
+		});
+		return false;
+	}
 	const preflight=opts.preflightResult || preflightSaveData(data,{storage:localStorage,requireHash:false});
 	if(!preflight.ok){
 		const summary=loadFailureSummary(preflight);
@@ -5987,6 +6611,7 @@ function applyGameDataCore(data,opts){
 	restoreRequired('companions',data.companions!=null,()=>{ if(COMPANIONS && COMPANIONS.restore) return COMPANIONS.restore(data.companions,getTile); throw new Error('companion restorer unavailable'); });
 	restoreRequired('generatedNpcs',data.generatedNpcs!=null,()=>{ if(GENERATED_NPCS && GENERATED_NPCS.restore) return GENERATED_NPCS.restore(data.generatedNpcs); throw new Error('generated NPC restorer unavailable'); });
 	restoreRequired('tasks',data.tasks!=null,()=>{ if(TASKS && TASKS.restore) return TASKS.restore(data.tasks); throw new Error('task restorer unavailable'); });
+	reconcileGraveReturnTask();
 	restoreRequired('progress',data.progress!=null,()=>{ if(PROGRESS && PROGRESS.restore) return PROGRESS.restore(data.progress); throw new Error('progress restorer unavailable'); });
 	restoreRequired('plants',data.plants!=null,()=>{ if(PLANTS && PLANTS.restore) return PLANTS.restore(data.plants); throw new Error('plant restorer unavailable'); });
 	restoreRequired('graffiti',data.graffiti!=null,()=>{ if(GRAFFITI && GRAFFITI.restore) return GRAFFITI.restore(data.graffiti); throw new Error('graffiti restorer unavailable'); });
@@ -6436,6 +7061,10 @@ window.addEventListener('beforeunload',flushPendingSave);
 document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden' && !temporalEchoActive()) flushPendingSave(); });
 
 function prepareHostedWorldReplacement(){
+	if(typeof temporalEchoActive==='function' && temporalEchoActive()){
+		msg('Wczytywanie i zmiana świata są wstrzymane do rozstrzygnięcia Echa Chwili');
+		return false;
+	}
 	if(MM.ghostMode || !GHOST_HOST) return true;
 	if(GHOST_HOST && GHOST_HOST.hasPendingObserverTransactions && GHOST_HOST.hasPendingObserverTransactions()){
 		msg('Poczekaj chwilę — trwa bezpieczne rozliczanie atrapy obserwatora');
@@ -7012,14 +7641,48 @@ let selectedCraftId=null;
 let craftQuery='';
 let craftGroup='all';
 let craftAvailOnly=false;
+let craftIngredientKey='';
 let craftFlashId=null;       // recipe id to pulse the detail panel for after a craft
 let craftTrackerBooted=false; // first tracker refresh swallows a stale justReady toast on load
-function resetCraftingAvailability(){ CRAFT_MODEL.reset(); }
+let craftIngredientRecipeKeysCache=null;
+let craftIngredientRecipeKeysGodMode=null;
+let craftIngredientRecipeKeysChallenge='';
+function invalidateCraftIngredientRecipeKeys(){
+	craftIngredientRecipeKeysCache=null;
+	craftIngredientRecipeKeysGodMode=null;
+	craftIngredientRecipeKeysChallenge='';
+}
+function craftIngredientRecipeChallengeKey(){
+	if(!MM.challenge || !MM.challenge.craftBans) return '';
+	const bans=MM.challenge.craftBans();
+	return Array.isArray(bans) ? bans.map(value=>String(value)).sort().join('\u0000') : '';
+}
+function knownCraftIngredientRecipeKeys(){
+	const challengeKey=craftIngredientRecipeChallengeKey();
+	if(craftIngredientRecipeKeysCache
+		&& craftIngredientRecipeKeysGodMode===godMode
+		&& craftIngredientRecipeKeysChallenge===challengeKey){
+		return craftIngredientRecipeKeysCache;
+	}
+	const keys=new Set();
+	for(const recipe of visibleCraftRecipes()){
+		if(!recipe||!recipe.cost) continue;
+		for(const key of Object.keys(recipe.cost)){
+			if(Number(recipe.cost[key])>0) keys.add(key);
+		}
+	}
+	craftIngredientRecipeKeysCache=keys;
+	craftIngredientRecipeKeysGodMode=godMode;
+	craftIngredientRecipeKeysChallenge=challengeKey;
+	return keys;
+}
+function resetCraftingAvailability(){ CRAFT_MODEL.reset(); invalidateCraftIngredientRecipeKeys(); }
 function snapshotCrafting(){
 	return CRAFT_MODEL.snapshot();
 }
 function restoreCraftingAvailability(src){
 	CRAFT_MODEL.restore(src);
+	invalidateCraftIngredientRecipeKeys();
 }
 function heldResourceKeys(){
 	return Object.keys(inv).filter(k=>typeof inv[k]==='number' && inv[k]>0);
@@ -7058,11 +7721,18 @@ function noteCategoryDiscoveries(opts){
 }
 function checkCraftingAvailability(opts){
 	const silent=!!(opts&&opts.silent);
-	if(silent){ CRAFT_MODEL.noteMaterials(heldResourceKeys(),{silent:true}); CRAFT_MODEL.seedSeen(); noteCategoryDiscoveries({silent:true}); return; }
+	if(silent){
+		CRAFT_MODEL.noteMaterials(heldResourceKeys(),{silent:true});
+		CRAFT_MODEL.seedSeen();
+		invalidateCraftIngredientRecipeKeys();
+		noteCategoryDiscoveries({silent:true});
+		return;
+	}
 	// Progressive discovery: touching a new material can UNLOCK recipes (they
 	// appear in the panel); gathering enough of everything makes them CRAFTABLE.
 	const unlocked=CRAFT_MODEL.noteMaterials(heldResourceKeys());
 	const newly=CRAFT_MODEL.syncAvailability();
+	if(unlocked.length) invalidateCraftIngredientRecipeKeys();
 	const newlyIds=new Set(newly.map(r=>r.id));
 	const unlockedOnly=unlocked.filter(r=>!newlyIds.has(r.id));
 	if(unlockedOnly.length){
@@ -7132,9 +7802,17 @@ function challengeCraftBanned(id){
 }
 function craftRecipeVisible(r){ return (godMode || CRAFT_MODEL.isUnlocked(r)) && !challengeCraftBanned(r.id); }
 function visibleCraftRecipes(){ return RECIPES.filter(craftRecipeVisible); }
+function recipeUsesIngredient(r,key){
+	if(!r||!key||!r.cost||!Object.prototype.hasOwnProperty.call(r.cost,key)) return false;
+	return Number(r.cost[key])>0;
+}
+function visibleRecipesUsingIngredient(key){
+	return visibleCraftRecipes().filter(recipe=>recipeUsesIngredient(recipe,key));
+}
 function filteredCraftRecipes(){
 	const q=craftQuery.trim().toLowerCase();
 	let list=visibleCraftRecipes().filter(r=> craftGroup==='fav' ? CRAFT_MODEL.isFavorite(r.id) : (craftGroup==='all' || recipeGroup(r)===craftGroup));
+	if(craftIngredientKey) list=list.filter(r=>recipeUsesIngredient(r,craftIngredientKey));
 	if(craftAvailOnly) list=list.filter(r=>canCraft(r) && !recipeDone(r));
 	if(q) list=list.filter(r=>recipeSearchText(r).includes(q));
 	return list.sort((a,b)=>{
@@ -7382,7 +8060,7 @@ function renderCraftDetail(r){
 		dropRow.appendChild(info);
 		dropRow.addEventListener('click',()=>{
 			const idx=MM.hotbar.index();
-			if(MM.hotbar.assign(idx,outDef.tile)) msg('Slot '+hotbarKeyLabel(idx)+' → '+outDef.label);
+			assignHotbarWithUndo(idx,outDef.tile,outDef.label);
 		});
 		detail.appendChild(dropRow);
 	}
@@ -7472,7 +8150,9 @@ function renderCraftList(){
 	list.innerHTML='';
 	if(!recipes.length){
 		const empty=document.createElement('div'); empty.className='craftEmpty';
-		empty.textContent=craftAvailOnly ? 'Nic do wytworzenia - zbierz surowce albo wyłącz filtr „Dostępne".'
+		const ingredient=craftIngredientKey&&SMART_FEED_RESOURCE_DEFS.get(craftIngredientKey);
+		empty.textContent=ingredient ? 'Nie znasz jeszcze receptur wykorzystujących '+ingredient.label+'.'
+			: craftAvailOnly ? 'Nic do wytworzenia - zbierz surowce albo wyłącz filtr „Dostępne".'
 			: (!visibleCraftRecipes().length ? 'Nie znasz jeszcze żadnych receptur — zbieraj surowce i podglądaj przedmioty w świecie.' : 'Brak receptur dla filtra.');
 		list.appendChild(empty);
 	}
@@ -7492,6 +8172,20 @@ function renderCraftList(){
 }
 function renderCraftPanel(){
 	const host=document.getElementById('craft'); if(!host) return;
+	const search=document.getElementById('craftSearch');
+	if(search&&search.value!==craftQuery) search.value=craftQuery;
+	const availButton=document.getElementById('craftAvailBtn');
+	if(availButton){
+		availButton.classList.toggle('on',craftAvailOnly);
+		availButton.setAttribute('aria-pressed',String(craftAvailOnly));
+	}
+	const ingredientFilter=document.getElementById('craftIngredientFilter');
+	if(ingredientFilter){
+		const def=craftIngredientKey&&SMART_FEED_RESOURCE_DEFS.get(craftIngredientKey);
+		ingredientFilter.hidden=!def;
+		ingredientFilter.textContent=def?'Składnik: '+def.label+' ×':'';
+		ingredientFilter.setAttribute('aria-label',def?'Wyczyść filtr składnika '+def.label:'Wyczyść filtr składnika');
+	}
 	const summary=document.getElementById('craftSummary');
 	if(summary){
 		const visible=visibleCraftRecipes();
@@ -7525,6 +8219,14 @@ function buildCraftPanel(){
 	const search=document.createElement('input'); search.id='craftSearch'; search.type='search'; search.placeholder='Szukaj receptury'; search.autocomplete='off'; search.value=craftQuery;
 	search.addEventListener('input',()=>{ craftQuery=search.value||''; renderCraftPanel(); });
 	toolbar.appendChild(search);
+	const ingredientFilter=document.createElement('button');
+	ingredientFilter.type='button';
+	ingredientFilter.id='craftIngredientFilter';
+	ingredientFilter.className='craftIngredientFilter';
+	ingredientFilter.hidden=!craftIngredientKey;
+	ingredientFilter.title='Wyczyść filtr składnika';
+	ingredientFilter.addEventListener('click',clearCraftIngredientFilter);
+	toolbar.appendChild(ingredientFilter);
 	const availBtn=document.createElement('button'); availBtn.type='button'; availBtn.id='craftAvailBtn'; availBtn.className='craftFilterBtn'+(craftAvailOnly?' on':'');
 	availBtn.textContent='✔ Dostępne';
 	availBtn.title='Pokazuj tylko receptury, które możesz wytworzyć teraz';
@@ -7547,6 +8249,54 @@ function buildCraftPanel(){
 	renderCraftPanel();
 }
 function updateCraftButtons(){ renderCraftPanel(); }
+function clearCraftIngredientFilter(event){
+	if(!craftIngredientKey) return false;
+	const filter=document.getElementById('craftIngredientFilter');
+	const restoreFocus=document.activeElement===filter || !!(event&&event.currentTarget===filter);
+	craftIngredientKey='';
+	renderCraftPanel();
+	if(restoreFocus){
+		requestAnimationFrame(()=>{
+			const search=document.getElementById('craftSearch');
+			if(search&&search.focus) search.focus({preventScroll:true});
+		});
+	}
+	return true;
+}
+function openCraftForIngredient(key,opts){
+	const def=SMART_FEED_RESOURCE_DEFS.get(String(key||''));
+	if(!def) return false;
+	const matches=visibleRecipesUsingIngredient(def.key);
+	if(!matches.length){
+		msg('Nie znasz jeszcze receptur wykorzystujących '+def.label);
+		return false;
+	}
+	const host=document.getElementById('craft');
+	if(!host) return false;
+	craftIngredientKey=def.key;
+	craftQuery='';
+	craftGroup='all';
+	craftAvailOnly=false;
+	selectedCraftId=(matches.find(canCraft)||matches[0]).id;
+	setCraftCollapsed(host,false);
+	renderCraftPanel();
+	if(!opts || opts.focus!==false){
+		requestAnimationFrame(()=>{
+			const row=document.getElementById('craft_'+selectedCraftId);
+			if(row&&row.focus) row.focus({preventScroll:false});
+		});
+	}
+	return true;
+}
+MM.craftUI=Object.assign(MM.craftUI||{},{
+	openForIngredient:openCraftForIngredient,
+	clearIngredientFilter:clearCraftIngredientFilter,
+	hasIngredientRecipes:key=>{
+		const def=SMART_FEED_RESOURCE_DEFS.get(String(key||''));
+		return !!(def&&knownCraftIngredientRecipeKeys().has(def.key));
+	},
+	ingredientFilter:()=>craftIngredientKey
+});
 // --- HUD ingredient tracker: the one 📌-pinned recipe stays on screen with
 // live have/need chips and announces once whenever it crosses into craftable.
 function ensureCraftTracker(){
@@ -15344,6 +16094,10 @@ function noteCraftResultSeen(resourceKey,opts){
 		if(fresh) unlocked.push(fresh);
 	}
 	if(!unlocked.length) return [];
+	// The resource action index is derived from visible recipes. Observing an
+	// output can unlock one without changing inventory, so no later resource
+	// event can be relied on to invalidate or redraw Smart Feed affordances.
+	invalidateCraftIngredientRecipeKeys();
 	if(!(opts&&opts.announce===false)){
 		const source=opts&&opts.source;
 		const prefix=source==='trader'?'Katalog handlarza ujawnil przepis: ':source==='chest'?'Skarb ze skrzyni ujawnil przepis: ':'Podpatrzony przepis: ';
@@ -15352,6 +16106,7 @@ function noteCraftResultSeen(resourceKey,opts){
 	}
 	noteCategoryDiscoveries({});
 	renderCraftPanel();
+	if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
 	if(!(opts&&opts.persist===false)) try{ saveState(); }catch(e){}
 	return unlocked;
 }
@@ -17701,7 +18456,7 @@ function openHotSelect(slot,anchorEl){ if(!hotSelectMenu) return; hotSelectOptio
 	const baseTypes=RESOURCE_DEFS.filter(r=>r.tile && resourceDiscovered(r.key)).map(r=>({k:r.tile, label:r.label}));
 	let types=[...baseTypes];
 	if(godMode){ Object.keys(CHEST_SELECTION_META).forEach(k=>{ const m=CHEST_SELECTION_META[k]; types.push({k, label:m.label, col:m.color}); }); }
-	types.forEach(t=>{ const b=document.createElement('button'); b.textContent=t.label; const baseBg='rgba(255,255,255,.08)'; const rareBg=t.col? t.col+'33': baseBg; const border=t.col? t.col+'88':'rgba(255,255,255,.15)'; b.style.cssText='text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;'; if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8'; b.addEventListener('click',()=>{ HOTBAR_ORDER[slot]=t.k; closeHotSelect(); cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' -> '+t.label); }); hotSelectOptions.appendChild(b); });
+	types.forEach(t=>{ const b=document.createElement('button'); b.textContent=t.label; const baseBg='rgba(255,255,255,.08)'; const rareBg=t.col? t.col+'33': baseBg; const border=t.col? t.col+'88':'rgba(255,255,255,.15)'; b.style.cssText='text-align:left; background:'+rareBg+'; border:1px solid '+border+'; color:#fff; border-radius:8px; padding:4px 8px; cursor:pointer; font-size:12px;'; if(HOTBAR_ORDER[slot]===t.k) b.style.outline='2px solid #2c7ef8'; b.addEventListener('click',()=>{ if(!writeHotbarSlot(slot,t.k)) return; closeHotSelect(); cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' -> '+t.label); }); hotSelectOptions.appendChild(b); });
 	const rect=anchorEl.getBoundingClientRect();
 	const place=hotPickerPlacement(rect,{width:innerWidth,height:innerHeight},document.documentElement.dataset.inputMode==='touch');
 	hotSelectMenu.style.display='block'; hotSelectMenu.style.width=place.width+'px'; hotSelectMenu.style.maxHeight=place.maxHeight+'px';
@@ -17744,14 +18499,27 @@ function hotSelectCatalog(){
 // picker so the picker cards can reuse this instance as their drag handle.
 const CRAFTDRAG=createCraftDrag({
 	slots:()=>[...document.querySelectorAll('#hotbarWrap .hotSlot')],
-	assign(slot,item){ if(!(MM.hotbar && MM.hotbar.assign(slot,item.k))) return false; msg('Slot '+hotbarKeyLabel(slot)+' → '+item.label); return true; },
+	assign(slot,item){ return assignHotbarWithUndo(slot,item.k,item.label); },
+	slotInfo(slot,item){
+		const current=HOTBAR_ORDER[slot];
+		return {
+			keyLabel:hotbarKeyLabel(slot),
+			currentLabel:hotbarEntryLabel(current),
+			nextLabel:String(item&&item.label||hotbarEntryLabel(item&&item.k))
+		};
+	},
 	drawTile(g,item){
 		const id=T[item.k];
 		if(id==null) return false;
 		return !!(MM.drawEntityTile && MM.drawEntityTile(g,id,0,0,7,11));
 	}
 });
-if(CRAFTDRAG) MM.craftDrag=CRAFTDRAG;
+if(CRAFTDRAG){
+	MM.craftDrag=CRAFTDRAG;
+	// Re-decorate any inventory card that appeared during boot, before the
+	// shared pointer drag layer was available.
+	SMART_FEED.refresh();
+}
 const HOTPICKER=createHotPicker({
 	menu:hotSelectMenu,
 	options:hotSelectOptions,
@@ -17771,7 +18539,7 @@ const HOTPICKER=createHotPicker({
 		return !!(MM.drawEntityTile && MM.drawEntityTile(g,id,0,0,7,11));
 	},
 	current:slot=>HOTBAR_ORDER[slot],
-	assign(slot,item){ HOTBAR_ORDER[slot]=item.k; cycleHotbar(slot); msg('Slot '+hotbarKeyLabel(slot)+' → '+item.label); },
+	assign(slot,item){ assignHotbarWithUndo(slot,item.k,item.label); },
 	// drag a card onto ANY slot (reuses the shared drag layer); the "+" crafts
 	// the block on the spot when its recipe is known and affordable.
 	makeDraggable:(el,itemFn)=> CRAFTDRAG && CRAFTDRAG.makeDraggable(el,itemFn),
@@ -18758,6 +19526,10 @@ function onTaskFeedChange(change){
 	const task=change&&change.task;
 	if(!task || !task.id) return;
 	const id=String(task.id);
+	if(task.source==='smart_feed'){
+		rememberAnnouncedFeedTask(id);
+		return;
+	}
 	if(kind==='upsert' && !announcedFeedTasks.has(id)){
 		rememberAnnouncedFeedTask(id);
 		SMART_FEED.notify('task',task.title||'Nowe zadanie',{
@@ -18765,16 +19537,17 @@ function onTaskFeedChange(change){
 			context:task.detail||'Dodano do listy zadań',
 			priority:68,
 			dedupeKey:'task:create:'+id,
+			taskId:id,
 			target:task.target||null
 		});
 	}else if(kind==='complete'){
-		rememberAnnouncedFeedTask(id);
 		SMART_FEED.notify('achievement',task.title||'Zadanie ukończone',{
 			title:'ZADANIE UKOŃCZONE',
 			context:'Cel zapisany w historii',
 			priority:80,
 			dedupeKey:'task:complete:'+id
 		});
+		announcedFeedTasks.delete(id);
 	}else if(kind==='remove' || kind==='discard') announcedFeedTasks.delete(id);
 }
 if(TASKS && TASKS.setContext) TASKS.setContext({onChange:onTaskFeedChange});

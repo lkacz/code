@@ -214,7 +214,12 @@ assert.match(mainSrc, /tiles:\['WIRE',[^\]]*'SAPLING'\]/, 'hotbar utility group 
 assert.match(mainSrc, /function selectToolMode\(opts\)\{[\s\S]*INV\.unequip\('weapon'\)[\s\S]*updateWeaponBar\(\)/, 'selecting build mode holsters the active weapon and refreshes the weapon bar');
 assert.match(mainSrc, /function cycleHotbar\(idx,opts\)\{[\s\S]*selectToolMode\(\{quiet:true\}\)[\s\S]*updateHotbarSel\(\)/, 'choosing a hotbar resource immediately returns to pickaxe/build mode');
 assert.match(mainSrc, /const preview=\(c && INV\.selectedWeaponForCategory\)\? INV\.selectedWeaponForCategory\(c\.id\)/, 'inactive weapon HUD slots display their remembered selection');
-assert.match(mainSrc, /assign\(slot,key\)\{[\s\S]*HOTBAR_ORDER\[slot\]=key; cycleHotbar\(slot\);/, 'inventory resource assignment goes through the hotbar selector');
+assert.match(mainSrc, /function writeHotbarSlot\(slot,key\)\{[\s\S]{0,220}Number\.isInteger\(slot\)[\s\S]{0,220}Object\.prototype\.hasOwnProperty\.call\(T,key\)/, 'the centralized hotbar writer rejects fractional slots and prototype keys');
+assert.match(mainSrc, /function writeHotbarSlot\(slot,key\)\{[\s\S]{0,420}HOTBAR_ORDER\[slot\]=key;[\s\S]{0,140}HOTBAR_REVISIONS\[slot\]=/, 'every valid hotbar mutation advances the slot revision');
+assert.match(mainSrc, /assign\(slot,key\)\{[\s\S]{0,100}writeHotbarSlot\(slot,key\)[\s\S]{0,140}cycleHotbar\(slot\);/, 'the public hotbar bridge selects through the centralized writer');
+assert.match(mainSrc, /function restoreHotbar\(src\)\{[\s\S]{0,260}writeHotbarSlot\(i,src\.order\[i\]\)/, 'save and co-op restores invalidate stale per-slot undo revisions');
+assert.match(mainSrc, /b\.addEventListener\('click',\(\)=>\{ if\(!writeHotbarSlot\(slot,t\.k\)\) return;/, 'the fallback picker cannot bypass hotbar revision accounting');
+assert.match(mainSrc, /revision:slot=>Number\.isInteger\(slot\)/, 'hotbar exposes a read-only slot revision for ABA-safe undo');
 
 // --- crafting-panel drag&drop onto hotbar slots (engine/craft_drag.js) ------
 const craftDragSrc = readFileSync(new URL('../src/engine/craft_drag.js', import.meta.url), 'utf8');
@@ -222,7 +227,18 @@ assert.match(craftDragSrc, /elementFromPoint\(x,y\)[\s\S]{0,120}closest\('\.hotS
 assert.match(craftDragSrc, /#craftDragGhost\{[^}]*pointer-events:none/, 'drag ghost never blocks drop hit-testing');
 assert.match(craftDragSrc, /\.craftDragHandle\{[^}]*touch-action:none/, 'drag handles opt out of native panning so touch can drag');
 assert.ok(!/\.innerHTML\s*=/.test(craftDragSrc), 'drag layer renders text via textContent only');
-assert.match(mainSrc, /assign\(slot,item\)\{ if\(!\(MM\.hotbar && MM\.hotbar\.assign\(slot,item\.k\)\)\) return false;/, 'craft drag drops flow through the validated MM.hotbar.assign bridge');
+assert.match(craftDragSrc, /const slotInfoFn=typeof deps\.slotInfo==='function'\?deps\.slotInfo:null/, 'drag layer accepts a live slot-description bridge');
+assert.match(craftDragSrc, /preview\.className='craftDragPreview'[\s\S]{0,240}preview\.setAttribute\('aria-live','polite'\)/, 'replacement preview is a visible, accessible drag-ghost status');
+assert.match(craftDragSrc, /'Slot '\+keyLabel\+': '\+currentLabel\+' → '\+nextLabel/, 'replacement preview spells out the actual old-to-new slot mapping');
+assert.match(craftDragSrc, /function setOver\(slot\)\{[\s\S]{0,260}updatePreview\(slot\)/, 'replacement preview follows the currently hovered hotbar slot');
+assert.match(craftDragSrc, /recentlyDragged:el=>[\s\S]{0,120}el===recentDragSource/, 'post-drag click suppression is scoped to the source handle');
+assert.match(craftDragSrc, /setTimeout\(\(\)=>\{[\s\S]{0,180}removeEventListener\('click',suppressClick,true\)/, 'unused synthetic-click suppression expires instead of swallowing a later click');
+assert.match(craftDragSrc, /function onWindowBlur\(\)\{[\s\S]{0,120}if\(drag\.started\)\{ cleanup\(\); return; \}/, 'an active drag still cleans up immediately on a real window blur');
+assert.match(craftDragSrc, /const pending=drag;\s*setTimeout\(\(\)=>\{\s*if\(drag===pending && !pending\.started\) cleanup\(\);/, 'a transient focus handoff cannot cancel the pressed drag handle before its first pointermove');
+assert.match(mainSrc, /assign\(slot,item\)\{ return assignHotbarWithUndo\(slot,item\.k,item\.label\); \}/, 'craft drag drops flow through the guarded remap bridge');
+assert.match(mainSrc, /function assignHotbarWithUndo\(slot,key,label\)\{[\s\S]{0,1200}MM\.hotbar\.assign\(slot,key\)/, 'guarded remaps still mutate through validated MM.hotbar.assign');
+assert.match(mainSrc, /return order\[rec\.slot\]===rec\.nextKey && revision===rec\.revision/, 'undo rejects ABA remaps even when a slot later returns to the same key');
+assert.match(mainSrc, /slotInfo\(slot,item\)\{[\s\S]{0,240}currentLabel:hotbarEntryLabel\(current\)/, 'main supplies live old/new labels for the drag preview');
 assert.match(mainSrc, /function craftPlaceableDef\(k\)\{[\s\S]{0,80}RESOURCE_DEFS\.find\(res=>res\.key===k && res\.tile\)/, 'craft panel resolves placeable resources through the resource registry');
 assert.match(mainSrc, /const placeable=craftPlaceableDef\(k\);/, 'ingredient rows expose placeable resources as tile drag handles');
 assert.match(mainSrc, /className='craftHotDrop'/, 'craft detail shows a drag-to-hotbar card for placeable outputs');
@@ -243,7 +259,7 @@ assert.ok(mainSrc.indexOf('const CRAFTDRAG=createCraftDrag') < mainSrc.indexOf('
 assert.match(mainSrc, /makeDraggable:\(el,itemFn\)=> CRAFTDRAG && CRAFTDRAG\.makeDraggable\(el,itemFn\)/, 'picker cards reuse the shared hotbar drag layer');
 assert.match(mainSrc, /quickCraft:item=>\{ const ok=MM\.quickCraftTile\(item\.k\); if\(ok\) updateHotbarCounts\(\); return ok; \}/, 'picker "+" crafts and refreshes the HUD counts');
 assert.match(mainSrc, /ownedOnlyKey:'mm_hotbar_owned_only_v1'/, 'picker exposes a persisted owned-only toggle');
-assert.match(mainSrc, /assign\(slot,item\)\{ HOTBAR_ORDER\[slot\]=item\.k; cycleHotbar\(slot\);/, 'picker click-assign still routes through HOTBAR_ORDER + cycleHotbar');
+assert.match(mainSrc, /assign\(slot,item\)\{ assignHotbarWithUndo\(slot,item\.k,item\.label\); \}/, 'picker click-assign uses the same guarded remap and undo path');
 // hot_picker module: icon is the drag handle (small target keeps grid scroll)
 assert.match(hotPickerSrc, /const makeDraggable=typeof deps\.makeDraggable==='function'/, 'picker accepts an optional drag layer');
 assert.match(hotPickerSrc, /makeDraggable\(icon,\(\)=>\(\{k:item\.k,label:item\.label,col:item\.col\}\)\)/, 'the tile ICON (not the whole card) is the drag handle');
@@ -253,7 +269,19 @@ assert.match(hotPickerSrc, /function ownedVisible\(items\)\{[\s\S]*info\.n>0 \|\
 assert.match(invUiSrc, /MM\.craftDrag\.makeDraggable\(dot,\(\)=>\(\{k:r\.tile/, 'inventory resource swatch is a hotbar drag handle');
 assert.match(invUiSrc, /MM\.quickCraftResource\(r\.key\)/, 'inventory "+" crafts through the shared quick-craft bridge');
 assert.match(invUiSrc, /const INV_OWNED_ONLY_KEY='mm_inv_owned_only_v1'/, 'inventory owned-only toggle persists');
+assert.match(invUiSrc, /setAttribute\('role','tab'\)[\s\S]{0,180}setAttribute\('aria-controls','invGrid'\)/, 'inventory category tabs expose complete tab semantics');
+assert.match(invUiSrc, /function modalFocusables\(\)[\s\S]{0,420}el\.tabIndex<0[\s\S]{0,240}getClientRects\(\)\.length>0/, 'the modal trap excludes hidden and programmatic-only controls');
+assert.match(invUiSrc, /!overlay\.contains\(document\.activeElement\)\|\|!focusables\.includes\(document\.activeElement\)/, 'the modal trap recovers focus that was stranded on body after a rebuild');
+assert.match(invUiSrc, /function inventoryFocusSnapshot\(active\)[\s\S]{0,900}discoveryCategory[\s\S]{0,900}resourceKey/, 'inventory rebuilds retain semantic control identities');
+assert.match(invUiSrc, /discoveryCategory=key;[\s\S]{0,80}buildGrid\(\);[\s\S]{0,600}dataset\.discoveryCategory===String\(key\)[\s\S]{0,240}replacement\.focus/, 'clicking an Atlas trail restores focus to its rebuilt navigation button');
+assert.match(invUiSrc, /setActive\(discoveryTab,false\)[\s\S]{0,180}(?:setPrimaryView\('equipment'\)|else open\(\))/, 'opening a discovery selects state first and builds the Atlas grid only once');
 assert.match(invUiSrc, /if\(ownedOnly\) list=list\.filter\(r=>r\.count>0\)/, 'owned-only keeps only stacks above zero');
+assert.match(invUiSrc, /card\.dataset\.discoveryId=e\.id/, 'atlas cards expose a safe opaque focus identity');
+assert.match(invUiSrc, /function openDiscovery\(id\)\{[\s\S]{0,460}entries\.find\(row=>row && row\.found && row\.id===id\)/, 'feed atlas actions re-resolve only earned discovery ids');
+assert.match(invUiSrc, /function focusDiscoveryCard\(id\)\{[\s\S]{0,300}for\(const card of grid\.querySelectorAll\('\.invDiscCard'\)\)\{[\s\S]{0,100}card\.dataset\.discoveryId===id/, 'atlas focus avoids interpolating public ids into a selector');
+assert.match(invUiSrc, /const focusSnapshot=inventoryFocusSnapshot\(focusedBefore\)[\s\S]{0,320}else if\(focusSnapshot\) restoreInventoryFocus\(focusSnapshot\)/, 'atlas rebuilds preserve whichever semantic control still owns focus without a timed focus-steal window');
+assert.match(invUiSrc, /const returnFocus=lastFocus&&lastFocus\.isConnected[\s\S]{0,160}#smartFeed \.smartFeedToggle/, 'closing Atlas falls back to a live feed control when its original action was rebuilt');
+assert.match(invUiSrc, /MM\.inventoryUI=\{open, openDiscovery, close/, 'inventory UI publishes the canonical open-specific-discovery action');
 // CSS: overlay pass-through (inventory modal sits ABOVE #ui and cannot be
 // out-z-indexed) + hotbar raised above the picker during any tile drag.
 assert.match(indexHtml, /body\.mmTileDrag #invOverlay\{[^}]*pointer-events:none/, 'inventory overlay turns pointer-transparent mid-drag so drops fall through to the hotbar');

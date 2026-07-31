@@ -354,7 +354,9 @@ const ufo = (function(){
       prefer:(opts && opts.prefer)||null,
       trophy:null,
     };
-    say('🛸 '+look.name+' nadlatuje! Coś skanuje okolicę...');
+    say('🛸 '+look.name+' nadlatuje! Coś skanuje okolicę...',{
+      target:{x:craft.x,y:craft.y}
+    });
     sfx('ufo',{x:craft.x,y:craft.y});
     return craft;
   }
@@ -456,7 +458,9 @@ const ufo = (function(){
     burst(c.x,c.y,'epic'); burst(c.x-1.5,c.y+0.5,'epic'); burst(c.x+1.5,c.y+0.5,'epic');
     damageBlastCreatures(MM,c.x,c.y,6,28,{source:'ufo',cause:'ufo_crash_blast'});
     sfx('explosion',{x:c.x,y:c.y});
-    say('💥 '+c.look.name+' zestrzelony! Antymateria ×'+n+artMsg+bioMsg+' (+120 XP)');
+    say('💥 '+c.look.name+' zestrzelony! Antymateria ×'+n+artMsg+bioMsg+' (+120 XP)',{
+      target:{x:c.x,y:c.y}
+    });
     if(typeof window!=='undefined' && window.updateInventoryHud) try{ window.updateInventoryHud(); }catch(e){}
     craft=null;
     acc=0; rollNext(); save();

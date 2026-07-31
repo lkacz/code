@@ -195,6 +195,18 @@ assert.equal(model.restore({seenAvailable:'junk'}), false, 'corrupt snapshot fal
   assert.match(mainSrcPin, /function scanCraftablesInView\(dt\)/, 'viewport sweep teaches recipes from world sightings');
   assert.match(mainSrcPin, /function resourceDiscovered\(key\)/, 'hotbar picker gates blocks on discovery');
   assert.match(mainSrcPin, /RESOURCE_DEFS\.filter\(r=>r\.tile && resourceDiscovered\(r\.key\)\)/, 'hot picker catalog filters undiscovered resources');
+  assert.match(mainSrcPin, /function recipeUsesIngredient\(r,key\)\{[\s\S]{0,180}hasOwnProperty\.call\(r\.cost,key\)[\s\S]{0,80}Number\(r\.cost\[key\]\)>0/, 'ingredient filtering uses an exact positive cost key instead of fuzzy search');
+  assert.match(mainSrcPin, /let list=visibleCraftRecipes\(\)[\s\S]{0,260}if\(craftIngredientKey\) list=list\.filter\(r=>recipeUsesIngredient\(r,craftIngredientKey\)\)/, 'ingredient filtering retains the normal discovery and challenge visibility gate');
+  assert.match(mainSrcPin, /MM\.craftUI=Object\.assign[\s\S]{0,420}openForIngredient:openCraftForIngredient/, 'the feed opens ingredient recipes through one canonical crafting UI bridge');
+  assert.match(mainSrcPin, /function knownCraftIngredientRecipeKeys\(\)[\s\S]{0,520}for\(const recipe of visibleCraftRecipes\(\)\)[\s\S]{0,420}craftIngredientRecipeKeysCache=keys/, 'feed recipe affordances share one cached visible-ingredient index');
+  assert.match(mainSrcPin, /function knownCraftIngredientRecipeKeys\(\)[\s\S]{0,240}craftIngredientRecipeChallengeKey\(\)[\s\S]{0,260}craftIngredientRecipeKeysChallenge===challengeKey/, 'the cached ingredient index includes live challenge bans in its identity');
+  assert.match(mainSrcPin, /hasIngredientRecipes:key=>\{[\s\S]{0,180}knownCraftIngredientRecipeKeys\(\)\.has\(def\.key\)/, 'each resource row performs a constant-time recipe lookup');
+  assert.match(mainSrcPin, /const unlocked=CRAFT_MODEL\.noteMaterials[\s\S]{0,180}if\(unlocked\.length\) invalidateCraftIngredientRecipeKeys\(\)/, 'ordinary resource changes retain the ingredient index until recipe visibility actually changes');
+  assert.match(mainSrcPin, /function noteCraftResultSeen\(resourceKey,opts\)[\s\S]{0,520}if\(!unlocked\.length\) return \[\];[\s\S]{0,260}invalidateCraftIngredientRecipeKeys\(\)[\s\S]{0,900}SMART_FEED\.refresh/, 'observing a crafted result invalidates and redraws feed recipe actions without waiting for inventory churn');
+  assert.match(mainSrcPin, /function openCraftForIngredient\(key,opts\)\{[\s\S]{0,420}visibleRecipesUsingIngredient\(def\.key\)[\s\S]{0,420}setCraftCollapsed\(host,false\)/, 'craft action revalidates the resource, exact known matches, and explicitly opens the panel');
+  assert.match(mainSrcPin, /function openCraftForIngredient\(key,opts\)[\s\S]{0,760}opts\.focus!==false[\s\S]{0,260}\.focus\(\{preventScroll:false\}\)/, 'pointer and keyboard feed actions both move focus into the craft panel they reveal');
+  assert.match(mainSrcPin, /ingredientFilter\.textContent=def\?'Składnik: '\+def\.label\+' ×'/, 'the exact ingredient filter remains visible and removable in the toolbar');
+  assert.match(mainSrcPin, /function clearCraftIngredientFilter\(event\)[\s\S]{0,420}document\.activeElement===filter[\s\S]{0,420}craftSearch[\s\S]{0,120}\.focus/, 'clearing the active ingredient chip restores focus to the craft search instead of the document body');
 
   // Category discovery: every real craft group / picker group has a journal
   // entry, and main.js reports first-of-category unlocks through it.

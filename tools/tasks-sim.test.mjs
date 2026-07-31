@@ -117,6 +117,30 @@ assert.equal(tasks.metrics().active, 1, 'sync removes alien-cache tasks whose ca
 assert.equal(tasks.removeSource('invasions'), 1, 'source removal clears invasion recovery tasks');
 assert.equal(userChanges, 14, 'creation, completion, removal, sync and source cleanup all request persistence without refresh churn');
 
+// Smart-feed locations deliberately reuse one stable task id: tracking a later
+// discovery/event moves the waypoint instead of growing an unbounded task list.
+tasks.reset();
+const waypointA=tasks.upsert({
+  id:'smart_feed:waypoint',source:'smart_feed',kind:'waypoint',title:'Miejsce: meteoryt',
+  pointer:true,target:{x:12,y:9,label:'Meteoryt'}
+});
+assert.equal(tasks.setPriority(waypointA.id),true,'a feed waypoint can become the active HUD target');
+tasks.upsert({
+  id:'smart_feed:waypoint',source:'smart_feed',kind:'waypoint',title:'Miejsce: odkrycie',
+  pointer:true,target:{x:-8,y:33,label:'Odkrycie'}
+});
+assert.equal(tasks.metrics().active,1,'a later feed target replaces the fixed waypoint instead of adding another task');
+assert.equal(tasks.metrics().priorityId,'smart_feed:waypoint','replacing the waypoint preserves active tracking');
+assert.equal(tasks.trackedTarget({x:0,y:0}).x,-8,'the HUD follows the newest validated feed coordinates');
+assert.equal(tasks.discard('smart_feed:waypoint'),true,'a player may dismiss a feed waypoint');
+const waypointRevived=tasks.upsert({
+  id:'smart_feed:waypoint',source:'smart_feed',kind:'waypoint',title:'Miejsce: nowy sygnał',
+  pointer:true,target:{x:45,y:-6,label:'Nowy sygnał'},reactivate:true
+});
+assert.equal(waypointRevived.status,'active','an explicit new feed action reactivates its stable dismissed waypoint');
+assert.equal(tasks.metrics().discarded,0,'reactivation releases the old discard tombstone');
+assert.equal(tasks.trackedTarget({x:0,y:0}).x,45,'reactivated tracking follows the new snapshot');
+
 // Imported/corrupted task state is bounded and deterministic: a discarded
 // tombstone wins over a duplicate active row, and newest-first history stays so.
 tasks.restore({

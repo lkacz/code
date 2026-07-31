@@ -139,6 +139,7 @@ import './inventory.js';
   let tierFilter='all';
   let sortMode='power';
   let discoveryCategory='next';
+  let discoveryFocusId='';
   let selectedJewelKey=null;
   let toolbarEl=null, searchInput=null, tierSelect=null, sortSelect=null, capEl=null, undoBtn=null, newReviewEl=null;
   let activeView='hero';
@@ -178,22 +179,52 @@ import './inventory.js';
   if(heroNav) heroNav.addEventListener('click',()=>setPrimaryView('hero'));
   if(equipmentNav) equipmentNav.addEventListener('click',()=>setPrimaryView('equipment'));
 
-  function setActive(tab){
+  function setActive(tab,render=true){
     activeTab=tab;
     if(equipmentView) equipmentView.dataset.tab=tab.key;
-    tabsEl.querySelectorAll('.invTabBtn').forEach(b=>{ b.classList.toggle('sel', b.dataset.key===tab.key); });
-    buildGrid();
+    let activeButton=null;
+    tabsEl.querySelectorAll('.invTabBtn').forEach(b=>{
+      const on=b.dataset.key===tab.key;
+      b.classList.toggle('sel',on);
+      b.setAttribute('aria-selected',on?'true':'false');
+      b.tabIndex=on?0:-1;
+      if(on) activeButton=b;
+    });
+    grid.setAttribute('role','tabpanel');
+    if(activeButton&&activeButton.id) grid.setAttribute('aria-labelledby',activeButton.id);
+    if(render) buildGrid();
   }
   function buildTabs(){
     tabsEl.innerHTML='';
-    TABS.forEach(tab=>{
+    TABS.forEach((tab,index)=>{
       const b=document.createElement('button');
       b.className='invTabBtn'; b.dataset.key=tab.key;
+      b.id='invTab_'+index;
+      b.type='button';
+      b.setAttribute('role','tab');
+      b.setAttribute('aria-controls','invGrid');
+      b.setAttribute('aria-selected','false');
+      b.tabIndex=-1;
       const ic=document.createElement('span'); ic.setAttribute('aria-hidden','true'); ic.textContent=TAB_ICONS[tab.key]||'';
       const lb=document.createElement('span'); lb.textContent=tab.label;
       const cnt=document.createElement('span'); cnt.className='cnt'; cnt.style.display='none';
       b.appendChild(ic); b.appendChild(lb); b.appendChild(cnt);
       b.addEventListener('click',()=>setActive(tab));
+      b.addEventListener('keydown',event=>{
+        const keys=['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'];
+        if(!keys.includes(event.key)) return;
+        event.preventDefault();
+        const buttons=[...tabsEl.querySelectorAll('.invTabBtn')];
+        const current=buttons.indexOf(b);
+        let next=current;
+        if(event.key==='Home') next=0;
+        else if(event.key==='End') next=buttons.length-1;
+        else if(event.key==='ArrowRight'||event.key==='ArrowDown') next=(current+1)%buttons.length;
+        else next=(current-1+buttons.length)%buttons.length;
+        const nextTab=TABS.find(row=>row.key===buttons[next]?.dataset.key);
+        if(nextTab) setActive(nextTab);
+        buttons[next]?.focus();
+      });
       tabsEl.appendChild(b);
     });
     updateTabMeta();
@@ -312,6 +343,7 @@ import './inventory.js';
     slotsEl.innerHTML='';
     INV.SLOTS.forEach(slot=>{
       const box=document.createElement('div'); box.className='invSlot'; box.tabIndex=0;
+      box.dataset.slotId=String(slot.id);
       box.title='Przejdź do zakładki: '+(INV.KIND_LABELS[slot.accepts]||slot.label);
       const it=INV.equippedItem(slot.id);
       const ic=document.createElement('span'); ic.className='invSlotIcon'; ic.setAttribute('aria-hidden','true');
@@ -513,6 +545,7 @@ import './inventory.js';
   }
   function makeCard(item,slot,maxScore,refScore){
     const div=document.createElement('div'); div.className='invItem'; div.tabIndex=0;
+    div.dataset.itemId=String(item.id);
     const cmp=compare(item);
     const equipped=INV.isEquipped(item.id);
     const isNew=!!(INV.isNew && INV.isNew(item.id));
@@ -723,6 +756,7 @@ import './inventory.js';
       if(searchText && !String(jewel.label+' '+jewel.desc).toLowerCase().includes(searchText)) continue;
       const count=Math.max(0,((window.inv||{})[jewel.key]|0));
       const card=document.createElement('div'); card.className='invResCard invJewelCard'+(count?'':' zero')+(selectedJewelKey===jewel.key?' selected':'');
+      card.dataset.resourceKey=String(jewel.key);
       card.style.setProperty('--jewel',jewel.color);
       const top=document.createElement('div'); top.className='invResTop';
       const gem=document.createElement('span'); gem.className='invJewelGem'; gem.setAttribute('aria-hidden','true');
@@ -824,6 +858,7 @@ import './inventory.js';
     }
     list.forEach(r=>{
       const card=document.createElement('div'); card.className='invResCard'+(r.count>0?'':' zero');
+      card.dataset.resourceKey=String(r.key);
       const top=document.createElement('div'); top.className='invResTop';
       const dot=document.createElement('span'); dot.className='invResDot'; dot.style.background=r.color;
       if(r.tile && MM.craftDrag && MM.craftDrag.makeDraggable){
@@ -847,9 +882,12 @@ import './inventory.js';
         });
         btns.appendChild(plus);
       }
-      if(r.tile && MM.hotbar && MM.hotbar.assign){
+      if(r.tile && MM.hotbar && (MM.hotbar.remap||MM.hotbar.assign)){
         const hb=document.createElement('button'); hb.textContent='Do paska'; hb.title='Przypisz do aktywnego slotu paska';
-        hb.addEventListener('click',()=>{ if(MM.hotbar.assign(MM.hotbar.index(), r.tile) && window.msg) window.msg(r.label+' przypisano do paska'); });
+        hb.addEventListener('click',()=>{
+          const assign=MM.hotbar.remap||MM.hotbar.assign;
+          if(assign(MM.hotbar.index(),r.tile,r.label) && window.msg && !MM.hotbar.remap) window.msg(r.label+' przypisano do paska');
+        });
         btns.appendChild(hb);
       }
       [['-1',1],['-10',10]].forEach(([t,n])=>{
@@ -928,10 +966,22 @@ import './inventory.js';
       const button=document.createElement('button');
       button.type='button';
       button.className='invDiscNavBtn';
+      button.dataset.discoveryCategory=String(key);
       button.classList.toggle('active',!searchText && discoveryCategory===key);
       button.setAttribute('aria-pressed',String(!searchText && discoveryCategory===key));
       button.textContent=label+(count!==undefined && count!==null && count!==''?' '+count:'');
-      button.addEventListener('click',()=>{ discoveryCategory=key; buildGrid(); });
+      button.addEventListener('click',()=>{
+        discoveryCategory=key;
+        buildGrid();
+        // buildGrid() replaces the whole Atlas subtree, including the button
+        // that initiated this change. Restore focus by its bounded data key so
+        // keyboard and switch users do not fall out of the modal onto <body>.
+        const replacement=[...grid.querySelectorAll('.invDiscNavBtn')]
+          .find(node=>node.dataset.discoveryCategory===String(key));
+        if(replacement&&replacement.focus){
+          try{ replacement.focus({preventScroll:true}); }catch(e){ replacement.focus(); }
+        }
+      });
       nav.appendChild(button);
     };
     navButton('next','✦ Następne');
@@ -1014,6 +1064,7 @@ import './inventory.js';
         if(e.cat!==cat) continue;
         const card=document.createElement('div');
         card.className='invResCard invDiscCard'+(e.found?' found':' zero');
+        card.dataset.discoveryId=e.id;
         card.dataset.discoveryTier=e.tier||'principle';
         card.dataset.discoveryStage=e.stage||'discovery';
         card.style.setProperty('--tier',e.color||'#7de3a8');
@@ -1535,8 +1586,9 @@ import './inventory.js';
   // --- Colors ---
   const CAPE_SWATCHES=['#b91818','#1d6fd6','#1f9d44','#7a25c9','#e08a00','#d6336c','#11b5ad','#222831'];
   const OUTFIT_SWATCHES=['#f4c05a','#e0e0e0','#7fb2e5','#9adf7c','#e58f7f','#c9a0ff'];
-  function buildColorRow(labelText, swatches, getCur, apply){
+  function buildColorRow(groupKey,labelText, swatches, getCur, apply){
     const wrap=document.createElement('div');
+    wrap.dataset.colorGroup=String(groupKey);
     const lab=document.createElement('div'); lab.className='swLabel'; lab.textContent=labelText; wrap.appendChild(lab);
     const row=document.createElement('div'); row.className='swRow';
     function refreshSel(){ row.querySelectorAll('.sw').forEach(b=>{ b.classList.toggle('sel', b.dataset.col===getCur()); }); }
@@ -1551,8 +1603,8 @@ import './inventory.js';
   }
   function buildColors(){
     if(!colorsEl) return; colorsEl.innerHTML='';
-    colorsEl.appendChild(buildColorRow('Kolor peleryny', CAPE_SWATCHES, ()=>INV.getColors().cape, col=>INV.setColor('cape',col)));
-    colorsEl.appendChild(buildColorRow('Kolor stroju (Podstawowy)', OUTFIT_SWATCHES, ()=>INV.getColors().outfit, col=>INV.setColor('outfit',col)));
+    colorsEl.appendChild(buildColorRow('cape','Kolor peleryny', CAPE_SWATCHES, ()=>INV.getColors().cape, col=>INV.setColor('cape',col)));
+    colorsEl.appendChild(buildColorRow('outfit','Kolor stroju (Podstawowy)', OUTFIT_SWATCHES, ()=>INV.getColors().outfit, col=>INV.setColor('outfit',col)));
   }
 
   // --- Character development (levels + skill points from engine/progress.js) ---
@@ -1713,6 +1765,98 @@ import './inventory.js';
   // dozens of 'input' events per second, each dispatching mm-customization-change,
   // and a full DOM rebuild per event caused layout thrash while the panel was open.
   let refreshQueued=false;
+  function focusDiscoveryCard(id){
+    if(!id || !isOpen() || activeView!=='equipment' || activeTab.key!=='discovery') return false;
+    let target=null;
+    for(const card of grid.querySelectorAll('.invDiscCard')){
+      if(card.dataset.discoveryId===id){ target=card; break; }
+    }
+    if(!target) return false;
+    target.tabIndex=-1;
+    try{ target.focus({preventScroll:true}); }catch(e){ target.focus(); }
+    if(typeof target.scrollIntoView==='function'){
+      target.scrollIntoView({block:'center',inline:'nearest'});
+    }
+    return true;
+  }
+  function focusedControlPart(active,base){
+    if(!active||!base||active===base) return null;
+    return {
+      tag:String(active.tagName||''),
+      type:String(active.type||''),
+      cls:active.classList&&active.classList.length
+        ? String(active.classList[0]||'')
+        : '',
+      text:String(active.textContent||'').replace(/\s+/g,' ').trim().slice(0,80)
+    };
+  }
+  function inventoryFocusSnapshot(active){
+    if(!active||!overlay.contains(active)) return null;
+    const direct=[
+      ['discoveryNav','.invDiscNavBtn','discoveryCategory'],
+      ['discovery','.invDiscCard','discoveryId'],
+      ['slot','.invSlot','slotId'],
+      ['item','.invItem','itemId'],
+      ['resource','.invResCard','resourceKey'],
+      ['color','[data-color-group]','colorGroup']
+    ];
+    for(const [type,selector,key] of direct){
+      const base=active.closest&&active.closest(selector);
+      if(base&&overlay.contains(base)){
+        return {
+          type,
+          key:String(base.dataset&&base.dataset[key]||''),
+          part:focusedControlPart(active,base)
+        };
+      }
+    }
+    if(slotsEl.contains(active)||grid.contains(active)||(colorsEl&&colorsEl.contains(active))){
+      return {type:'fallback',key:'',part:null};
+    }
+    if(heroView&&heroView.contains(active)) return {type:'fallback',key:'',part:null};
+    return null;
+  }
+  function focusInventoryFallback(){
+    const activeButton=[...tabsEl.querySelectorAll('.invTabBtn')]
+      .find(button=>button.dataset.key===activeTab.key);
+    const target=activeView==='hero'
+      ? (heroNav||closeBtn)
+      : (activeButton||equipmentNav||closeBtn);
+    if(!target||!target.focus) return false;
+    try{ target.focus({preventScroll:true}); }catch(e){ target.focus(); }
+    return true;
+  }
+  function restoreInventoryFocus(snapshot){
+    if(!snapshot) return false;
+    if(snapshot.type==='discovery') return focusDiscoveryCard(snapshot.key);
+    const map={
+      discoveryNav:['.invDiscNavBtn','discoveryCategory'],
+      slot:['.invSlot','slotId'],
+      item:['.invItem','itemId'],
+      resource:['.invResCard','resourceKey'],
+      color:['[data-color-group]','colorGroup']
+    };
+    const config=map[snapshot.type];
+    if(!config) return focusInventoryFallback();
+    const [selector,key]=config;
+    const base=[...overlay.querySelectorAll(selector)]
+      .find(node=>String(node.dataset&&node.dataset[key]||'')===snapshot.key);
+    if(!base) return focusInventoryFallback();
+    let target=base;
+    if(snapshot.part){
+      const candidates=[...base.querySelectorAll('button,input,select,textarea,[tabindex]')];
+      target=candidates.find(node=>{
+        if(String(node.tagName||'')!==snapshot.part.tag) return false;
+        if(snapshot.part.type&&String(node.type||'')!==snapshot.part.type) return false;
+        if(snapshot.part.cls&&!(node.classList&&node.classList.contains(snapshot.part.cls))) return false;
+        if(snapshot.part.text&&String(node.textContent||'').replace(/\s+/g,' ').trim().slice(0,80)!==snapshot.part.text) return false;
+        return true;
+      })||base;
+    }
+    if(!target.focus) return focusInventoryFallback();
+    try{ target.focus({preventScroll:true}); }catch(e){ target.focus(); }
+    return true;
+  }
   function refreshAll(force){
     if(!isOpen() && !force) return;
     if(refreshQueued) return;
@@ -1720,24 +1864,71 @@ import './inventory.js';
     requestAnimationFrame(()=>{
       refreshQueued=false;
       if(!isOpen()) return;
+      const focusedBefore=document.activeElement;
+      const focusSnapshot=inventoryFocusSnapshot(focusedBefore);
       if(activeView==='equipment'){
         updateToolbar(); buildSlots(); buildGrid(); buildColors();
+        if(discoveryFocusId && focusDiscoveryCard(discoveryFocusId)) discoveryFocusId='';
+        else if(focusSnapshot) restoreInventoryFocus(focusSnapshot);
       }
       updatePreview(); updateStats(); updateSelInfo(); buildProgress();
+      if(activeView==='hero'&&focusSnapshot&&!(focusedBefore&&focusedBefore.isConnected)){
+        restoreInventoryFocus(focusSnapshot);
+      }
     });
   }
-  window.addEventListener('mm-inventory-change',refreshAll);
-  window.addEventListener('mm-customization-change',refreshAll);
+  let customizationRefreshQueued=false;
+  function refreshCustomizationOnly(){
+    if(!isOpen()||customizationRefreshQueued) return;
+    customizationRefreshQueued=true;
+    requestAnimationFrame(()=>{
+      customizationRefreshQueued=false;
+      if(!isOpen()) return;
+      const colors=INV.getColors?INV.getColors():{};
+      if(colorsEl){
+        for(const wrap of colorsEl.querySelectorAll('[data-color-group]')){
+          const current=String(colors[wrap.dataset.colorGroup]||'').toLowerCase();
+          for(const swatch of wrap.querySelectorAll('.sw[data-col]')){
+            swatch.classList.toggle('sel',String(swatch.dataset.col||'').toLowerCase()===current);
+          }
+          const input=wrap.querySelector('input[type="color"]');
+          if(input&&/^#[0-9a-f]{6}$/i.test(current)&&input.value.toLowerCase()!==current) input.value=current;
+        }
+      }
+      updatePreview();
+    });
+  }
+  window.addEventListener('mm-inventory-change',event=>{
+    if(event&&event.detail&&event.detail.key==='color') return;
+    refreshAll();
+  });
+  window.addEventListener('mm-customization-change',event=>{
+    if(event&&event.detail&&event.detail.key==='color') refreshCustomizationOnly();
+    else refreshAll();
+  });
   window.addEventListener('mm-resources-change',()=>{ if(isOpen() && (activeTab.key==='resources'||activeTab.key==='jewels')) refreshAll(); });
   window.addEventListener('mm-discovery-earned',()=>{ if(isOpen() && activeTab.key==='discovery') refreshAll(); });
 
   // --- Open / close / focus management ---
   let lastFocus=null;
+  function modalFocusables(){
+    return [...overlay.querySelectorAll('a[href],button,input,select,textarea,[tabindex]')]
+      .filter(el=>{
+        if(el.disabled||el.tabIndex<0||!el.isConnected||el.closest('[hidden]')) return false;
+        const style=getComputedStyle(el);
+        return style.display!=='none'&&style.visibility!=='hidden'&&el.getClientRects().length>0;
+      });
+  }
   function trapFocus(e){
     if(!isOpen() || e.key!=='Tab') return;
-    const focusables=[...overlay.querySelectorAll('button,[tabindex]')].filter(el=>!el.disabled);
+    const focusables=modalFocusables();
     if(!focusables.length) return;
     const first=focusables[0], last=focusables[focusables.length-1];
+    if(!overlay.contains(document.activeElement)||!focusables.includes(document.activeElement)){
+      e.preventDefault();
+      (e.shiftKey?last:first).focus();
+      return;
+    }
     if(e.shiftKey){ if(document.activeElement===first){ e.preventDefault(); last.focus(); } }
     else { if(document.activeElement===last){ e.preventDefault(); first.focus(); } }
   }
@@ -1751,13 +1942,51 @@ import './inventory.js';
     if(primary) primary.focus();
     document.addEventListener('keydown',trapFocus);
   }
+  function openDiscovery(id){
+    if(typeof id!=='string' || !id || id.length>160) return false;
+    const discovery=MM.discovery;
+    if(!discovery || typeof discovery.entries!=='function') return false;
+    let entries;
+    try{ entries=discovery.entries(); }catch(e){ return false; }
+    if(!Array.isArray(entries)) return false;
+    const entry=entries.find(row=>row && row.found && row.id===id);
+    if(!entry) return false;
+    const discoveryTab=TABS.find(tab=>tab.key==='discovery');
+    if(!discoveryTab) return false;
+
+    searchText='';
+    ensureToolbar();
+    if(searchInput) searchInput.value='';
+    discoveryCategory=entry.collection
+      ? 'collection'
+      : (typeof entry.cat==='string' && entry.cat ? entry.cat : 'next');
+
+    // Select the view explicitly: open() intentionally does nothing when the
+    // overlay is already visible, while feed actions may arrive in either view.
+    activeView='equipment';
+    setActive(discoveryTab,false);
+    if(isOpen()) setPrimaryView('equipment');
+    else open();
+    updateToolbar();
+    discoveryFocusId=entry.id;
+
+    requestAnimationFrame(()=>{
+      if(focusDiscoveryCard(entry.id)) discoveryFocusId='';
+    });
+    return true;
+  }
   function close(){
     if(!isOpen()) return;
+    const returnFocus=lastFocus&&lastFocus.isConnected
+      ? lastFocus
+      : (document.querySelector('#smartFeed .smartFeedToggle')||hudOpenBtn||openBtn);
     overlay.style.display='none';
+    discoveryFocusId='';
     if(hudOpenBtn) hudOpenBtn.setAttribute('aria-expanded','false');
     if(MM.modalInput) MM.modalInput.pop('inventory');
     document.removeEventListener('keydown',trapFocus);
-    if(lastFocus && lastFocus.focus) lastFocus.focus();
+    if(returnFocus && returnFocus.focus) returnFocus.focus();
+    lastFocus=null;
   }
   function toggle(){ if(isOpen()) close(); else open(); }
   if(openBtn) openBtn.addEventListener('click',open);
@@ -1819,7 +2048,7 @@ import './inventory.js';
   buildActions();
   // Reuse the exact inventory-card renderer in compact HUD notifications so a
   // cape, weapon or charm looks identical wherever the player sees it.
-  MM.inventoryUI={open, close, toggle, isOpen, drawItemThumb};
+  MM.inventoryUI={open, openDiscovery, close, toggle, isOpen, drawItemThumb};
 })();
 // ESM export (progressive migration)
 export const inventoryUI = (typeof window!=='undefined' && window.MM) ? window.MM.inventoryUI : undefined;

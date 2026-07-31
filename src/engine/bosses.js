@@ -610,7 +610,9 @@ window.MM = window.MM || {};
         if(collides(m,getTile)) continue;
         monsters.push(m); spawnedTotal++;
         const dirTxt=(m.x>=px)? 'na wschodzie':'na zachodzie';
-        say((m.gargantuan? '⚠ GARGANTUICZNY wodny potwór ':'🌊 Wodny potwór ')+m.name+' wynurzył się '+dirTxt+'!');
+        say((m.gargantuan? '⚠ GARGANTUICZNY wodny potwór ':'🌊 Wodny potwór ')+m.name+' wynurzył się '+dirTxt+'!',{
+          target:{x:m.x,y:m.y}
+        });
         try{ if(MM.audio && MM.audio.play) MM.audio.play('roar',{x:m.x,y:m.y}); }catch(e){}
         return m;
       }
@@ -625,7 +627,9 @@ window.MM = window.MM || {};
       if(collides(m,getTile)) continue;
       monsters.push(m); spawnedTotal++;
       const dirTxt=(m.x>=px)? 'na wschodzie':'na zachodzie';
-      say((m.gargantuan? '⚠ GARGANTUICZNY potwór ':'⚠ Potwór ')+m.name+' pojawił się '+dirTxt+'!');
+      say((m.gargantuan? '⚠ GARGANTUICZNY potwór ':'⚠ Potwór ')+m.name+' pojawił się '+dirTxt+'!',{
+        target:{x:m.x,y:m.y}
+      });
       try{ if(MM.audio && MM.audio.play) MM.audio.play('roar',{x:m.x,y:m.y}); }catch(e){}
       return m;
     }
@@ -1285,7 +1289,10 @@ window.MM = window.MM || {};
     const bx=Math.round(m.x)+(m.core?m.core.dx:0), by=Math.round(m.y)+(m.core?m.core.dy:0);
     try{ if(MM.particles && MM.particles.spawnBurst) MM.particles.spawnBurst((bx+0.5)*(MM.TILE||20),(by+0.5)*(MM.TILE||20),'rare'); }catch(e){}
     try{ if(MM.audio && MM.audio.play) MM.audio.play('warning',{x:bx,y:by}); }catch(e){}
-    say('Serce '+m.name+' kona i puchnie od energii - uciekaj!',{urgent:true});
+    say('Serce '+m.name+' kona i puchnie od energii - uciekaj!',{
+      urgent:true,
+      target:{x:bx+0.5,y:by+0.5}
+    });
     return true;
   }
   function heartHitsTerrain(getTile,x,y,r){
@@ -1493,7 +1500,9 @@ window.MM = window.MM || {};
         },{boss:true,hp:hpBudget,dmg:m.attackDmg,xp:xpGain});
       }
     }catch(e){}
-    say('💥 Serce potwora '+m.name+' eksplodowało! Nagroda: +'+xpGain+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'));
+    say('💥 Serce potwora '+m.name+' eksplodowało! Nagroda: +'+xpGain+' XP'+(m.gargantuan? ' — zostawił stos epickich skrzyń!':' — zostawił skrzynię!'),{
+      target:{x:blastX,y:blastY}
+    });
     killedTotal++;
     try{ if(typeof window!=='undefined' && window.dispatchEvent) window.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:m.name,gargantuan:!!m.gargantuan,xp:xpGain,x:blastX,y:blastY}})); }catch(e){}
     m.dead=true;

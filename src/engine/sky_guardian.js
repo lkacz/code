@@ -480,7 +480,9 @@ const skyGuardian = (function(){
       boss.tacticCd=0.2;
     }
     addEffect({type:'ring',kind:'air',x:L.ax,y:L.gateY,t:0,max:1.2,r:28});
-    say(stage>=3 ? 'Astrael locks the last ambition into three crowns.' : 'The Sky Gate answers with resonators.');
+    say(stage>=3 ? 'Astrael locks the last ambition into three crowns.' : 'The Sky Gate answers with resonators.',{
+      target:{x:L.ax,y:L.gateY}
+    });
   }
   function awaken(opts){
     opts=opts || {};
@@ -497,7 +499,9 @@ const skyGuardian = (function(){
     state.debugRematch=!!opts.debug;
     spawnResonators(1,L);
     spawnLeaflings(1,L,L.bossX+5,L.bossY+1,0);
-    say('Sky Gate opens: Astrael reads the shape of your ambition.');
+    say('Sky Gate opens: Astrael reads the shape of your ambition.',{
+      target:{x:boss.x,y:boss.y}
+    });
     sfx('warning',{x:boss.x,y:boss.y});
     return true;
   }

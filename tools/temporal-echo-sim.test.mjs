@@ -38,6 +38,19 @@ const mobs=readFileSync(new URL('../src/engine/mobs.js',import.meta.url),'utf8')
 const trees=readFileSync(new URL('../src/engine/trees.js',import.meta.url),'utf8');
 const falling=readFileSync(new URL('../src/engine/falling.js',import.meta.url),'utf8');
 const audio=readFileSync(new URL('../src/engine/audio.js',import.meta.url),'utf8');
+function sourceSlice(source,startMarker,endMarker){
+  const start=source.indexOf(startMarker);
+  assert.notEqual(start,-1,'missing source marker: '+startMarker);
+  const end=source.indexOf(endMarker,start+startMarker.length);
+  assert.notEqual(end,-1,'missing source marker after '+startMarker+': '+endMarker);
+  return source.slice(start,end);
+}
+function declaredFunctionSource(source,signature){
+  const start=source.indexOf(signature);
+  assert.notEqual(start,-1,'missing function: '+signature);
+  const end=source.indexOf('\nfunction ',start+signature.length);
+  return source.slice(start,end<0?source.length:end);
+}
 assert.match(main,/captureTemporalEcho\(cause\)[\s\S]*buildSaveObject\(\{lightweight:true[\s\S]*TEMPORAL_ECHO\.arm/);
 assert.match(main,/const incomplete=Object\.entries\(payload\.data[\s\S]*complete===false/, 'lossy subsystem snapshots refuse to arm an inaccurate rewind');
 assert.match(main,/window\.heroDied=function\(cause\)[\s\S]*captureTemporalEcho\(cause\)[\s\S]*HERO_STATUS\.clearAll/);
@@ -50,8 +63,6 @@ assert.match(main,/finishDeathTravelRespawn\(\)[\s\S]*TEMPORAL_ECHO\.beginRace/)
 assert.match(main,/function tryOpenGraveAt\(tx,ty\)[\s\S]*activeTemporalGraveAt\(tx,ty\)[\s\S]*wejdź w jego światło[\s\S]*return true/, 'tools cannot trigger the spirit remotely; they teach physical contact');
 assert.doesNotMatch(main,/function tryOpenGraveAt\(tx,ty\)\{[\s\S]{0,260}beginTemporalRewind/, 'grave interaction no longer bypasses the contact objective');
 assert.match(main,/function breakMinedTile\(\)[\s\S]*tId===T\.GRAVE\) return tryOpenGraveAt/, 'finishing a grave mining action resolves the grave instead of deleting its tile');
-assert.match(main,/function repairTemporalGrave\(\)[\s\S]*setTile\(grave\.x,grave\.y,T\.GRAVE\)[\s\S]*collapseTemporalEcho\('grave-lost'/, 'external grave destruction self-heals or fails closed');
-assert.match(main,/function updateTemporalEcho\(dt\)[\s\S]*state\.phase==='racing'[\s\S]*repairTemporalGrave\(\)/, 'the racing loop enforces the grave objective invariant');
 assert.match(main,/function playerTouchesTemporalSpirit\(\)[\s\S]*activeTemporalGraveAt[\s\S]*return px1>=sx0/, 'the spirit has a generous body-contact volume');
 assert.match(main,/playerTouchesTemporalSpirit\(\) && beginTemporalRewind\(\)/, 'touching the spirit automatically starts the rewind');
 assert.match(main,/findGroundedGraveCell\(cx,cy,[\s\S]*isSupport:isObjectFootingTile/, 'death markers require physical footing instead of freezing in open air');
@@ -65,6 +76,41 @@ assert.match(main,/restoreTemporalEchoPayload\(payload\)[\s\S]*restoreTemporalCh
 assert.match(main,/restoreTemporalEchoPayload\(payload\)[\s\S]*DISCOVERY\.restore\(payload\.discovery\)/, 'branch-only discoveries are rolled back with their XP');
 assert.match(main,/restoreTemporalEchoPayload\(payload\)[\s\S]*applyProgressHp\(\)[\s\S]*applyHeroEnergyCapacity\(\)/, 'derived hero capacities are recomputed from restored progression and gear');
 assert.match(main,/getTile\(gx,gy\)!==T\.GRAVE[\s\S]*zasoby zostały zwrócone/, 'failed grave placement refunds resources instead of creating an impossible objective');
+assert.match(main,/previousGrave && previousGrave!==grave[\s\S]{0,700}setForegroundConfirmed\(previousGrave\.x,previousGrave\.y,T\.AIR\)[\s\S]{0,400}Poprzedni nagrobek wygasł/, 'a replacement death retires the old marker and explicitly reports its forfeited payload');
+assert.match(main,/function reconcileGraveReturnTask\(\)[\s\S]{0,1800}if\(discardedGraveTask\) return true[\s\S]{0,500}upsertGraveReturnTask\(grave,false,\{[\s\S]{0,180}preservePriority:keepOtherPriority\|\|activeGraveTask/, 'restored graves reconcile their canonical recovery objective without resurrecting or repinning a dismissed target');
+assert.match(main,/restoreRequired\('tasks'[\s\S]{0,260}reconcileGraveReturnTask\(\)/, 'save loading reconciles grave geometry only after task state has been restored');
+assert.match(main,/restoreGrave\(d\.grave\);\s*reconcileGraveReturnTask\(\)/, 'temporal restoration also reconciles a migrated or restored grave target');
+const trackedGraveSource=declaredFunctionSource(main,'function repairTrackedGrave()');
+assert.match(trackedGraveSource,/graveHasStableGround|nearestOpenGraveCell/, 'tracked grave repair validates footing instead of merely repainting a floating marker');
+assert.match(trackedGraveSource,/T\.GRAVE[\s\S]*(?:setForegroundConfirmed|setTile)/, 'tracked grave repair restores an externally destroyed marker through the world write path');
+assert.match(trackedGraveSource,/reconcileGraveReturnTask|upsertGraveReturnTask/, 'tracked grave relocation keeps the recovery task synchronized with its physical marker');
+assert.match(trackedGraveSource,/wasEcho[\s\S]*upsertGraveReturnTask\(grave,true,\{[\s\S]*reactivate:false[\s\S]*\}[\s\S]*(?:else[\s\S]*)?reconcileGraveReturnTask/,
+  'repair preserves the temporal task identity and a dismissed/unpinned decision; only an ordinary grave uses ordinary reconciliation');
+assert.match(trackedGraveSource,/grave=null|refund|zwr[oĂł]cone/i, 'an impossible ordinary-grave repair cannot leave an inaccessible escrow record behind');
+assert.equal(main.includes('repairTemporalGrave'),false, 'the superseded temporal-only repair seam has no dangling callers');
+assert.match(main,/function tryOpenGraveAt\(tx,ty\)[\s\S]{0,180}repairTrackedGrave\(\)/,
+  'tool interaction rechecks the same tracked-grave invariant instead of calling a removed temporal-only helper');
+const echoUpdateSource=sourceSlice(main,'function updateTemporalEcho(dt)','MM.temporalEcho={');
+const trackedRepairAt=echoUpdateSource.indexOf('repairTrackedGrave()');
+const phaseReadAt=echoUpdateSource.indexOf('const state=temporalEchoState()');
+assert.ok(trackedRepairAt>=0 && phaseReadAt>=0 && trackedRepairAt<phaseReadAt,
+  'every frame repairs the tracked marker before phase-specific Echo handling, including ordinary graves');
+const applyGameDataSource=sourceSlice(main,'function applyGameData(data,opts)','function applyGameDataCore(data,opts)');
+const loadEchoGuardAt=applyGameDataSource.indexOf('temporalEchoActive()');
+const loadPreflightAt=applyGameDataSource.indexOf('preflightSaveData');
+const loadRollbackSnapshotAt=applyGameDataSource.indexOf('buildSaveObject');
+assert.ok(loadEchoGuardAt>=0 && loadPreflightAt>=0 && loadRollbackSnapshotAt>=0
+  && loadEchoGuardAt<loadPreflightAt && loadEchoGuardAt<loadRollbackSnapshotAt,
+  'the central load chokepoint refuses an active Echo before preflight or rollback capture can consume its checkpoint');
+assert.match(applyGameDataSource.slice(loadEchoGuardAt,Math.min(loadPreflightAt,loadRollbackSnapshotAt)),/return false/,
+  'the active-Echo load guard fails closed');
+const replacementSource=sourceSlice(main,'function prepareHostedWorldReplacement()','function startNewGame(requestedSeed)');
+const replacementEchoGuardAt=replacementSource.indexOf('temporalEchoActive()');
+const roomRotationAt=replacementSource.indexOf('rotateRoomNamespace');
+assert.ok(replacementEchoGuardAt>=0 && roomRotationAt>=0 && replacementEchoGuardAt<roomRotationAt,
+  'player-facing world replacement refuses an active Echo before rotating or stopping a hosted room');
+assert.match(replacementSource.slice(replacementEchoGuardAt,roomRotationAt),/return false/,
+  'the world-replacement UX guard leaves the active escrow untouched');
 assert.match(main,/function saveState\(\)[\s\S]*temporalEchoActive\(\)\) return/);
 assert.match(main,/function drawTemporalEchoOverlay\(ts\)[\s\S]*globalCompositeOperation='screen'/);
 assert.match(main,/function drawTemporalEchoOverlay\(ts\)[\s\S]*createRadialGradient/);

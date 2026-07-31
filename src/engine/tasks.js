@@ -186,8 +186,12 @@ const tasks = (function(){
       return result;
     }
     // A discarded objective stays dismissed when its source periodically
-    // re-publishes it. It is released when that source completes/removes it.
-    if(discarded.has(task.id)) return serializeTask(discarded.get(task.id));
+    // re-publishes it. Explicit user-driven/recovery actions may reactivate the
+    // same stable identity without inventing an unbounded stream of task ids.
+    if(discarded.has(task.id)){
+      if(src.reactivate===true) discarded.delete(task.id);
+      else return serializeTask(discarded.get(task.id));
+    }
     const previous = active.get(task.id) || null;
     // Story/invasion sources republish their objectives on simulation ticks.
     // Treat an identical publication as a read so it neither churns timestamps

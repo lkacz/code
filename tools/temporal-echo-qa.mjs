@@ -64,10 +64,34 @@ const lifecycleAssertion=`(async()=>{
   const constants=await import('/src/constants.js');
   const physics=await import('/src/engine/material_physics.js');
   const groundedTarget=!!(temporalTarget&&physics.isObjectFootingTile(MM.world.getTile(temporalTarget.x,temporalTarget.y+1)));
+  const checkpointBeforeBlockedLoad=MM.world.temporalCheckpointState();
+  const escrowBeforeBlockedLoad=inv.stone;
+  const pendingBeforeBlockedLoad=!!(localStorage.getItem('mm_temporal_echo_pending_v1')||sessionStorage.getItem('mm_temporal_echo_pending_v1'));
+  const blockedLoadData=racing?.payload?.data||armed.payload?.data||null;
+  const blockedLoadResult=blockedLoadData&&MM.ghostBridge?.applyGameData
+    ? MM.ghostBridge.applyGameData(blockedLoadData,{ignoreCritical:true,transactional:true})
+    : null;
+  const stateAfterBlockedLoad=MM.temporalEcho.state();
+  const targetAfterBlockedLoad=MM.temporalEcho.target();
+  const checkpointAfterBlockedLoad=MM.world.temporalCheckpointState();
+  const escrowAfterBlockedLoad=inv.stone;
+  const pendingAfterBlockedLoad=!!(localStorage.getItem('mm_temporal_echo_pending_v1')||sessionStorage.getItem('mm_temporal_echo_pending_v1'));
   let graveSelfHealed=false;
   if(temporalTarget){
     MM.world.setTile(temporalTarget.x,temporalTarget.y,constants.T.AIR);
     graveSelfHealed=!!(await waitFor(()=>MM.world.getTile(temporalTarget.x,temporalTarget.y)===constants.T.GRAVE,2000));
+  }
+  const tasksAfterTemporalRepair=MM.tasks.state();
+  const temporalTaskKept=tasksAfterTemporalRepair.active.some(task=>task?.id==='temporal_echo:return')
+    &&!tasksAfterTemporalRepair.active.some(task=>task?.id==='grave:return');
+  let dismissedTemporalTaskKept=false;
+  if(temporalTarget&&temporalTaskKept&&MM.tasks.discard('temporal_echo:return')){
+    MM.world.setTile(temporalTarget.x,temporalTarget.y,constants.T.AIR);
+    const repairedAfterDismiss=await waitFor(()=>MM.world.getTile(temporalTarget.x,temporalTarget.y)===constants.T.GRAVE,2000);
+    const afterDismiss=MM.tasks.state();
+    dismissedTemporalTaskKept=!!repairedAfterDismiss
+      &&afterDismiss.discarded.some(task=>task?.id==='temporal_echo:return')
+      &&!afterDismiss.active.some(task=>task?.id==='temporal_echo:return'||task?.id==='grave:return');
   }
   const deathCycle=Number(armed.payload?.data?.background?.cycleT);
   const shiftedCycle=(deathCycle+0.16)%1;
@@ -101,7 +125,17 @@ const lifecycleAssertion=`(async()=>{
     temporalTarget:!!temporalTarget,
     spiritTarget:temporalTarget?.kind==='spirit',
     groundedTarget,
+    activeLoadBlocked:blockedLoadResult===false,
+    activeLoadKeptRace:stateAfterBlockedLoad.phase==='racing',
+    activeLoadKeptTarget:!!(temporalTarget&&targetAfterBlockedLoad
+      && targetAfterBlockedLoad.x===temporalTarget.x&&targetAfterBlockedLoad.y===temporalTarget.y),
+    activeLoadKeptCheckpoint:checkpointBeforeBlockedLoad.active===true&&checkpointBeforeBlockedLoad.valid===true
+      &&checkpointAfterBlockedLoad.active===true&&checkpointAfterBlockedLoad.valid===true,
+    activeLoadKeptEscrow:escrowAfterBlockedLoad===escrowBeforeBlockedLoad,
+    activeLoadKeptPending:pendingBeforeBlockedLoad&&pendingAfterBlockedLoad,
     graveSelfHealed,
+    temporalTaskKept,
+    dismissedTemporalTaskKept,
     autoContact:sawRewinding,
     finished:!!finished,
     resourcesRestored:inv.stone===before.stone,
@@ -171,6 +205,65 @@ const expiryAssertion=`(async()=>{
   return (Object.values(checks).every(Boolean)?'PASS ':'FAIL ')+JSON.stringify({checks,before,afterSplit,afterExpiry:inv.stone});
 })()`;
 
+const ordinaryGraveAssertion=`(async()=>{
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const waitFor=async(fn,ms)=>{
+    const end=performance.now()+ms;
+    while(performance.now()<end){ const value=fn(); if(value) return value; await sleep(80); }
+    return null;
+  };
+  document.querySelector('#titleScreen .tsPrimary')?.click();
+  await sleep(500);
+  window.__simulationTimeScale=1;
+  const deathX=Math.floor(player.x)+4;
+  window.__mmDebugHero(deathX,MM.worldGen.surfaceHeight(deathX)-2);
+  await sleep(200);
+  inv.stone=20;
+  const before=inv.stone;
+  player.hp=0;
+  // The inner_* prefix is deliberately Echo-ineligible, while this synthetic
+  // cause avoids the three story-only center-guardian death handlers.
+  window.heroDied('inner_ordinary_grave_qa');
+  const taskBefore=await waitFor(()=>MM.tasks.activeList().find(task=>task?.id==='grave:return'),1800);
+  const constants=await import('/src/constants.js');
+  const physics=await import('/src/engine/material_physics.js');
+  const tx=taskBefore&&Math.floor(taskBefore.target?.x);
+  const ty=taskBefore&&Math.floor(taskBefore.target?.y);
+  const afterSplit=inv.stone;
+  const recordBefore=(()=>{ try{ return JSON.parse(localStorage.getItem('mm_grave_v1')||'null'); }catch{ return null; } })();
+  // A blast removes both the passable marker and its footing. Repair may restore
+  // the same cell only if it becomes stable again, or relocate marker + task.
+  const removed=Number.isFinite(tx)&&Number.isFinite(ty)
+    ? (MM.world.setTile(tx,ty,constants.T.AIR),MM.world.setTile(tx,ty+1,constants.T.AIR),
+      MM.world.getTile(tx,ty)===constants.T.AIR&&MM.world.getTile(tx,ty+1)===constants.T.AIR)
+    : false;
+  const repaired=await waitFor(()=>{
+    const task=MM.tasks.activeList().find(row=>row?.id==='grave:return')||null;
+    const x=task&&Math.floor(task.target?.x),y=task&&Math.floor(task.target?.y);
+    if(!Number.isFinite(x)||!Number.isFinite(y)||MM.world.getTile(x,y)!==constants.T.GRAVE) return null;
+    if(!physics.isObjectFootingTile(MM.world.getTile(x,y+1))) return null;
+    return {task,x,y};
+  },6000);
+  const taskAfter=repaired?.task||null;
+  const recordAfter=(()=>{ try{ return JSON.parse(localStorage.getItem('mm_grave_v1')||'null'); }catch{ return null; } })();
+  const checkpoint=MM.world.temporalCheckpointState();
+  const checks={
+    ordinaryDeath:MM.temporalEcho.state().phase==='idle'&&MM.temporalEcho.target()===null,
+    resourceSplit:afterSplit===Math.ceil(before/2),
+    trackedBefore:!!taskBefore&&recordBefore?.x===tx&&recordBefore?.y===ty,
+    externallyRemoved:removed,
+    markerSelfHealed:!!repaired,
+    escrowPreserved:inv.stone===afterSplit,
+    taskPreserved:!!taskAfter&&Math.floor(taskAfter.target?.x)===repaired?.x&&Math.floor(taskAfter.target?.y)===repaired?.y,
+    recordPreserved:recordAfter?.x===repaired?.x&&recordAfter?.y===repaired?.y,
+    noTemporalCheckpoint:checkpoint.active===false
+  };
+  return (Object.values(checks).every(Boolean)?'PASS ':'FAIL ')+JSON.stringify({
+    checks,before,afterSplit,afterRepair:inv.stone,oldTarget:{x:tx,y:ty},
+    repairedTarget:repaired?{x:repaired.x,y:repaired.y}:null
+  });
+})()`;
+
 async function runPreview(name,assertion){
   const preview=spawn(process.execPath,[
     join(repoRoot,'tools/live-preview.mjs'),
@@ -191,7 +284,8 @@ try{
   await waitForServer();
   await runPreview('temporal-echo-success',lifecycleAssertion);
   await runPreview('temporal-echo-expiry',expiryAssertion);
-  console.log('Temporal Echo browser success + expiry lifecycle passed');
+  await runPreview('ordinary-grave-repair',ordinaryGraveAssertion);
+  console.log('Temporal Echo browser success + expiry + ordinary grave repair lifecycles passed');
 }finally{
   if(server.exitCode==null) server.kill();
   await rm(tempRoot,{recursive:true,force:true});

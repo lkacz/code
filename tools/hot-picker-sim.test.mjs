@@ -102,7 +102,7 @@ assert.match(mainSrc, /import \{ createHotPickerModel, createHotPicker, foldText
 assert.match(mainSrc, /MM\.groupedHotSelect=HOTPICKER\.open/, 'slot clicks open the module picker');
 assert.match(mainSrc, /document\.addEventListener\('pointerdown',e=>\{ if\(hotSelectMenu[\s\S]{0,220}closeHotSelect/,
   'popover dismissal listens on POINTERDOWN — a click dismisser fires after chip re-renders detach the target and closes the menu on every chip press');
-assert.match(mainSrc, /assign\(slot,item\)\{ HOTBAR_ORDER\[slot\]=item\.k; cycleHotbar\(slot\);/, 'picker assignment goes through HOTBAR_ORDER + cycleHotbar');
+assert.match(mainSrc, /assign\(slot,item\)\{ assignHotbarWithUndo\(slot,item\.k,item\.label\); \}/, 'picker assignment uses the guarded canonical hotbar remap');
 assert.match(mainSrc, /drawEntityTile && MM\.drawEntityTile\(g,id,0,0,7,11\)/, 'icons paint the REAL tile art with stable pseudo-coords');
 
 // every resource tile must be consciously placed in a picker group — new
@@ -123,5 +123,10 @@ assert.match(indexHtml, /id="hotSelectMenu"[^>]*width:min\(520px,calc\(100vw - 1
 const pickerSrc=readFileSync(new URL('../src/engine/hot_picker.js', import.meta.url), 'utf8');
 assert.match(pickerSrc, /addEventListener\('orientationchange',reposition/, 'open picker is repositioned after a phone rotation');
 assert.match(pickerSrc, /visualViewport\.addEventListener\('resize',reposition/, 'open picker follows the actual visible mobile viewport');
+assert.match(pickerSrc, /const plus=document\.createElement\('button'\)[\s\S]{0,120}plus\.dataset\.hotQuick=item\.k/, 'quick craft is a native, separately addressable button');
+assert.doesNotMatch(pickerSrc, /plus\.setAttribute\('role','button'\)|plus\.tabIndex=-1/, 'quick craft is neither a nested ARIA imitation nor removed from keyboard order');
+assert.match(pickerSrc, /wrap\.appendChild\(plus\)[\s\S]{0,180}wrap\.prepend\(b\)/, 'quick craft is a sibling of the assignment button instead of invalid nested interactivity');
+assert.match(pickerSrc, /const nextQuick=[\s\S]{0,300}const focusTarget=nextQuick\|\|nextCard[\s\S]{0,100}focusTarget\.focus/, 'quick-craft rebuilds restore focus without activating the assignment path');
+assert.match(pickerSrc, /const anchor=state\.anchor[\s\S]{0,240}anchor\.focus\(\{preventScroll:true\}\)/, 'Enter and Escape return focus to the picker source');
 
 console.log('hot-picker-sim: all assertions passed');

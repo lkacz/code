@@ -139,9 +139,12 @@
     #craftToggle{ min-width:32px; padding:3px 8px; line-height:1.1; }
     #craft[data-collapsed="true"]{ width:auto; overflow:hidden; }
     #craft[data-collapsed="true"] .craftBody{ display:none; }
-    #craft .craftToolbar{ display:flex; gap:6px; }
-    #craftSearch{ width:100%; min-width:0; background:rgba(255,255,255,.08); color:#f4f7fb; border:1px solid rgba(255,255,255,.16); border-radius:8px; padding:7px 9px; font-size:12px; outline:none; }
+    #craft .craftToolbar{ display:flex; flex-wrap:wrap; gap:6px; }
+    #craftSearch{ flex:1 1 180px; width:100%; min-width:0; background:rgba(255,255,255,.08); color:#f4f7fb; border:1px solid rgba(255,255,255,.16); border-radius:8px; padding:7px 9px; font-size:12px; outline:none; }
     #craftSearch:focus{ border-color:#58a6ff; box-shadow:0 0 0 2px rgba(88,166,255,.22); }
+    #craft .craftIngredientFilter{ flex:0 1 auto; max-width:100%; overflow:hidden; border:1px solid rgba(255,196,74,.48); border-radius:999px; background:rgba(126,83,18,.28); color:#ffe1a0; padding:5px 9px; font-size:10px; font-weight:800; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+    #craft .craftIngredientFilter:hover,#craft .craftIngredientFilter:focus-visible{ border-color:#ffd56d; background:rgba(156,105,23,.42); outline:2px solid rgba(255,213,109,.28); outline-offset:1px; }
+    #craft .craftIngredientFilter[hidden]{ display:none; }
     #craft .craftFilterBtn{ flex:0 0 auto; border:1px solid rgba(255,255,255,.16); border-radius:8px; background:rgba(255,255,255,.07); color:#cfdae7; padding:6px 9px; font-size:11px; font-weight:700; cursor:pointer; white-space:nowrap; transition:background .12s ease,color .12s ease; }
     #craft .craftFilterBtn.on{ background:rgba(74,222,128,.22); border-color:rgba(91,206,143,.6); color:#b7f4cd; }
     #craft .craftTabs{ display:flex; gap:5px; overflow-x:auto; padding-bottom:2px; scrollbar-width:thin; }
@@ -634,24 +637,98 @@
     .smartFeedText{ margin:4px 0 0; color:#f1f6fb; font-size:12px; font-weight:680; line-height:1.32; overflow-wrap:anywhere; }
     .smartFeedFooter{ display:flex; align-items:center; gap:8px; margin-top:6px; color:#9badbf; font-size:10px; line-height:1.25; }
     .smartFeedXp{ margin-left:auto; padding:2px 6px; border:1px solid rgba(255,214,110,.32); border-radius:999px; color:#ffe18d; background:rgba(255,214,110,.10); font-size:10px; font-variant-numeric:tabular-nums; }
+    .smartFeedActions{ display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; pointer-events:none; }
+    .smartFeedAction{ display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:30px; max-width:100%; padding:4px 9px; border:1px solid color-mix(in srgb,var(--smart-feed-accent) 50%,rgba(255,255,255,.14)); border-radius:8px; color:#edf7ff; background:color-mix(in srgb,var(--smart-feed-accent) 16%,rgba(13,22,34,.9)); font:800 10px/1.1 system-ui,sans-serif; cursor:pointer; pointer-events:auto; }
+    .smartFeedAction:hover,.smartFeedAction:focus-visible{ border-color:color-mix(in srgb,var(--smart-feed-accent) 78%,white); outline:2px solid color-mix(in srgb,var(--smart-feed-accent) 42%,transparent); outline-offset:1px; background:color-mix(in srgb,var(--smart-feed-accent) 26%,rgba(13,22,34,.94)); }
+    .smartFeedAction.undo{ border-color:rgba(129,199,255,.45); color:#dcefff; background:rgba(39,91,137,.25); }
     .smartFeedRepeat{ align-self:center; margin-left:-2px; color:#c6d3df; font-size:10px; font-variant-numeric:tabular-nums; }
     .smartFeedBubble:has(.smartFeedRepeat){ grid-template-columns:34px minmax(0,1fr) auto; }
     .smartFeedItems{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:3px; margin-top:6px; }
-    .smartFeedItem{ --smart-item-accent:#9fb8d1; display:grid; grid-template-columns:19px minmax(0,1fr) auto; align-items:center; gap:4px; min-width:0; min-height:24px; padding:2px 5px 2px 3px; border-radius:7px; color:#eaf1f8; background:rgba(255,255,255,.045); box-shadow:inset 2px 0 0 color-mix(in srgb,var(--smart-item-accent) 72%,transparent); }
+    .smartFeedItem{ --smart-item-accent:#9fb8d1; display:grid; grid-template-columns:19px minmax(0,1fr) auto; align-items:center; gap:4px; min-width:0; min-height:24px; padding:2px 5px 2px 3px; border-radius:7px; color:#eaf1f8; background:rgba(255,255,255,.045); box-shadow:inset 2px 0 0 color-mix(in srgb,var(--smart-item-accent) 72%,transparent); transition:opacity .14s ease,background .14s ease; }
     .smartFeedItemIcon{ overflow:hidden; font-size:12px; text-align:center; }
     .smartFeedItemName{ overflow:hidden; font-size:10px; font-weight:700; text-overflow:ellipsis; white-space:nowrap; }
+    .smartFeedItemCopy{ display:flex; flex-direction:column; min-width:0; gap:1px; overflow:hidden; }
+    .smartFeedItemLive{ overflow:hidden; color:#91a5b8; font-size:8px; font-weight:720; line-height:1.1; text-overflow:ellipsis; white-space:nowrap; }
+    .smartFeedItem.is-depleted{ opacity:.66; background:rgba(255,255,255,.025); }
+    .smartFeedItem.is-depleted .smartFeedItemLive{ color:#df9e91; }
     .smartFeedItemAmount{ color:#80dfa4; font-size:11px; font-variant-numeric:tabular-nums; }
+    .smartFeedItemSide{ display:flex; align-items:center; justify-content:flex-end; gap:3px; min-width:0; }
     .smartFeedItem[data-direction='loss'] .smartFeedItemAmount{ color:#ff9b8a; }
+    .smartFeedItem[data-feed-actionable]{ grid-template-columns:34px minmax(0,1fr) auto; min-height:36px; }
+    .smartFeedItemHotbar{ position:relative; display:grid; place-items:center; box-sizing:border-box; width:34px; height:34px; margin:-2px 0 -2px -2px; overflow:visible; border:1px solid rgba(124,196,255,.54); border-radius:9px; color:#eaf6ff; background:linear-gradient(145deg,rgba(50,126,197,.32),rgba(18,30,44,.72)); box-shadow:0 0 0 1px rgba(255,255,255,.04) inset,0 3px 9px rgba(0,0,0,.3); }
+    .smartFeedItemHotbar::after{ content:"↘"; position:absolute; right:-3px; bottom:-3px; display:grid; place-items:center; width:13px; height:13px; border:1px solid rgba(154,214,255,.68); border-radius:50%; color:#eaf8ff; background:#1e6fa9; box-shadow:0 2px 5px rgba(0,0,0,.42); font:900 8px/1 system-ui,sans-serif; pointer-events:none; }
+    .smartFeedItemHotbar:hover,.smartFeedItemHotbar:focus-visible{ border-color:#9bd9ff; outline:2px solid rgba(124,196,255,.74); outline-offset:1px; background:linear-gradient(145deg,rgba(59,151,226,.48),rgba(18,38,58,.82)); }
+    .smartFeedItemTile{ width:22px; height:22px; image-rendering:pixelated; pointer-events:none; }
+    .smartFeedItemEquip{ position:relative; display:grid; place-items:center; box-sizing:border-box; width:34px; height:34px; margin:-2px 0 -2px -2px; overflow:hidden; border:1px solid color-mix(in srgb,var(--smart-item-accent) 66%,rgba(255,255,255,.18)); border-radius:9px; background:linear-gradient(145deg,color-mix(in srgb,var(--smart-item-accent) 24%,rgba(28,36,49,.9)),rgba(15,21,31,.92)); cursor:pointer; }
+    .smartFeedItemEquip::after{ content:"✓"; position:absolute; right:1px; bottom:0; color:#a8f3c3; font:900 9px/1 system-ui,sans-serif; text-shadow:0 1px 3px #000; }
+    .smartFeedItemEquip:hover,.smartFeedItemEquip:focus-visible{ outline:2px solid color-mix(in srgb,var(--smart-item-accent) 70%,white); outline-offset:1px; }
+    .smartFeedItemEquip.is-equipped{ cursor:default; filter:saturate(.65); opacity:.72; }
+    .smartFeedItemGear{ width:29px; height:29px; image-rendering:pixelated; pointer-events:none; }
+    .smartFeedItemCraft{ display:grid; place-items:center; flex:none; width:25px; height:25px; padding:0; border:1px solid rgba(255,196,74,.45); border-radius:7px; color:#ffe2a0; background:rgba(128,82,17,.32); font:900 12px/1 system-ui,sans-serif; cursor:pointer; pointer-events:auto; }
+    .smartFeedItemCraft:hover,.smartFeedItemCraft:focus-visible{ border-color:#ffd56d; outline:2px solid rgba(255,213,109,.28); outline-offset:1px; background:rgba(157,105,24,.48); }
+    body.mmTileDrag .smartFeedItemHotbar{ border-color:#b8e7ff; box-shadow:0 0 14px rgba(95,190,255,.52); }
     .smartFeedMore{ margin-top:4px; color:#9fb0c1; font-size:10px; font-weight:800; text-align:right; }
+    /* The compact feed keeps world input transparent, but the newest one or two
+       explicit actions remain immediately reachable. */
+    #smartFeed[data-expanded='false'] .smartFeedBubble[data-action-items] .smartFeedItems{ display:grid; pointer-events:none; }
+    #smartFeed[data-expanded='false'] .smartFeedBubble[data-action-items] .smartFeedItem{ display:none; pointer-events:none; }
+    #smartFeed[data-expanded='false'] .smartFeedBubble[data-action-items] .smartFeedItem[data-compact-action='true']{ display:grid; }
+    #smartFeed[data-expanded='false'] .smartFeedBubble[data-action-items] .smartFeedItemHotbar,
+    #smartFeed[data-expanded='false'] .smartFeedBubble[data-action-items] .smartFeedItemEquip,
+    #smartFeed[data-expanded='false'] .smartFeedBubble[data-action-items] .smartFeedItemCraft{ pointer-events:auto; }
+    #smartFeed[data-expanded='false'] .smartFeedBubble[data-notice-actions] .smartFeedActions{ display:flex; pointer-events:none; }
+    @media (pointer:coarse){
+      .smartFeedAction{ min-height:44px; padding:7px 11px; font-size:11px; }
+      .smartFeedItem[data-feed-actionable]{ grid-template-columns:42px minmax(0,1fr) auto; min-height:44px; }
+      .smartFeedItemHotbar,.smartFeedItemEquip{ width:42px; height:42px; margin:-2px 0 -2px -2px; }
+      .smartFeedItemTile{ width:25px; height:25px; }
+      .smartFeedItemGear{ width:35px; height:35px; }
+      .smartFeedItemCraft{ width:42px; height:42px; font-size:15px; }
+    }
+    :root[data-input-mode='touch'] .smartFeedAction{ min-height:44px; padding:7px 11px; font-size:11px; }
+    :root[data-input-mode='touch'] .smartFeedItem[data-feed-actionable]{ grid-template-columns:42px minmax(0,1fr) auto; min-height:44px; }
+    :root[data-input-mode='touch'] .smartFeedItemHotbar,:root[data-input-mode='touch'] .smartFeedItemEquip{ width:42px; height:42px; margin:-2px 0 -2px -2px; }
+    :root[data-input-mode='touch'] .smartFeedItemTile{ width:25px; height:25px; }
+    :root[data-input-mode='touch'] .smartFeedItemGear{ width:35px; height:35px; }
+    :root[data-input-mode='touch'] .smartFeedItemCraft{ width:42px; height:42px; font-size:15px; }
     @media (max-width:859px){ #craft:not([data-collapsed='true']) ~ #smartFeed{ visibility:hidden; pointer-events:none; } }
     @media (min-width:860px) and (max-width:979px){ #craft:not([data-collapsed='true']) ~ #smartFeed{ right:calc(var(--safe-right) + 10px); left:auto; width:min(300px,calc(100vw - var(--safe-left) - var(--safe-right) - 604px)); } }
     @media (min-width:980px){ #craft:not([data-collapsed='true']) ~ #smartFeed{ left:calc(var(--safe-left) + 594px); width:min(350px,calc(100vw - var(--safe-left) - var(--safe-right) - 604px)); } }
     @media (max-width:760px){ #smartFeed{ top:calc(var(--safe-top) + 96px); width:min(310px,calc(100vw - var(--safe-left) - var(--safe-right) - 20px)); } }
     @media (max-width:380px){ #smartFeed{ width:min(276px,calc(100vw - var(--safe-left) - var(--safe-right) - 20px)); } }
+    @media (max-width:480px){ #smartFeed .smartFeedItems{ grid-template-columns:minmax(0,1fr); } }
+    :root[data-input-mode='touch'] #smartFeed .smartFeedItems{ grid-template-columns:minmax(0,1fr); }
     @media (orientation:portrait) and (max-width:560px){ :root[data-input-mode='pc'] #smartFeed{ top:calc(var(--safe-top) + 154px); } }
-    @media (orientation:portrait) and (max-width:820px){ :root[data-input-mode='touch'] #smartFeed{ top:auto; bottom:calc(var(--safe-bottom) + var(--stick-zone) + 122px); } :root[data-input-mode='touch'] #smartFeed[data-expanded='true']{ box-sizing:border-box; padding:6px; border:1px solid rgba(174,203,230,.24); border-radius:15px; background:rgba(6,10,17,.94); box-shadow:0 14px 34px rgba(0,0,0,.55); pointer-events:auto; } :root[data-input-mode='touch'] #smartFeed[data-expanded='true'] .smartFeedStack{ max-height:min(30vh,260px); } }
+    @media (orientation:portrait) and (max-width:820px){
+      /* The touch hotbar is fixed at y=246..302. Anchor the feed immediately
+         below it instead of deriving its top from viewport height; the old
+         bottom anchor crossed the slot labels on short and expanded screens. */
+      :root[data-input-mode='touch'] #smartFeed{ top:calc(var(--safe-top) + 310px); bottom:auto; }
+      :root[data-input-mode='touch'] #smartFeed[data-expanded='true']{ box-sizing:border-box; padding:6px; border:1px solid rgba(174,203,230,.24); border-radius:15px; background:rgba(6,10,17,.94); box-shadow:0 14px 34px rgba(0,0,0,.55); pointer-events:auto; }
+      :root[data-input-mode='touch'] #smartFeed[data-expanded='true'] .smartFeedStack{ max-height:min(28vh,240px); }
+      :root[data-input-mode='touch'] #messages{ left:calc(var(--safe-left) + 10px); right:auto; top:calc(var(--safe-top) + 96px); bottom:auto; width:min(220px,calc(100vw - var(--safe-left) - var(--safe-right) - 200px)); max-width:none; transform:none; }
+    }
+    @media (orientation:portrait) and (max-width:480px) and (max-height:700px){
+      /* On a short phone the right-hand action cluster begins around x=178.
+         Keep the feed in the left lane and cap expanded history above the
+         joystick; actionable rows retain their full touch targets. */
+      :root[data-input-mode='touch'] #smartFeed{ width:min(168px,calc(100vw - var(--safe-left) - var(--safe-right) - 20px)); }
+      :root[data-input-mode='touch'] #smartFeed .smartFeedHead{ gap:4px; padding-left:8px; }
+      :root[data-input-mode='touch'] #smartFeed .smartFeedLabel{ font-size:9px; letter-spacing:.06em; }
+      :root[data-input-mode='touch'] #smartFeed .smartFeedLive{ display:none; }
+      :root[data-input-mode='touch'] #smartFeed .smartFeedBubble{ grid-template-columns:minmax(0,1fr); }
+      :root[data-input-mode='touch'] #smartFeed .smartFeedIcon{ display:none; }
+      :root[data-input-mode='touch'] #smartFeed[data-expanded='true'] .smartFeedStack{ max-height:min(18vh,116px); }
+      :root[data-input-mode='touch'] #messages{ width:min(190px,calc(100vw - var(--safe-left) - var(--safe-right) - 180px)); }
+    }
     @media (orientation:landscape) and (max-height:560px){ :root[data-input-mode='touch'] #smartFeed{ top:calc(var(--safe-top) + 128px); bottom:auto; left:calc(var(--safe-left) + var(--stick-zone) + 14px); width:min(252px,calc(100vw - var(--safe-left) - var(--safe-right) - var(--stick-zone) - var(--action-selector-size) - 44px)); } :root[data-input-mode='touch'] #smartFeed[data-expanded='true']{ box-sizing:border-box; padding:5px; border:1px solid rgba(174,203,230,.24); border-radius:14px; background:rgba(6,10,17,.95); box-shadow:0 12px 30px rgba(0,0,0,.56); pointer-events:auto; } :root[data-input-mode='touch'] #smartFeed[data-expanded='true'] .smartFeedStack{ max-height:27vh; } }
-    @media (prefers-reduced-motion:reduce){ .smartFeedBubble.is-new{ animation:none; } }
+    @media (prefers-reduced-motion:reduce){ .smartFeedBubble.is-new,.hotSlot.hotDropSuccess{ animation:none; } }
+    #hotbarUndoToast{ position:fixed; z-index:1200; display:flex; align-items:center; gap:9px; max-width:min(420px,calc(100vw - 24px)); transform:translate(-50%,-100%); box-sizing:border-box; padding:6px 7px 6px 11px; border:1px solid rgba(129,199,255,.48); border-radius:11px; color:#eaf5ff; background:rgba(10,18,29,.96); box-shadow:0 9px 26px rgba(0,0,0,.52),inset 3px 0 0 #81c7ff; font-size:10px; font-weight:760; pointer-events:auto; }
+    #hotbarUndoToast span{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #hotbarUndoToast button{ flex:none; min-width:64px; min-height:36px; border:1px solid rgba(129,199,255,.48); border-radius:8px; color:#eaf5ff; background:rgba(51,120,178,.3); font-weight:850; cursor:pointer; }
+    #hotbarUndoToast button:hover,#hotbarUndoToast button:focus-visible{ border-color:#a9dcff; outline:2px solid rgba(129,199,255,.35); outline-offset:1px; background:rgba(51,120,178,.5); }
+    @keyframes hotDropSuccess{ 0%{ transform:scale(1); } 42%{ transform:translateY(-5px) scale(1.12); box-shadow:0 0 19px rgba(112,220,166,.72); border-color:#8eebba; } 100%{ transform:scale(1); } }
+    .hotSlot.hotDropSuccess{ animation:hotDropSuccess .62s cubic-bezier(.2,.8,.2,1); }
   #hoverInfo{ position:absolute; left:50%; bottom:128px; transform:translateX(-50%); pointer-events:none; opacity:0; transition:opacity .12s ease; display:flex; align-items:center; gap:6px; max-width:min(280px,70vw); padding:4px 9px; border-radius:999px; border:1px solid rgba(255,255,255,.16); background:rgba(4,9,16,.62); color:#f4f8ff; box-shadow:0 2px 10px rgba(0,0,0,.35); backdrop-filter:blur(4px); font-size:11px; line-height:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #hoverInfo::before{ content:""; width:8px; height:8px; flex:none; border-radius:2px; background:var(--hover-color,#9fb8d1); border:1px solid rgba(255,255,255,.35); box-shadow:0 0 8px var(--hover-glow,rgba(159,184,209,.35)); }
   #hoverInfo.show{ opacity:.92; }

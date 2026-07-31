@@ -9,6 +9,7 @@
 //   tools/hot-picker-qa-b.png  search narrowed to ranked results
 //   tools/hot-picker-qa-c.png  after a card was dragged onto a DIFFERENT slot
 //   tools/hot-picker-qa-d.png  inventory resources tab: drag handles + "+" craft
+//   tools/hot-picker-qa-e.png  compact smart-feed resource dragged onto key 0
 // Also exercises (real CDP mouse input where a drag is involved): dragging a
 // card icon onto any hotbar slot, the per-card "+" quick-craft, the persisted
 // "owned only" filter, and dragging an inventory swatch onto the hotbar THROUGH
@@ -120,15 +121,17 @@ const ASSIGN = `(async()=>{
 	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 	const menu=document.getElementById('hotSelectMenu');
 	const input=menu.querySelector('input');
+	const sourceSlot=document.querySelectorAll('#hotbarWrap .hotSlot')[1];
 	// Enter assigns the first ranked hit (SNOW) to the open slot
 	input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
 	await sleep(250);
 	if(getComputedStyle(menu).display!=='none') return 'menu-should-close-after-assign';
+	if(document.activeElement!==sourceSlot) return 'enter-focus-did-not-return-to-source';
 	const order=MM.hotbar.order();
 	if(order[1]!=='SNOW') return 'assign-failed:'+order.join(',');
 	const lbl=document.querySelectorAll('#hotbarWrap .hotSlot')[1].querySelector('.lbl').textContent;
 	// re-open: recents section must lead with the fresh assignment
-	const slotEl=document.querySelectorAll('#hotbarWrap .hotSlot')[1];
+	const slotEl=sourceSlot;
 	slotEl.click(); slotEl.click();
 	await sleep(250);
 	const secHeads=[...menu.querySelectorAll('div')].map(d=>d.textContent).filter(t=>t==='Ostatnie');
@@ -140,7 +143,8 @@ const ASSIGN = `(async()=>{
 	input2.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
 	await sleep(150);
 	const closed=getComputedStyle(menu).display==='none';
-	return 'ok: slotLabel='+lbl+' recentLeads='+recentLeads+' escCloses='+closed;
+	const escapeFocus=document.activeElement===slotEl;
+	return (closed&&escapeFocus?'ok':'FAIL')+': slotLabel='+lbl+' recentLeads='+recentLeads+' escCloses='+closed+' escFocus='+escapeFocus;
 })()`;
 
 // --- NEW: drag a card onto ANY slot, "+" quick-craft, owned-only filter ------
@@ -161,9 +165,17 @@ const PICKER_DRAG_PREP = `(async()=>{
 	const icon=card.querySelector('canvas');
 	const dst=document.querySelectorAll('#hotbarWrap .hotSlot')[0];
 	const a=icon.getBoundingClientRect(), b=dst.getBoundingClientRect();
-	return JSON.stringify({fx:a.left+a.width/2, fy:a.top+a.height/2, tx:b.left+b.width/2, ty:b.top+b.height/2, before:MM.hotbar.order()[0]});
+	const fx=a.left+a.width/2, fy=a.top+a.height/2;
+	const hit=document.elementFromPoint(fx,fy);
+	return JSON.stringify({
+		fx,fy,tx:b.left+b.width/2,ty:b.top+b.height/2,before:MM.hotbar.order()[0],
+		hit:hit?String(hit.tagName)+'.'+String(hit.className||''):'none',
+		hitIsIcon:hit===icon,
+		handle:icon.classList.contains('craftDragHandle'),
+		pointerEvents:getComputedStyle(icon).pointerEvents
+	});
 })()`;
-const PICKER_DRAG_MID = `JSON.stringify({dragging:!!(MM.craftDrag&&MM.craftDrag.dragging()), hotbarZ:getComputedStyle(document.getElementById('hotbarWrap')).zIndex, ghost:!!document.getElementById('craftDragGhost')})`;
+const PICKER_DRAG_MID = `JSON.stringify({active:!!(MM.craftDrag&&MM.craftDrag.active&&MM.craftDrag.active()), dragging:!!(MM.craftDrag&&MM.craftDrag.dragging()), hotbarZ:getComputedStyle(document.getElementById('hotbarWrap')).zIndex, ghost:!!document.getElementById('craftDragGhost')})`;
 const PICKER_DRAG_CHECK = `JSON.stringify({slot0:MM.hotbar.order()[0], menuOpen:getComputedStyle(document.getElementById('hotSelectMenu')).display!=='none'})`;
 
 const PICKER_PLUS = `(async()=>{
@@ -172,14 +184,23 @@ const PICKER_PLUS = `(async()=>{
 	if(getComputedStyle(menu).display==='none'){ const s=document.querySelectorAll('#hotbarWrap .hotSlot')[2]; s.click(); s.click(); await sleep(200); }
 	const card=menu.querySelector('button[data-hot-card="TORCH"]');
 	if(!card) return 'no-torch-card (torch not discovered?)';
-	const plus=card.querySelector('.hpQuickCraft');
+	const wrap=card.closest('.hpCardWrap');
+	const plus=wrap&&wrap.querySelector('button.hpQuickCraft[data-hot-quick="TORCH"]');
 	if(!plus) return 'no-plus-chip (recipe locked?)';
 	const before=window.inv.torch|0;
+	const orderBefore=MM.hotbar.order().join(',');
+	plus.focus();
 	plus.click();
 	await sleep(200);
 	const after=window.inv.torch|0;
 	if(getComputedStyle(menu).display==='none') return 'plus-closed-menu (should stay open)';
-	return (after>before?'ok':'FAIL')+': torch '+before+'->'+after+' menuStaysOpen=true';
+	const orderStable=MM.hotbar.order().join(',')===orderBefore;
+	const focus=String(document.activeElement?.dataset?.hotQuick||document.activeElement?.dataset?.hotCard||'');
+	const focusRestored=focus==='TORCH';
+	const nativeSibling=plus.tagName==='BUTTON'&&!card.contains(plus);
+	return (after>before&&orderStable&&focusRestored&&nativeSibling?'ok':'FAIL')+
+		': torch '+before+'->'+after+' menuStaysOpen=true orderStable='+orderStable+
+		' focusRestored='+focusRestored+' nativeSibling='+nativeSibling;
 })()`;
 
 const PICKER_OWNED = `(async()=>{
@@ -217,17 +238,26 @@ const INV_OPEN = `(async()=>{
 	await sleep(250);
 	const ov=document.getElementById('invOverlay');
 	if(getComputedStyle(ov).display==='none') return 'inv-did-not-open';
+	const equipmentNav=document.getElementById('invEquipmentNav');
+	if(!equipmentNav) return 'no-equipment-nav';
+	equipmentNav.click();
+	await sleep(120);
 	const tab=document.querySelector('#invTabs [data-key="resources"]'); if(!tab) return 'no-resources-tab';
 	tab.click();
 	await sleep(200);
-	const card=[...document.querySelectorAll('.invResCard')].find(c=>c.querySelector('.invResDrag'));
-	if(!card) return 'no-draggable-resource';
-	const dot=card.querySelector('.invResDrag');
+	const dot=[...document.querySelectorAll('.invResDrag')].find(node=>{
+		const rect=node.getBoundingClientRect();
+		return rect.width>0 && rect.height>0 && getComputedStyle(node).visibility!=='hidden';
+	});
+	if(!dot) return 'no-visible-draggable-resource';
+	dot.scrollIntoView({block:'center',inline:'nearest'});
+	await sleep(80);
+	const card=dot.closest('.invResCard');
 	const dst=document.querySelectorAll('#hotbarWrap .hotSlot')[4]; // slot key 9
 	const a=dot.getBoundingClientRect(), b=dst.getBoundingClientRect();
 	return JSON.stringify({fx:a.left+a.width/2, fy:a.top+a.height/2, tx:b.left+b.width/2, ty:b.top+b.height/2, before:MM.hotbar.order()[4]});
 })()`;
-const INV_DRAG_MID = `JSON.stringify({dragging:!!(MM.craftDrag&&MM.craftDrag.dragging()), overlayPE:getComputedStyle(document.getElementById('invOverlay')).pointerEvents, dropThrough:(function(){var b=document.querySelectorAll('#hotbarWrap .hotSlot')[4].getBoundingClientRect();var el=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return !!(el&&el.closest&&el.closest('#hotbarWrap'));})()})`;
+const INV_DRAG_MID = `JSON.stringify({active:!!(MM.craftDrag&&MM.craftDrag.active&&MM.craftDrag.active()), dragging:!!(MM.craftDrag&&MM.craftDrag.dragging()), overlayPE:getComputedStyle(document.getElementById('invOverlay')).pointerEvents, dropThrough:(function(){var b=document.querySelectorAll('#hotbarWrap .hotSlot')[4].getBoundingClientRect();var el=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);return !!(el&&el.closest&&el.closest('#hotbarWrap'));})()})`;
 const INV_DRAG_CHECK = `JSON.stringify({slot4:MM.hotbar.order()[4]})`;
 const INV_PLUS = `(async()=>{
 	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -242,6 +272,40 @@ const INV_PLUS = `(async()=>{
 	await sleep(150);
 	return 'ok: crafted from inventory "+" ('+label+')';
 })()`;
+
+const FEED_DRAG_PREP = `(async()=>{
+	const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+	document.getElementById('invClose')?.click();
+	MM.smartFeed.clear();
+	MM.smartFeed.setExpanded(false);
+	MM.inventoryFeedback.reset();
+	MM.hotbar.assign(5,'WATER');
+	const before=window.inv.wood|0;
+	window.inv.wood=before+2;
+	window.dispatchEvent(new CustomEvent('mm-resources-change'));
+	await sleep(180);
+	const handle=document.querySelector('#smartFeed .smartFeedItem[data-hotbar-assignable="true"] .smartFeedItemHotbar');
+	const dst=document.querySelectorAll('#hotbarWrap .hotSlot')[5];
+	if(!handle || !dst) return 'missing-feed-handle-or-slot';
+	const a=handle.getBoundingClientRect(), b=dst.getBoundingClientRect();
+	return JSON.stringify({
+		fx:a.left+a.width/2,fy:a.top+a.height/2,
+		tx:b.left+b.width/2,ty:b.top+b.height/2,
+		wood:window.inv.wood|0
+	});
+})()`;
+const FEED_DRAG_MID = `JSON.stringify({
+	dragging:!!(MM.craftDrag&&MM.craftDrag.dragging()),
+	ghost:!!document.getElementById('craftDragGhost'),
+	targets:document.querySelectorAll('#hotbarWrap.hotDropActive .hotSlot').length,
+	hovered:document.querySelectorAll('#hotbarWrap .hotSlot')[5].classList.contains('dropHot')
+})`;
+const FEED_DRAG_CHECK = `JSON.stringify({
+	slot0:MM.hotbar.order()[5],
+	selected:MM.hotbar.index(),
+	wood:window.inv.wood|0,
+	clean:!MM.craftDrag.dragging()&&!document.getElementById('craftDragGhost')&&!document.body.classList.contains('mmTileDrag')
+})`;
 
 async function main(){
 	const { existsSync } = await import('node:fs');
@@ -363,6 +427,22 @@ async function main(){
 			await writeFile(outA.replace(/\.png$/, '-d.png'), Buffer.from(shot.data, 'base64'));
 			console.log('wrote', outA.replace(/\.png$/, '-d.png'));
 			await run('invPlus', INV_PLUS);
+		} else failed = true;
+
+		// smart feed: the compact "+2 wood" resource handle can be dragged
+		// directly to key 0 without transferring or consuming that historical +2.
+		const fp = await run('feedDragPrep', FEED_DRAG_PREP, false);
+		if (typeof fp === 'string' && fp.startsWith('{')){
+			const p = JSON.parse(fp);
+			await dragTo(p, FEED_DRAG_MID, 'feedDragMid');
+			const chk = await send(ws, 'Runtime.evaluate', { expression: FEED_DRAG_CHECK, returnByValue: true });
+			const v = chk && chk.result ? JSON.parse(chk.result.value) : {};
+			const ok = v.slot0 === 'WOOD' && v.selected === 5 && v.wood === p.wood && v.clean === true;
+			console.log('feedDrag:', (ok ? 'ok' : 'FAIL') + ': slot0=' + v.slot0 + ' selected=' + v.selected + ' wood=' + v.wood);
+			if (!ok) failed = true;
+			shot = await send(ws, 'Page.captureScreenshot', { format: 'png' });
+			await writeFile(outA.replace(/\.png$/, '-e.png'), Buffer.from(shot.data, 'base64'));
+			console.log('wrote', outA.replace(/\.png$/, '-e.png'));
 		} else failed = true;
 
 		if (pageErrors.length) console.log('pageErrors:', pageErrors.slice(0, 5).join('\n---\n'));

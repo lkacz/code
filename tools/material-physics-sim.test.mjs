@@ -668,13 +668,13 @@ for(const t of [T.DIRT,T.WOOD,T.STEEL,T.DIAMOND,T.IRIDIUM,T.WATER_PUMP,T.WIRE,T.
   assert.equal(isMeteorPickSparkMaterial(t), false, 'meteor pick spark materials exclude '+(INFO[t]?.name || t));
 }
 
-for(const t of [T.AIR,T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC,T.OBSIDIAN,T.DIAMOND,T.IRIDIUM,T.BEDROCK,T.VOLCANO_MASTER_STONE,T.SERVANT_STONE]){
+for(const t of [T.AIR,T.GRAVE,T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC,T.OBSIDIAN,T.DIAMOND,T.IRIDIUM,T.BEDROCK,T.VOLCANO_MASTER_STONE,T.SERVANT_STONE]){
   assert.equal(isBlastProtectedTile(t), true, 'blast protection preserves '+(INFO[t]?.name || t));
 }
 for(const t of [T.STONE,T.GRANITE,T.BASALT,T.STEEL,T.WOOD,T.COAL,T.GOLD_ORE,T.ALIEN_BIOMASS,T.WATER_PUMP]){
   assert.equal(isBlastProtectedTile(t), false, 'blast crater can affect '+(INFO[t]?.name || t));
 }
-for(const t of [T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC,T.VOLCANO_MASTER_STONE,T.SERVANT_STONE,T.ANTIGRAVITY_BEACON,T.METEOR_SIREN,T.BEDROCK]){
+for(const t of [T.GRAVE,T.CHEST_COMMON,T.CHEST_RARE,T.CHEST_EPIC,T.VOLCANO_MASTER_STONE,T.SERVANT_STONE,T.ANTIGRAVITY_BEACON,T.METEOR_SIREN,T.BEDROCK]){
   assert.equal(isMeteorProtectedTile(t), true, 'meteor terrain jobs preserve '+(INFO[t]?.name || t));
 }
 for(const t of [T.AIR,T.STONE,T.OBSIDIAN,T.DIAMOND,T.IRIDIUM,T.WATER_PUMP,T.TURRET,T.WIRE,T.WATER]){

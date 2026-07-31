@@ -145,6 +145,7 @@ export function createHotPickerModel(opts){
 // so the module installs one <style id="hotPickerCss"> next to the shell.
 // ---------------------------------------------------------------------------
 const PICKER_CSS=`
+#hotSelectMenu .hpCardWrap{ position:relative; min-width:0; }
 #hotSelectMenu .hpCard{ position:relative; display:flex; flex-direction:column; align-items:center; gap:3px;
   background:rgba(255,255,255,.055); border:1px solid rgba(255,255,255,.14); border-radius:9px;
   color:#e8edf6; cursor:pointer; font:inherit; min-width:0;
@@ -252,9 +253,13 @@ export function createHotPicker(deps){
   function gridColumns(){
     const cards=cardButtons();
     if(cards.length<2) return 1;
-    const top0=cards[0].offsetTop;
+    const rowTop=card=>{
+      const wrap=card.closest&&card.closest('.hpCardWrap');
+      return wrap ? wrap.offsetTop : card.offsetTop;
+    };
+    const top0=rowTop(cards[0]);
     let n=1;
-    while(n<cards.length&&cards[n].offsetTop===top0) n++;
+    while(n<cards.length&&rowTop(cards[n])===top0) n++;
     return Math.max(1,n);
   }
   function focusCard(idx){
@@ -309,6 +314,8 @@ export function createHotPicker(deps){
     const cur=typeof deps.current==='function'?deps.current(state.slot):null;
     const info=countInfo(item);
     const touch=isTouch();
+    const wrap=document.createElement('div');
+    wrap.className='hpCardWrap';
     const b=document.createElement('button');
     b.type='button';
     b.className='hpCard';
@@ -337,26 +344,35 @@ export function createHotPicker(deps){
     if(craftInfoFn){
       const ci=craftInfoFn(item)||{};
       if(ci.hasRecipe){
-        const plus=document.createElement('span');
+        const plus=document.createElement('button');
+        plus.type='button';
         plus.className='mmQuickCraft hpQuickCraft';
+        plus.dataset.hotQuick=item.k;
         plus.textContent='+';
-        plus.setAttribute('role','button');
-        plus.tabIndex=-1; // keep arrow-key card walking clean
+        plus.disabled=!ci.canCraft;
         plus.setAttribute('aria-disabled', String(!ci.canCraft));
+        plus.setAttribute('aria-label',(ci.canCraft?'Wytwórz teraz: ':'Brak surowców na: ')+(ci.name||item.label));
         plus.title=(ci.canCraft?'Wytwórz teraz: ':'Brak surowców na: ')+(ci.name||item.label)+(ci.costText?(' ('+ci.costText+')'):'');
-        plus.style.cssText='position:absolute; top:2px; left:3px; width:17px; height:17px; font-size:12px;';
-        plus.addEventListener('pointerdown',e=>{ e.stopPropagation(); });
+        plus.style.cssText='position:absolute; z-index:1; top:2px; left:3px; width:17px; height:17px; padding:0; font-size:12px;';
         plus.addEventListener('click',e=>{
           e.stopPropagation(); e.preventDefault();
           const now=craftInfoFn(item)||{};
-          if(now.canCraft && quickCraftFn && quickCraftFn(item)) refreshViews();
+          if(now.canCraft && quickCraftFn && quickCraftFn(item)){
+            refreshViews();
+            const nextQuick=[...gridHost.querySelectorAll('button[data-hot-quick]')]
+              .find(node=>node.dataset.hotQuick===item.k && !node.disabled);
+            const nextCard=cardButtons().find(node=>node.dataset.hotCard===item.k);
+            const focusTarget=nextQuick||nextCard;
+            if(focusTarget&&focusTarget.focus) focusTarget.focus({preventScroll:true});
+          }
         });
-        b.appendChild(plus);
+        wrap.appendChild(plus);
       }
     }
     b.addEventListener('click',()=>assignItem(item));
     b.addEventListener('keydown',onCardKey);
-    return b;
+    wrap.prepend(b);
+    return wrap;
   }
 
   function renderChips(){
@@ -523,7 +539,20 @@ export function createHotPicker(deps){
     if(!state.open&&menu.style.display==='none') return;
     state.open=false;
     menu.style.display='none';
-    if(searchInput&&document.activeElement===searchInput) searchInput.blur();
+    const anchor=state.anchor;
+    if(anchor&&anchor.isConnected&&typeof anchor.focus==='function'){
+      const suppliedTabIndex=anchor.hasAttribute('tabindex');
+      if(!suppliedTabIndex) anchor.tabIndex=-1;
+      try{ anchor.focus({preventScroll:true}); }catch(e){ anchor.focus(); }
+      // Hotbar slots are pointer controls today. Keep this programmatic focus
+      // seam only until the user moves on instead of silently adding all six
+      // slots to the page's sequential tab order.
+      if(!suppliedTabIndex){
+        anchor.addEventListener('blur',()=>{
+          if(anchor.getAttribute('tabindex')==='-1') anchor.removeAttribute('tabindex');
+        },{once:true});
+      }
+    }else if(searchInput&&document.activeElement===searchInput) searchInput.blur();
   }
 
   if(typeof window!=='undefined'){

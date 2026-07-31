@@ -949,7 +949,9 @@ const guardianLairs = (function(){
     if(kind==='fire') seedFireArenaAtmosphere(L,opts.getTile,opts.setTile);
     if(kind==='ice') seedIceArenaAtmosphere(L,opts.getTile,opts.setTile,awakening);
     addEffect({type:trueSelf?'avatarReveal':(iceChoir?'choirReveal':(kind==='fire'?'solarAwaken':'rimeAwaken')),kind,x:L.bossX,y:trueSelf?L.floorY-3:(iceChoir?L.floorY-8.5:L.bossY),t:0,max:iceChoir?2.4:1.8,r:kind==='fire'?24:(iceChoir?26:16)});
-    say(trueSelf ? SPEC.fire.trueName+' waits where the dragon broke.' : (iceChoir ? SPEC.ice.trueName+' is listening where the sovereign shattered.' : SPEC[kind].label+' awakens at '+Math.round(L.ax)+' blocks.'));
+    say(trueSelf ? SPEC.fire.trueName+' waits where the dragon broke.' : (iceChoir ? SPEC.ice.trueName+' is listening where the sovereign shattered.' : SPEC[kind].label+' awakens at '+Math.round(L.ax)+' blocks.'),{
+      target:{x:L.bossX,y:finalY}
+    });
     markWorldChanged();
     return true;
   }
@@ -971,7 +973,9 @@ const guardianLairs = (function(){
     const x=Math.round(player.x + ahead);
     const y=finite(player.y, surfaceAt(x)-4)-4;
     const e=spawnGuardian(kind,side.role,{x,y,ambient:true,seed:seedFor(kind,x)^0xa11});
-    if(e) say(side.name+' is stalking the '+(kind==='fire'?'eastern heat':'western frost')+'.');
+    if(e) say(side.name+' is stalking the '+(kind==='fire'?'eastern heat':'western frost')+'.',{
+      target:{x:e.x,y:e.y}
+    });
     return !!e;
   }
   function resetStorm(kind){
