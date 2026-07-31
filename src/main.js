@@ -3541,7 +3541,11 @@ function upsertGraveReturnTask(marker,echo,opts){
 	// release the feed de-duplication guard explicitly before the next death.
 	if(!(opts&&opts.preserveAnnouncement)) announcedFeedTasks.delete(id);
 	removeGraveReturnTask(echo?GRAVE_RETURN_TASK_ID:TEMPORAL_ECHO_TASK_ID);
-	const target={x:Number(marker.x)+0.5,y:Number(marker.y)+0.5,label:echo?'Duch Chwili':'Nagrobek bohatera'};
+	const target={
+		x:Number(marker.x)+(echo?0:0.5),
+		y:Number(marker.y)+(echo?0:0.5),
+		label:echo?'Duch Chwili':'Nagrobek bohatera'
+	};
 	const task=TASKS.upsert({
 		id,
 		source:echo?'temporal_echo':'grave',
@@ -3780,11 +3784,9 @@ function forfeitTemporalEscrow(){
 	if(!grave || !grave.echo) return {lost:0,marker:null};
 	const marker={x:grave.x,y:grave.y};
 	const lost=temporalEscrowResourceCount();
-	// Keep the GRAVE world tile as a readable consequence, but deliberately
-	// remove its tracked payload. Mining it later follows the existing
-	// "Pusty nagrobek" path and can never pay out after the deadline.
+	// The spirit is an overlay, not a world tile. Expiry retires both the escrow
+	// and its visual without leaving a convincing but empty physical marker.
 	grave=null;
-	refreshGraveMarkerVisual(marker.x,marker.y);
 	return {lost,marker};
 }
 function collapseTemporalEcho(reason,notice){
@@ -3848,16 +3850,19 @@ function beginTemporalRewind(){
 	return true;
 }
 function playerTouchesTemporalSpirit(){
-	if(!grave || !activeTemporalGraveAt(grave.x,grave.y) || !player) return false;
+	if(!grave || !grave.echo || !grave.overlay || temporalEchoState().phase!=='racing' || !player) return false;
 	const px0=Number(player.x)||0, py0=Number(player.y)||0;
 	const px1=px0+Math.max(0.1,Number(player.w)||HERO_BODY_W);
 	const py1=py0+Math.max(0.1,Number(player.h)||HERO_BODY_H);
-	const sx0=grave.x+0.08, sx1=grave.x+0.92;
-	const sy0=grave.y-0.62, sy1=grave.y+1.02;
-	return px1>=sx0 && px0<=sx1 && py1>=sy0 && py0<=sy1;
+	const sx=Number(grave.x)||0, sy=Number(grave.y)||0;
+	const nearestX=Math.max(px0,Math.min(px1,sx));
+	const nearestY=Math.max(py0,Math.min(py1,sy));
+	// No line-of-sight requirement: a spirit left inside one layer of crush
+	// rubble can be recovered by reaching its glow from the adjacent opening.
+	return Math.hypot(nearestX-sx,nearestY-sy)<=1.35;
 }
 function updateTemporalEcho(dt){
-	if(!repairTrackedGrave()) return false;
+	if(grave && !grave.echo && !repairTrackedGrave()) return false;
 	if(temporalRewindFx){
 		const fx=temporalRewindFx;
 		fx.t+=Math.max(0,dt||0);
@@ -3896,12 +3901,12 @@ function updateTemporalEcho(dt){
 	if(state.phase==='racing'){
 		const checkpoint=WORLD&&WORLD.temporalCheckpointState?WORLD.temporalCheckpointState():null;
 		if(!checkpoint || !checkpoint.valid){
-			collapseTemporalEcho('checkpoint-invalid','⌛ Echo czasu pękło — jego depozyt przepadł, a pozostał pusty nagrobek.');
+			collapseTemporalEcho('checkpoint-invalid','⌛ Echo czasu pękło — jego depozyt i duch przepadły.');
 			return false;
 		}
 		if(playerTouchesTemporalSpirit() && beginTemporalRewind()) return true;
 		const event=TEMPORAL_ECHO.update(dt);
-		if(event&&event.type==='expired') collapseTemporalEcho('expired','⌛ Minuta minęła — zasoby z Echa przepadły. Pozostał pusty nagrobek.');
+		if(event&&event.type==='expired') collapseTemporalEcho('expired','⌛ Minuta minęła — zasoby z Echa przepadły, a duch zniknął.');
 	}else TEMPORAL_ECHO.update(dt);
 	return false;
 }
@@ -4549,13 +4554,45 @@ window.heroDied=function(cause){
 		const half=Math.floor((inv[k]||0)/2);
 		if(half>0){ res[k]=half; inv[k]-=half; any=true; }
 	}
-	if(any || echoArmed){
+	if(echoArmed){
+		const heroW=Math.max(0.1,Number(player.w)||HERO_BODY_W);
+		const heroH=Math.max(0.1,Number(player.h)||HERO_BODY_H);
+		// Echo is a session-only overlay at the exact fatal position. It never
+		// writes a GRAVE tile, so terrain, trees and unseen caves cannot move it.
+		grave={
+			x:(Number(player.x)||0)+heroW*0.5,
+			y:(Number(player.y)||0)+heroH,
+			res,
+			seed:WORLDGEN.worldSeed,
+			echo:true,
+			overlay:true
+		};
+		let supersededResources=0;
+		if(previousGrave){
+			for(const key of RESOURCE_KEYS){
+				supersededResources+=Math.max(0,Math.floor(Number(previousGrave.res&&previousGrave.res[key])||0));
+			}
+			const oldX=Math.floor(Number(previousGrave.x));
+			const oldY=Math.floor(Number(previousGrave.y));
+			// The checkpoint restores an older ordinary grave after a successful
+			// rewind; the abandoned branch must not leave its stale tile visible.
+			if(getTile(oldX,oldY)===T.GRAVE) setForegroundConfirmed(oldX,oldY,T.AIR);
+		}
+		const supersededNote=supersededResources>0
+			?' Poprzedni nagrobek wygasł: utracono '+supersededResources+' zasobów.'
+			:'';
+		upsertGraveReturnTask(grave,true);
+		msg('⏳ Duch Chwili czeka dokładnie w miejscu śmierci. Zbliż się przed upływem minuty.'+supersededNote);
+		const target={x:grave.x,y:grave.y};
+		noteDiscoveryFact('temporal_echo_started',{resources:temporalEscrowResourceCount(),target});
+		noteDiscoveryFact('temporal_echo_timer_seen',{seconds:60,target});
+	}else if(any){
 		let gx=Math.round(player.x); let gy=Math.round(player.y);
 		const spot=nearestOpenGraveCell(gx,gy);
 		if(spot){ gx=spot.x; gy=spot.y; }
 		// A crush death leaves the hero inside solid rubble — hunt for the nearest
-		// supported opening so the gravestone lands and stays reachable.
-		grave=spot ? {x:gx, y:gy, res, seed:WORLDGEN.worldSeed,echo:echoArmed} : null;
+		// supported opening so the ordinary gravestone stays reachable.
+		grave=spot ? {x:gx, y:gy, res, seed:WORLDGEN.worldSeed} : null;
 		saveGrave();
 		if(spot && isReplaceableNaturalOpenTile(getTile(gx,gy),false)) setTile(gx,gy,T.GRAVE);
 		if(!spot || getTile(gx,gy)!==T.GRAVE){
@@ -4564,8 +4601,8 @@ window.heroDied=function(cause){
 			// grave marker instead of silently deleting half the inventory.
 			for(const k in res) if(typeof inv[k]==='number') inv[k]+=res[k];
 			grave=previousGrave;
-			if(echoArmed) collapseTemporalEcho('grave-unreachable','⌛ Echo nie znalazło bezpiecznego miejsca — zasoby zostały zwrócone');
-			else { saveGrave(); msg('☠ Brak miejsca na nagrobek — zasoby zostały zwrócone'); }
+			saveGrave();
+			msg('☠ Brak miejsca na nagrobek — zasoby zostały zwrócone');
 		}else{
 			let supersededResources=0;
 			if(previousGrave && previousGrave!==grave){
@@ -4585,16 +4622,8 @@ window.heroDied=function(cause){
 			const supersededNote=supersededResources>0
 				?' Poprzedni nagrobek wygasł: utracono '+supersededResources+' zasobów.'
 				:'';
-			if(echoArmed){
-				upsertGraveReturnTask(grave,true);
-				msg('⏳ Duch Chwili przechowuje utracone zasoby ('+gx+', '+gy+'). Dotknij go przed upływem minuty.'+supersededNote);
-				const target={x:gx+0.5,y:gy+0.5};
-				noteDiscoveryFact('temporal_echo_started',{resources:temporalEscrowResourceCount(),target});
-				noteDiscoveryFact('temporal_echo_timer_seen',{seconds:60,target});
-			}else{
-				upsertGraveReturnTask(grave,false);
-				msg('☠ Zginąłeś — połowa zasobów czeka w nagrobku ('+gx+', '+gy+')'+supersededNote);
-			}
+			upsertGraveReturnTask(grave,false);
+			msg('☠ Zginąłeś — połowa zasobów czeka w nagrobku ('+gx+', '+gy+')'+supersededNote);
 		}
 	} else {
 		msg('☠ Zginąłeś – respawn');
@@ -4620,28 +4649,12 @@ function nearestOpenGraveCell(cx,cy){
 		fall:160
 	});
 }
-function activeTemporalSpiritAt(tx,ty){
-	return !!(grave && grave.echo && grave.x===Math.floor(tx) && grave.y===Math.floor(ty));
-}
-function refreshGraveMarkerVisual(x,y){
-	if(getTile(x,y)!==T.GRAVE) return;
-	worldRenderChangeCounter++;
-	MM.worldRenderVersion=worldRenderChangeCounter;
-	const key=worldRenderSectionKey(Math.floor(x/CHUNK_W),worldSectionY(y));
-	const entry=chunkCanvases.get(key);
-	if(entry) entry.version=-1;
-	chunkRenderDirty.delete(key);
-}
-function activeTemporalGraveAt(tx,ty){
-	const state=temporalEchoState();
-	return state.phase==='racing' && activeTemporalSpiritAt(tx,ty);
-}
 function repairTrackedGrave(){
 	if(!grave) return true;
+	if(grave.echo && grave.overlay) return true;
 	if(graveHasStableGround(grave.x,grave.y)) return true;
 	const oldX=Math.floor(Number(grave.x));
 	const oldY=Math.floor(Number(grave.y));
-	const wasEcho=!!grave.echo;
 	ensureChunkAtY(Math.floor(oldX/CHUNK_W),oldY);
 
 	// Prefer the canonical cell when only the marker was erased. If its footing
@@ -4672,17 +4685,11 @@ function repairTrackedGrave(){
 			}
 			grave.x=target.x;
 			grave.y=target.y;
-			if(wasEcho){
-				upsertGraveReturnTask(grave,true,{
-					preservePriority:true,
-					preserveAnnouncement:true,
-					reactivate:false
-				});
-			}else reconcileGraveReturnTask();
+			reconcileGraveReturnTask();
 			saveGrave();
 			if(!repairTrackedGrave._noticeAt || performance.now()-repairTrackedGrave._noticeAt>2500){
 				repairTrackedGrave._noticeAt=performance.now();
-				msg(wasEcho?'⧖ Echo odtworzyło bezpieczny punkt zaczepienia':'⚒ Nagrobek został przeniesiony na stabilne podłoże');
+				msg('⚒ Nagrobek został przeniesiony na stabilne podłoże');
 			}
 			return true;
 		}
@@ -4699,13 +4706,9 @@ function repairTrackedGrave(){
 		}
 	}
 	grave=null;
-	if(wasEcho){
-		collapseTemporalEcho('grave-lost','⚠ Echo straciło punkt zaczepienia — zasoby zostały zwrócone');
-	}else{
-		removeGraveReturnTask(GRAVE_RETURN_TASK_ID);
-		saveGrave();
-		msg('⚠ Nagrobek nie mógł zostać odtworzony — zwrócono '+refund+' zasobów');
-	}
+	removeGraveReturnTask(GRAVE_RETURN_TASK_ID);
+	saveGrave();
+	msg('⚠ Nagrobek nie mógł zostać odtworzony — zwrócono '+refund+' zasobów');
 	updateInventory({
 		resourceChange:{source:'grave_system_refund'},
 		inventoryFeedbackContext:{kind:'reward',source:'grave_system_refund'}
@@ -4713,14 +4716,6 @@ function repairTrackedGrave(){
 	return false;
 }
 function tryOpenGraveAt(tx,ty){
-	if(activeTemporalGraveAt(tx,ty)){
-		if(!repairTrackedGrave()) return false;
-		if(!tryOpenGraveAt._spiritNoticeAt || performance.now()-tryOpenGraveAt._spiritNoticeAt>1800){
-			tryOpenGraveAt._spiritNoticeAt=performance.now();
-			msg('⏳ Ducha Chwili nie otwiera się narzędziem — wejdź w jego światło');
-		}
-		return true;
-	}
 	if(getTile(tx,ty)!==T.GRAVE) return false;
 	if(!setForegroundConfirmed(tx,ty,T.AIR)) return false;
 	if(grave && grave.x===tx && grave.y===ty && grave.res){
@@ -11546,9 +11541,7 @@ function drawChunkToCache(cx,sy,centerCx){ sy=Number.isFinite(sy) ? Math.floor(s
 							isSolid(chunkTileAt(arr,cx,lx-1,y,originY,sectionH)),
 							isSolid(chunkTileAt(arr,cx,lx+1,y,originY,sectionH)));
 					}
-					// The Temporal Echo keeps GRAVE only as an interaction anchor;
-					// its visible form is the animated spirit drawn every frame.
-					if(t===T.GRAVE && !activeTemporalSpiritAt(wx,y)) drawGraveTile(cctx, lx*TILE, y*TILE);
+					if(t===T.GRAVE) drawGraveTile(cctx, lx*TILE, y*TILE);
 					if(t===T.RESPAWN_TOTEM) drawRespawnTotemTile(cctx, lx*TILE, y*TILE);
 					if(t===T.GLOWSHROOM) drawGlowshroomTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
 					if(t===T.VINE) drawVineTileArt(cctx,lx*TILE,y*TILE,hash32(wx,y));
@@ -13621,7 +13614,7 @@ function normalizeLegacyHelpDebugCopy(){
 		);
 		node.textContent=node.textContent.replace(
 			'Po śmierci połowa zasobów zostaje w nagrobku — kliknij go, by odzyskać.',
-			'Po śmierci utracone zasoby przejmuje Duch Chwili — dotknij go przed końcem odliczania, aby odzyskać depozyt i cofnąć świat. Po czasie pozostaje pusty nagrobek.'
+			'Po śmierci utracone zasoby przejmuje Duch Chwili — pojawia się dokładnie w miejscu zgonu jako przenikający teren duch. Zbliż się przed końcem odliczania, aby odzyskać depozyt i cofnąć świat; po czasie duch znika.'
 		);
 		node.textContent=node.textContent.replace(
 			'wpis w Dzienniku Odkryć (+40 XP)',
@@ -24069,8 +24062,8 @@ function drawTemporalEchoOverlay(ts){
 	ctx.fillStyle=vignette; ctx.fillRect(0,0,W,H);
 	if(grave && (state.phase==='racing'||state.phase==='armed')){
 		const cam=currentRenderCamera();
-		const gx=((grave.x+.5)*TILE-cam.x*TILE)*zoom;
-		const gy=((grave.y+1)*TILE-cam.y*TILE)*zoom;
+		const gx=(grave.x*TILE-cam.x*TILE)*zoom;
+		const gy=(grave.y*TILE-cam.y*TILE)*zoom;
 		drawTemporalEchoSpirit(gx,gy,time,pulse);
 		for(let i=0;i<3;i++){
 			const r=(18+i*11+((time*22+i*13)%32))*zoom;

@@ -55,6 +55,10 @@ const lifecycleAssertion=`(async()=>{
   await sleep(250);
   inv.stone=20;
   const before={maxHp:player.maxHp,stone:inv.stone};
+  const deathPoint={
+    x:player.x+(Number(player.w)||0.78)*0.5,
+    y:player.y+(Number(player.h)||1.8)
+  };
   player.hp=0;
   window.heroDied('temporal_browser_qa');
   const armed=MM.temporalEcho.state();
@@ -62,8 +66,11 @@ const lifecycleAssertion=`(async()=>{
   const racing=await waitFor(()=>MM.temporalEcho.state().phase==='racing'&&MM.temporalEcho.state(),12000);
   const temporalTarget=MM.temporalEcho.target();
   const constants=await import('/src/constants.js');
-  const physics=await import('/src/engine/material_physics.js');
-  const groundedTarget=!!(temporalTarget&&physics.isObjectFootingTile(MM.world.getTile(temporalTarget.x,temporalTarget.y+1)));
+  const exactOverlay=!!(temporalTarget
+    &&Math.abs(temporalTarget.x-deathPoint.x)<1e-6
+    &&Math.abs(temporalTarget.y-deathPoint.y)<1e-6);
+  const noWorldGrave=!!(temporalTarget
+    &&MM.world.getTile(Math.floor(temporalTarget.x),Math.floor(temporalTarget.y))!==constants.T.GRAVE);
   const checkpointBeforeBlockedLoad=MM.world.temporalCheckpointState();
   const escrowBeforeBlockedLoad=inv.stone;
   const pendingBeforeBlockedLoad=!!(localStorage.getItem('mm_temporal_echo_pending_v1')||sessionStorage.getItem('mm_temporal_echo_pending_v1'));
@@ -76,21 +83,17 @@ const lifecycleAssertion=`(async()=>{
   const checkpointAfterBlockedLoad=MM.world.temporalCheckpointState();
   const escrowAfterBlockedLoad=inv.stone;
   const pendingAfterBlockedLoad=!!(localStorage.getItem('mm_temporal_echo_pending_v1')||sessionStorage.getItem('mm_temporal_echo_pending_v1'));
-  let graveSelfHealed=false;
-  if(temporalTarget){
-    MM.world.setTile(temporalTarget.x,temporalTarget.y,constants.T.AIR);
-    graveSelfHealed=!!(await waitFor(()=>MM.world.getTile(temporalTarget.x,temporalTarget.y)===constants.T.GRAVE,2000));
-  }
   const tasksAfterTemporalRepair=MM.tasks.state();
-  const temporalTaskKept=tasksAfterTemporalRepair.active.some(task=>task?.id==='temporal_echo:return')
+  const temporalTask=tasksAfterTemporalRepair.active.find(task=>task?.id==='temporal_echo:return')||null;
+  const temporalTaskKept=!!(temporalTask&&temporalTarget
+    &&Math.abs(temporalTask.target?.x-temporalTarget.x)<0.001
+    &&Math.abs(temporalTask.target?.y-temporalTarget.y)<0.001)
     &&!tasksAfterTemporalRepair.active.some(task=>task?.id==='grave:return');
   let dismissedTemporalTaskKept=false;
   if(temporalTarget&&temporalTaskKept&&MM.tasks.discard('temporal_echo:return')){
-    MM.world.setTile(temporalTarget.x,temporalTarget.y,constants.T.AIR);
-    const repairedAfterDismiss=await waitFor(()=>MM.world.getTile(temporalTarget.x,temporalTarget.y)===constants.T.GRAVE,2000);
+    await sleep(180);
     const afterDismiss=MM.tasks.state();
-    dismissedTemporalTaskKept=!!repairedAfterDismiss
-      &&afterDismiss.discarded.some(task=>task?.id==='temporal_echo:return')
+    dismissedTemporalTaskKept=afterDismiss.discarded.some(task=>task?.id==='temporal_echo:return')
       &&!afterDismiss.active.some(task=>task?.id==='temporal_echo:return'||task?.id==='grave:return');
   }
   const deathCycle=Number(armed.payload?.data?.background?.cycleT);
@@ -99,7 +102,10 @@ const lifecycleAssertion=`(async()=>{
   MM.background.importState(shiftedState);
   await sleep(120);
   const skyBeforeTouch=MM.background.snapshot().cycleT;
-  if(temporalTarget) window.__mmDebugHero(temporalTarget.x+0.12,temporalTarget.y-0.3);
+  if(temporalTarget) window.__mmDebugHero(
+    temporalTarget.x-(Number(player.w)||0.78)*0.5,
+    temporalTarget.y-(Number(player.h)||1.8)
+  );
   let sawRewinding=false;
   const skySamples=[];
   let finished=null;
@@ -124,7 +130,8 @@ const lifecycleAssertion=`(async()=>{
     racing:!!racing,
     temporalTarget:!!temporalTarget,
     spiritTarget:temporalTarget?.kind==='spirit',
-    groundedTarget,
+    exactOverlay,
+    noWorldGrave,
     activeLoadBlocked:blockedLoadResult===false,
     activeLoadKeptRace:stateAfterBlockedLoad.phase==='racing',
     activeLoadKeptTarget:!!(temporalTarget&&targetAfterBlockedLoad
@@ -133,7 +140,6 @@ const lifecycleAssertion=`(async()=>{
       &&checkpointAfterBlockedLoad.active===true&&checkpointAfterBlockedLoad.valid===true,
     activeLoadKeptEscrow:escrowAfterBlockedLoad===escrowBeforeBlockedLoad,
     activeLoadKeptPending:pendingBeforeBlockedLoad&&pendingAfterBlockedLoad,
-    graveSelfHealed,
     temporalTaskKept,
     dismissedTemporalTaskKept,
     autoContact:sawRewinding,
@@ -156,9 +162,77 @@ const lifecycleAssertion=`(async()=>{
     initialSkyDistance,
     finalSkyError,
     skySamples:skySamples.length,
+    deathPoint,
+    temporalTarget,
+    temporalTask,
     storageError:window.__mmTemporalStorageError||''
   };
   return (Object.values(checks).every(Boolean)?'PASS ':'FAIL ')+JSON.stringify({checks,diagnostics});
+})()`;
+
+const surfaceObstructionAssertion=`(async()=>{
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const waitFor=async(fn,ms)=>{
+    const end=performance.now()+ms;
+    while(performance.now()<end){ const value=fn(); if(value) return value; await sleep(80); }
+    return null;
+  };
+  document.querySelector('#titleScreen .tsPrimary')?.click();
+  await sleep(500);
+  window.__simulationTimeScale=4;
+  const constants=await import('/src/constants.js');
+  const physics=await import('/src/engine/material_physics.js');
+  const deathX=Math.floor(player.x)+24;
+  const surface=Math.floor(MM.worldGen.surfaceHeight(deathX));
+  const bodyY=surface-2;
+  window.__mmDebugHero(deathX+0.1,bodyY);
+  const deathPoint={
+    x:player.x+(Number(player.w)||0.78)*0.5,
+    y:player.y+(Number(player.h)||1.8)
+  };
+  const markerCell={x:Math.floor(deathPoint.x),y:Math.floor(deathPoint.y)};
+
+  // The fatal point is occupied by rubble while a supported open cave cell
+  // lies close below it. The overlay must stay at the body, not search either
+  // upward or downward for a place where a physical grave could stand.
+  MM.world.setTile(markerCell.x,markerCell.y,constants.T.STONE);
+  const caveY=markerCell.y+3;
+  MM.world.setTile(deathX,caveY,constants.T.AIR);
+  MM.world.setTile(deathX,caveY+1,constants.T.STONE);
+  for(let x=markerCell.x+1;x<=markerCell.x+2;x++){
+    for(let y=markerCell.y-2;y<=markerCell.y;y++) MM.world.setTile(x,y,constants.T.AIR);
+    MM.world.setTile(x,markerCell.y+1,constants.T.STONE);
+  }
+  const deathTileBefore=MM.world.getTile(markerCell.x,markerCell.y);
+  inv.stone=20;
+  player.hp=0;
+  window.heroDied('surface_obstruction_qa');
+  const state=MM.temporalEcho.state();
+  const target=MM.temporalEcho.target();
+  const exactFatalPosition=!!(target
+    &&Math.abs(target.x-deathPoint.x)<1e-6
+    &&Math.abs(target.y-deathPoint.y)<1e-6);
+  const racing=await waitFor(()=>MM.temporalEcho.state().phase==='racing'&&MM.temporalEcho.state(),16000);
+  if(target) window.__mmDebugHero(
+    target.x+1.15,
+    target.y-(Number(player.h)||1.8)
+  );
+  const adjacentContact=!!(await waitFor(()=>MM.temporalEcho.state().phase==='rewinding',2500));
+  const checks={
+    armed:state.phase==='armed',
+    spirit:target?.kind==='spirit',
+    racing:!!racing,
+    exactFatalPosition,
+    terrainUntouched:MM.world.getTile(markerCell.x,markerCell.y)===deathTileBefore,
+    overlaysRubble:deathTileBefore===constants.T.STONE,
+    caveWasViable:MM.world.getTile(deathX,caveY)===constants.T.AIR
+      &&physics.isObjectFootingTile(MM.world.getTile(deathX,caveY+1)),
+    didNotChooseCave:!!target&&Math.abs(target.y-caveY)>1e-6,
+    adjacentContact
+  };
+  return (Object.values(checks).every(Boolean)?'PASS ':'FAIL ')+JSON.stringify({
+    checks,target,deathPoint,markerCell,surface,bodyY,caveY,remaining:state.remaining
+  });
 })()`;
 
 const repeatedDeathAssertion=`(async()=>{
@@ -169,7 +243,10 @@ const repeatedDeathAssertion=`(async()=>{
     return null;
   };
   const finishEcho=async target=>{
-    if(target) window.__mmDebugHero(target.x+0.12,target.y-0.3);
+    if(target) window.__mmDebugHero(
+      target.x-(Number(player.w)||0.78)*0.5,
+      target.y-(Number(player.h)||1.8)
+    );
     let sawRewind=false;
     const idle=await waitFor(()=>{
       const state=MM.temporalEcho.state();
@@ -183,7 +260,6 @@ const repeatedDeathAssertion=`(async()=>{
   await sleep(500);
   window.__simulationTimeScale=4;
   const constants=await import('/src/constants.js');
-  const physics=await import('/src/engine/material_physics.js');
   const deaths=[];
   window.addEventListener('mm-hero-died',event=>deaths.push(event.detail));
 
@@ -191,6 +267,10 @@ const repeatedDeathAssertion=`(async()=>{
   window.__mmDebugHero(firstX,MM.worldGen.surfaceHeight(firstX)-2);
   await sleep(180);
   inv.stone=48;
+  const firstDeathPoint={
+    x:player.x+(Number(player.w)||0.78)*0.5,
+    y:player.y+(Number(player.h)||1.8)
+  };
   player.hp=0;
   window.heroDied('temporal_repeat_first');
   const firstArmed=MM.temporalEcho.state();
@@ -209,12 +289,19 @@ const repeatedDeathAssertion=`(async()=>{
   MM.world.setTile(deepX+5,deepY+1,constants.T.STONE);
   window.__mmDebugHero(deepX+0.1,deepY+0.1);
   inv.stone=48;
+  const crushDeathPoint={
+    x:player.x+(Number(player.w)||0.78)*0.5,
+    y:player.y+(Number(player.h)||1.8)
+  };
   player.hp=0;
   window.heroDied('crushed');
   const crushArmed=MM.temporalEcho.state();
   const crushTargetAtDeath=MM.temporalEcho.target();
-  const crushGrounded=!!(crushTargetAtDeath
-    &&physics.isObjectFootingTile(MM.world.getTile(crushTargetAtDeath.x,crushTargetAtDeath.y+1)));
+  const crushExact=!!(crushTargetAtDeath
+    &&Math.abs(crushTargetAtDeath.x-crushDeathPoint.x)<1e-6
+    &&Math.abs(crushTargetAtDeath.y-crushDeathPoint.y)<1e-6);
+  const crushCell={x:Math.floor(crushDeathPoint.x),y:Math.floor(crushDeathPoint.y)};
+  const crushInsideRubble=MM.world.getTile(crushCell.x,crushCell.y)===constants.T.STONE;
   const crushRace=await waitFor(()=>MM.temporalEcho.state().phase==='racing'&&MM.temporalEcho.state(),18000);
   const crushTarget=MM.temporalEcho.target();
   const crushHud=document.getElementById('temporalEchoHud');
@@ -227,6 +314,10 @@ const repeatedDeathAssertion=`(async()=>{
   const thirdX=deepX+18;
   window.__mmDebugHero(thirdX,MM.worldGen.surfaceHeight(thirdX)-2);
   await sleep(180);
+  const thirdDeathPoint={
+    x:player.x+(Number(player.w)||0.78)*0.5,
+    y:player.y+(Number(player.h)||1.8)
+  };
   player.hp=0;
   window.heroDied('crushed');
   const thirdArmed=MM.temporalEcho.state();
@@ -239,15 +330,23 @@ const repeatedDeathAssertion=`(async()=>{
     firstArmed:firstArmed.phase==='armed',
     firstRace:!!firstRace,
     firstSpirit:firstTarget?.kind==='spirit',
+    firstExact:!!firstTarget
+      &&Math.abs(firstTarget.x-firstDeathPoint.x)<1e-6
+      &&Math.abs(firstTarget.y-firstDeathPoint.y)<1e-6,
     firstRecovered:!!firstFinished,
     firstReusable,
     crushArmed:crushArmed.phase==='armed',
     crushCause:deaths[1]?.cause==='crushed',
     crushSpirit:crushTargetAtDeath?.kind==='spirit'&&crushTarget?.kind==='spirit',
-    crushGrounded,
+    crushExact,
+    crushInsideRubble,
+    crushDidNotCreateGrave:MM.world.getTile(crushCell.x,crushCell.y)!==constants.T.GRAVE,
     crushTimer:!!crushRace&&crushRace.remaining>0&&crushRace.remaining<=60&&crushTimerVisible,
     activeRaceRearmed:thirdArmed.phase==='armed'&&deaths[2]?.echoCollapsed===true&&deaths[2]?.echoArmed===true,
     thirdSpirit:thirdTargetAtDeath?.kind==='spirit'&&thirdTarget?.kind==='spirit',
+    thirdExact:!!thirdTargetAtDeath
+      &&Math.abs(thirdTargetAtDeath.x-thirdDeathPoint.x)<1e-6
+      &&Math.abs(thirdTargetAtDeath.y-thirdDeathPoint.y)<1e-6,
     thirdTimer:!!thirdRace&&thirdRace.remaining>0&&thirdRace.remaining<=60,
     everyDeathArmed:deaths.length===3&&deaths.every(detail=>detail?.echoArmed===true),
     finalRecovered:!!thirdFinished&&thirdFinished.cooldown===0,
@@ -257,7 +356,7 @@ const repeatedDeathAssertion=`(async()=>{
   return (Object.values(checks).every(Boolean)?'PASS ':'FAIL ')+JSON.stringify({
     checks,
     deaths:deaths.map(detail=>({cause:detail?.cause,echoArmed:detail?.echoArmed,echoCollapsed:detail?.echoCollapsed})),
-    targets:{first:firstTarget,crush:crushTarget,thirdAtDeath:thirdTargetAtDeath,third:thirdTarget},
+    targets:{first:firstTarget,firstDeathPoint,crush:crushTarget,crushDeathPoint,thirdAtDeath:thirdTargetAtDeath,third:thirdTarget,thirdDeathPoint},
     remaining:{crush:crushRace?.remaining,third:thirdRace?.remaining}
   });
 })()`;
@@ -298,9 +397,10 @@ const expiryAssertion=`(async()=>{
     expired,
     collapseReason:state.collapseReason==='expired',
     escrowForfeited:inv.stone===afterSplit,
-    emptyGravestone:!!target&&MM.world.getTile(target.x,target.y)===constants.T.GRAVE
-      && MM.temporalEcho.target()===null
-      && !localStorage.getItem('mm_grave_v1'),
+    overlayGone:MM.temporalEcho.target()===null,
+    noWorldGravestone:!!target
+      &&MM.world.getTile(Math.floor(target.x),Math.floor(target.y))!==constants.T.GRAVE
+      &&!localStorage.getItem('mm_grave_v1'),
     checkpointReleased:checkpoint.active===false,
     markerCleared:!(localStorage.getItem('mm_temporal_echo_pending_v1')||sessionStorage.getItem('mm_temporal_echo_pending_v1'))
   };
@@ -385,10 +485,11 @@ async function runPreview(name,assertion){
 try{
   await waitForServer();
   await runPreview('temporal-echo-success',lifecycleAssertion);
+  await runPreview('temporal-echo-surface-obstruction',surfaceObstructionAssertion);
   await runPreview('temporal-echo-repeated-deaths',repeatedDeathAssertion);
   await runPreview('temporal-echo-expiry',expiryAssertion);
   await runPreview('ordinary-grave-repair',ordinaryGraveAssertion);
-  console.log('Temporal Echo browser success + repeated deaths + expiry + ordinary grave repair lifecycles passed');
+  console.log('Temporal Echo browser success + surface obstruction + repeated deaths + expiry + ordinary grave repair lifecycles passed');
 }finally{
   if(server.exitCode==null) server.kill();
   await rm(tempRoot,{recursive:true,force:true});

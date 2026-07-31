@@ -1092,7 +1092,7 @@ const rows=[
   },
   {
     id:'expired_echo_loses_resources',
-    label:'Po wygaśnięciu Echa depozyt przepada, a zostaje pusty nagrobek',
+    label:'Po wygaśnięciu Echa depozyt przepada, a duch znika',
     cat:'⏳ Echo Chwili',
     hint:'Pozwól odliczaniu dobiec końca, aby poznać cenę spóźnienia…',
     stage:'insight',tier:'principle',chain:'temporal_echo',requires:['echo_is_timed'],
