@@ -639,6 +639,15 @@ const guardianAftermath = (function(){
         if(setTileNotified(x, y, tile, getTile, setTile, batch, protectedAreas)) changed++;
       }
     }
+    // A fire remnant must leave a visible scar even when the probabilistic
+    // splash roll misses every candidate cell. Without this floor, a rare
+    // unlucky roll makes the aftermath appear to vanish and makes simulation
+    // coverage flaky. The center is still routed through the same protection
+    // and notification gates, so structures and physics remain safe.
+    if(changed === 0){
+      const fallbackY = clamp(cy, 1, WORLD_H - 2);
+      if(setTileNotified(cx, fallbackY, T.BASALT, getTile, setTile, batch, protectedAreas)) changed++;
+    }
     changed += depositMotherCore('fire', cx, cy, r, getTile, setTile, batch, protectedAreas);
     const hotCells = Math.min(5, Math.max(1, Math.floor(f.size / 2)));
     for(let i=0; i<hotCells; i++){
