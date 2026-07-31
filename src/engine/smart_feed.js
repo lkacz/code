@@ -2,8 +2,8 @@
 // events. Producers submit structured notices; this module owns pacing,
 // de-duplication, short history and the compact/expanded presentation.
 
-export const SMART_FEED_MIN_INTERVAL_MS=2000;
-export const SMART_FEED_DISCOVERY_HOLD_MS=4200;
+export const SMART_FEED_MIN_INTERVAL_MS=4000;
+export const SMART_FEED_DISCOVERY_HOLD_MS=6200;
 export const SMART_FEED_MAX_PENDING=32;
 export const SMART_FEED_MAX_HISTORY=24;
 export const SMART_FEED_MAX_HOLD_MS=15000;
@@ -23,6 +23,21 @@ const KIND_META=Object.freeze({
   system:{icon:'•',title:'SYSTEM',accent:'#a8b7c8',priority:38},
   info:{icon:'•',title:'INFORMACJA',accent:'#9fb8d1',priority:36}
 });
+
+const FILTER_OPTIONS=Object.freeze([
+  ['all','Wszystkie'],
+  ['discovery','Odkrycia'],
+  ['world','Świat'],
+  ['omen','Omeny'],
+  ['story','Opowieść'],
+  ['task','Zadania'],
+  ['achievement','Rozwój'],
+  ['inventory','Ekwipunek'],
+  ['warning','Ostrzeżenia'],
+  ['success','Sukcesy'],
+  ['system','System'],
+  ['info','Informacje']
+]);
 
 function finite(value,fallback=0){
   const n=Number(value);
@@ -339,6 +354,8 @@ export function createSmartFeed(options={}){
   const bindNoticeActions=typeof options.bindNoticeActions==='function' ? options.bindNoticeActions : null;
   const queue=createSmartFeedQueue(options);
   let expanded=options.expanded===undefined ? false : !!options.expanded;
+  let filterKind=KIND_META[options.filterKind] ? options.filterKind : 'all';
+  let selectedNoticeId='';
   let timer=0;
   let newestId='';
   let destroyed=false;
@@ -484,11 +501,49 @@ export function createSmartFeed(options={}){
     return true;
   }
 
+  function filteredHistory(history){
+    return filterKind==='all' ? history : history.filter(notice=>notice.kind===filterKind);
+  }
+
+  function selectedHistoryIndex(history){
+    if(!history.length){
+      selectedNoticeId='';
+      return -1;
+    }
+    const index=selectedNoticeId
+      ? history.findIndex(notice=>notice.id===selectedNoticeId)
+      : 0;
+    if(index>=0) return index;
+    selectedNoticeId='';
+    return 0;
+  }
+
+  function setFilter(value){
+    filterKind=KIND_META[value] ? value : 'all';
+    selectedNoticeId='';
+    newestId='';
+    render();
+    return filterKind;
+  }
+
+  function browseHistory(offset){
+    const history=filteredHistory(queue.state().history);
+    const index=selectedHistoryIndex(history);
+    if(index<0) return null;
+    const next=Math.max(0,Math.min(history.length-1,index+offset));
+    selectedNoticeId=next===0 ? '' : history[next].id;
+    newestId='';
+    render();
+    return noticeSnapshot(history[next]);
+  }
+
   function render(){
     if(!host || !doc || destroyed) return;
     const active=doc.activeElement;
     const restoreControl=controlFocusSnapshot(active);
     const restoreToggleFocus=!!(active && active.classList && active.classList.contains('smartFeedToggle'));
+    const restoreHeaderClass=['smartFeedOlder','smartFeedNewer','smartFeedFilter']
+      .find(name=>active && active.classList && active.classList.contains(name)) || '';
     const restoreStackFocus=!!(active && active.classList && active.classList.contains('smartFeedStack'));
     const previousStack=host.querySelector('.smartFeedStack');
     let scrollAnchor=null;
@@ -502,7 +557,10 @@ export function createSmartFeed(options={}){
       };
     }
     const state=queue.state();
+    const history=filteredHistory(state.history);
+    const historyIndex=selectedHistoryIndex(history);
     host.dataset.expanded=expanded?'true':'false';
+    host.dataset.filter=filterKind;
     host.classList.toggle('is-empty',!state.history.length && !state.pending.length);
     host.replaceChildren();
     if(!state.history.length && !state.pending.length) return;
@@ -511,10 +569,11 @@ export function createSmartFeed(options={}){
     head.className='smartFeedHead';
     const label=doc.createElement('span');
     label.className='smartFeedLabel';
-    label.textContent='DZIENNIK ZDARZEŃ';
+    label.textContent='KOMUNIKATY';
     const queueStatus=doc.createElement('span');
     queueStatus.className='smartFeedLive';
-    queueStatus.textContent=state.pending.length ? '+'+state.pending.length+' w kolejce' : 'na żywo';
+    queueStatus.textContent=state.pending.length ? '+'+state.pending.length : 'live';
+    queueStatus.title=state.pending.length ? state.pending.length+' w kolejce' : 'Brak oczekujących komunikatów';
     const toggle=doc.createElement('button');
     toggle.type='button';
     toggle.className='smartFeedToggle';
@@ -529,6 +588,45 @@ export function createSmartFeed(options={}){
     });
     head.append(label,queueStatus,toggle);
 
+    const tools=doc.createElement('div');
+    tools.className='smartFeedTools';
+    const nav=doc.createElement('div');
+    nav.className='smartFeedNav';
+    const older=doc.createElement('button');
+    older.type='button';
+    older.className='smartFeedHistoryButton smartFeedOlder';
+    older.textContent='←';
+    older.disabled=historyIndex<0 || historyIndex>=history.length-1;
+    older.setAttribute('aria-label','Pokaż starszy komunikat');
+    older.title='Starszy komunikat';
+    older.addEventListener('click',()=>browseHistory(1));
+    const position=doc.createElement('span');
+    position.className='smartFeedPosition';
+    position.textContent=historyIndex<0 ? '0/0' : (historyIndex+1)+'/'+history.length;
+    position.setAttribute('aria-live','polite');
+    const newer=doc.createElement('button');
+    newer.type='button';
+    newer.className='smartFeedHistoryButton smartFeedNewer';
+    newer.textContent='→';
+    newer.disabled=historyIndex<=0;
+    newer.setAttribute('aria-label','Pokaż nowszy komunikat');
+    newer.title='Nowszy komunikat';
+    newer.addEventListener('click',()=>browseHistory(-1));
+    nav.append(older,position,newer);
+    const filter=doc.createElement('select');
+    filter.className='smartFeedFilter';
+    filter.setAttribute('aria-label','Filtruj komunikaty według kategorii');
+    filter.title='Kategoria komunikatów';
+    for(const [value,text] of FILTER_OPTIONS){
+      const option=doc.createElement('option');
+      option.value=value;
+      option.textContent=text;
+      filter.appendChild(option);
+    }
+    filter.value=filterKind;
+    filter.addEventListener('change',()=>setFilter(filter.value));
+    tools.append(nav,filter);
+
     const stack=doc.createElement('div');
     stack.id='smartFeedHistory';
     stack.className='smartFeedStack';
@@ -536,10 +634,16 @@ export function createSmartFeed(options={}){
     stack.setAttribute('aria-live','off');
     stack.setAttribute('aria-label','Historia komunikatów, najnowsze na początku');
     stack.tabIndex=expanded?0:-1;
-    const visible=expanded ? state.history : state.history.slice(0,1);
+    const visible=expanded ? history : historyIndex<0 ? [] : history.slice(historyIndex,historyIndex+1);
     const now=clock();
     for(const notice of visible) stack.appendChild(cardFor(notice,now));
-    host.append(head,stack,announcer);
+    if(!visible.length){
+      const empty=doc.createElement('p');
+      empty.className='smartFeedEmpty';
+      empty.textContent='Brak wpisów w tej kategorii';
+      stack.appendChild(empty);
+    }
+    host.append(head,tools,stack,announcer);
     if(scrollAnchor){
       const anchor=[...stack.querySelectorAll('.smartFeedBubble')]
         .find(card=>card.dataset.noticeId===scrollAnchor.id);
@@ -548,10 +652,15 @@ export function createSmartFeed(options={}){
     if(restoreControl){
       if(!restoreControlFocus(restoreControl,stack)) toggle.focus({preventScroll:true});
     }else if(restoreToggleFocus) toggle.focus({preventScroll:true});
+    else if(restoreHeaderClass){
+      const control=host.querySelector('.'+restoreHeaderClass);
+      if(control&&!control.disabled) control.focus({preventScroll:true});
+      else toggle.focus({preventScroll:true});
+    }
     else if(restoreStackFocus && expanded) stack.focus({preventScroll:true});
     if(newestId){
       const latest=state.history.find(notice=>notice.id===newestId);
-      if(latest&&latest.announce!==false){
+      if(latest&&latest.announce!==false&&(filterKind==='all'||latest.kind===filterKind)){
         const itemSummary=latest.items.length
           ? latest.items.slice(0,6).map(item=>(item.delta>0?'plus ':'minus ')+Math.abs(item.delta)+' '+item.name).join(', ')
             +(latest.items.length>6 || latest.omittedItems>0
@@ -572,7 +681,10 @@ export function createSmartFeed(options={}){
     const state=queue.state();
     host.classList.toggle('is-empty',!state.history.length && !state.pending.length);
     const status=host.querySelector('.smartFeedLive');
-    if(status) status.textContent=state.pending.length ? '+'+state.pending.length+' w kolejce' : 'na żywo';
+    if(status){
+      status.textContent=state.pending.length ? '+'+state.pending.length : 'live';
+      status.title=state.pending.length ? state.pending.length+' w kolejce' : 'Brak oczekujących komunikatów';
+    }
   }
 
   function schedule(){
@@ -649,6 +761,7 @@ export function createSmartFeed(options={}){
     clearTimer();
     queue.clear();
     newestId='';
+    selectedNoticeId='';
     render();
   }
 
@@ -674,9 +787,12 @@ export function createSmartFeed(options={}){
     clear,
     destroy,
     setExpanded,
+    setFilter,
+    showOlder:()=>browseHistory(1),
+    showNewer:()=>browseHistory(-1),
     refresh:()=>render(),
     isExpanded:()=>expanded,
-    state:()=>Object.assign(queue.state(),{expanded}),
+    state:()=>Object.assign(queue.state(),{expanded,filterKind,selectedNoticeId}),
     flush:()=>pump()
   };
   render();

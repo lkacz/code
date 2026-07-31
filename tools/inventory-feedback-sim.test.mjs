@@ -108,10 +108,10 @@ const feedbackSource=readFileSync(new URL('../src/engine/inventory_feedback.js',
 const htmlSource=readFileSync(new URL('../index.html',import.meta.url),'utf8');
 const mainSource=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 assert.match(feedbackSource,/function renderBatch\(row,entry,queueState\)[\s\S]*inventoryFeedBatchItem[\s\S]*inventoryFeedBatchAmount/,'compact changes render their names and signed amounts together');
-assert.match(htmlSource,/#smartFeed\{[^}]*left:calc\(var\(--safe-left\) \+ 10px\)[^}]*width:min\(350px/,'the shared activity feed owns a left-edge desktop lane');
+assert.match(htmlSource,/#smartFeed\{[^}]*left:calc\(var\(--safe-left\) \+ 10px\)[^}]*width:min\(190px/,'the shared activity feed owns a slim left-edge desktop lane');
 assert.doesNotMatch(htmlSource,/#smartFeed\{[^}]*left:50%/,'activity feedback never returns to a central screen anchor');
 assert.match(htmlSource,/smartFeedItems\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/,'large bursts use a compact two-column list');
-assert.match(htmlSource,/@media \(max-width:760px\)\{ #smartFeed\{[^}]*width:min\(310px/,'touch feedback stays narrow enough to preserve the center of the game');
+assert.match(htmlSource,/@media \(max-width:760px\)\{ #smartFeed\{[^}]*width:min\(190px/,'touch feedback stays narrow enough to preserve the center of the game');
 assert.match(mainSource,/publish:publishInventoryFeedEntry/,'inventory transactions publish into the shared feed');
 
 const eventTarget=new EventTarget();

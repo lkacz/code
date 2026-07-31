@@ -2504,7 +2504,7 @@ function undoSmartFeedHotbar(token){
 		SMART_FEED.notify('success','Przywrócono '+rec.previousLabel+' w slocie '+hotbarKeyLabel(rec.slot),{
 			title:'PASEK SZYBKIEGO WYBORU',
 			priority:56,
-			holdFor:1700,
+			holdFor:3700,
 			dedupeKey:'hotbar-undo:'+rec.token
 		});
 	}
@@ -2598,7 +2598,7 @@ function assignHotbarWithUndo(slot,key,label){
 		SMART_FEED.notify('success','Przypisano '+nextLabel+' do slotu '+hotbarKeyLabel(slot),{
 			title:'PASEK SZYBKIEGO WYBORU',
 			priority:54,
-			holdFor:1900,
+			holdFor:3900,
 			dedupeKey:'hotbar-remap:'+rec.token,
 			undoToken:rec.token
 		});
@@ -2860,7 +2860,7 @@ function bindSmartFeedNoticeActions({body,notice}){
 }
 const SMART_FEED=createSmartFeed({
 	host:document.getElementById('smartFeed'),
-	minInterval:2000,
+	minInterval:4000,
 	maxPending:32,
 	maxHistory:24,
 	onPromote:onSmartFeedPromote,
@@ -2999,12 +2999,12 @@ function onDiscoveryEarned(event){
 	const stage=['observation','insight','discovery'].includes(d.stage)?d.stage:'discovery';
 	const collection=!!d.collection;
 	const presentation=collection
-		? {title:'NOWY WPIS W ATLASIE',priority:42,holdFor:2100}
+		? {title:'NOWY WPIS W ATLASIE',priority:42,holdFor:4100}
 		: stage==='observation'
-			? {title:'NOWA OBSERWACJA',priority:58,holdFor:2400}
+			? {title:'NOWA OBSERWACJA',priority:58,holdFor:4400}
 			: stage==='insight'
-				? {title:'NOWE SPOSTRZEŻENIE',priority:82,holdFor:3300}
-				: {title:'NOWE ODKRYCIE',priority:100,holdFor:4200};
+				? {title:'NOWE SPOSTRZEŻENIE',priority:82,holdFor:5300}
+				: {title:'NOWE ODKRYCIE',priority:100,holdFor:6200};
 	const target=d.target && Number.isFinite(Number(d.target.x)) && Number.isFinite(Number(d.target.y))
 		? {x:Number(d.target.x),y:Number(d.target.y)}
 		: null;

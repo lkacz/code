@@ -47,3 +47,13 @@ Treat Git and `gh` authentication as separate capabilities. Request a new
 login only when the required operation genuinely cannot be completed with
 Git Credential Manager, the public API, or the connected GitHub tools. A
 failed `gh auth status` by itself is not such a blocker.
+
+## Completion and publishing default
+
+When a requested code change is genuinely complete and its required
+verification has passed, finish the delivery without waiting for a separate
+prompt: commit only the completed scope, push `main`, wait for both GitHub
+Pages jobs, and verify the live site. Keep unrelated or unfinished worktree
+changes out of the commit. Do not publish while required checks are failing or
+the requested work is still in progress, and respect an explicit user request
+not to commit, push, or deploy.
