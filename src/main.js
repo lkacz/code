@@ -3023,8 +3023,8 @@ function discoveryFeedContext(category,target){
 }
 function onSmartFeedPromote(notice){
 	if(!notice || notice.kind!=='discovery') return;
-	notice.context=discoveryFeedContext(notice.context,notice.target);
-	if(notice.presentation==='collection') return;
+	const context=discoveryFeedContext(notice.context,notice.target);
+	if(notice.presentation==='collection') return {context};
 	const stage=String(notice.stage||'discovery');
 	const isBreakthrough=stage==='discovery';
 	if(isBreakthrough){
@@ -3039,6 +3039,7 @@ function onSmartFeedPromote(notice){
 		color:String(notice.accent||'#ffd66e')
 	});
 	if(discoveryObservationFx.length>4) discoveryObservationFx.length=4;
+	return {context};
 }
 function onDiscoveryEarned(event){
 	const d=(event&&event.detail)||{};
@@ -4740,10 +4741,12 @@ function repairTrackedGrave(){
 	}else{
 		removeGraveReturnTask(GRAVE_RETURN_TASK_ID);
 		saveGrave();
-		saveState();
 		msg('⚠ Nagrobek nie mógł zostać odtworzony — zwrócono '+refund+' zasobów');
 	}
-	updateInventory();
+	updateInventory({
+		resourceChange:{source:'grave_system_refund'},
+		inventoryFeedbackContext:{kind:'reward',source:'grave_system_refund'}
+	});
 	return false;
 }
 function tryOpenGraveAt(tx,ty){

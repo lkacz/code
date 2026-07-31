@@ -36,6 +36,12 @@ const gainRows=[...rows].filter(row=>row.dataset.direction==='gain');
 const lossRows=[...rows].filter(row=>row.dataset.direction==='loss');
 const rect=host?.getBoundingClientRect();
 const actionRailRect=document.getElementById('touchActionRail')?.getBoundingClientRect();
+const touchBlockers=[
+  document.getElementById('controls'),
+  document.getElementById('dirRing'),
+  ...document.querySelectorAll('#touchActionRail button')
+].filter(Boolean).map(node=>node.getBoundingClientRect());
+const overlaps=(a,b)=>a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;
 const immediateRect=document.getElementById('messages')?.getBoundingClientRect();
 const itemGrid=card?.querySelector('.smartFeedItems');
 const gridColumns=itemGrid
@@ -56,7 +62,7 @@ const checks={
     const name=row.querySelector('.smartFeedItemName');
     return !name || name.scrollWidth<=name.clientWidth+1 || getComputedStyle(name).whiteSpace!=='nowrap';
   }),
-  clearsTouchActions:!mobile || !actionRailRect || rect.bottom<=actionRailRect.top-8,
+  clearsTouchActions:!mobile || !rect || touchBlockers.every(blocker=>!overlaps(rect,blocker)),
   immediateLaneClear:!mobile || !immediateRect || immediateRect.width===0 ||
     (immediateRect.left<=12 && immediateRect.bottom<=rect.top-8),
   visible:rect && rect.width>=160 && rect.height>90

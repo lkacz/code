@@ -128,6 +128,7 @@ const mechSource=readFileSync(new URL('../src/engine/mechs.js',import.meta.url),
 const guardianSource=readFileSync(new URL('../src/engine/guardian_lairs.js',import.meta.url),'utf8');
 const npcSource=readFileSync(new URL('../src/engine/npc_system.js',import.meta.url),'utf8');
 const ufoSource=readFileSync(new URL('../src/engine/ufo.js',import.meta.url),'utf8');
+const chestSource=readFileSync(new URL('../src/engine/chests.js',import.meta.url),'utf8');
 assert.match(feedbackSource,/function renderBatch\(row,entry,queueState\)[\s\S]*inventoryFeedBatchItem[\s\S]*inventoryFeedBatchAmount/,'compact changes render their names and signed amounts together');
 assert.match(htmlSource,/#smartFeed\{[^}]*left:calc\(var\(--safe-left\) \+ 10px\)[^}]*width:min\(190px/,'the shared activity feed owns a slim left-edge desktop lane');
 assert.doesNotMatch(htmlSource,/#smartFeed\{[^}]*left:50%/,'activity feedback never returns to a central screen anchor');
@@ -141,6 +142,8 @@ assert.match(mechSource,/awardPilotLoot\(m\)[\s\S]{0,240}kind:'reward',source:'a
 assert.match(guardianSource,/const source='guardian_heart_'\+kind;[\s\S]{0,360}updateInventoryHud\(\{resourceChange,inventoryFeedbackContext\}\)/,'guardian hearts carry reward attribution');
 assert.match(npcSource,/source='npc_reward_'\+id[\s\S]{0,220}inventoryFeedbackContext:\{kind:'reward',source\}/,'NPC resource grants carry reward attribution');
 assert.match(ufoSource,/source='ufo_destroy'[\s\S]{0,220}updateInventoryHud\(\{resourceChange,inventoryFeedbackContext\}\)/,'UFO wreck resources carry reward attribution');
+assert.match(mainSource,/source:'grave_system_refund'[\s\S]{0,100}inventoryFeedbackContext:\{kind:'reward',source:'grave_system_refund'\}/,'automatic grave repair refunds publish their exact resource changes');
+assert.match(chestSource,/directlyCredited[\s\S]{0,1800}source='chest_fallback'[\s\S]{0,180}updateInventoryHud\(\{[\s\S]{0,100}inventoryFeedbackContext:\{kind:'reward',source\}/,'chest drop-cap fallbacks refresh the HUD with reward attribution');
 
 const eventTarget=new EventTarget();
 const liveCounts={wood:10,diamond:2};

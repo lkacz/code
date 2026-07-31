@@ -608,6 +608,24 @@ assert.equal(played.length, 0, 'restored drops do not replay the fanfare');
     'the chest furnishing is a physical legendary resource drop');
   assert.equal(furnishingResult.furnishingSpawned,true,'chest result reports physical furnishing emission');
   drops.reset();
+
+  // If persistent world drops fill the entity budget, chest metals fall back
+  // directly into inventory and must still refresh/attribute that reward once.
+  const originalSpawnResource=drops.spawnResource;
+  const fallbackRefreshes=[];
+  window.updateInventoryHud=opts=>fallbackRefreshes.push(opts);
+  drops.spawnResource=()=>null;
+  const silverBefore=Number(inv.silver)||0;
+  const goldBefore=Number(inv.gold)||0;
+  const fallbackLoot=MM.chests._releaseLoot('legendary',1,89.5,SURF-1);
+  drops.spawnResource=originalSpawnResource;
+  delete window.updateInventoryHud;
+  assert.ok((Number(inv.silver)||0)>silverBefore && (Number(inv.gold)||0)>goldBefore,
+    'refused physical chest metals are credited directly instead of being lost');
+  assert.ok(fallbackLoot.metals.every(m=>m.spawned===false),'fallback result records that its metal drops were refused');
+  assert.equal(fallbackRefreshes.length,1,'a chest fallback refreshes inventory once for the whole reward transaction');
+  assert.equal(fallbackRefreshes[0].inventoryFeedbackContext.source,'chest_fallback','fallback refresh carries stable reward attribution');
+  drops.reset();
 }
 
 // --- extended rarity ladder: uncommon/legendary ride the same drop machinery -------

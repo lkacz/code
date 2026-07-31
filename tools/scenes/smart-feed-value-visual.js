@@ -40,10 +40,10 @@ const compactChecks={
 // keeps producing discoveries and tasks while the hero moves in this scene.
 MM.smartFeed.destroy();
 const {createSmartFeed}=await import('./src/engine/smart_feed.js');
-MM.smartFeed=createSmartFeed({host,minInterval:80,idleDelay:120,maxHistory:12});
-MM.smartFeed.push({kind:'world',text:'Cichy test koperty',holdFor:80,dedupeKey:'qa:idle-inbox'});
+const qaFeed=createSmartFeed({host,minInterval:80,idleDelay:120,maxHistory:12});
+qaFeed.push({kind:'world',text:'Cichy test koperty',holdFor:80,dedupeKey:'qa:idle-inbox'});
 await sleep(350);
-const idleState=MM.smartFeed.state();
+const idleState=qaFeed.state();
 const idleChecks={
   idle:idleState.idle===true,
   inbox:!!host.querySelector('.smartFeedInbox'),
@@ -51,10 +51,10 @@ const idleChecks={
 };
 host.querySelector('.smartFeedInbox')?.click();
 await sleep(80);
-idleChecks.reopens=!!host.querySelector('.smartFeedBubble')&&!MM.smartFeed.state().idle;
+idleChecks.reopens=!!host.querySelector('.smartFeedBubble')&&!qaFeed.state().idle;
 
-MM.smartFeed.clear();
-MM.smartFeed.push({kind:'world',text:'Test fokusu myszy',holdFor:80,dedupeKey:'qa:pointer-focus'});
+qaFeed.clear();
+qaFeed.push({kind:'world',text:'Test fokusu myszy',holdFor:80,dedupeKey:'qa:pointer-focus'});
 await sleep(30);
 const pointerFocused=host.querySelector('.smartFeedToggle');
 if(pointerFocused){
@@ -62,11 +62,11 @@ if(pointerFocused){
   pointerFocused.focus();
 }
 await sleep(350);
-idleChecks.pointerFocusDoesNotPin=MM.smartFeed.state().idle===true;
+idleChecks.pointerFocusDoesNotPin=qaFeed.state().idle===true;
 
 host.querySelector('.smartFeedInbox')?.click();
-MM.smartFeed.clear();
-MM.smartFeed.push({kind:'world',text:'Test fokusu klawiatury',holdFor:80,dedupeKey:'qa:keyboard-focus'});
+qaFeed.clear();
+qaFeed.push({kind:'world',text:'Test fokusu klawiatury',holdFor:80,dedupeKey:'qa:keyboard-focus'});
 await sleep(30);
 const keyboardFocused=host.querySelector('.smartFeedToggle');
 if(keyboardFocused){
@@ -74,12 +74,12 @@ if(keyboardFocused){
   keyboardFocused.focus();
 }
 await sleep(350);
-idleChecks.keyboardFocusDefers=MM.smartFeed.state().idle===false;
+idleChecks.keyboardFocusDefers=qaFeed.state().idle===false;
 keyboardFocused?.blur();
 
-MM.smartFeed.clear();
-MM.smartFeed.setExpanded(true);
-MM.smartFeed.push({
+qaFeed.clear();
+qaFeed.setExpanded(true);
+qaFeed.push({
   kind:'inventory',
   title:'NAGRODA',
   context:'za odkrycie ukrytej komnaty',

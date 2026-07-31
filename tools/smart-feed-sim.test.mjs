@@ -226,6 +226,7 @@ const renderedFeed=createSmartFeed({
   document:fakeDocument,
   now:()=>0,
   minInterval:0,
+  onPromote:notice=>notice.kind==='inventory'?{context:'8 bloków w prawo'}:null,
   onUrgent:()=>{ urgentAnnouncements++; },
   bindInventoryItem:({item})=>bindingKinds.get(item.name),
   bindNoticeActions:({body,notice})=>{
@@ -242,6 +243,7 @@ renderedFeed.push({
   actions:[{label:'NIE UFAJ'}],
   items:[...bindingKinds.keys()].map(name=>({name,delta:1}))
 });
+assert.equal(renderedFeed.state().history[0].context,'8 bloków w prawo','promotion hooks can safely add late-derived context to the stored notice');
 const walk=(node,out=[])=>{
   out.push(node);
   for(const child of node.children||[]) walk(child,out);
@@ -354,9 +356,10 @@ assert.match(html,/smartFeedItemHotbar,[\s\S]{0,180}smartFeedItemCraft\{ pointer
 assert.match(html,/@media \(pointer:coarse\)[\s\S]*smartFeedItemHotbar,\.smartFeedItemEquip\{ width:42px; height:42px/,'touch devices receive large dedicated action targets without disabling feed scrolling');
 assert.match(html,/:root\[data-input-mode='touch'\] #smartFeed \.smartFeedItems\{ grid-template-columns:minmax\(0,1fr\)/,'all touch feed item lists use a readable single-column layout');
 assert.match(html,/@media \(orientation:portrait\) and \(max-width:820px\)[\s\S]{0,520}#smartFeed\{ top:calc\(var\(--safe-top\) \+ 310px\); bottom:auto; \}/,'portrait touch feed starts below the fixed top hotbar instead of crossing it');
-assert.match(html,/@media \(orientation:portrait\) and \(max-width:820px\)[\s\S]{0,1000}#smartFeed\[data-expanded='true'\] \.smartFeedStack\{ max-height:min\(28vh,240px\); \}/,'expanded portrait history stays clear of the touch action rail');
+assert.match(html,/@media \(orientation:portrait\) and \(max-width:820px\)[\s\S]{0,1000}#smartFeed\[data-expanded='true'\] \.smartFeedStack\{ max-height:min\(24vh,200px\); \}/,'expanded portrait history includes its header and tools when staying clear of the touch action rail');
 assert.match(html,/@media \(orientation:portrait\) and \(max-width:820px\)[\s\S]{0,1400}#messages\{ left:calc\(var\(--safe-left\) \+ 10px\);[\s\S]{0,160}top:calc\(var\(--safe-top\) \+ 96px\)/,'portrait transient status uses the free upper-left lane instead of covering the feed');
 assert.match(html,/@media \(orientation:portrait\) and \(max-width:480px\) and \(max-height:700px\)[\s\S]{0,520}#smartFeed\{ width:min\(168px/,'short phones keep the feed in the left lane away from action controls');
+assert.match(html,/@media \(orientation:portrait\) and \(max-width:480px\) and \(max-height:700px\)[\s\S]{0,900}smartFeedStack\{ max-height:min\(10vh,60px\); \}/,'short phones reserve enough vertical room for the movement joystick below expanded history');
 assert.match(html,/\.smartFeedAction\{[^}]*width:30px; height:30px/,'notice actions use compact icon-only button surfaces');
 assert.match(html,/#smartFeed\{[^}]*width:min\(190px/,'the left notification lane is about half its former width');
 assert.match(html,/\.smartFeedBubble\{[^}]*rgba\(7,12,20,\.68\)/,'notification cards keep the game visible through a translucent surface');

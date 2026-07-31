@@ -256,6 +256,17 @@ export function createSmartFeedQueue(options={}){
     return Math.max(0,lastHold-(finite(now,Date.now())-lastPromotion));
   }
 
+  function revisePromoted(id,patch){
+    const notice=history.find(item=>item.id===id);
+    if(!notice || !patch || typeof patch!=='object') return null;
+    // Promotion hooks receive detached snapshots. Accept only the bounded,
+    // presentation-only fields they are explicitly allowed to derive late.
+    if(Object.prototype.hasOwnProperty.call(patch,'context')){
+      notice.context=safeText(patch.context,100);
+    }
+    return noticeSnapshot(notice);
+  }
+
   function clear(){
     pending.length=0;
     history.length=0;
@@ -275,7 +286,7 @@ export function createSmartFeedQueue(options={}){
     };
   }
 
-  return {push,promote,delay,clear,state};
+  return {push,promote,delay,revisePromoted,clear,state};
 }
 
 function relativeAge(createdAt,now){
@@ -785,7 +796,10 @@ export function createSmartFeed(options={}){
       awakeUntil=-Infinity;
       newestId=promoted.id;
       if(onPromote){
-        try{ onPromote(promoted); }catch(e){ /* presentation callbacks are optional */ }
+        try{
+          const patch=onPromote(promoted);
+          if(patch) queue.revisePromoted(promoted.id,patch);
+        }catch(e){ /* presentation callbacks are optional */ }
       }
     }
     if(promoted || forceRender) render();

@@ -305,6 +305,7 @@ import { rollChestFurnishing } from './furnishings.js';
     // is what routes it into dynamicLoot + the inventory bag.
     const drops=MM.drops;
     let spawned=0;
+    let directlyCredited=false;
     if(drops && typeof drops.spawnGear==='function'){
       items.forEach((it,i)=>{
         // A roll ABOVE the chest's own tier is a jackpot moment — that one gets
@@ -334,7 +335,10 @@ import { rollChestFurnishing } from './furnishings.js';
       }
       if(!spawnedMetal){
         const inv=window.inv;
-        if(inv && typeof inv==='object') inv[metal.key]=(Number(inv[metal.key])||0)+metal.n;
+        if(inv && typeof inv==='object'){
+          inv[metal.key]=(Number(inv[metal.key])||0)+metal.n;
+          directlyCredited=true;
+        }
       }
       metalSpawns.push({key:metal.key,n:metal.n,spawned:spawnedMetal});
     }
@@ -350,9 +354,19 @@ import { rollChestFurnishing } from './furnishings.js';
     if(furnishing){
       if(!furnishingSpawned){
         const inv=window.inv;
-        if(inv && typeof inv==='object') inv[furnishing.key]=(Number(inv[furnishing.key])||0)+1;
+        if(inv && typeof inv==='object'){
+          inv[furnishing.key]=(Number(inv[furnishing.key])||0)+1;
+          directlyCredited=true;
+        }
       }
       try{ if(typeof MM.noteCraftResultSeen==='function') MM.noteCraftResultSeen(furnishing.key,{source:'chest'}); }catch(e){}
+    }
+    if(directlyCredited && typeof window.updateInventoryHud==='function'){
+      const source='chest_fallback';
+      window.updateInventoryHud({
+        resourceChange:{source},
+        inventoryFeedbackContext:{kind:'reward',source}
+      });
     }
     return {tier,items,spawned,furnishing:furnishing||null,furnishingSpawned,metals:metalSpawns};
   }
