@@ -5756,7 +5756,15 @@ const invasions = (function(){
     const cache = caches.splice(idx,1)[0];
     completeCacheTask(cache);
     const restored = restoreCacheLoot(cache,ctx);
-    try{ if(typeof ctx.updateInventory === 'function') ctx.updateInventory(); }catch(e){}
+    try{
+      if(typeof ctx.updateInventory === 'function'){
+        const source='invasion_cache';
+        ctx.updateInventory({
+          resourceChange:{key:'loot',source},
+          inventoryFeedbackContext:{kind:'reward',source}
+        });
+      }
+    }catch(e){}
     burst(tx+0.5,ty+0.5,'epic');
     play('chest',{x:tx+0.5,y:ty+0.5});
     const parts = [];

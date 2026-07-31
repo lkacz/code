@@ -597,10 +597,18 @@ function createQuestNpc(def){
     ctx=contextFor(ctx);
     try{ if(ctx && typeof ctx.onChange==='function') ctx.onChange(); }catch(e){}
   }
-  function refreshInventory(ctx){
+  function refreshInventory(ctx,options){
     ctx=contextFor(ctx);
-    try{ if(ctx && typeof ctx.onInventoryChange==='function'){ ctx.onInventoryChange(); return; } }catch(e){}
-    try{ if(root.updateInventoryHud) root.updateInventoryHud(); }catch(e){}
+    try{ if(ctx && typeof ctx.onInventoryChange==='function'){ ctx.onInventoryChange(options); return; } }catch(e){}
+    try{
+      if(root.updateInventoryHud){ root.updateInventoryHud(options); return; }
+      if(root.dispatchEvent){
+        const opts=options&&typeof options==='object'?options:{};
+        const detail=Object.assign({},opts.resourceChange||{});
+        if(opts.inventoryFeedbackContext) detail.inventoryFeedbackContext=opts.inventoryFeedbackContext;
+        root.dispatchEvent(new CustomEvent('mm-resources-change',{detail}));
+      }
+    }catch(e){}
   }
   function message(text){ try{ if(text && root.msg) root.msg(text); }catch(e){} }
   function safeGet(getTile,x,y){ try{ return getTile ? getTile(Math.floor(x),Math.floor(y)) : T.AIR; }catch(e){ return T.AIR; } }
@@ -924,7 +932,11 @@ function createQuestNpc(def){
       const value=Number(reward.defeatedT);
       state.defeatedT=Number.isFinite(value) ? clamp(value,0,NPC_TRANSIENT_TIME_CAP) : 0;
     }
-    refreshInventory(ctx);
+    const source='npc_reward_'+id;
+    refreshInventory(ctx,{
+      resourceChange:{key:'loot',source},
+      inventoryFeedbackContext:{kind:'reward',source}
+    });
     markChanged(ctx);
     message(rewardText(reward.message,item));
     const line=rewardText(reward.line,item);

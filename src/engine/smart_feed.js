@@ -757,7 +757,12 @@ export function createSmartFeed(options={}){
       idleTimer=setTimeout(()=>{
         idleTimer=0;
         const active=doc&&doc.activeElement;
+        let keyboardFocus=false;
         if(active&&host&&typeof host.contains==='function'&&host.contains(active)){
+          try{ keyboardFocus=typeof active.matches==='function'&&active.matches(':focus-visible'); }
+          catch(e){ keyboardFocus=true; }
+        }
+        if(keyboardFocus){
           awakeUntil=clock()+9000;
           scheduleIdle();
           return;

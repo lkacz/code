@@ -795,8 +795,15 @@ const skyGuardian = (function(){
     state.heartAwarded=true;
     if(newly){
       if(inv) inv[SPEC.heartKey]=(Number(inv[SPEC.heartKey])||0)+1;
-      try{ if(root.updateInventoryHud) root.updateInventoryHud(); }catch(e){}
-      try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){}
+      const source='guardian_heart_air';
+      const resourceChange={key:SPEC.heartKey,gained:1,source};
+      const inventoryFeedbackContext={kind:'reward',source};
+      try{
+        if(root.updateInventoryHud) root.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+        else if(root.dispatchEvent) root.dispatchEvent(new CustomEvent('mm-resources-change',{
+          detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+        }));
+      }catch(e){}
       say(SPEC.heartLabel+' acquired.');
     }else{
       say(SPEC.heartLabel+' already sings above you.');

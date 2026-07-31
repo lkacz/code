@@ -461,7 +461,15 @@ const ufo = (function(){
     say('💥 '+c.look.name+' zestrzelony! Antymateria ×'+n+artMsg+bioMsg+' (+120 XP)',{
       target:{x:c.x,y:c.y}
     });
-    if(typeof window!=='undefined' && window.updateInventoryHud) try{ window.updateInventoryHud(); }catch(e){}
+    if(typeof window!=='undefined') try{
+      const source='ufo_destroy';
+      const resourceChange={key:'loot',source};
+      const inventoryFeedbackContext={kind:'reward',source};
+      if(window.updateInventoryHud) window.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+      else if(window.dispatchEvent) window.dispatchEvent(new CustomEvent('mm-resources-change',{
+        detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+      }));
+    }catch(e){}
     craft=null;
     acc=0; rollNext(); save();
   }
@@ -601,7 +609,18 @@ const ufo = (function(){
       if(c.carried>=c.carryDist){
         pl.vy=0; pl.vx=c.vx*0.3;
         const inv=(typeof window!=='undefined' && window.inv)||null;
-        if(inv && typeof inv.antimatter==='number'){ inv.antimatter+=1; try{ if(window.updateInventoryHud) window.updateInventoryHud(); }catch(e){} }
+        if(inv && typeof inv.antimatter==='number'){
+          inv.antimatter+=1;
+          try{
+            const source='ufo_abduction';
+            const resourceChange={key:'antimatter',gained:1,source};
+            const inventoryFeedbackContext={kind:'reward',source};
+            if(window.updateInventoryHud) window.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+            else if(window.dispatchEvent) window.dispatchEvent(new CustomEvent('mm-resources-change',{
+              detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+            }));
+          }catch(e){}
+        }
         say('🛸 Obcy przebadali cię i wyrzucili... W kieszeni została grudka antymaterii!');
         leaveWith(null);
       }

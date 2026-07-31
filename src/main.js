@@ -41,7 +41,7 @@ import { chests as CHESTS } from './engine/chests.js';
 import { gearForge as GEAR_FORGE } from './engine/gear_forge.js';
 import { gravityGun as GRAVITY_GUN } from './engine/gravity_gun.js';
 import { createCraftingModel, SOURCE_HINTS as CRAFT_SOURCE_HINTS } from './engine/crafting.js';
-import { createInventoryFeedback } from './engine/inventory_feedback.js';
+import { createInventoryFeedback, inventoryFeedbackEventDetail } from './engine/inventory_feedback.js';
 import { createSmartFeed } from './engine/smart_feed.js';
 import { createSingleNoticeQueue } from './engine/single_notice_queue.js';
 import { furnishings as FURNISHINGS } from './engine/furnishings.js';
@@ -19552,7 +19552,11 @@ function updateInventory(opts){
 	updateHotbarCounts();
 	updateWeaponBar();
 	if(!opts.noSave) saveState();
-	try{ window.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){}
+	try{
+		window.dispatchEvent(new CustomEvent('mm-resources-change',{
+			detail:inventoryFeedbackEventDetail(opts)
+		}));
+	}catch(e){}
 }
 // Inventory overlay (resources tab) refreshes the HUD after dropping resources
 window.updateInventoryHud = updateInventory;

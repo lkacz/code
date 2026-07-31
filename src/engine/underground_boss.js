@@ -1716,8 +1716,15 @@ const undergroundBoss = (function(){
     state.heartAwarded=true;
     if(newly){
       if(inv) inv[SPEC.heartKey]=(Number(inv[SPEC.heartKey])||0)+1;
-      try{ if(root.updateInventoryHud) root.updateInventoryHud(); }catch(e){}
-      try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){}
+      const source='guardian_heart_earth';
+      const resourceChange={key:SPEC.heartKey,gained:1,source};
+      const inventoryFeedbackContext={kind:'reward',source};
+      try{
+        if(root.updateInventoryHud) root.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+        else if(root.dispatchEvent) root.dispatchEvent(new CustomEvent('mm-resources-change',{
+          detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+        }));
+      }catch(e){}
       say(SPEC.heartLabel+' acquired.');
     }else{
       say(SPEC.heartLabel+' already beats in your story.');
@@ -1780,8 +1787,15 @@ const undergroundBoss = (function(){
         inv.meteorDust=(Number(inv.meteorDust)||0)+45;
         inv.antimatter=(Number(inv.antimatter)||0)+10;
         granted=true;
-        try{ if(root.updateInventoryHud) root.updateInventoryHud(); }catch(e){}
-        try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){}
+        const source='underground_surveyor_reward';
+        const resourceChange={key:'loot',source};
+        const inventoryFeedbackContext={kind:'reward',source};
+        try{
+          if(root.updateInventoryHud) root.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+          else if(root.dispatchEvent) root.dispatchEvent(new CustomEvent('mm-resources-change',{
+            detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+          }));
+        }catch(e){}
       }
     }
     if(granted){

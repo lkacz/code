@@ -5,6 +5,7 @@ import {
   createInventoryFeedbackQueue,
   diffInventoryFeedback,
   inventoryFeedbackContext,
+  inventoryFeedbackEventDetail,
   INVENTORY_FEEDBACK_BATCH_SIZE,
   INVENTORY_FEEDBACK_COMPACT_THRESHOLD
 } from '../src/engine/inventory_feedback.js';
@@ -53,6 +54,15 @@ assert.equal(inventoryFeedbackContext({key:'wood',spent:2}).kind,'direct');
 assert.equal(inventoryFeedbackContext({key:'discard'}).kind,'direct');
 assert.equal(inventoryFeedbackContext({key:'loot'}).kind,'reward');
 assert.equal(inventoryFeedbackContext({source:'meteor'}).kind,'reward');
+assert.equal(inventoryFeedbackContext({key:'wood',gained:2,source:'meteor'}).kind,'reward','an explicit reward source wins over the generic gained marker');
+assert.deepEqual(inventoryFeedbackEventDetail({
+  resourceChange:{key:'wood',gained:2},
+  inventoryFeedbackContext:{kind:'reward',source:'meteor'}
+}),{
+  key:'wood',
+  gained:2,
+  inventoryFeedbackContext:{kind:'reward',source:'meteor'}
+},'the canonical HUD refresh carries transaction context on its first event');
 
 const feedbackQueue=createInventoryFeedbackQueue();
 feedbackQueue.push([
@@ -112,12 +122,25 @@ assert.equal(growingQueue.state().current.entries.length,5);
 const feedbackSource=readFileSync(new URL('../src/engine/inventory_feedback.js',import.meta.url),'utf8');
 const htmlSource=readFileSync(new URL('../index.html',import.meta.url),'utf8');
 const mainSource=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
+const bossSource=readFileSync(new URL('../src/engine/bosses.js',import.meta.url),'utf8');
+const meteorSource=readFileSync(new URL('../src/engine/meteorites.js',import.meta.url),'utf8');
+const mechSource=readFileSync(new URL('../src/engine/mechs.js',import.meta.url),'utf8');
+const guardianSource=readFileSync(new URL('../src/engine/guardian_lairs.js',import.meta.url),'utf8');
+const npcSource=readFileSync(new URL('../src/engine/npc_system.js',import.meta.url),'utf8');
+const ufoSource=readFileSync(new URL('../src/engine/ufo.js',import.meta.url),'utf8');
 assert.match(feedbackSource,/function renderBatch\(row,entry,queueState\)[\s\S]*inventoryFeedBatchItem[\s\S]*inventoryFeedBatchAmount/,'compact changes render their names and signed amounts together');
 assert.match(htmlSource,/#smartFeed\{[^}]*left:calc\(var\(--safe-left\) \+ 10px\)[^}]*width:min\(190px/,'the shared activity feed owns a slim left-edge desktop lane');
 assert.doesNotMatch(htmlSource,/#smartFeed\{[^}]*left:50%/,'activity feedback never returns to a central screen anchor');
 assert.match(htmlSource,/smartFeedItems\{[^}]*grid-template-columns:minmax\(0,1fr\)/,'large bursts keep full names in a readable single-column list');
 assert.match(htmlSource,/@media \(max-width:760px\)\{ #smartFeed\{[^}]*width:min\(190px/,'touch feedback stays narrow enough to preserve the center of the game');
 assert.match(mainSource,/publish:publishInventoryFeedEntry/,'inventory transactions publish into the shared feed');
+assert.match(mainSource,/detail:inventoryFeedbackEventDetail\(opts\)/,'the canonical HUD refresh emits its transaction context on the first snapshot event');
+assert.match(bossSource,/addUfoConcreteResource\(count\)[\s\S]{0,900}updateInventoryHud\(\{resourceChange,inventoryFeedbackContext\}\)/,'boss blast matter uses the canonical reward refresh');
+assert.match(meteorSource,/addMeteorUfoConcrete\(count\)[\s\S]{0,900}updateInventoryHud\(\{resourceChange,inventoryFeedbackContext\}\)/,'meteor matter uses the canonical reward refresh');
+assert.match(mechSource,/awardPilotLoot\(m\)[\s\S]{0,240}kind:'reward',source:'alien_mech_pilot'/,'mech pilot biomass is marked as a non-obvious reward');
+assert.match(guardianSource,/const source='guardian_heart_'\+kind;[\s\S]{0,360}updateInventoryHud\(\{resourceChange,inventoryFeedbackContext\}\)/,'guardian hearts carry reward attribution');
+assert.match(npcSource,/source='npc_reward_'\+id[\s\S]{0,220}inventoryFeedbackContext:\{kind:'reward',source\}/,'NPC resource grants carry reward attribution');
+assert.match(ufoSource,/source='ufo_destroy'[\s\S]{0,220}updateInventoryHud\(\{resourceChange,inventoryFeedbackContext\}\)/,'UFO wreck resources carry reward attribution');
 
 const eventTarget=new EventTarget();
 const liveCounts={wood:10,diamond:2};
@@ -171,10 +194,34 @@ filteredCounts.wood=9;
 eventTarget.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key:'wood',spent:1}}));
 assert.equal(valuable.length,0,'intentional spending never reaches the notification lane');
 filteredCounts.wood=11;
-eventTarget.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key:'wood',source:'meteor'}}));
+eventTarget.dispatchEvent(new CustomEvent('mm-resources-change',{detail:inventoryFeedbackEventDetail({
+  resourceChange:{key:'wood',gained:2},
+  inventoryFeedbackContext:{kind:'reward',source:'meteor'}
+})}));
 assert.equal(valuable.length,1,'an out-of-band reward remains visible');
 assert.equal(valuable[0].delta,2,'suppressed direct changes still advance the comparison snapshot');
 assert.equal(valuable[0].cause,'reward');
 filtered.destroy();
+
+const orderedCounts={wood:0,diamond:0};
+const orderedRewards=[];
+const ordered=createInventoryFeedback({
+  eventTarget,
+  resourceDefs,
+  specialDefs:[],
+  getResourceCount:key=>orderedCounts[key],
+  getItems:()=>[],
+  publish:entry=>orderedRewards.push(entry),
+  shouldInclude:entry=>entry.cause==='reward'
+}).start();
+orderedCounts.wood=3;
+eventTarget.dispatchEvent(new CustomEvent('mm-resources-change',{detail:inventoryFeedbackEventDetail({
+  resourceChange:{key:'wood',gained:3},
+  inventoryFeedbackContext:{kind:'reward',source:'boss_blast'}
+})}));
+assert.equal(orderedRewards.length,1,'the first canonical refresh publishes an automatic reward before its snapshot advances');
+eventTarget.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key:'wood',gained:3,source:'boss_blast'}}));
+assert.equal(orderedRewards.length,1,'a redundant legacy event cannot duplicate an already published reward');
+ordered.destroy();
 
 console.log('inventory feedback simulation passed');

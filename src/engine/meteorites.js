@@ -975,10 +975,20 @@ const meteorites = (function(){
     if(!inv) return false;
     if(typeof inv.ufoConcrete!=='number') inv.ufoConcrete=0;
     inv.ufoConcrete+=n;
-    try{ if(typeof window.updateInventoryHud==='function') window.updateInventoryHud(); }catch(e){}
+    const resourceChange={key:'ufoConcrete',gained:n,source:'meteor'};
+    const inventoryFeedbackContext={kind:'reward',source:'meteor'};
+    let updated=false;
     try{
-      if(typeof window.dispatchEvent==='function' && typeof CustomEvent!=='undefined'){
-        window.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key:'ufoConcrete',gained:n,source:'meteor'}}));
+      if(typeof window.updateInventoryHud==='function'){
+        window.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+        updated=true;
+      }
+    }catch(e){}
+    try{
+      if(!updated && typeof window.dispatchEvent==='function' && typeof CustomEvent!=='undefined'){
+        window.dispatchEvent(new CustomEvent('mm-resources-change',{
+          detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+        }));
       }
     }catch(e){}
     markWorldChanged();

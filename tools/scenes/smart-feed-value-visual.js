@@ -54,6 +54,30 @@ await sleep(80);
 idleChecks.reopens=!!host.querySelector('.smartFeedBubble')&&!MM.smartFeed.state().idle;
 
 MM.smartFeed.clear();
+MM.smartFeed.push({kind:'world',text:'Test fokusu myszy',holdFor:80,dedupeKey:'qa:pointer-focus'});
+await sleep(30);
+const pointerFocused=host.querySelector('.smartFeedToggle');
+if(pointerFocused){
+  pointerFocused.matches=selector=>selector===':focus-visible'?false:HTMLElement.prototype.matches.call(pointerFocused,selector);
+  pointerFocused.focus();
+}
+await sleep(350);
+idleChecks.pointerFocusDoesNotPin=MM.smartFeed.state().idle===true;
+
+host.querySelector('.smartFeedInbox')?.click();
+MM.smartFeed.clear();
+MM.smartFeed.push({kind:'world',text:'Test fokusu klawiatury',holdFor:80,dedupeKey:'qa:keyboard-focus'});
+await sleep(30);
+const keyboardFocused=host.querySelector('.smartFeedToggle');
+if(keyboardFocused){
+  keyboardFocused.matches=selector=>selector===':focus-visible'?true:HTMLElement.prototype.matches.call(keyboardFocused,selector);
+  keyboardFocused.focus();
+}
+await sleep(350);
+idleChecks.keyboardFocusDefers=MM.smartFeed.state().idle===false;
+keyboardFocused?.blur();
+
+MM.smartFeed.clear();
 MM.smartFeed.setExpanded(true);
 MM.smartFeed.push({
   kind:'inventory',

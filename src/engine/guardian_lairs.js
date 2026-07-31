@@ -2180,8 +2180,15 @@ const guardianLairs = (function(){
     if(typeof inv.iridium==='number') inv.iridium+=18;
     if(typeof inv.meteorDust==='number') inv.meteorDust+=40;
     if(typeof inv.antimatter==='number') inv.antimatter+=8;
-    try{ if(root.updateInventoryHud) root.updateInventoryHud(); }catch(e){}
-    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){}
+    const source='guardian_ghost_'+kind;
+    const resourceChange={key:'loot',source};
+    const inventoryFeedbackContext={kind:'reward',source};
+    try{
+      if(root.updateInventoryHud) root.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+      else if(root.dispatchEvent) root.dispatchEvent(new CustomEvent('mm-resources-change',{
+        detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+      }));
+    }catch(e){}
     say((kind==='fire'?'Solar':'Rime')+' ghost leaves rare matter in your pack.');
     return true;
   }
@@ -2355,8 +2362,15 @@ const guardianLairs = (function(){
     if(newly){
       const inv=root.inv;
       if(inv && spec.heartKey){ inv[spec.heartKey]=(Number(inv[spec.heartKey])||0)+1; }
-      try{ if(root.updateInventoryHud) root.updateInventoryHud(); }catch(e){}
-      try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){}
+      const source='guardian_heart_'+kind;
+      const resourceChange={key:spec.heartKey,gained:1,source};
+      const inventoryFeedbackContext={kind:'reward',source};
+      try{
+        if(root.updateInventoryHud) root.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+        else if(root.dispatchEvent) root.dispatchEvent(new CustomEvent('mm-resources-change',{
+          detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+        }));
+      }catch(e){}
       say(spec.heartLabel+' acquired.');
     }else say(spec.heartLabel+' already beats in your story.');
     const defeatedName=spec.trueName || spec.bossName;

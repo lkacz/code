@@ -534,8 +534,17 @@ const centerGuardian = (function(){
     if(!handled) newly=!(inv && (Number(inv[SPEC.heartKey])||0)>0);
     if(newly && inv) inv[SPEC.heartKey]=(Number(inv[SPEC.heartKey])||0)+1;
     state.heartAwarded=true;
-    try{ if(root.updateInventoryHud) root.updateInventoryHud(); }catch(e){}
-    try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-resources-change')); }catch(e){}
+    if(newly){
+      const source='guardian_heart_mother';
+      const resourceChange={key:SPEC.heartKey,gained:1,source};
+      const inventoryFeedbackContext={kind:'reward',source};
+      try{
+        if(root.updateInventoryHud) root.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+        else if(root.dispatchEvent) root.dispatchEvent(new CustomEvent('mm-resources-change',{
+          detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+        }));
+      }catch(e){}
+    }
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-guardian-defeated',{detail:{kind:'mother',name:SPEC.bossName,heart:SPEC.heartKey,newReward:newly,center:true}})); }catch(e){}
     try{ root.dispatchEvent && root.dispatchEvent(new CustomEvent('mm-boss-killed',{detail:{name:SPEC.bossName,guardian:true,kind:'mother',center:true}})); }catch(e){}
     return newly;

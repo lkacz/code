@@ -38,6 +38,44 @@ const accessibilityChecks={
 };
 if(immediateStatus) immediateStatus.textContent='';
 
+// Canonical resource refreshes stay silent for intentional actions, while an
+// automatic reward reaches the feed on that same first snapshot event.
+MM.smartFeed.clear();
+MM.inventoryFeedback.reset();
+const originalConcrete=Number(inv.ufoConcrete)||0;
+inv.ufoConcrete=originalConcrete+1;
+window.updateInventoryHud({
+  noSave:true,
+  noCraftNotify:true,
+  resourceChange:{key:'ufoConcrete',gained:1},
+  inventoryFeedbackContext:{kind:'direct'}
+});
+await sleep(90);
+const directResourceSilent=!document.querySelector('#smartFeed .smartFeedBubble[data-kind="inventory"]');
+inv.ufoConcrete=originalConcrete+3;
+window.updateInventoryHud({
+  noSave:true,
+  noCraftNotify:true,
+  resourceChange:{key:'ufoConcrete',gained:2,source:'qa_reward'},
+  inventoryFeedbackContext:{kind:'reward',source:'qa_reward'}
+});
+await sleep(120);
+const rewardCard=document.querySelector('#smartFeed .smartFeedBubble[data-kind="inventory"]');
+const transactionChecks={
+  directSilent:directResourceSilent,
+  rewardVisible:!!rewardCard,
+  exactAmount:rewardCard?.querySelector('.smartFeedItemAmount')?.textContent.includes('2')===true,
+  named:rewardCard?.textContent.includes('Beton UFO')===true
+};
+inv.ufoConcrete=originalConcrete;
+window.updateInventoryHud({
+  noSave:true,
+  noCraftNotify:true,
+  resourceChange:{key:'ufoConcrete',spent:3},
+  inventoryFeedbackContext:{kind:'direct'}
+});
+MM.inventoryFeedback.reset();
+
 // 1) A gear gain is re-resolved through MM.inventory and can be equipped from
 // the compact feed without opening the hidden equipment overlay.
 MM.smartFeed.clear();
@@ -185,6 +223,7 @@ const taskChecks={
 
 const checks={
   accessibility:accessibilityChecks,
+  transactions:transactionChecks,
   gear:gearChecks,
   discovery:discoveryTrackChecks,
   atlas:atlasChecks,

@@ -11647,7 +11647,13 @@ const mobs = (function(){
         const inv=window.inv; let gained=[];
         for(const d of drops){ if(typeof inv[d.item]==='number'){ inv[d.item]+=d.qty; gained.push(d.item+' ×'+d.qty); } }
         if(gained.length){
-          if(window.updateInventoryHud) window.updateInventoryHud();
+          if(window.updateInventoryHud){
+            const source='mob_loot_fallback';
+            window.updateInventoryHud({
+              resourceChange:{key:'loot',source},
+              inventoryFeedbackContext:{kind:'reward',source}
+            });
+          }
           if(window.msg) window.msg('Łup: '+gained.join(', '));
         }
       }

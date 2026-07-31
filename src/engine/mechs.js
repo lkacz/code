@@ -150,19 +150,22 @@ import { damageBlastCreatures } from './explosion_damage.js';
     m[k]=simT;
     play(id,{x:centerX(m),y:centerY(m)});
   }
-  function notifyResources(key,n){
+  function notifyResources(key,n,inventoryFeedbackContext){
+    const resourceChange=n>=0 ? {key,gained:n} : {key,spent:Math.abs(n)};
+    const options={resourceChange};
+    if(inventoryFeedbackContext) options.inventoryFeedbackContext=inventoryFeedbackContext;
     try{
-      if(typeof root.updateInventoryHud === 'function') root.updateInventoryHud();
-      else emit('mm-resources-change',{key,gained:n});
+      if(typeof root.updateInventoryHud === 'function') root.updateInventoryHud(options);
+      else emit('mm-resources-change',Object.assign({},resourceChange,inventoryFeedbackContext?{inventoryFeedbackContext}:{}));
     }catch(e){}
   }
-  function addResource(key,n){
+  function addResource(key,n,inventoryFeedbackContext){
     const inv=root.inv;
     const amount=Math.max(0,n|0);
     if(!inv || !key || amount<=0) return false;
     if(typeof inv[key] !== 'number') inv[key]=0;
     inv[key]+=amount;
-    notifyResources(key,amount);
+    notifyResources(key,amount,inventoryFeedbackContext);
     return true;
   }
   function spendResource(key,n,ctx){
@@ -2397,7 +2400,9 @@ import { damageBlastCreatures } from './explosion_damage.js';
     });
   }
   function awardPilotLoot(m){
-    addResource('alienBiomass',1+(hash01(m.id,991)>0.55?1:0));
+    addResource('alienBiomass',1+(hash01(m.id,991)>0.55?1:0),{
+      kind:'reward',source:'alien_mech_pilot'
+    });
     addXp(m.kind==='solar'?90:105,centerX(m),m.y,'ALIEN_MECH_PILOT');
   }
   function collapseOffsets(){

@@ -724,26 +724,40 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
   }
   function notifyResourceSpent(key,n){
     let updated=false;
+    const resourceChange={key,spent:n};
+    const inventoryFeedbackContext={kind:'direct'};
     try{
       if(typeof window.updateInventoryHud==='function'){
-        window.updateInventoryHud();
+        window.updateInventoryHud({resourceChange,inventoryFeedbackContext});
         updated=true;
       }
     }catch(e){}
     if(!updated){
       try{
         if(typeof window.dispatchEvent==='function' && typeof CustomEvent!=='undefined'){
-          window.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key, spent:n}}));
+          window.dispatchEvent(new CustomEvent('mm-resources-change',{
+            detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+          }));
         }
       }catch(e){}
       markWorldChanged();
     }
   }
   function notifyResourceGained(key,n){
-    try{ if(typeof window.updateInventoryHud==='function') window.updateInventoryHud(); }catch(e){}
+    let updated=false;
+    const resourceChange={key,gained:n};
+    const inventoryFeedbackContext={kind:'direct'};
     try{
-      if(typeof window.dispatchEvent==='function' && typeof CustomEvent!=='undefined'){
-        window.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key, gained:n}}));
+      if(typeof window.updateInventoryHud==='function'){
+        window.updateInventoryHud({resourceChange,inventoryFeedbackContext});
+        updated=true;
+      }
+    }catch(e){}
+    try{
+      if(!updated && typeof window.dispatchEvent==='function' && typeof CustomEvent!=='undefined'){
+        window.dispatchEvent(new CustomEvent('mm-resources-change',{
+          detail:Object.assign({},resourceChange,{inventoryFeedbackContext})
+        }));
       }
     }catch(e){}
     markWorldChanged();

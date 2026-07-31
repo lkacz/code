@@ -319,6 +319,7 @@ assert.match(source,/const restoreControl=controlFocusSnapshot\(active\)/,'feed 
 assert.match(source,/if\(restoreControl\)\{[\s\S]{0,140}restoreControlFocus\(restoreControl,stack\)/,'feed rebuilds restore that action or fall back to the header control');
 assert.match(source,/options\.expanded===undefined \? false/,'the feed starts compact instead of covering gameplay');
 assert.match(source,/state\.lastPromotion\+state\.lastHold\+idleDelay/,'the feed automatically minimizes only after the visible notice has finished');
+assert.match(source,/active\.matches\(':focus-visible'\)/,'only keyboard-visible focus postpones automatic minimization');
 assert.match(source,/className='smartFeedInbox'/,'the inactive feed leaves a single inbox affordance');
 assert.match(source,/bindInventoryItem\(\{row,handle:icon,item,notice\}\)/,'inventory rows expose one narrow decoration seam');
 assert.match(source,/bindNoticeActions\(\{card,body,notice\}\)/,'notice cards expose a main-controlled action seam');

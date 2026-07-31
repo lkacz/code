@@ -13,17 +13,28 @@ const DIRECT_CHANGE_KEYS=new Set([
 ]);
 const REWARD_CHANGE_KEYS=new Set(['grant','loot']);
 
+export function inventoryFeedbackEventDetail(options={}){
+  const opts=options && typeof options==='object' ? options : {};
+  const change=opts.resourceChange && typeof opts.resourceChange==='object'
+    ? Object.assign({},opts.resourceChange)
+    : {};
+  if(opts.inventoryFeedbackContext && typeof opts.inventoryFeedbackContext==='object'){
+    change.inventoryFeedbackContext=Object.assign({},opts.inventoryFeedbackContext);
+  }
+  return change;
+}
+
 export function inventoryFeedbackContext(detail){
   const src=detail && typeof detail==='object' ? detail : {};
   if(src.inventoryFeedbackContext && typeof src.inventoryFeedbackContext==='object'){
     return src.inventoryFeedbackContext;
   }
   const key=String(src.key||'');
-  if(src.spent || src.dropped || src.gained || DIRECT_CHANGE_KEYS.has(key)){
-    return {kind:'direct'};
-  }
   if(src.source || REWARD_CHANGE_KEYS.has(key)){
     return {kind:'reward',source:String(src.source||key)};
+  }
+  if(src.spent || src.dropped || src.gained || DIRECT_CHANGE_KEYS.has(key)){
+    return {kind:'direct'};
   }
   return {};
 }
