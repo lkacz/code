@@ -4,6 +4,7 @@ import {
   createInventoryFeedback,
   createInventoryFeedbackQueue,
   diffInventoryFeedback,
+  inventoryFeedbackContext,
   INVENTORY_FEEDBACK_BATCH_SIZE,
   INVENTORY_FEEDBACK_COMPACT_THRESHOLD
 } from '../src/engine/inventory_feedback.js';
@@ -48,6 +49,10 @@ assert.deepEqual(changes[0].preview,{kind:'resource',tile:'WOOD',icon:''});
 assert.equal(changes[3].preview.kind,'gear');
 assert.equal(changes[3].preview.item.kind,undefined);
 assert.equal(changes[4].preview.item.id,'new_cape');
+assert.equal(inventoryFeedbackContext({key:'wood',spent:2}).kind,'direct');
+assert.equal(inventoryFeedbackContext({key:'discard'}).kind,'direct');
+assert.equal(inventoryFeedbackContext({key:'loot'}).kind,'reward');
+assert.equal(inventoryFeedbackContext({source:'meteor'}).kind,'reward');
 
 const feedbackQueue=createInventoryFeedbackQueue();
 feedbackQueue.push([
@@ -110,7 +115,7 @@ const mainSource=readFileSync(new URL('../src/main.js',import.meta.url),'utf8');
 assert.match(feedbackSource,/function renderBatch\(row,entry,queueState\)[\s\S]*inventoryFeedBatchItem[\s\S]*inventoryFeedBatchAmount/,'compact changes render their names and signed amounts together');
 assert.match(htmlSource,/#smartFeed\{[^}]*left:calc\(var\(--safe-left\) \+ 10px\)[^}]*width:min\(190px/,'the shared activity feed owns a slim left-edge desktop lane');
 assert.doesNotMatch(htmlSource,/#smartFeed\{[^}]*left:50%/,'activity feedback never returns to a central screen anchor');
-assert.match(htmlSource,/smartFeedItems\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/,'large bursts use a compact two-column list');
+assert.match(htmlSource,/smartFeedItems\{[^}]*grid-template-columns:minmax\(0,1fr\)/,'large bursts keep full names in a readable single-column list');
 assert.match(htmlSource,/@media \(max-width:760px\)\{ #smartFeed\{[^}]*width:min\(190px/,'touch feedback stays narrow enough to preserve the center of the game');
 assert.match(mainSource,/publish:publishInventoryFeedEntry/,'inventory transactions publish into the shared feed');
 
@@ -150,5 +155,26 @@ assert.equal(published[0].type,'batch');
 assert.equal(published[0].entries.length,6,'more than five simultaneous changes stay condensed');
 assert.equal(publisher.state().current,null,'the shared feed becomes the only remaining presentation queue');
 publisher.destroy();
+
+const filteredCounts={wood:10,diamond:0};
+const valuable=[];
+const filtered=createInventoryFeedback({
+  eventTarget,
+  resourceDefs,
+  specialDefs:[],
+  getResourceCount:key=>filteredCounts[key],
+  getItems:()=>[],
+  publish:entry=>valuable.push(entry),
+  shouldInclude:entry=>entry.cause==='reward'
+}).start();
+filteredCounts.wood=9;
+eventTarget.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key:'wood',spent:1}}));
+assert.equal(valuable.length,0,'intentional spending never reaches the notification lane');
+filteredCounts.wood=11;
+eventTarget.dispatchEvent(new CustomEvent('mm-resources-change',{detail:{key:'wood',source:'meteor'}}));
+assert.equal(valuable.length,1,'an out-of-band reward remains visible');
+assert.equal(valuable[0].delta,2,'suppressed direct changes still advance the comparison snapshot');
+assert.equal(valuable[0].cause,'reward');
+filtered.destroy();
 
 console.log('inventory feedback simulation passed');

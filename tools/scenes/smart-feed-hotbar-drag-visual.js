@@ -160,14 +160,15 @@ const compactChecks={
 };
 
 // Live inventory truth updates in place without rebuilding/detaching the feed.
-const liveNode=row.querySelector('.smartFeedItemLive');
+// The redundant numeric "teraz ×…" copy is intentionally gone; depletion is
+// still reflected visually and the action remains usable.
 const sameRow=row;
 inv.wood=0;
 window.dispatchEvent(new CustomEvent('mm-resources-change'));
 await sleep(80);
 const liveChecks={
   sameDomRow:row===sameRow && row.isConnected,
-  zeroVisible:/×0$/.test(liveNode?.textContent||''),
+  redundantCountHidden:!row.querySelector('.smartFeedItemLive'),
   depleted:row.classList.contains('is-depleted'),
   mappingStillUsable:getComputedStyle(handle).pointerEvents==='auto'
 };

@@ -8,6 +8,26 @@
 export const INVENTORY_FEEDBACK_COMPACT_THRESHOLD=5;
 export const INVENTORY_FEEDBACK_BATCH_SIZE=8;
 
+const DIRECT_CHANGE_KEYS=new Set([
+  'discard','merge','undoDiscard','enhance','equip','unequip','color'
+]);
+const REWARD_CHANGE_KEYS=new Set(['grant','loot']);
+
+export function inventoryFeedbackContext(detail){
+  const src=detail && typeof detail==='object' ? detail : {};
+  if(src.inventoryFeedbackContext && typeof src.inventoryFeedbackContext==='object'){
+    return src.inventoryFeedbackContext;
+  }
+  const key=String(src.key||'');
+  if(src.spent || src.dropped || src.gained || DIRECT_CHANGE_KEYS.has(key)){
+    return {kind:'direct'};
+  }
+  if(src.source || REWARD_CHANGE_KEYS.has(key)){
+    return {kind:'reward',source:String(src.source||key)};
+  }
+  return {};
+}
+
 function finiteCount(value){
   const n=Number(value);
   return Number.isFinite(n) ? Math.max(0,Math.floor(n)) : 0;
@@ -203,6 +223,7 @@ export function createInventoryFeedback(options={}){
   const eventTarget=options.eventTarget || (typeof window!=='undefined'?window:null);
   const host=options.host || null;
   const publish=typeof options.publish==='function' ? options.publish : null;
+  const shouldInclude=typeof options.shouldInclude==='function' ? options.shouldInclude : null;
   const resourceDefs=Array.isArray(options.resourceDefs)?options.resourceDefs:[];
   const specialDefs=Array.isArray(options.specialDefs)?options.specialDefs:[];
   const tierColors=options.tierColors||{};
@@ -458,9 +479,15 @@ export function createInventoryFeedback(options={}){
       previous=next;
       return [];
     }
-    const context=pendingContext || ((detail && detail.inventoryFeedbackContext) || {});
-    const entries=diffInventoryFeedback(previous,next,{resourceDefs,specialDefs,tierColors},context);
+    const context=pendingContext || inventoryFeedbackContext(detail);
+    let entries=diffInventoryFeedback(previous,next,{resourceDefs,specialDefs,tierColors},context);
     previous=next;
+    if(shouldInclude){
+      entries=entries.filter(entry=>{
+        try{ return shouldInclude(entry,{context,detail:detail||{}})!==false; }
+        catch(e){ return false; }
+      });
+    }
     if(entries.length){
       pendingContext=null;
       feedbackQueue.push(entries);

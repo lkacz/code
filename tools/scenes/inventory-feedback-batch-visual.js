@@ -26,7 +26,7 @@ MM.smartFeed.setExpanded(true);
 keys.forEach((key,index)=>{
   inv[key]+=index<4 ? (index+1)*3 : -(index-2)*2;
 });
-const changes=MM.inventoryFeedback.sync({inventoryFeedbackContext:{kind:'qa_batch'}});
+const changes=MM.inventoryFeedback.sync({inventoryFeedbackContext:{kind:'reward',source:'qa_batch'}});
 await sleep(120);
 
 const host=document.getElementById('smartFeed');
@@ -51,10 +51,15 @@ const checks={
   leftAnchored:rect && rect.left<=12 && rect.right<innerWidth-40,
   mobileWidth:!mobile || rect.width<=311,
   mobileSingleColumn:!mobile || gridColumns===1,
+  readableSingleColumn:gridColumns===1,
+  fullNames:[...rows].every(row=>{
+    const name=row.querySelector('.smartFeedItemName');
+    return !name || name.scrollWidth<=name.clientWidth+1 || getComputedStyle(name).whiteSpace!=='nowrap';
+  }),
   clearsTouchActions:!mobile || !actionRailRect || rect.bottom<=actionRailRect.top-8,
   immediateLaneClear:!mobile || !immediateRect || immediateRect.width===0 ||
     (immediateRect.left<=12 && immediateRect.bottom<=rect.top-8),
-  visible:rect && rect.width>200 && rect.height>90
+  visible:rect && rect.width>=160 && rect.height>90
 };
 const ok=Object.values(checks).every(Boolean);
 return (ok?'ok':'FAIL')+' :: '+JSON.stringify({

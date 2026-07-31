@@ -14,7 +14,7 @@ const craft=document.getElementById('craft');
 if(craft && craft.dataset.collapsed!=='true') document.getElementById('craftToggle')?.click();
 
 const actionByText=(card,text)=>[...(card?.querySelectorAll('.smartFeedAction')||[])]
-  .find(button=>button.textContent.includes(text));
+  .find(button=>(button.dataset.actionLabel||button.getAttribute('aria-label')||'').includes(text));
 const hitTest=el=>{
   if(!el) return false;
   const rect=el.getBoundingClientRect();
@@ -96,7 +96,8 @@ const discoveryTrackChecks={
   card:!!card,
   twoActions:card?.querySelectorAll('.smartFeedAction').length===2,
   hitTargets:discoveryActionHits,
-  focusPreserved:/Śledź miejsce/.test(document.activeElement?.textContent||''),
+  focusPreserved:/Śledź miejsce/.test(document.activeElement?.dataset?.actionLabel||''),
+  iconOnly:[trackPlace,openAtlas].every(button=>button && button.textContent.length<=2),
   waypoint:MM.tasks.metrics().priorityId==='smart_feed:waypoint',
   waypointX:Math.abs((trackedDiscovery?.x||0)-discoveryTarget.x)<0.001,
   waypointY:Math.abs((trackedDiscovery?.y||0)-discoveryTarget.y)<0.001
@@ -164,7 +165,7 @@ taskAction?.focus();
 taskAction?.click();
 await sleep(70);
 const selectedTask=MM.tasks.metrics().priorityId===taskId;
-const taskFocusPreserved=/Śledź zadanie/.test(document.activeElement?.textContent||'');
+const taskFocusPreserved=/Śledź zadanie/.test(document.activeElement?.dataset?.actionLabel||'');
 card=document.querySelector('#smartFeed .smartFeedBubble[data-kind="task"]');
 taskAction=actionByText(card,'Śledź zadanie');
 MM.tasks.remove(taskId);

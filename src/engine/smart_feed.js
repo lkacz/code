@@ -7,6 +7,7 @@ export const SMART_FEED_DISCOVERY_HOLD_MS=6200;
 export const SMART_FEED_MAX_PENDING=32;
 export const SMART_FEED_MAX_HISTORY=24;
 export const SMART_FEED_MAX_HOLD_MS=15000;
+export const SMART_FEED_IDLE_DELAY_MS=1400;
 const SMART_FEED_MAX_ITEMS=12;
 const SMART_FEED_MAX_COUNTER=1000000000;
 
@@ -352,11 +353,15 @@ export function createSmartFeed(options={}){
   const onUrgent=typeof options.onUrgent==='function' ? options.onUrgent : null;
   const bindInventoryItem=typeof options.bindInventoryItem==='function' ? options.bindInventoryItem : null;
   const bindNoticeActions=typeof options.bindNoticeActions==='function' ? options.bindNoticeActions : null;
+  const idleDelay=Math.max(0,finite(options.idleDelay,SMART_FEED_IDLE_DELAY_MS));
   const queue=createSmartFeedQueue(options);
   let expanded=options.expanded===undefined ? false : !!options.expanded;
   let filterKind=KIND_META[options.filterKind] ? options.filterKind : 'all';
   let selectedNoticeId='';
   let timer=0;
+  let idleTimer=0;
+  let idle=false;
+  let awakeUntil=-Infinity;
   let newestId='';
   let destroyed=false;
   const announcer=doc ? doc.createElement('div') : null;
@@ -367,9 +372,25 @@ export function createSmartFeed(options={}){
     announcer.setAttribute('aria-atomic','true');
   }
 
-  function clearTimer(){
+  function clearPromotionTimer(){
     if(timer) clearTimeout(timer);
     timer=0;
+  }
+
+  function clearIdleTimer(){
+    if(idleTimer) clearTimeout(idleTimer);
+    idleTimer=0;
+  }
+
+  function clearTimers(){
+    clearPromotionTimer();
+    clearIdleTimer();
+  }
+
+  function wake(duration=idleDelay){
+    idle=false;
+    awakeUntil=Math.max(awakeUntil,clock()+Math.max(0,finite(duration,idleDelay)));
+    clearIdleTimer();
   }
 
   function cardFor(notice,now){
@@ -474,7 +495,7 @@ export function createSmartFeed(options={}){
       if(rowIndex>=0 && kind) return {type:'item',noticeId,rowIndex,kind};
     }
     if(active.classList&&active.classList.contains('smartFeedAction')){
-      return {type:'notice',noticeId,label:String(active.textContent||'')};
+      return {type:'notice',noticeId,label:String(active.dataset&&active.dataset.actionLabel||active.textContent||'')};
     }
     return null;
   }
@@ -494,7 +515,7 @@ export function createSmartFeed(options={}){
       }
     }else if(snapshot.type==='notice'){
       target=[...card.querySelectorAll('.smartFeedAction')]
-        .find(node=>String(node.textContent||'')===snapshot.label) || null;
+        .find(node=>String(node.dataset&&node.dataset.actionLabel||node.textContent||'')===snapshot.label) || null;
     }
     if(!target||typeof target.focus!=='function') return false;
     try{ target.focus({preventScroll:true}); }catch(e){ target.focus(); }
@@ -519,14 +540,17 @@ export function createSmartFeed(options={}){
   }
 
   function setFilter(value){
+    wake(9000);
     filterKind=KIND_META[value] ? value : 'all';
     selectedNoticeId='';
     newestId='';
     render();
+    scheduleIdle();
     return filterKind;
   }
 
   function browseHistory(offset){
+    wake(9000);
     const history=filteredHistory(queue.state().history);
     const index=selectedHistoryIndex(history);
     if(index<0) return null;
@@ -534,6 +558,7 @@ export function createSmartFeed(options={}){
     selectedNoticeId=next===0 ? '' : history[next].id;
     newestId='';
     render();
+    scheduleIdle();
     return noticeSnapshot(history[next]);
   }
 
@@ -560,10 +585,28 @@ export function createSmartFeed(options={}){
     const history=filteredHistory(state.history);
     const historyIndex=selectedHistoryIndex(history);
     host.dataset.expanded=expanded?'true':'false';
+    host.dataset.idle=idle&&!expanded?'true':'false';
     host.dataset.filter=filterKind;
     host.classList.toggle('is-empty',!state.history.length && !state.pending.length);
     host.replaceChildren();
     if(!state.history.length && !state.pending.length) return;
+
+    if(idle&&!expanded){
+      const inbox=doc.createElement('button');
+      inbox.type='button';
+      inbox.className='smartFeedInbox';
+      inbox.textContent='✉';
+      inbox.title='Otwórz komunikaty';
+      inbox.setAttribute('aria-label','Otwórz komunikaty. W historii: '+state.history.length);
+      inbox.addEventListener('click',()=>{
+        wake(9000);
+        selectedNoticeId='';
+        render();
+        scheduleIdle();
+      });
+      host.append(inbox,announcer);
+      return;
+    }
 
     const head=doc.createElement('div');
     head.className='smartFeedHead';
@@ -583,8 +626,10 @@ export function createSmartFeed(options={}){
     toggle.textContent=expanded?'⌃':'⌄';
     toggle.addEventListener('click',()=>{
       expanded=!expanded;
+      wake(9000);
       newestId='';
       render();
+      scheduleIdle();
     });
     head.append(label,queueStatus,toggle);
 
@@ -690,7 +735,8 @@ export function createSmartFeed(options={}){
   function schedule(){
     const wait=queue.delay(clock());
     if(wait==null){
-      clearTimer();
+      clearPromotionTimer();
+      scheduleIdle();
       return;
     }
     if(timer) return;
@@ -700,10 +746,38 @@ export function createSmartFeed(options={}){
     },Math.max(0,wait));
   }
 
+  function scheduleIdle(){
+    clearIdleTimer();
+    if(destroyed||expanded||idle) return;
+    const state=queue.state();
+    if(!state.history.length||state.pending.length) return;
+    const due=Math.max(state.lastPromotion+state.lastHold+idleDelay,awakeUntil);
+    const wait=Math.max(0,due-clock());
+    if(wait>0){
+      idleTimer=setTimeout(()=>{
+        idleTimer=0;
+        const active=doc&&doc.activeElement;
+        if(active&&host&&typeof host.contains==='function'&&host.contains(active)){
+          awakeUntil=clock()+9000;
+          scheduleIdle();
+          return;
+        }
+        if(queue.state().pending.length||expanded) return;
+        idle=true;
+        render();
+      },wait);
+      return;
+    }
+    idle=true;
+    render();
+  }
+
   function pump(forceRender=false){
     if(destroyed) return null;
     const promoted=queue.promote(clock());
     if(promoted){
+      idle=false;
+      awakeUntil=-Infinity;
       newestId=promoted.id;
       if(onPromote){
         try{ onPromote(promoted); }catch(e){ /* presentation callbacks are optional */ }
@@ -719,6 +793,11 @@ export function createSmartFeed(options={}){
     if(destroyed) return false;
     const result=queue.push(notice,clock());
     if(!result.accepted) return false;
+    idle=false;
+    const state=queue.state();
+    const hold=result.notice ? Math.max(state.minInterval,result.notice.holdFor) : state.minInterval;
+    awakeUntil=Math.max(awakeUntil,clock()+hold+idleDelay);
+    clearIdleTimer();
     pump(result.location==='history');
     return true;
   }
@@ -758,8 +837,10 @@ export function createSmartFeed(options={}){
   }
 
   function clear(){
-    clearTimer();
+    clearTimers();
     queue.clear();
+    idle=false;
+    awakeUntil=-Infinity;
     newestId='';
     selectedNoticeId='';
     render();
@@ -767,13 +848,32 @@ export function createSmartFeed(options={}){
 
   function setExpanded(value){
     expanded=!!value;
+    wake(9000);
     render();
+    scheduleIdle();
     return expanded;
+  }
+
+  function open(){
+    wake(9000);
+    selectedNoticeId='';
+    render();
+    scheduleIdle();
+    return true;
+  }
+
+  function minimize(){
+    const state=queue.state();
+    if(expanded||!state.history.length||state.pending.length) return false;
+    clearIdleTimer();
+    idle=true;
+    render();
+    return true;
   }
 
   function destroy(){
     destroyed=true;
-    clearTimer();
+    clearTimers();
     queue.clear();
     if(host) host.replaceChildren();
   }
@@ -787,12 +887,14 @@ export function createSmartFeed(options={}){
     clear,
     destroy,
     setExpanded,
+    open,
+    minimize,
     setFilter,
     showOlder:()=>browseHistory(1),
     showNewer:()=>browseHistory(-1),
     refresh:()=>render(),
     isExpanded:()=>expanded,
-    state:()=>Object.assign(queue.state(),{expanded,filterKind,selectedNoticeId}),
+    state:()=>Object.assign(queue.state(),{expanded,filterKind,selectedNoticeId,idle}),
     flush:()=>pump()
   };
   render();

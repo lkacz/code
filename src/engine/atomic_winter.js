@@ -175,7 +175,12 @@ import { isPlayerPassableTile } from './material_physics.js';
   }
   function announceStart(){
     try{
-      if(root.msg) root.msg('Atomic winter: nuclear bomb detonated. Green poisonous rain lasts until winter ends; shelter under a roof blocks rain and lightning.');
+      const text='Zaczęła się zima nuklearna. Trujący deszcz rani bez dachu.';
+      const feed=MM.smartFeed;
+      if(feed && typeof feed.world==='function') feed.world(text,{
+        title:'ZIMA NUKLEARNA',icon:'☢',priority:104,holdFor:7000,dedupeKey:'world:atomic-winter-start'
+      });
+      else if(root.msg) root.msg(text);
     }catch(e){}
   }
   function removeLegacyMessenger(){
@@ -296,7 +301,14 @@ import { isPlayerPassableTile } from './material_physics.js';
     state.winterRefresh=0;
     atomicClouds.length=0;
     releaseWinter();
-    try{ if(root.msg) root.msg('Atomic winter ended as winter passed.'); }catch(e){}
+    try{
+      const text='Zima nuklearna się skończyła. Pogoda wraca do normy.';
+      const feed=MM.smartFeed;
+      if(feed && typeof feed.world==='function') feed.world(text,{
+        title:'KONIEC ZIMY NUKLEARNEJ',icon:'☢',priority:92,holdFor:6200,dedupeKey:'world:atomic-winter-end'
+      });
+      else if(root.msg) root.msg(text);
+    }catch(e){}
   }
   function reset(){
     const wasForced=state.forcedWinter;

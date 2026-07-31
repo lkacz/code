@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   SMART_FEED_DISCOVERY_HOLD_MS,
+  SMART_FEED_IDLE_DELAY_MS,
   SMART_FEED_MAX_HOLD_MS,
   SMART_FEED_MIN_INTERVAL_MS,
   classifySmartFeedMessage,
@@ -279,11 +280,17 @@ assert.equal(renderedFeed.state().filterKind,'inventory');
 const filteredCards=walk(fakeHost,[]).filter(node=>node.classList?.contains('smartFeedBubble'));
 assert.deepEqual(filteredCards.map(card=>card.dataset.kind),['inventory'],'the compact feed renders only the selected category');
 assert.equal(renderedFeed.setFilter('not-a-kind'),'all','unknown filters safely fall back to all categories');
+assert.equal(renderedFeed.minimize(),true,'a drained compact feed can collapse to its inbox icon');
+assert.equal(renderedFeed.state().idle,true,'the minimized state is observable for deterministic UI checks');
+assert.ok(walk(fakeHost,[]).some(node=>node.classList?.contains('smartFeedInbox')),'the idle feed renders only an accessible inbox control');
+assert.equal(renderedFeed.open(),true,'the inbox can restore the latest communication');
+assert.equal(renderedFeed.state().idle,false);
 renderedFeed.destroy();
 
 assert.equal(SMART_FEED_MIN_INTERVAL_MS,4000);
 assert.equal(SMART_FEED_DISCOVERY_HOLD_MS,6200);
 assert.equal(SMART_FEED_MAX_HOLD_MS,15000);
+assert.equal(SMART_FEED_IDLE_DELAY_MS,1400);
 assert.equal(classifySmartFeedMessage('Nadciąga meteoryt!').kind,'world');
 assert.equal(classifySmartFeedMessage('Brak energii').kind,'warning');
 assert.equal(classifySmartFeedMessage('Zapisano grę').kind,'success');
@@ -311,6 +318,8 @@ assert.match(source,/previousStack\.scrollTop/,'incoming cards preserve the read
 assert.match(source,/const restoreControl=controlFocusSnapshot\(active\)/,'feed rebuilds capture the focused direct action');
 assert.match(source,/if\(restoreControl\)\{[\s\S]{0,140}restoreControlFocus\(restoreControl,stack\)/,'feed rebuilds restore that action or fall back to the header control');
 assert.match(source,/options\.expanded===undefined \? false/,'the feed starts compact instead of covering gameplay');
+assert.match(source,/state\.lastPromotion\+state\.lastHold\+idleDelay/,'the feed automatically minimizes only after the visible notice has finished');
+assert.match(source,/className='smartFeedInbox'/,'the inactive feed leaves a single inbox affordance');
 assert.match(source,/bindInventoryItem\(\{row,handle:icon,item,notice\}\)/,'inventory rows expose one narrow decoration seam');
 assert.match(source,/bindNoticeActions\(\{card,body,notice\}\)/,'notice cards expose a main-controlled action seam');
 assert.match(mainSource,/resourceKey:entry\.type==='resource'\?entry\.key:''/,'only inventory resources publish an actionable identity');
@@ -347,9 +356,17 @@ assert.match(html,/@media \(orientation:portrait\) and \(max-width:820px\)[\s\S]
 assert.match(html,/@media \(orientation:portrait\) and \(max-width:820px\)[\s\S]{0,1000}#smartFeed\[data-expanded='true'\] \.smartFeedStack\{ max-height:min\(28vh,240px\); \}/,'expanded portrait history stays clear of the touch action rail');
 assert.match(html,/@media \(orientation:portrait\) and \(max-width:820px\)[\s\S]{0,1400}#messages\{ left:calc\(var\(--safe-left\) \+ 10px\);[\s\S]{0,160}top:calc\(var\(--safe-top\) \+ 96px\)/,'portrait transient status uses the free upper-left lane instead of covering the feed');
 assert.match(html,/@media \(orientation:portrait\) and \(max-width:480px\) and \(max-height:700px\)[\s\S]{0,520}#smartFeed\{ width:min\(168px/,'short phones keep the feed in the left lane away from action controls');
-assert.match(html,/\.smartFeedAction\{[^}]*min-height:30px/,'notice actions have a dedicated accessible button surface');
+assert.match(html,/\.smartFeedAction\{[^}]*width:30px; height:30px/,'notice actions use compact icon-only button surfaces');
 assert.match(html,/#smartFeed\{[^}]*width:min\(190px/,'the left notification lane is about half its former width');
-assert.match(html,/\.smartFeedBubble\{[^}]*rgba\(7,12,20,\.78\)/,'notification cards keep the game visible through a translucent surface');
+assert.match(html,/\.smartFeedBubble\{[^}]*rgba\(7,12,20,\.68\)/,'notification cards keep the game visible through a translucent surface');
+assert.match(html,/\.smartFeedItems\{[^}]*grid-template-columns:minmax\(0,1fr\)/,'inventory history uses one readable named row per change');
+assert.doesNotMatch(html,/#smartFeed\[data-expanded='false'\] \.smartFeedText[^}]*-webkit-line-clamp/,'compact cards never hide copy behind an ellipsis');
+assert.match(html,/\.smartFeedXp\{[^}]*white-space:nowrap/,'short XP labels always remain on one line');
+assert.match(mainSource,/button\.dataset\.actionLabel=label;[\s\S]{0,180}button\.setAttribute\('aria-label',label\)/,'icon-only actions retain a full accessible name and tooltip');
+assert.doesNotMatch(mainSource,/const text=document\.createElement\('span'\);\s*text\.textContent=label;/,'notice action labels no longer consume card width');
+assert.match(mainSource,/function shouldPublishInventoryFeedback\(entry\)[\s\S]{0,180}entry\.cause==='direct'\) return false/,'direct player inventory changes are filtered before publication');
+assert.match(mainSource,/Zaczął się dzień\.[\s\S]{0,80}Zapadła noc\./,'day and night transitions enter the useful world feed');
+assert.match(mainSource,/Zaczęła się wiosna\.[\s\S]{0,220}Zaczęła się zima\./,'all season transitions have concise world notices');
 assert.match(mainSource,/const ui=inventoryOverlay&&inventoryOverlay\.style\.display==='block'[\s\S]{0,80}\? inventoryOverlay[\s\S]{0,40}: document\.body/,'the undo toast mounts above an open inventory modal');
 assert.match(uiSource,/function msgImmediate\(text\)/,'the HUD retains a direct lane that cannot recursively duplicate urgent feed cards');
 assert.match(bossSource,/puchnie od energii - uciekaj!',\{[\s\S]{0,90}urgent:true,[\s\S]{0,90}target:\{x:bx\+0\.5,y:by\+0\.5\}/,'the short boss-heart escape window bypasses pacing and exposes its snapshot location');

@@ -2625,9 +2625,6 @@ function attachSmartFeedItemCopy(row,liveText){
 function setSmartFeedResourceLive(row,def){
 	if(!row||!def) return;
 	const amount=Math.max(0,Math.floor(Number(inv[def.key])||0));
-	let live=row.querySelector('.smartFeedItemLive');
-	if(!live) live=attachSmartFeedItemCopy(row,'');
-	if(live) live.textContent='teraz ×'+Math.min(999999,amount);
 	row.classList.toggle('is-depleted',amount<=0);
 	row.dataset.resourceKey=String(def.key);
 }
@@ -2776,12 +2773,13 @@ function smartFeedActionButton(label,icon,activate,opts){
 	const button=document.createElement('button');
 	button.type='button';
 	button.className='smartFeedAction'+(opts&&opts.tone?' '+opts.tone:'');
+	button.dataset.actionLabel=label;
+	button.title=label;
+	button.setAttribute('aria-label',label);
 	const glyph=document.createElement('span');
 	glyph.setAttribute('aria-hidden','true');
 	glyph.textContent=icon||'›';
-	const text=document.createElement('span');
-	text.textContent=label;
-	button.append(glyph,text);
+	button.appendChild(glyph);
 	button.addEventListener('click',event=>{
 		event.preventDefault();
 		event.stopPropagation();
@@ -2838,7 +2836,7 @@ function bindSmartFeedNoticeActions({body,notice}){
 		actions.push(smartFeedActionButton('Śledź zadanie','⌖',()=>trackSmartFeedTask(notice.taskId)));
 	}
 	if(notice.discoveryId&&MM.inventoryUI&&MM.inventoryUI.openDiscovery){
-		actions.push(smartFeedActionButton('Otwórz w Atlasie','⌕',()=>{
+		actions.push(smartFeedActionButton('Otwórz w Atlasie','🔎',()=>{
 			if(!MM.inventoryUI.openDiscovery(String(notice.discoveryId))){
 				msg('Ten wpis nie jest już dostępny w Atlasie');
 				if(SMART_FEED&&SMART_FEED.refresh) SMART_FEED.refresh();
@@ -2846,7 +2844,7 @@ function bindSmartFeedNoticeActions({body,notice}){
 		}));
 	}
 	if(actions.length<2 && smartFeedTarget(notice) && ['discovery','world','omen','story'].includes(notice.kind)){
-		actions.push(smartFeedActionButton('Śledź miejsce','◎',()=>trackSmartFeedTarget(notice)));
+		actions.push(smartFeedActionButton('Śledź miejsce','◉',()=>trackSmartFeedTarget(notice)));
 	}
 	if(actions.length<2 && notice.undoToken&&canUndoSmartFeedHotbar(notice.undoToken)){
 		actions.push(smartFeedActionButton('Cofnij zmianę','↶',()=>undoSmartFeedHotbar(notice.undoToken),{tone:'undo'}));
@@ -2904,6 +2902,45 @@ function rememberAnnouncedFeedTask(id){
 	}
 }
 MM.smartFeed=SMART_FEED;
+let smartFeedDayPhase='';
+const SMART_FEED_SEASONS=Object.freeze({
+	spring:{text:'Zaczęła się wiosna.',icon:'🌱',accent:'#93df91'},
+	summer:{text:'Zaczęło się lato.',icon:'☀',accent:'#ffd56f'},
+	autumn:{text:'Zaczęła się jesień.',icon:'🍂',accent:'#e59a61'},
+	winter:{text:'Zaczęła się zima.',icon:'❄',accent:'#a9dcff'}
+});
+function updateSmartFeedDayPhase(timeInfo){
+	if(!timeInfo||typeof timeInfo.isDay!=='boolean') return;
+	const phase=timeInfo.isDay?'day':'night';
+	if(!smartFeedDayPhase){ smartFeedDayPhase=phase; return; }
+	if(phase===smartFeedDayPhase) return;
+	smartFeedDayPhase=phase;
+	SMART_FEED.notify('world',phase==='day'?'Zaczął się dzień.':'Zapadła noc.',{
+		title:'DZIEŃ I NOC',
+		icon:phase==='day'?'🌅':'🌙',
+		accent:phase==='day'?'#ffd480':'#9eb8ff',
+		priority:58,
+		holdFor:5200,
+		dedupeKey:'world:day-phase:'+phase
+	});
+}
+if(SEASONS&&typeof SEASONS.subscribe==='function'){
+	SEASONS.subscribe(event=>{
+		if(!event||event.type!=='seasonChanged') return;
+		// Początek zimy atomowej ma własny, ważniejszy komunikat.
+		if(ATOMIC_WINTER&&ATOMIC_WINTER.isActive&&ATOMIC_WINTER.isActive()) return;
+		const presentation=SMART_FEED_SEASONS[String(event.to||'')];
+		if(!presentation) return;
+		SMART_FEED.notify('world',presentation.text,{
+			title:'PORA ROKU',
+			icon:presentation.icon,
+			accent:presentation.accent,
+			priority:66,
+			holdFor:5800,
+			dedupeKey:'world:season:'+String(event.to)
+		});
+	});
+}
 if(ATTENTION && ATTENTION.setNotifier){
 	ATTENTION.setNotifier(text=>SMART_FEED.notify('omen',text,{dedupeKey:'attention:'+String(text)}));
 }
@@ -2913,7 +2950,15 @@ function inventoryFeedContext(entry){
 		if(entry.deathCause==='molekin_invasion') return 'po śmierci — inwazja kretoludzi';
 		return entry.direction==='gain'?'odzyskane po śmierci':'utracone po śmierci';
 	}
-	return entry && entry.direction==='loss'?'ubyło z ekwipunku':'trafiło do ekwipunku';
+	return '';
+}
+function shouldPublishInventoryFeedback(entry){
+	if(!entry) return false;
+	if(entry.cause==='direct') return false;
+	if(entry.cause==='death'||entry.cause==='reward') return true;
+	// Unikalne wyposażenie może zmienić się poza bezpośrednią akcją bohatera.
+	// Rutynowe, nieopisane różnice zasobów po kopaniu i walce są tylko hałasem.
+	return entry.type==='gear';
 }
 function inventoryFeedItem(entry){
 	const glyph=(entry.preview&&entry.preview.icon)||inventoryFeedbackGlyph(entry.key)||(entry.type==='gear'?'✦':'◆');
@@ -2933,7 +2978,7 @@ function publishInventoryFeedEntry(entry){
 	const losses=rows.filter(item=>item.delta<0).length;
 	const title=gains===rows.length?'ZDOBYTO':losses===rows.length?'UTRACONO':'ZMIANY EKWIPUNKU';
 	const context=entry.type==='batch'
-		? (entry.cause==='death' ? inventoryFeedContext(entry) : rows.length+' pozycji')
+		? (entry.cause==='death' ? inventoryFeedContext(entry) : '')
 		: inventoryFeedContext(entry);
 	return SMART_FEED.push({
 		kind:'inventory',
@@ -2960,6 +3005,7 @@ function showSmartFeedUrgent(text){
 }
 function resetActivityPresentation(){
 	clearDiscoveryObservationFx();
+	smartFeedDayPhase='';
 	announcedFeedTasks.clear();
 	smartFeedHotbarUndo=null;
 	removeHotbarUndoToast();
@@ -3044,6 +3090,7 @@ const INVENTORY_FEEDBACK=createInventoryFeedback({
 	getItems:()=>MM.inventory&&MM.inventory.bagItems?MM.inventory.bagItems():[],
 	drawThumbnail:drawInventoryFeedbackThumbnail,
 	publish:publishInventoryFeedEntry,
+	shouldInclude:shouldPublishInventoryFeedback,
 	pollInterval:850,
 	itemsAreSnapshots:true
 });
@@ -18705,6 +18752,7 @@ canvas.addEventListener('pointerleave',()=>{ lastPointer.has=false; });
 function draw(){ // Background first
  frameTimeInfo=(BACKGROUND && BACKGROUND.timeInfo)?BACKGROUND.timeInfo():null;
  frameDaylight=currentDaylight();
+ updateSmartFeedDayPhase(frameTimeInfo);
  resetFrameCanvasState();
  const renderCam=currentRenderCamera();
  drawBackground();
