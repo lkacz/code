@@ -108,7 +108,7 @@ const lifecycleAssertion=`(async()=>{
     const sky=MM.background.snapshot();
     skySamples.push(sky.cycleT);
     if(state.phase==='rewinding') sawRewinding=true;
-    if(state.phase==='idle'&&state.cooldown>0){ finished=state; break; }
+    if(sawRewinding&&state.phase==='idle'){ finished=state; break; }
     await sleep(30);
   }
   const checkpoint=MM.world.temporalCheckpointState();
@@ -145,7 +145,8 @@ const lifecycleAssertion=`(async()=>{
     skyReturnedToDeath:finalSkyError<0.004,
     checkpointReleased:checkpoint.active===false,
     markerCleared:!(localStorage.getItem('mm_temporal_echo_pending_v1')||sessionStorage.getItem('mm_temporal_echo_pending_v1')),
-    cooldownPersisted:!!(localStorage.getItem('mm_temporal_echo_cooldown_v1')||sessionStorage.getItem('mm_temporal_echo_cooldown_v1')),
+    immediatelyReusable:MM.temporalEcho.state().cooldown===0
+      &&!(localStorage.getItem('mm_temporal_echo_cooldown_v1')||sessionStorage.getItem('mm_temporal_echo_cooldown_v1')),
     exactRestore:window.__mmTemporalRestoreDegraded!==true
   };
   const diagnostics={
@@ -158,6 +159,107 @@ const lifecycleAssertion=`(async()=>{
     storageError:window.__mmTemporalStorageError||''
   };
   return (Object.values(checks).every(Boolean)?'PASS ':'FAIL ')+JSON.stringify({checks,diagnostics});
+})()`;
+
+const repeatedDeathAssertion=`(async()=>{
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const waitFor=async(fn,ms)=>{
+    const end=performance.now()+ms;
+    while(performance.now()<end){ const value=fn(); if(value) return value; await sleep(80); }
+    return null;
+  };
+  const finishEcho=async target=>{
+    if(target) window.__mmDebugHero(target.x+0.12,target.y-0.3);
+    let sawRewind=false;
+    const idle=await waitFor(()=>{
+      const state=MM.temporalEcho.state();
+      if(state.phase==='rewinding') sawRewind=true;
+      return sawRewind&&state.phase==='idle'&&state;
+    },9000);
+    await sleep(900);
+    return idle;
+  };
+  document.querySelector('#titleScreen .tsPrimary')?.click();
+  await sleep(500);
+  window.__simulationTimeScale=4;
+  const constants=await import('/src/constants.js');
+  const physics=await import('/src/engine/material_physics.js');
+  const deaths=[];
+  window.addEventListener('mm-hero-died',event=>deaths.push(event.detail));
+
+  const firstX=Math.floor(player.x)+8;
+  window.__mmDebugHero(firstX,MM.worldGen.surfaceHeight(firstX)-2);
+  await sleep(180);
+  inv.stone=48;
+  player.hp=0;
+  window.heroDied('temporal_repeat_first');
+  const firstArmed=MM.temporalEcho.state();
+  const firstRace=await waitFor(()=>MM.temporalEcho.state().phase==='racing'&&MM.temporalEcho.state(),14000);
+  const firstTarget=MM.temporalEcho.target();
+  const firstFinished=await finishEcho(firstTarget);
+  const firstReusable=!!firstFinished&&firstFinished.cooldown===0
+    &&!(localStorage.getItem('mm_temporal_echo_cooldown_v1')||sessionStorage.getItem('mm_temporal_echo_cooldown_v1'));
+
+  // Build a sealed rubble pocket with one nearby, supported opening. The hero
+  // dies inside solid underground terrain, matching the cave-in/crush path.
+  const deepX=Math.floor(player.x)+20;
+  const deepY=MM.worldGen.surfaceHeight(deepX)+28;
+  for(let dx=-3;dx<=3;dx++) for(let dy=-3;dy<=3;dy++) MM.world.setTile(deepX+dx,deepY+dy,constants.T.STONE);
+  MM.world.setTile(deepX+5,deepY,constants.T.AIR);
+  MM.world.setTile(deepX+5,deepY+1,constants.T.STONE);
+  window.__mmDebugHero(deepX+0.1,deepY+0.1);
+  inv.stone=48;
+  player.hp=0;
+  window.heroDied('crushed');
+  const crushArmed=MM.temporalEcho.state();
+  const crushTargetAtDeath=MM.temporalEcho.target();
+  const crushGrounded=!!(crushTargetAtDeath
+    &&physics.isObjectFootingTile(MM.world.getTile(crushTargetAtDeath.x,crushTargetAtDeath.y+1)));
+  const crushRace=await waitFor(()=>MM.temporalEcho.state().phase==='racing'&&MM.temporalEcho.state(),18000);
+  const crushTarget=MM.temporalEcho.target();
+  const crushHud=document.getElementById('temporalEchoHud');
+  const crushTimerVisible=!!(crushHud&&crushHud.style.display!=='none'&&/s/.test(crushHud.textContent));
+
+  // Die once more before touching the second spirit. This must forfeit only
+  // that escrow and immediately replace it with a fresh Echo and fresh timer.
+  // Move away from the respawn point first: dying exactly on it legitimately
+  // makes the new spirit auto-contact on arrival, too briefly for timer QA.
+  const thirdX=deepX+18;
+  window.__mmDebugHero(thirdX,MM.worldGen.surfaceHeight(thirdX)-2);
+  await sleep(180);
+  player.hp=0;
+  window.heroDied('crushed');
+  const thirdArmed=MM.temporalEcho.state();
+  const thirdTargetAtDeath=MM.temporalEcho.target();
+  const thirdRace=await waitFor(()=>MM.temporalEcho.state().phase==='racing'&&MM.temporalEcho.state(),14000);
+  const thirdTarget=MM.temporalEcho.target();
+  const thirdFinished=await finishEcho(thirdTarget);
+  const checkpoint=MM.world.temporalCheckpointState();
+  const checks={
+    firstArmed:firstArmed.phase==='armed',
+    firstRace:!!firstRace,
+    firstSpirit:firstTarget?.kind==='spirit',
+    firstRecovered:!!firstFinished,
+    firstReusable,
+    crushArmed:crushArmed.phase==='armed',
+    crushCause:deaths[1]?.cause==='crushed',
+    crushSpirit:crushTargetAtDeath?.kind==='spirit'&&crushTarget?.kind==='spirit',
+    crushGrounded,
+    crushTimer:!!crushRace&&crushRace.remaining>0&&crushRace.remaining<=60&&crushTimerVisible,
+    activeRaceRearmed:thirdArmed.phase==='armed'&&deaths[2]?.echoCollapsed===true&&deaths[2]?.echoArmed===true,
+    thirdSpirit:thirdTargetAtDeath?.kind==='spirit'&&thirdTarget?.kind==='spirit',
+    thirdTimer:!!thirdRace&&thirdRace.remaining>0&&thirdRace.remaining<=60,
+    everyDeathArmed:deaths.length===3&&deaths.every(detail=>detail?.echoArmed===true),
+    finalRecovered:!!thirdFinished&&thirdFinished.cooldown===0,
+    checkpointReleased:checkpoint.active===false,
+    noPersistentCooldown:!(localStorage.getItem('mm_temporal_echo_cooldown_v1')||sessionStorage.getItem('mm_temporal_echo_cooldown_v1'))
+  };
+  return (Object.values(checks).every(Boolean)?'PASS ':'FAIL ')+JSON.stringify({
+    checks,
+    deaths:deaths.map(detail=>({cause:detail?.cause,echoArmed:detail?.echoArmed,echoCollapsed:detail?.echoCollapsed})),
+    targets:{first:firstTarget,crush:crushTarget,thirdAtDeath:thirdTargetAtDeath,third:thirdTarget},
+    remaining:{crush:crushRace?.remaining,third:thirdRace?.remaining}
+  });
 })()`;
 
 const expiryAssertion=`(async()=>{
@@ -283,9 +385,10 @@ async function runPreview(name,assertion){
 try{
   await waitForServer();
   await runPreview('temporal-echo-success',lifecycleAssertion);
+  await runPreview('temporal-echo-repeated-deaths',repeatedDeathAssertion);
   await runPreview('temporal-echo-expiry',expiryAssertion);
   await runPreview('ordinary-grave-repair',ordinaryGraveAssertion);
-  console.log('Temporal Echo browser success + expiry + ordinary grave repair lifecycles passed');
+  console.log('Temporal Echo browser success + repeated deaths + expiry + ordinary grave repair lifecycles passed');
 }finally{
   if(server.exitCode==null) server.kill();
   await rm(tempRoot,{recursive:true,force:true});

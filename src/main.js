@@ -3525,10 +3525,9 @@ function validHealingShelterRecords(){
 loadRespawnTotemsFromStorage();
 loadHealingSheltersFromStorage();
 let grave=null; const GRAVE_KEY='mm_grave_v1';
-const TEMPORAL_ECHO=createTemporalEchoController({durationSeconds:60,cooldownSeconds:180});
-const TEMPORAL_COOLDOWN_KEY='mm_temporal_echo_cooldown_v1';
+const TEMPORAL_ECHO=createTemporalEchoController({durationSeconds:60,cooldownSeconds:0});
+const LEGACY_TEMPORAL_COOLDOWN_KEY='mm_temporal_echo_cooldown_v1';
 const TEMPORAL_PENDING_KEY='mm_temporal_echo_pending_v1';
-const TEMPORAL_COOLDOWN_MS=180000;
 const TEMPORAL_ECHO_TASK_ID='temporal_echo:return';
 const GRAVE_RETURN_TASK_ID='grave:return';
 function removeGraveReturnTask(id){
@@ -3587,13 +3586,6 @@ function reconcileGraveReturnTask(){
 		reactivate:false
 	});
 }
-function temporalStorageRead(key){
-	for(const storage of [localStorage,typeof sessionStorage!=='undefined'?sessionStorage:null]){
-		if(!storage) continue;
-		try{ const raw=storage.getItem(key); if(raw!=null) return raw; }catch(e){}
-	}
-	return null;
-}
 function temporalStorageWrite(key,value){
 	const raw=JSON.stringify(value);
 	let written=false, lastError=null;
@@ -3612,50 +3604,20 @@ function temporalStorageRemove(key){
 		try{ storage.removeItem(key); }catch(e){}
 	}
 }
-let temporalCooldownUntil=0;
 try{
-	const raw=JSON.parse(temporalStorageRead(TEMPORAL_COOLDOWN_KEY)||'null');
-	if(raw && Number.isFinite(Number(raw.until))){
-		// Corrupt or hand-edited storage must not lock the mechanic indefinitely.
-		// A legitimate persisted lock can never extend beyond one full cooldown
-		// from this boot.
-		temporalCooldownUntil=Math.max(0,Math.min(Number(raw.until),Date.now()+TEMPORAL_COOLDOWN_MS));
-	}
-	const pending=JSON.parse(temporalStorageRead(TEMPORAL_PENDING_KEY)||'null');
-	if(pending && pending.v===1){
-		// A tab killed inside an unresolved branch must not turn reload into a free
-		// death undo. This runs before the async saved-world seed is loaded, so the
-		// marker is intentionally account-wide just like the cooldown record.
-		temporalCooldownUntil=Math.max(temporalCooldownUntil,Date.now()+TEMPORAL_COOLDOWN_MS);
-	}
+	// Echo used to impose a hidden three-minute lock after a successful rewind
+	// (and after recovering from an interrupted tab). The mechanic now belongs
+	// to every eligible death, so retire persisted locks from older builds.
+	temporalStorageRemove(LEGACY_TEMPORAL_COOLDOWN_KEY);
 	temporalStorageRemove(TEMPORAL_PENDING_KEY);
-	if(temporalCooldownUntil>Date.now()) temporalStorageWrite(TEMPORAL_COOLDOWN_KEY,{v:1,until:temporalCooldownUntil});
-	else temporalStorageRemove(TEMPORAL_COOLDOWN_KEY);
 }catch(e){}
 let temporalRewindFx=null;
-function temporalPersistentCooldownSeconds(){
-	const remaining=(temporalCooldownUntil-Date.now())/1000;
-	if(remaining>0) return remaining;
-	if(temporalCooldownUntil){
-		temporalCooldownUntil=0;
-		temporalStorageRemove(TEMPORAL_COOLDOWN_KEY);
-	}
-	return 0;
-}
-function temporalEchoState(){
-	const state=TEMPORAL_ECHO.state();
-	const cooldown=Math.max(state.cooldown,temporalPersistentCooldownSeconds());
-	return cooldown===state.cooldown ? state : Object.freeze({...state,cooldown});
-}
+function temporalEchoState(){ return TEMPORAL_ECHO.state(); }
 function temporalEchoActive(){ return temporalEchoState().active; }
 function rememberTemporalPending(payload){
 	temporalStorageWrite(TEMPORAL_PENDING_KEY,{v:1,seed:WORLDGEN.worldSeed,at:Date.now(),cause:String(payload&&payload.cause||'damage')});
 }
 function clearTemporalPending(){ temporalStorageRemove(TEMPORAL_PENDING_KEY); }
-function persistTemporalCooldown(){
-	temporalCooldownUntil=Math.max(temporalCooldownUntil,Date.now()+TEMPORAL_COOLDOWN_MS);
-	temporalStorageWrite(TEMPORAL_COOLDOWN_KEY,{v:1,until:temporalCooldownUntil});
-}
 function cleanGraveRecord(src){
 	if(!src || typeof src!=='object' || !Number.isFinite(Number(src.x)) || !Number.isFinite(Number(src.y)) || !worldYInBounds(Number(src.y)) || src.seed!==WORLDGEN.worldSeed || !src.res || typeof src.res!=='object') return null;
 	const res={};
@@ -3909,7 +3871,6 @@ function updateTemporalEcho(dt){
 			// that rewound losses/discoveries still happened.
 			resetActivityPresentation();
 			TEMPORAL_ECHO.finishRewind();
-			persistTemporalCooldown();
 			clearTemporalPending();
 			saveGrave(); saveState();
 			try{ if(AUDIO&&AUDIO.play) AUDIO.play('temporalReturn'); }catch(e){}
@@ -4529,7 +4490,9 @@ window.heroDied=function(cause){
 	if(immunityMode){ player.hp=player.maxHp; return; }
 	const echoWasActive=temporalEchoActive();
 	if(echoWasActive) collapseTemporalEcho('second-death','⌛ Drugą śmiercią rozbiłeś Echo — jego zasoby przepadły.');
-	const echoArmed=!echoWasActive && captureTemporalEcho(cause);
+	// The previous escrow is lost on a repeated death, but the new death still
+	// opens its own complete 60-second recovery loop.
+	const echoArmed=captureTemporalEcho(cause);
 	beginHeroDeathSlowMotion();
 	// finale.js keeps the lifetime deaths tally off this event
 	const deathCause=String(cause||'damage');

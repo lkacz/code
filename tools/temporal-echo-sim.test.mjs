@@ -24,6 +24,14 @@ assert.equal(echo.arm({}),false);
 echo.update(0.1);
 assert.equal(echo.arm({}),true);
 
+const repeatableEcho=createTemporalEchoController({durationSeconds:60,cooldownSeconds:0});
+assert.equal(repeatableEcho.arm({death:{x:1,y:12}}),true);
+assert.equal(repeatableEcho.beginRace(),true);
+assert.equal(repeatableEcho.beginRewind(),true);
+assert.equal(repeatableEcho.finishRewind(),true);
+assert.equal(repeatableEcho.state().cooldown,0,'the gameplay configuration has no post-rewind lock');
+assert.equal(repeatableEcho.arm({death:{x:2,y:18}}),true,'the next death can arm Echo immediately');
+
 const daylightPlan=createTemporalCycleRewind(0.32,0.14);
 assert.ok(Math.abs(daylightPlan.distance-0.18)<1e-9);
 assert.ok(Math.abs(temporalCycleAt(daylightPlan,0)-0.32)<1e-9);
@@ -56,8 +64,10 @@ assert.match(main,/const incomplete=Object\.entries\(payload\.data[\s\S]*complet
 assert.match(main,/window\.heroDied=function\(cause\)[\s\S]*captureTemporalEcho\(cause\)[\s\S]*HERO_STATUS\.clearAll/);
 assert.match(main,/temporalEchoEligible\(cause\)[\s\S]*MM\.challenge\.isIronman/, 'ironman runs cannot rewind their one permitted death');
 assert.match(main,/rememberTemporalPending\(payload\)[\s\S]*TEMPORAL_PENDING_KEY/, 'an unresolved branch leaves crash-recovery evidence');
-assert.match(main,/pending && pending\.v===1[\s\S]*temporalCooldownUntil=Math\.max/, 'crash recovery cannot miss a non-default world before its seed loads');
-assert.match(main,/persistTemporalCooldown\(\)[\s\S]*TEMPORAL_COOLDOWN_MS/, 'successful rewind cooldown survives reload');
+assert.match(main,/createTemporalEchoController\(\{durationSeconds:60,cooldownSeconds:0\}\)/, 'every eligible death can arm a fresh Echo without a hidden cooldown');
+assert.match(main,/LEGACY_TEMPORAL_COOLDOWN_KEY[\s\S]*temporalStorageRemove\(LEGACY_TEMPORAL_COOLDOWN_KEY\)/, 'old persisted cooldowns are retired on boot');
+assert.doesNotMatch(main,/function persistTemporalCooldown|persistTemporalCooldown\(\)/, 'successful rewind does not suppress the next death');
+assert.match(main,/const echoWasActive=temporalEchoActive\(\);[\s\S]{0,500}collapseTemporalEcho\('second-death'[\s\S]{0,500}const echoArmed=captureTemporalEcho\(cause\)/, 'a death during an active race forfeits the old escrow but arms a new Echo');
 assert.match(main,/resetWorldTransitionRuntime\(\)[\s\S]*clearTemporalPending\(\)/, 'intentional world transitions clear the crash marker');
 assert.match(main,/finishDeathTravelRespawn\(\)[\s\S]*TEMPORAL_ECHO\.beginRace/);
 assert.match(main,/function tryOpenGraveAt\(tx,ty\)[\s\S]*activeTemporalGraveAt\(tx,ty\)[\s\S]*wejdź w jego światło[\s\S]*return true/, 'tools cannot trigger the spirit remotely; they teach physical contact');
