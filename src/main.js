@@ -99,6 +99,7 @@ import { createTemporalCycleRewind, temporalCycleAt } from './engine/temporal_sk
 import { audio as AUDIO, RADIO_STATIONS } from './engine/audio.js';
 import { ufo as UFO } from './engine/ufo.js';
 import { tasks as TASKS } from './engine/tasks.js';
+import { engagement as ENGAGEMENT } from './engine/engagement.js';
 import { invasions as INVASIONS } from './engine/invasions.js';
 import { traps as TRAPS } from './engine/traps.js';
 import { terrainTraps as TERRAIN_TRAPS } from './engine/terrain_traps.js';
@@ -151,6 +152,9 @@ import './inventory_ui.js';
 if(window.__mmPublicFrameBlocked) throw new Error('Mini Miner refuses to run inside a public iframe');
 // Bind global MM into a module-scoped constant for convenience
 const MM = window.MM;
+if(MM.inventory&&MM.inventory.registerModifierSource){
+	MM.inventory.registerModifierSource('descent-protocol',()=>MM.challenge&&MM.challenge.boonModifiers?MM.challenge.boonModifiers():null);
+}
 const TREASURE_SCANNER=TREASURE_COMPASS.create();
 const TREASURE_DROP_TARGET_CAP=96;
 const TREASURE_DROP_WINDOW=TREASURE_COMPASS.createRotatingTargetWindow({limit:TREASURE_DROP_TARGET_CAP});
@@ -2894,6 +2898,7 @@ const SMART_FEED=createSmartFeed({
 	minInterval:4000,
 	maxPending:32,
 	maxHistory:24,
+	focusMode:'onboarding',
 	onPromote:onSmartFeedPromote,
 	onUrgent:showSmartFeedUrgent,
 	bindInventoryItem:bindSmartFeedInventoryItem,
@@ -6541,6 +6546,7 @@ function applyGameDataCore(data,opts){
 	try{ if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); }catch(e){}
 	try{ if(CENTER_GUARDIAN && CENTER_GUARDIAN.reset) CENTER_GUARDIAN.reset(); }catch(e){}
 	try{ if(STORY_PROGRESSION && STORY_PROGRESSION.reset) STORY_PROGRESSION.reset(); }catch(e){}
+	try{ if(ENGAGEMENT && ENGAGEMENT.reset) ENGAGEMENT.reset(); }catch(e){}
 	try{ if(PROGRESS && PROGRESS.clearTransient) PROGRESS.clearTransient(); }catch(e){}
 	try{ if(FALLING && FALLING.reset) FALLING.reset(); }catch(e){}
 	try{ if(BOATS && BOATS.reset) BOATS.reset(); }catch(e){}
@@ -7841,10 +7847,10 @@ function loadCraftCollapsed(){
 	try{
 		const v=localStorage.getItem(CRAFT_COLLAPSED_KEY);
 		if(v!==null) return v==='1';
-	}catch(e){ return false; }
-	// No saved preference: on a touch screen the open panel would cover the whole
-	// view (phones especially), so first runs boot with it tucked away.
-	return !!(MM.inputMode && MM.inputMode.isTouch());
+	}catch(e){ return true; }
+	// First contact belongs to the world and its experiment, not a recipe
+	// dashboard. The preference remains sticky after the player opens the panel.
+	return true;
 }
 function loadCraftGroup(){
 	try{ return localStorage.getItem(CRAFT_GROUP_KEY) || 'all'; }catch(e){ return 'all'; }
@@ -13157,8 +13163,10 @@ function ensurePausePanel(){
 	const chalControl=document.createElement('div'); chalControl.className='pauseSeedControl';
 	const chalInfo=document.createElement('code'); chalInfo.className='pauseChallengeMods';
 	const chalList=(MM.challenge && MM.challenge.list)? MM.challenge.list() : [];
+	const chalBoon=(MM.challenge&&MM.challenge.boon)?MM.challenge.boon():'';
 	const chalFailed=!!(MM.challenge && MM.challenge.failed && MM.challenge.failed());
 	chalInfo.textContent=(chalList.length ? chalList.map(m=>((MM.challenge.MODS[m]&&MM.challenge.MODS[m].label)||m)).join(', ') : 'bez modyfikatorów')
+		+(chalBoon?' · '+((MM.challenge.BOONS[chalBoon]&&MM.challenge.BOONS[chalBoon].label)||chalBoon):'')
 		+(chalFailed ? ' · ☠ przegrane' : '');
 	const copyChallenge=document.createElement('button'); copyChallenge.type='button'; copyChallenge.textContent='Skopiuj wyzwanie';
 	copyChallenge.addEventListener('click',()=>{
@@ -13276,7 +13284,9 @@ function setPaused(v){
 			const chalEl=panel.querySelector('.pauseChallengeMods');
 			if(chalEl && MM.challenge && MM.challenge.list){
 				const mods=MM.challenge.list();
+				const boon=MM.challenge.boon&&MM.challenge.boon();
 				chalEl.textContent=(mods.length ? mods.map(m=>((MM.challenge.MODS[m]&&MM.challenge.MODS[m].label)||m)).join(', ') : 'bez modyfikatorów')
+					+(boon?' · '+((MM.challenge.BOONS[boon]&&MM.challenge.BOONS[boon].label)||boon):'')
 					+((MM.challenge.failed&&MM.challenge.failed()) ? ' · ☠ przegrane' : '');
 			}
 			const fsBtn=panel.querySelector('.pauseFullscreenBtn'); if(fsBtn) fsBtn.textContent=fullscreenBtnLabel();
@@ -19636,6 +19646,10 @@ function onTaskFeedChange(change){
 		rememberAnnouncedFeedTask(id);
 		return;
 	}
+	if(task.source==='mastery'){
+		rememberAnnouncedFeedTask(id);
+		return;
+	}
 	if(kind==='upsert' && !announcedFeedTasks.has(id)){
 		rememberAnnouncedFeedTask(id);
 		SMART_FEED.notify('task',task.title||'Nowe zadanie',{
@@ -19656,7 +19670,12 @@ function onTaskFeedChange(change){
 		announcedFeedTasks.delete(id);
 	}else if(kind==='remove' || kind==='discard') announcedFeedTasks.delete(id);
 }
+if(ENGAGEMENT && ENGAGEMENT.setContext) ENGAGEMENT.setContext({player,getTile,setTile,msg});
 if(TASKS && TASKS.setContext) TASKS.setContext({onChange:onTaskFeedChange});
+if(TASKS && TASKS.setContext) TASKS.setContext({onAction:(actionId,task)=>{
+	if(STORY_PROGRESSION&&STORY_PROGRESSION.handleTaskAction&&STORY_PROGRESSION.handleTaskAction(actionId,task)) return true;
+	return !!(ENGAGEMENT&&ENGAGEMENT.handleTaskAction&&ENGAGEMENT.handleTaskAction(actionId,task));
+}});
 if(FISHING && FISHING.setContext) FISHING.setContext({onInventoryChange:updateInventory, onChange:saveState});
 // Wandering trader panel: DOM host for engine/trader.js. The module opens it
 // via the npc_system click dispatch and closes it on departure / walking away.
@@ -24334,7 +24353,7 @@ function runGameStep(dt,ts){
 	if(SMOKE && SMOKE.updateSoot) SMOKE.updateSoot(player,dt,{height:player.h});
 	if(PLANTS && PLANTS.update) PLANTS.update(getTile, setTile, dt);
 	if(PROGRESS && PROGRESS.update) PROGRESS.update(dt);
-updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(SMR && SMR.update) SMR.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
+updateMining(dt); updateFallingBlocks(dt); if(FALLING && FALLING.update) FALLING.update(getTile,setTile,dt); if(WATER && WATER.update) WATER.update(getTile,setTile,dt); if(DYNAMO && DYNAMO.update) DYNAMO.update(dt,getTile); if(SOLAR && SOLAR.update) SOLAR.update(dt,player,getTile); if(TELEPORTERS && TELEPORTERS.update) TELEPORTERS.update(dt, player, getElectricNetworkTile, setTile, {dynamo:DYNAMO, heroEnergy:MM.heroEnergy}); if(PUMPS && PUMPS.update) PUMPS.update(dt, player, getFluidNetworkTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(STEAM_MACHINES && STEAM_MACHINES.update) STEAM_MACHINES.update(dt, player, getTile, setTile); if(SMR && SMR.update) SMR.update(dt, player, getTile, setTile); if(TURRETS && TURRETS.update) TURRETS.update(dt, player, getTile, setTile, {dynamo:DYNAMO, teleporters:TELEPORTERS, pumps:PUMPS}); if(SPRING_PLATFORMS && SPRING_PLATFORMS.update) SPRING_PLATFORMS.update(dt, player, getElectricNetworkTile, {dynamo:DYNAMO, teleporters:TELEPORTERS}); if(VENDING && VENDING.update) VENDING.update(dt,getTile); updateHeroEnergy(dt); updateUraniumCharge(dt); updateHeroLamp(dt); updateSpecialVision(dt); updateTreasureCompass(dt); if(CLOUDS && CLOUDS.update) CLOUDS.update(getTile,setTile,dt); if(ATOMIC_WINTER && ATOMIC_WINTER.update) ATOMIC_WINTER.update(dt, player, getTile, setTile); if(GUARDIANS && GUARDIANS.update) GUARDIANS.update(dt, player, getTile, setTile); if(UNDERGROUND && UNDERGROUND.update) UNDERGROUND.update(dt, player, getTile, setTile); if(SKY_GUARDIAN && SKY_GUARDIAN.update) SKY_GUARDIAN.update(dt, player, getTile, setTile); if(CENTER_GUARDIAN && CENTER_GUARDIAN.update) CENTER_GUARDIAN.update(dt, player, getTile, setTile); if(STORY_PROGRESSION && STORY_PROGRESSION.update) STORY_PROGRESSION.update(dt, player, getTile, setTile); if(ENGAGEMENT && ENGAGEMENT.update) ENGAGEMENT.update(dt,player); if(FINALE && FINALE.update) FINALE.update(dt); if(AFTERMATH && AFTERMATH.update) AFTERMATH.update(dt, player, getTile, setTile); if(BOSSES && BOSSES.update) BOSSES.update(getTile,setTile,dt); if(MOBS && MOBS.update) MOBS.update(dt, player, getTile, setTile); if(INVASIONS && INVASIONS.update) INVASIONS.update(dt, player, getTile, setTile, {inv, viewport:currentViewportState(), resourceKeys:RESOURCE_KEYS, inventory:MM.inventory, ensureChunkAtY, updateInventory, notifyStructureTileChanged, saveState, msg, spawnBurst}); if(ALIEN_RUINS && ALIEN_RUINS.update) ALIEN_RUINS.update(dt, player, getTile, setTile, {saveState, msg}); if(COMPANIONS && COMPANIONS.update) COMPANIONS.update(dt, player, getTile, setTile, {breakTile:breakTileByCompanion, harvestSpeed:tools[player.tool]*((MM.activeModifiers && MM.activeModifiers.mineSpeedMult)||1), controls:companionControlState()}); if(UFO && UFO.update) UFO.update(dt, player); if(TRAPS && TRAPS.update) TRAPS.update(dt, player, getTile, setTile); if(TERRAIN_TRAPS && TERRAIN_TRAPS.update) TERRAIN_TRAPS.update(dt); if(METEORITES && METEORITES.update) METEORITES.update(dt, player, getTile, setTile); updateParticles(dt); updateCombatImpactFx(dt); updateCape(dt); updateBlink(ts);
 	renewDebugHeroEnergyIfEmpty();
 	if(WORLD_SIM) WORLD_SIM.endFrame();
 }

@@ -368,6 +368,8 @@ export function createSmartFeed(options={}){
   const queue=createSmartFeedQueue(options);
   let expanded=options.expanded===undefined ? false : !!options.expanded;
   let filterKind=KIND_META[options.filterKind] ? options.filterKind : 'all';
+  let focusMode=options.focusMode==='onboarding' ? 'onboarding' : 'normal';
+  const onboardingKinds=new Set(['story','task','warning','success','achievement','omen']);
   let selectedNoticeId='';
   let timer=0;
   let idleTimer=0;
@@ -534,7 +536,19 @@ export function createSmartFeed(options={}){
   }
 
   function filteredHistory(history){
-    return filterKind==='all' ? history : history.filter(notice=>notice.kind===filterKind);
+    let out=focusMode==='onboarding' ? history.filter(notice=>onboardingKinds.has(notice.kind)) : history;
+    return filterKind==='all' ? out : out.filter(notice=>notice.kind===filterKind);
+  }
+
+  function setFocusMode(value){
+    const next=value==='onboarding' ? 'onboarding' : 'normal';
+    if(next===focusMode) return focusMode;
+    focusMode=next;
+    selectedNoticeId='';
+    newestId='';
+    render();
+    scheduleIdle();
+    return focusMode;
   }
 
   function selectedHistoryIndex(history){
@@ -598,6 +612,7 @@ export function createSmartFeed(options={}){
     host.dataset.expanded=expanded?'true':'false';
     host.dataset.idle=idle&&!expanded?'true':'false';
     host.dataset.filter=filterKind;
+    host.dataset.focus=focusMode;
     host.classList.toggle('is-empty',!state.history.length && !state.pending.length);
     host.replaceChildren();
     if(!state.history.length && !state.pending.length) return;
@@ -623,7 +638,7 @@ export function createSmartFeed(options={}){
     head.className='smartFeedHead';
     const label=doc.createElement('span');
     label.className='smartFeedLabel';
-    label.textContent='KOMUNIKATY';
+    label.textContent=focusMode==='onboarding' ? 'CEL I ODCZYTY' : 'KOMUNIKATY';
     const queueStatus=doc.createElement('span');
     queueStatus.className='smartFeedLive';
     queueStatus.textContent=state.pending.length ? '+'+state.pending.length : 'live';
@@ -906,6 +921,7 @@ export function createSmartFeed(options={}){
     clear,
     destroy,
     setExpanded,
+    setFocusMode,
     open,
     minimize,
     setFilter,
@@ -913,7 +929,7 @@ export function createSmartFeed(options={}){
     showNewer:()=>browseHistory(-1),
     refresh:()=>render(),
     isExpanded:()=>expanded,
-    state:()=>Object.assign(queue.state(),{expanded,filterKind,selectedNoticeId,idle}),
+    state:()=>Object.assign(queue.state(),{expanded,filterKind,focusMode,selectedNoticeId,idle}),
     flush:()=>pump()
   };
   render();

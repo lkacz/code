@@ -41,12 +41,15 @@
     #atomicWinterTimerPanel .atomicWinterTimerIcon{ color:#8dff9f; font-size:14px; filter:drop-shadow(0 0 5px rgba(93,255,124,.55)); }
     #atomicWinterTimerPanel .atomicWinterTimerLabel{ color:#a9eeb4; font-size:10px; font-weight:750; letter-spacing:.025em; }
     #atomicWinterTimerValue{ min-width:5.2ch; color:#f0fff2; font-size:12px; font-variant-numeric:tabular-nums; text-align:right; }
-    #taskPanel{ min-width:0; max-width:min(340px,38vw); overflow:hidden; border-color:rgba(255,196,74,.32); gap:7px; color:#e8e8e8; cursor:pointer; text-align:left; font-family:inherit; transition:background .12s ease,border-color .12s ease; }
+    #hud #taskPanel{ min-width:0; max-width:min(390px,42vw); height:auto; min-height:34px; overflow:hidden; border-color:rgba(255,196,74,.32); gap:7px; color:#e8e8e8; cursor:pointer; text-align:left; font-family:inherit; transition:background .12s ease,border-color .12s ease; }
     #taskPanel[hidden]{ display:none !important; }
     #taskPanel:hover,#taskPanel[aria-expanded="true"]{ background:rgba(48,43,31,.86); border-color:rgba(255,196,74,.62); }
     #taskPanel:focus-visible{ outline:2px solid #ffd36a; outline-offset:2px; }
     #taskPanel::before{ content:"🎯"; flex:none; font-size:12px; }
+    #taskStatusWrap{ display:flex; flex-direction:column; min-width:0; padding:3px 0; line-height:1.18; }
     #taskStatus{ display:block; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#ffe3ac; }
+    #hypothesisStatus{ display:block; min-width:0; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#8edcf4; font-size:9px; font-weight:650; }
+    #hypothesisStatus[hidden]{ display:none; }
     #taskChevron{ flex:none; color:#d9b866; font-size:10px; transition:transform .14s ease; }
     #taskPanel[aria-expanded="true"] #taskChevron{ transform:rotate(180deg); }
     #taskListPanel{ position:fixed; left:calc(var(--safe-left) + 8px); top:calc(var(--safe-top) + 50px); z-index:115; width:min(460px,calc(100vw - var(--safe-left) - var(--safe-right) - 16px)); max-height:min(calc(72vh - var(--safe-top) - var(--safe-bottom)),620px); display:flex; flex-direction:column; overflow:hidden; box-sizing:border-box; pointer-events:auto; color:#eef4fb; background:linear-gradient(160deg,rgba(17,21,29,.97),rgba(10,14,21,.97)); border:1px solid rgba(255,196,74,.28); border-radius:14px; box-shadow:0 18px 44px rgba(0,0,0,.58); backdrop-filter:blur(12px); }
@@ -66,11 +69,19 @@
     .taskTitle{ display:block; color:#f7f9fc; font-size:12px; line-height:1.35; }
     .taskItem.priority .taskTitle{ color:#ffe09b; }
     .taskDetail{ margin:3px 0 0; color:#b8c2cf; font-size:11px; line-height:1.35; }
+    .taskProgress{ display:flex; align-items:center; gap:7px; margin-top:7px; }
+    .taskProgressBar{ flex:1; min-width:50px; height:5px; overflow:hidden; border-radius:999px; background:rgba(255,255,255,.09); }
+    .taskProgressBar i{ display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#46b8e9,#8cf0d0); }
+    .taskProgressValue{ color:#9bd9e8; font-size:9px; font-weight:800; white-space:nowrap; }
+    .taskChips{ display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+    .taskChips span{ padding:2px 6px; border:1px solid rgba(126,206,232,.18); border-radius:999px; background:rgba(64,147,180,.09); color:#9fc7d6; font-size:9px; }
     .taskMeta{ margin-top:5px; color:#7f92a7; font-size:9px; font-weight:700; letter-spacing:.035em; text-transform:uppercase; }
     .taskActions{ display:flex; flex-direction:column; gap:5px; align-items:stretch; }
     .taskAction{ min-width:106px; border:1px solid rgba(255,255,255,.14); border-radius:8px; padding:5px 8px; background:rgba(255,255,255,.065); color:#dce5ef; font:700 10px system-ui; cursor:pointer; white-space:nowrap; }
     .taskAction:hover{ background:rgba(255,255,255,.12); }
     .taskPriority[aria-pressed="true"]{ background:rgba(255,196,74,.2); border-color:rgba(255,196,74,.45); color:#ffe09b; }
+    .taskCustom{ color:#a9ebd5; border-color:rgba(85,216,172,.28); }
+    .taskCustom:hover{ background:rgba(58,174,137,.16); border-color:rgba(85,216,172,.48); }
     .taskDiscard{ color:#e6a5a9; }
     .taskDiscard:hover{ background:rgba(202,72,80,.18); border-color:rgba(238,113,120,.34); }
     #taskListFoot{ padding:8px 13px 10px; border-top:1px solid rgba(255,255,255,.07); color:#8796a8; font-size:10px; line-height:1.35; }
@@ -944,12 +955,24 @@
   .fnStat{ background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:8px 4px; }
   .fnStatVal{ font-size:20px; font-weight:800; color:#ffd76a; }
   .fnStatLabel{ font-size:10px; color:#8ea1b8; margin-top:2px; }
+  .fnCompare{ grid-column:1 / -1; display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:5px; padding-top:3px; }
+  .fnCompareTitle{ width:100%; color:#8498ae; font-size:9px; letter-spacing:.12em; text-transform:uppercase; }
+  .fnCompareChip{ padding:2px 7px; border:1px solid rgba(255,255,255,.11); border-radius:999px; color:#aeb9c8; background:rgba(255,255,255,.035); font-size:9px; }
+  .fnCompareChip.better{ color:#8ce0ae; border-color:rgba(84,210,139,.28); background:rgba(46,158,102,.09); }
+  .fnCompareChip.worse{ color:#e7ad8c; border-color:rgba(226,137,86,.26); }
   .fnCredits{ margin:14px 0 4px; padding-top:10px; border-top:1px solid rgba(255,255,255,.1); display:flex; flex-direction:column; gap:3px; }
   .fnCredit{ display:flex; justify-content:space-between; gap:14px; font-size:11.5px; }
   .fnCreditRole{ color:#8ea1b8; text-align:left; }
   .fnCreditName{ color:#dfe8f5; text-align:right; flex:1; }
   .fnCredit .fnCreditName:only-child{ text-align:center; font-style:italic; color:#ffd76a; margin-top:4px; }
   .fnButtons{ display:flex; gap:10px; justify-content:center; margin-top:16px; flex-wrap:wrap; }
+  .fnBoonChoices{ flex-basis:100%; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; padding:9px; border:1px solid rgba(126,210,190,.24); border-radius:12px; background:rgba(50,150,126,.07); }
+  .fnBoonChoices[hidden]{ display:none; }
+  .fnBoonTitle{ grid-column:1 / -1; color:#a9ebd5; font-size:10px; letter-spacing:.1em; text-transform:uppercase; }
+  .fnBoonChoice{ display:flex; flex-direction:column; gap:3px; min-width:0; padding:8px; border:1px solid rgba(115,222,187,.24); border-radius:9px; background:rgba(15,35,34,.78); color:#e8fff7; cursor:pointer; }
+  .fnBoonChoice:hover{ border-color:rgba(115,222,187,.55); background:rgba(34,74,65,.82); }
+  .fnBoonChoice b{ font-size:10px; }
+  .fnBoonChoice small{ color:#9fc5b9; font-size:9px; line-height:1.25; }
   .fnPrimary{ font-size:14px; font-weight:800; padding:10px 22px; border:none; border-radius:12px; background:#2c7ef8; color:#fff; cursor:pointer; box-shadow:0 3px 14px rgba(44,126,248,.5); }
   .fnPrimary:hover{ filter:brightness(1.12); }
   .fnSecondary{ font-size:12px; font-weight:600; padding:9px 16px; border:1px solid rgba(255,255,255,.22); border-radius:10px; background:rgba(12,18,30,.6); color:#cfe0f4; cursor:pointer; }
@@ -1003,6 +1026,7 @@
   @keyframes fnSealIn{ 0%{ opacity:0; transform:scale(1.6) rotate(-4deg); } 100%{ opacity:1; transform:none; } }
   @keyframes fnGlitch{ 0%{ transform:translate(0); filter:none; } 25%{ transform:translate(-3px,1px) skewX(-1.5deg); filter:hue-rotate(38deg) saturate(1.6); } 50%{ transform:translate(2px,-2px); filter:hue-rotate(-30deg); clip-path:inset(2% 0 6% 0); } 75%{ transform:translate(-1px,2px) skewX(1deg); filter:saturate(2); clip-path:inset(12% 0 0 0); } 100%{ transform:none; filter:none; clip-path:none; } }
   @media (prefers-reduced-motion: reduce){ #finaleScreen *, #finaleScreen{ animation:none !important; transition:none !important; } }
+  @media (max-width:520px){ .fnBoonChoices{ grid-template-columns:1fr; } }
   #finaleBanner{ position:absolute; left:50%; top:52px; transform:translateX(-50%); z-index:90; pointer-events:auto; border:1px solid rgba(155,140,255,.5); border-radius:999px; background:rgba(20,18,34,.92); color:#e8e4ff; font-size:12px; font-weight:600; padding:8px 16px; cursor:pointer; box-shadow:0 4px 18px rgba(155,140,255,.35); animation:tsPulse 2.4s ease-in-out infinite; }
   /* the ceremonies clear the stage: only the world (canvas) shows underneath */
   body.mmTitleOpen #ui > :not(#titleScreen):not(#finaleScreen){ visibility:hidden; }
@@ -1218,7 +1242,7 @@
     <div id="hud">
       <div class="panel" id="atomicWinterTimerPanel" role="timer" aria-live="off" aria-label="Zima nuklearna: pozostały czas" title="Pozostały czas zimy nuklearnej" hidden><span class="atomicWinterTimerIcon" aria-hidden="true">☢️</span><span class="atomicWinterTimerLabel">Zima nuklearna</span><strong id="atomicWinterTimerValue">0:00:00</strong></div>
       <div class="panel" id="worldStatusPanel"><span id="worldStatus" title="Pozycja bohatera · zegar · temperatura · pogoda · pora roku">📍 —</span></div>
-      <button type="button" class="panel" id="taskPanel" aria-haspopup="dialog" aria-expanded="false" aria-controls="taskListPanel" hidden><span id="taskStatus" title="Zadania">Zadania -</span><span id="taskChevron" aria-hidden="true">▼</span></button>
+      <button type="button" class="panel" id="taskPanel" aria-haspopup="dialog" aria-expanded="false" aria-controls="taskListPanel" hidden><span id="taskStatusWrap"><span id="taskStatus" title="Zadania">Zadania -</span><small id="hypothesisStatus" hidden></small></span><span id="taskChevron" aria-hidden="true">▼</span></button>
       <div id="hudSpacer" aria-hidden="true"></div>
       <div class="panel" id="fpsPanel"><span id="fps">— FPS</span></div>
       <div id="menuWrap">

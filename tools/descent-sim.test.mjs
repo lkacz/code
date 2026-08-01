@@ -21,7 +21,7 @@ globalThis.sessionStorage = {
   removeItem: k => { delete store[k]; },
 };
 
-const { challenge: C, CHALLENGE_MODS } = await import('../src/engine/challenge.js');
+const { challenge: C, CHALLENGE_MODS, DESCENT_BOONS } = await import('../src/engine/challenge.js');
 
 // ------------------------------------------------------------- determinism
 {
@@ -32,6 +32,9 @@ const { challenge: C, CHALLENGE_MODS } = await import('../src/engine/challenge.j
   assert.notEqual(C.descentFor(3, 1).seed, C.descentFor(3, 2).seed, 'a different base seed descends differently');
   assert.ok(Number.isInteger(a.seed) && a.seed >= 0, 'the derived seed is a usable worldgen seed');
   assert.ok(a.seed < 1e9, 'and stays inside the seed range');
+  assert.equal(a.boonChoices.length,3,'every descent offers three deterministic positive protocols');
+  assert.equal(new Set(a.boonChoices).size,3,'the protocol choices never repeat within one offer');
+  assert.ok(a.boonChoices.every(key=>DESCENT_BOONS[key]),'every offered protocol comes from the bounded table');
 }
 
 // ------------------------------------------------------- curses only grow
@@ -64,14 +67,18 @@ const { challenge: C, CHALLENGE_MODS } = await import('../src/engine/challenge.j
 }
 
 // ------------------------------------------------------ it is a shareable link
-// A descent must be expressible as an ordinary ?seed&mods link — no new protocol.
+// A descent remains expressible as the ordinary challenge query, including its
+// one bounded, non-stacking positive protocol.
 {
   const plan = C.descentFor(4, 999);
-  const link = C.challengeLink('https://example.test/', plan.seed, plan.mods);
+  const boon=plan.boonChoices[0];
+  const link = C.challengeLink('https://example.test/', plan.seed, plan.mods,boon);
   assert.ok(link.includes('seed=' + plan.seed), 'the descent seed round-trips into a link');
   const parsed = C.parseChallenge(link.slice(link.indexOf('?')));
   assert.equal(parsed.seed, plan.seed, 'the link parses back to the same world');
   assert.deepEqual(parsed.mods, plan.mods, 'and the same curses');
+  assert.equal(parsed.boon,boon,'and the same selected protocol');
+  assert.deepEqual(C.boonModifiersFor(boon),DESCENT_BOONS[boon].mods,'the selected protocol derives one canonical stat bundle');
 }
 
 // ------------------------------------------------- floors COMPOSE, never clobber
@@ -105,8 +112,8 @@ const { challenge: C, CHALLENGE_MODS } = await import('../src/engine/challenge.j
   const finSrc = await readFile(new URL('../src/engine/finale.js', import.meta.url), 'utf8');
   const attSrc = await readFile(new URL('../src/engine/attention.js', import.meta.url), 'utf8');
   assert.match(finSrc, /descentFor\(depth \+ 1/, 'the finale offers the NEXT layer down (unlock() already counted this world in completions, so +2 skipped a layer)');
-  assert.match(finSrc, /C\.queueNext\(\{ seed: plan\.seed, mods: plan\.mods \}\)/,
-    'the descent rides the existing one-shot challenge handoff — no new protocol');
+  assert.match(finSrc, /C\.queueNext\(\{seed:plan\.seed,mods:plan\.mods,boon\}\)/,
+    'the descent rides the existing one-shot challenge handoff with one selected protocol');
   assert.match(finSrc, /state\.onNewGame/, 'and then takes the ordinary new-game path');
   assert.match(attSrc, /Math\.max\(floorFor\(\), descentFloor\(\)\)/,
     'exactly ONE writer composes both floors by max');

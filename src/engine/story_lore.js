@@ -110,9 +110,9 @@ const STORY_LORE = {
     },
     treeWatchShort:{
       prompt:[
-        'Wejdz na czubek drzewa i stoj tam 10 sekund. Zielony licznik nad glowa pokaze, kiedy pomiar naprawde ruszyl.',
-        'Potrzebuje obserwacji z drzewa. Dziesiec sekund na gorze, oczy na swiat, nie na kolana.',
-        'Stoj na drzewie przez 10 sekund. Jesli mapa ma kulisy, z wysokosci czasem widac szew.'
+        'Wejdź na czubek drzewa i utrzymaj pomiar przez 6 sekund. Zielony licznik pokaże, kiedy próbka naprawdę ruszyła.',
+        'Potrzebuję aktywnego odczytu z korony drzewa. Sześć sekund na górze, oczy na świat.',
+        'Dotrzyj na drzewo i utrzymaj pozycję przez 6 sekund. Jeśli mapa ma kulisy, z wysokości widać szew.'
       ],
       missing:[
         'To nie jest czubek drzewa. Drzewo musi czuc twoj ciezar i twoje filozoficzne niezdecydowanie.',
@@ -120,16 +120,16 @@ const STORY_LORE = {
         'Potrzebuje drzewa, nie ziemi obok drzewa. Symulacja tez zna wymowki.'
       ],
       complete:[
-        'Dziesiec sekund wystarcza tylko, zeby swiat poprawil miny. Wez skrzynie i stan tam dluzej.',
-        'Cos sie nie zgadza. Drzewo milczalo za rowno. Skrzynia jest twoja, ale staniesz dluzej.',
-        'Dobra, pierwszy pomiar mamy i skrzynia jest twoja. Teraz sprawdzimy, czy cierpliwosc lamie renderer.'
+        'Odczyt jest czysty. Weź skrzynię i kamień mistrza; teraz sprawdzimy, czy piasek odcina obserwatora.',
+        'Coś się nie zgadza. Drzewo milczało za równo. Nagroda jest twoja; kolejna próba wymaga piaskowej zasłony.',
+        'Pierwszy pomiar mamy. Skrzynia i kamień mistrza są twoje. Zbudujmy teraz piaskowe U.'
       ]
     },
     treeWatchLong:{
       prompt:[
-        'Teraz 30 sekund na czubku drzewa. Jesli ktos patrzy na nas z gory, niech tez poczuje nude eksperymentu.',
-        'Stoj na drzewie pol minuty. Dlugie patrzenie jest kilofem dla klamstw.',
-        'Jeszcze raz, ale 30 sekund. Krotka obserwacja sprawdza teren; dluga sprawdza obserwatora.'
+        'Ten starszy zapis potrzebuje jeszcze 8 sekund na czubku drzewa.',
+        'Utrzymaj pozycję przez 8 sekund. Domykamy zgodność dawnego eksperymentu.',
+        'Jeszcze raz, krótko: 8 sekund na koronie drzewa.'
       ],
       missing:[
         'Wroc na czubek drzewa. Tak, wiem, ze brzmi jak najgorsza wersja medytacji.',
@@ -144,9 +144,9 @@ const STORY_LORE = {
     },
     sandHide:{
       prompt:[
-        'Teraz schowaj sie w piasku na 30 sekund: piasek pod stopami i po obu stronach. Dach nie jest potrzebny. Zloty licznik pokaze, ze pomiar ruszyl.',
-        'Zbuduj z piasku male U i stan w srodku na 30 sekund. Nie zasypuj glowy; pustynia ma cie ukryc, nie pogrzebac.',
-        'Ukryj sie pomiedzy blokami piasku przez 30 sekund. Piasek pod nogami, sciana z lewej i prawej, a nad glowa wolne miejsce.'
+        'Teraz zbuduj piaskowe U i utrzymaj zasłonę przez 8 sekund: piasek pod stopami i po obu stronach. Złoty licznik potwierdzi pomiar.',
+        'Zbuduj z piasku małe U i stań w środku przez 8 sekund. Pustynia ma cię ukryć, nie pogrzebać.',
+        'Ukryj się pomiędzy blokami piasku przez 8 sekund. Podłoga, ściana z lewej i prawej, a nad głową wolne miejsce.'
       ],
       missing:[
         'Jeszcze nie licze. Stan na piasku pomiedzy dwoma blokami piasku; nad glowa zostaw powietrze.',

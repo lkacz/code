@@ -43,6 +43,26 @@ export const CHALLENGE_MODS = Object.freeze({
 		loot: { dropChanceMult: 0.5 } }
 });
 
+// A descent also offers one non-stacking protocol: a useful playstyle bias with
+// an explicit cost. Protocols are player modifiers, not permanent power, and a
+// new layer replaces the previous choice.
+export const DESCENT_BOONS = Object.freeze({
+	pathfinder:{label:'Protokół Szlaku',desc:'Ruch +12%, kopanie -8%.',mods:{moveSpeedMult:1.12,mineSpeedMult:0.92}},
+	delver:{label:'Protokół Głębi',desc:'Kopanie +12%, ruch -6%.',mods:{mineSpeedMult:1.12,moveSpeedMult:0.94}},
+	warded:{label:'Protokół Pancerza',desc:'Redukcja obrażeń +8%, ruch -7%.',mods:{damageReductionBonus:0.08,moveSpeedMult:0.93}},
+	striker:{label:'Protokół Natarcia',desc:'Atak +3, redukcja obrażeń -4 p.p.',mods:{attackDamage:3,damageReductionBonus:-0.04}},
+	amphibious:{label:'Protokół Przepływu',desc:'Szybsze pływanie, skok -6%.',mods:{waterMoveSpeedMult:0.78,jumpPowerMult:0.94}},
+	luminous:{label:'Protokół Światła',desc:'Większy zasięg widzenia, kopanie -6%.',mods:{visionRadius:12,mineSpeedMult:0.94}}
+});
+export function sanitizeBoon(value){
+	const key=String(value||'').trim().toLowerCase();
+	return Object.prototype.hasOwnProperty.call(DESCENT_BOONS,key) ? key : '';
+}
+export function boonModifiersFor(value){
+	const key=sanitizeBoon(value);
+	return key ? Object.assign({},DESCENT_BOONS[key].mods) : null;
+}
+
 function safeDecode(s){ try{ return decodeURIComponent(s); }catch(e){ return s; } }
 
 // ?seed=… is the anchor: mods without a seed are not a challenge (they would
@@ -51,25 +71,27 @@ function safeDecode(s){ try{ return decodeURIComponent(s); }catch(e){ return s; 
 export function parseChallenge(search){
 	let q = String(search || '');
 	if(q.startsWith('?')) q = q.slice(1);
-	let seed = null; const raw = [];
+	let seed = null, boon=''; const raw = [];
 	for(const part of q.split('&')){
 		const eq = part.indexOf('=');
 		const k = eq >= 0 ? part.slice(0, eq) : part;
 		const v = eq >= 0 ? safeDecode(part.slice(eq + 1)) : '';
 		if(k === 'seed') seed = normalizeWorldSeed(v);
 		else if(k === 'mods') for(const m of String(v).slice(0, 200).split(',')) raw.push(m.trim().toLowerCase());
+		else if(k === 'boon') boon=sanitizeBoon(v);
 	}
 	if(seed === null) return null;
 	const mods = Object.keys(CHALLENGE_MODS).filter(k => raw.includes(k));
-	return { seed, mods };
+	return Object.assign({seed,mods},boon?{boon}:{});
 }
 
-export function challengeLink(base, seed, mods){
+export function challengeLink(base, seed, mods, boon){
 	const b = String(base || '').split(/[?#]/)[0];
 	const s = normalizeWorldSeed(seed);
 	if(!s) return null;
 	const list = sanitizeMods(mods);
-	return b + '?seed=' + s + (list.length ? '&mods=' + list.join(',') : '');
+	const protocol=sanitizeBoon(boon);
+	return b + '?seed=' + s + (list.length ? '&mods=' + list.join(',') : '') + (protocol ? '&boon='+protocol : '');
 }
 
 export function sanitizeMods(mods){
@@ -144,6 +166,8 @@ function sanitizeChallenge(c){
 	const seed = normalizeWorldSeed(c.seed);
 	if(!seed) return null;
 	const out = { seed, mods: sanitizeMods(c.mods) };
+	const boon=sanitizeBoon(c.boon);
+	if(boon) out.boon=boon;
 	if(c.failed) out.failed = 1; // ironman verdict survives reloads with the run
 	return out;
 }
@@ -224,6 +248,13 @@ export function descentFor(layer, baseSeed){
 		if(taken === 'permanight' && picked.includes('permaday')) continue;
 		picked.push(taken);
 	}
+	const boonPool=Object.keys(DESCENT_BOONS);
+	const boonChoices=[];
+	let boonCursor=descentSeed(n+31,baseSeed);
+	while(boonChoices.length<3&&boonPool.length){
+		boonCursor=Math.imul(boonCursor^(boonCursor>>>16),0x27d4eb2d)>>>0;
+		boonChoices.push(boonPool.splice(boonCursor%boonPool.length,1)[0]);
+	}
 	return {
 		layer: n,
 		seed,
@@ -231,6 +262,7 @@ export function descentFor(layer, baseSeed){
 		// the descent floor composes with (never clobbers) the deeds axis and the
 		// debug slider: world_hostility takes the MAX of ramp and floor
 		hostilityFloor: Math.min(2.2, (n - 1) * 0.35),
+		boonChoices
 	};
 }
 
@@ -242,8 +274,9 @@ export function queueNextChallenge(c){
 
 // Ghost guests adopt the HOST's mods from the welcome packet: law/display
 // parity for the shared world. Re-whitelisted here — the host is remote input.
-let remoteMods = null;
+let remoteMods = null, remoteBoon='';
 function modsNow(){ return activeChallenge ? activeChallenge.mods : (remoteMods || []); }
+function boonNow(){ return activeChallenge ? sanitizeBoon(activeChallenge.boon) : remoteBoon; }
 // The derived tunings are consulted from hot paths (craft bans per recipe per
 // panel render, combat per wound, loot per kill) — memoize them against the
 // current mod set; the only invalidation point is a remote-mods adoption.
@@ -291,6 +324,11 @@ function setRemoteMods(list){
 	applyRemoteWorldMods();
 	return remoteMods ? remoteMods.slice() : [];
 }
+function setRemoteBoon(value){
+	remoteBoon=activeChallenge ? '' : sanitizeBoon(value);
+	try{ if(MMR&&MMR.recomputeModifiers) MMR.recomputeModifiers(); }catch(e){}
+	return remoteBoon;
+}
 applyNightLock();
 
 // The ironman verdict: a real death voids the run's honor. Non-destructive by
@@ -307,12 +345,14 @@ function markFailed(){
 
 const api = {
 	MODS: CHALLENGE_MODS,
+	BOONS: DESCENT_BOONS,
 	active: activeChallenge,
 	pending: pendingChallenge,
 	list: () => modsNow().slice(),
 	has: (m) => modsNow().includes(m),
-	link: (base) => challengeLink(base, (MMR && MMR.worldGen) ? MMR.worldGen.worldSeed : 0, modsNow()),
+	link: (base) => challengeLink(base, (MMR && MMR.worldGen) ? MMR.worldGen.worldSeed : 0, modsNow(),boonNow()),
 	setRemoteMods,
+	setRemoteBoon,
 	queueNext: queueNextChallenge,
 	nightLock: () => derivedNow().night, // ui.js's debug slider must not clobber the curse
 	spawnTuning: () => derivedNow().spawn,
@@ -322,7 +362,9 @@ const api = {
 	isIronman: () => derivedNow().ironman,
 	markFailed,
 	failed: () => runFailed,
-	parseChallenge, challengeLink, applyWorldMods, sanitizeMods,
+	boon:()=>boonNow(),
+	boonModifiers:()=>boonModifiersFor(boonNow()),
+	parseChallenge, challengeLink, applyWorldMods, sanitizeMods, sanitizeBoon, boonModifiersFor,
 	descentFor, descentSeed
 };
 if(MMR) MMR.challenge = api;

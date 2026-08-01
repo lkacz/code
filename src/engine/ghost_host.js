@@ -517,7 +517,8 @@ const ghostHost = (function(){
 				// active challenge mods ride the welcome: guests mirror the world's laws
 				// (endless night, doubled wounds) — display/law parity, re-whitelisted there
 				const chalMods = (MMR && MMR.challenge && MMR.challenge.list) ? MMR.challenge.list() : [];
-				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room, mode: entry.mode, rt: entry.resumeToken, chal: chalMods.length ? chalMods : undefined });
+				const chalBoon = (MMR && MMR.challenge && MMR.challenge.boon) ? MMR.challenge.boon() : '';
+				entry.peer.send({ t: 'welcome', proto: NET.GHOST_PROTO, host: s.name, room: s.room, mode: entry.mode, rt: entry.resumeToken, chal: chalMods.length ? chalMods : undefined, cb:chalBoon||undefined });
 				entry.lastSnapAt = now();
 				sendSnapshot(s, entry.peer);
 				sendInvFull(s, entry.peer); // the world save carries invasions, but a fresh

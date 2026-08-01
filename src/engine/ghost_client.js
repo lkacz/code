@@ -1260,6 +1260,7 @@ const ghostClient = (function(){
 				// the host's challenge mods are remote input: setRemoteMods re-whitelists
 				// against OUR table before mirroring the world's laws (night lock etc.)
 				if(Array.isArray(pl.chal) && MMR && MMR.challenge && MMR.challenge.setRemoteMods) MMR.challenge.setRemoteMods(pl.chal);
+				if(MMR && MMR.challenge && MMR.challenge.setRemoteBoon) MMR.challenge.setRemoteBoon(pl.cb);
 				lockedConn = c;
 				api.lock(c);
 				showVeil('Połączono z warstwą gracza <b>' + esc(hostName) + '</b>.<br>Pobieram świat…');

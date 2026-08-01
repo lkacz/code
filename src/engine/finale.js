@@ -195,6 +195,22 @@ const finale = (function(){
     }catch(e){ /* ignore */ }
     return out;
   }
+  function archiveComparison(rep,archive){
+    const history=archive&&Array.isArray(archive.history)?archive.history:[];
+    if(history.length<2) return [];
+    const previous=history[history.length-2];
+    const current=rep||history[history.length-1]||{};
+    const rows=[];
+    const add=(label,now,before,lowerBetter)=>{
+      const a=Number(now)||0,b=Number(before)||0,delta=a-b;
+      rows.push({label,value:a,previous:b,delta,better:delta===0?null:(lowerBetter?delta<0:delta>0)});
+    };
+    add('dni',current.day,previous.day,true);
+    add('śmierci',current.deaths,previous.deaths,true);
+    add('odkrycia',current.discoveries&&current.discoveries.count,previous.discoveries&&previous.discoveries.count,false);
+    add('bossowie',current.bossKills,previous.bossKills,false);
+    return rows;
+  }
 
   function play(name, opts){
     try{ if(MM.audio && MM.audio.play) MM.audio.play(name, opts); }catch(e){ /* ignore */ }
@@ -263,8 +279,9 @@ const finale = (function(){
       const c = MM.challenge;
       if(!c || !c.list) return null;
       const mods = c.list();
-      if(!mods.length) return null;
-      const labels = mods.map(m => (c.MODS[m] && c.MODS[m].label) || m).join(', ');
+      const boon=c.boon&&c.boon();
+      if(!mods.length&&!boon) return null;
+      const labels = mods.map(m => (c.MODS[m] && c.MODS[m].label) || m).join(', ')+(boon?((mods.length?' · ':'')+((c.BOONS[boon]&&c.BOONS[boon].label)||boon)):'');
       return labels + (c.failed && c.failed() ? ' · ☠ przegrane' : '');
     }catch(e){ return null; }
   }
@@ -667,6 +684,18 @@ const finale = (function(){
     statRow(grid, 'kamienie milowe', r.milestones.done, '/' + r.milestones.total, staged);
     statRow(grid, 'pokonani bossowie', r.bossKills, '', staged);
     statRow(grid, 'zmiany współrzędnych', r.deaths, '', staged);
+    const comparison=archiveComparison(r,layers());
+    if(comparison.length){
+      const compare=node('div','fnCompare');
+      compare.appendChild(node('strong','fnCompareTitle','Zmiana od poprzedniej warstwy'));
+      for(const row of comparison){
+        const delta=row.delta===0?'bez zmian':((row.delta>0?'+':'')+row.delta);
+        const chip=node('span','fnCompareChip '+(row.better===true?'better':row.better===false?'worse':'same'),row.label+': '+delta);
+        chip.title='Poprzednio: '+row.previous+' · teraz: '+row.value;
+        compare.appendChild(chip);
+      }
+      grid.appendChild(compare);
+    }
     card.appendChild(grid);
 
     const seal = dom.verdict = node('div', 'fnVerdict fnAct');
@@ -727,21 +756,29 @@ const finale = (function(){
       const C = root.MM && root.MM.challenge;
       if(!C || !C.descentFor){ descend.disabled = true; descend.textContent = 'zejście niedostępne'; return; }
       const plan = C.descentFor(depth + 1, report().seed || 0);
-      const names = (plan.mods || []).map(m => (C.MODS[m] && C.MODS[m].label) || m).join(', ');
-      const ok = root.confirm ? root.confirm(
-        'Zejść na warstwę ' + plan.layer + '?\n\n' +
-        (names ? 'Klątwy tej warstwy: ' + names + '\n' : 'Ta warstwa jest jeszcze łagodna.\n') +
-        '\nBieżący świat zostanie zastąpiony. Ręczne zapisy i ustawienia zostaną zachowane.') : true;
-      if(!ok) return;
-      descend.disabled = true; descend.textContent = 'Schodzę…';
-      let started = false;
-      try{
-        C.queueNext({ seed: plan.seed, mods: plan.mods });
-        if(typeof state.onNewGame === 'function') started = !!state.onNewGame();
-      }catch(e){ started = false; }
-      if(!started){ descend.disabled = false; descend.textContent = '⬇ Zejdź głębiej (warstwa ' + (depth + 1) + ')'; }
+      const chooser=dom.boonChoices;
+      if(!chooser) return;
+      chooser.hidden=false;
+      chooser.replaceChildren(node('strong','fnBoonTitle','Wybierz jeden protokół tej warstwy'));
+      const names=(plan.mods||[]).map(m=>(C.MODS[m]&&C.MODS[m].label)||m).join(', ');
+      for(const boon of plan.boonChoices||[]){
+        const def=C.BOONS&&C.BOONS[boon]; if(!def) continue;
+        const choice=node('button','fnBoonChoice'); choice.type='button';
+        choice.appendChild(node('b','',def.label));
+        choice.appendChild(node('small','',def.desc));
+        choice.addEventListener('click',()=>{
+          const ok=root.confirm?root.confirm('Zejść na warstwę '+plan.layer+'?\n\n'+(names?'Klątwy: '+names+'\n':'Bez dodatkowej klątwy.\n')+'Protokół: '+def.label+' — '+def.desc+'\n\nBieżący świat zostanie zastąpiony.'):true;
+          if(!ok) return;
+          descend.disabled=true; choice.disabled=true; descend.textContent='Schodzę…';
+          let started=false;
+          try{ C.queueNext({seed:plan.seed,mods:plan.mods,boon}); if(typeof state.onNewGame==='function') started=!!state.onNewGame(); }catch(e){ started=false; }
+          if(!started){ descend.disabled=false; choice.disabled=false; descend.textContent='⬇ Zejdź głębiej (warstwa '+(depth+1)+')'; }
+        });
+        chooser.appendChild(choice);
+      }
     });
     btns.appendChild(descend);
+    dom.boonChoices=node('div','fnBoonChoices'); dom.boonChoices.hidden=true; btns.appendChild(dom.boonChoices);
     const keep = node('button', 'fnSecondary', '📸 Pamiątka warstwy');
     keep.type = 'button';
     keep.addEventListener('click', ()=>{
@@ -1089,7 +1126,7 @@ const finale = (function(){
     });
   }
 
-  const api = { report, credits, verdict, shouldInstant, souvenir, open, close, isOpen, unlocked, unlock,
+  const api = { report, credits, verdict, archiveComparison, shouldInstant, souvenir, open, close, isOpen, unlocked, unlock,
     update, wire, reset, metrics, ceremony, layers,
     config: {BANNER_DELAY, AUTO_OPEN_DELAY, CEREMONY},
     _debug: {state} };

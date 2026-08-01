@@ -40,6 +40,22 @@ const tasks = (function(){
     if(src.label) target.label = cleanText(src.label, '', 64);
     return target;
   }
+  function cleanProgress(src){
+    if(!src || typeof src !== 'object') return null;
+    const target=Math.max(0,num(src.target,0));
+    if(!(target>0)) return null;
+    return {
+      current:+clamp(num(src.current,0),0,target).toFixed(3),
+      target:+target.toFixed(3),
+      label:cleanText(src.label,'postęp',32)
+    };
+  }
+  function cleanAction(src){
+    if(!src || typeof src !== 'object') return null;
+    const id=cleanText(src.id,'',64);
+    const label=cleanText(src.label,'',40);
+    return id && label ? {id,label} : null;
+  }
   function baseTaskId(src){
     if(!src || typeof src !== 'object') return '';
     const direct = cleanText(src.id, '', 80);
@@ -63,6 +79,11 @@ const tasks = (function(){
       updatedAt:t.updatedAt
     };
     if(t.target) out.target = Object.assign({}, t.target);
+    if(t.progress) out.progress = Object.assign({},t.progress);
+    if(t.reward) out.reward = t.reward;
+    if(t.difficulty) out.difficulty = t.difficulty;
+    if(t.reason) out.reason = t.reason;
+    if(t.action) out.action = Object.assign({},t.action);
     if(t.completedAt) out.completedAt = t.completedAt;
     if(t.discardedAt) out.discardedAt = t.discardedAt;
     if(t.firstSeenAt) out.firstSeenAt = t.firstSeenAt;
@@ -85,6 +106,8 @@ const tasks = (function(){
       ? 'done'
       : (src.status === 'discarded' ? 'discarded' : 'active');
     const n = nowStamp();
+    const hasProgress=Object.prototype.hasOwnProperty.call(src,'progress');
+    const hasAction=Object.prototype.hasOwnProperty.call(src,'action');
     return {
       id,
       kind:cleanText(src.kind || (prev && prev.kind), 'task', 32),
@@ -95,6 +118,11 @@ const tasks = (function(){
       priority:clamp(Math.round(num(src.priority, prev ? prev.priority : 10)), -100, 100),
       pointer:!!(target && src.pointer !== false),
       target,
+      progress:hasProgress ? cleanProgress(src.progress) : (prev && prev.progress ? cleanProgress(prev.progress) : null),
+      reward:cleanText(src.reward != null ? src.reward : (prev && prev.reward),'',64),
+      difficulty:cleanText(src.difficulty != null ? src.difficulty : (prev && prev.difficulty),'',32),
+      reason:cleanText(src.reason != null ? src.reason : (prev && prev.reason),'',100),
+      action:hasAction ? cleanAction(src.action) : (prev && prev.action ? cleanAction(prev.action) : null),
       createdAt:Math.max(0, Math.floor(num(src.createdAt, prev ? prev.createdAt : n))),
       updatedAt:Math.max(0, Math.floor(num(src.updatedAt, n))),
       completedAt:status === 'done' ? Math.max(0, Math.floor(num(src.completedAt, n))) : 0,
@@ -170,6 +198,11 @@ const tasks = (function(){
       && a.priority === b.priority
       && a.pointer === b.pointer
       && a.createdAt === b.createdAt
+      && JSON.stringify(a.progress||null) === JSON.stringify(b.progress||null)
+      && a.reward === b.reward
+      && a.difficulty === b.difficulty
+      && a.reason === b.reason
+      && JSON.stringify(a.action||null) === JSON.stringify(b.action||null)
       && sameTarget(a.target,b.target));
   }
   function upsert(src){
@@ -446,7 +479,7 @@ const tasks = (function(){
     return true;
   }
   function setContext(next){
-    context = next && typeof next === 'object' ? next : {};
+    context = next && typeof next === 'object' ? Object.assign({},context,next) : {};
     return true;
   }
   function notifyChange(kind, task){
@@ -458,6 +491,9 @@ const tasks = (function(){
     if(source === 'story') return 'Fabuła';
     if(source === 'invasions') return 'Inwazja';
     if(source === 'tutorial') return 'Samouczek';
+    if(source === 'hypothesis') return 'Atlas';
+    if(source === 'mastery') return 'Mistrzostwo';
+    if(source === 'combat') return 'Walka';
     return cleanText(source, 'Zadanie', 28);
   }
   function setTaskListOpen(open){
@@ -502,7 +538,7 @@ const tasks = (function(){
     const list = activeList(player);
     const signature = list.map(t=>{
       const d = distanceToTask(t, player);
-      return [t.id,t.title,t.detail,t.isPriority ? 1 : 0,Number.isFinite(d) ? Math.round(d) : '-'].join('|');
+      return [t.id,t.title,t.detail,t.isPriority ? 1 : 0,Number.isFinite(d) ? Math.round(d) : '-',JSON.stringify(t.progress||null),t.reward||'',t.difficulty||'',t.reason||'',JSON.stringify(t.action||null)].join('|');
     }).join('::');
     if(signature === lastListSignature && host.childNodes && host.childNodes.length === list.length) return;
     lastListSignature = signature;
@@ -525,6 +561,28 @@ const tasks = (function(){
         detail.textContent = task.detail;
         copy.appendChild(detail);
       }
+      if(task.progress){
+        const progress=doc.createElement('div');
+        progress.className='taskProgress';
+        const bar=doc.createElement('span');
+        bar.className='taskProgressBar';
+        const fill=doc.createElement('i');
+        fill.style.width=Math.round(100*task.progress.current/task.progress.target)+'%';
+        bar.appendChild(fill);
+        const value=doc.createElement('span');
+        value.className='taskProgressValue';
+        value.textContent=Math.round(task.progress.current)+'/'+Math.round(task.progress.target)+' '+task.progress.label;
+        progress.append(bar,value);
+        copy.appendChild(progress);
+      }
+      if(task.reason || task.difficulty || task.reward){
+        const chips=doc.createElement('div');
+        chips.className='taskChips';
+        if(task.difficulty){ const chip=doc.createElement('span'); chip.textContent='Wyzwanie: '+task.difficulty; chips.appendChild(chip); }
+        if(task.reward){ const chip=doc.createElement('span'); chip.textContent='Cel: '+task.reward; chips.appendChild(chip); }
+        if(task.reason){ const chip=doc.createElement('span'); chip.textContent=task.reason; chips.appendChild(chip); }
+        copy.appendChild(chips);
+      }
       const meta = doc.createElement('div');
       meta.className = 'taskMeta';
       const dist = distanceToTask(task, player);
@@ -536,6 +594,7 @@ const tasks = (function(){
       const actions = doc.createElement('div');
       actions.className = 'taskActions';
       actions.appendChild(taskActionButton(doc,'priority',task,task.isPriority ? '★ Priorytet' : '☆ Ustaw priorytet','taskPriority'));
+      if(task.action) actions.appendChild(taskActionButton(doc,'custom',task,task.action.label,'taskCustom'));
       actions.appendChild(taskActionButton(doc,'discard',task,'Odrzuć','taskDiscard'));
       item.appendChild(actions);
       host.appendChild(item);
@@ -559,6 +618,10 @@ const tasks = (function(){
       const id = button.dataset.taskId || '';
       if(button.dataset.action === 'priority') togglePriority(id);
       else if(button.dataset.action === 'discard') discard(id);
+      else if(button.dataset.action === 'custom'){
+        const task=active.get(id);
+        try{ if(task && task.action && context && typeof context.onAction==='function') context.onAction(task.action.id,serializeTask(task)); }catch(e){}
+      }
       if(active.size < 1) setTaskListOpen(false);
       else renderTaskList(playerRef());
     });
@@ -592,9 +655,12 @@ const tasks = (function(){
       lastHudTitle = '';
       status.textContent = '';
       status.title = '';
+      const hypothesisStatus=doc.getElementById('hypothesisStatus');
+      if(hypothesisStatus){ hypothesisStatus.hidden=true; hypothesisStatus.textContent=''; }
       return;
     }
-    const first = list[0];
+    const hypothesis=list.find(t=>t.source==='hypothesis') || null;
+    const first = list.find(t=>t.source!=='hypothesis') || hypothesis || list[0];
     const dist = distanceToTask(first, player);
     const distText = Number.isFinite(dist) ? ' '+formatDistance(dist) : '';
     const more = list.length > 1 ? ' +'+(list.length-1) : '';
@@ -605,12 +671,18 @@ const tasks = (function(){
     }).join('\n');
     panel.hidden = false;
     if(text !== lastHudText){ lastHudText = text; status.textContent = text; }
+    const hypothesisStatus=doc.getElementById('hypothesisStatus');
+    if(hypothesisStatus){
+      const show=!!(hypothesis && hypothesis.id!==first.id);
+      hypothesisStatus.hidden=!show;
+      hypothesisStatus.textContent=show ? 'Atlas: '+hypothesis.title.replace(/^Hipoteza Atlasu:\s*/,'') : '';
+    }
     if(title !== lastHudTitle){ lastHudTitle = title; status.title = title; panel.title = title; }
     if(taskListOpen) renderTaskList(player);
   }
   function snapshot(){
     return {
-      v:2,
+      v:3,
       active:activeList().slice(0,MAX_ACTIVE),
       discarded:Array.from(discarded.values()).slice(0,MAX_DISCARDED).map(serializeTask),
       priorityId:priorityTaskId || '',

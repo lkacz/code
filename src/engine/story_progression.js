@@ -23,10 +23,10 @@ const storyProgression = (function(){
     TASK_PRIORITY: 70
   };
   const MENTOR_TASKS = {
-    watch_area:  {title:'Obserwacja okolicy',      detail:'Stary Kwadrat chce wiedziec, czy teren zachowuje sie grzecznie pod spojrzeniem.'},
-    tree_watch_short:{title:'Dowolne drzewo (10 s)',detail:'Wejdz na dowolne drzewo. Zielony licznik nad glowa potwierdzi, ze czas plynie.'},
-    tree_watch_long:{title:'Dowolne drzewo (30 s)', detail:'Stan na dowolnym drzewie. Dluga obserwacja sprawdza obserwatora, nie teren.'},
-    sand_hide:   {title:'Miedzy piaskiem (30 s)',  detail:'Stan na piasku pomiedzy dwoma blokami piasku. Dach nie jest potrzebny; zloty licznik potwierdzi pomiar.'},
+    watch_area:  {title:'Laboratorium: skan okolicy',detail:'Odejdź od mentora i utrzymaj aktywny odczyt terenu przez 4 sekundy.'},
+    tree_watch_short:{title:'Laboratorium: korona drzewa',detail:'Dotrzyj na dowolne drzewo i utrzymaj zielony odczyt przez 6 sekund.'},
+    tree_watch_long:{title:'Laboratorium: zapis zgodności',detail:'Starszy zapis wymaga jeszcze 8 sekund na dowolnej koronie drzewa.'},
+    sand_hide:   {title:'Laboratorium: piaskowa zasłona',detail:'Zbuduj piaskowe U i utrzymaj złoty odczyt przez 8 sekund.'},
     water:       {title:'Woda dla mentora',        detail:'Przynies 1 blok wody. Pragnienie albo skrypt - sprawdzimy.'},
     raw_meat:    {title:'Blok miesa (3 skrawki)',  detail:'Zwierzeta zostawiaja skrawki miesa. Zbierz 3 i w craftingu, w zakladce Start, zrob 1 Blok miesa.'},
     cooked_meat: {title:'Upiecz Blok miesa',       detail:'Nie zabral miesa. Drewno lub wegiel to paliwo. Symulator miotacza: przytrzymaj LPM. Wegiel dymi czarno. Symulator mozesz zatrzymac.'},
@@ -63,6 +63,7 @@ const storyProgression = (function(){
 
   const state = {
     seen: {},        // beat id -> 1 (persisted)
+    expeditions: {}, // west/east -> furthest progress + unlocked return mark
     tickAcc: 0,
     beatQueue: [],   // pending staged lines {t,text}
     lastTaskIds: []
@@ -168,7 +169,7 @@ const storyProgression = (function(){
     return null;
   }
 
-  function upsertStoryTask(def,target){
+  function upsertStoryTask(def,target,extra){
     const tasks = tasksApi();
     if(!tasks || typeof tasks.upsert!=='function') return null;
     const src = {
@@ -181,6 +182,7 @@ const storyProgression = (function(){
       pointer:!!target,
       target:target ? {x:target.x, y:target.y, label:def.label||def.title} : null
     };
+    if(extra && typeof extra==='object') Object.assign(src,extra);
     return tasks.upsert(src);
   }
   function syncStoryTasks(desired){
@@ -190,7 +192,7 @@ const storyProgression = (function(){
     for(const d of desired){
       if(!d) continue;
       keep.add(d.def.id);
-      upsertStoryTask(d.def, d.target);
+      upsertStoryTask(d.def, d.target, d.extra);
     }
     // Retire story tasks the arc no longer implies.
     if(typeof tasks.activeList==='function' && typeof tasks.complete==='function'){
@@ -249,7 +251,59 @@ const storyProgression = (function(){
     return 'dormant';
   }
 
-  function evaluate(getTile,setTile){
+  const EXPEDITION_STAGES = Object.freeze([
+    {at:0,label:'Odczyt horyzontu',difficulty:'daleka wyprawa',line:'Horyzont odpowiada słabym sygnałem. Kierunek jest prawdziwy; droga dopiero zaczyna się.'},
+    {at:0.22,label:'Granica wpływu',difficulty:'teren nacisku',line:'Powietrze zmienia reguły. Zapisuję znak powrotu na skraju wpływu Strażnika.'},
+    {at:0.52,label:'Strefa zakłóceń',difficulty:'strefa Strażnika',line:'Sygnał Strażnika zagłusza zwykły świat. Drugi znak powrotu utrwala najdalszy bezpieczny odczyt.'},
+    {at:0.82,label:'Próg areny',difficulty:'próg areny',line:'To już nie pogoda. Arena jest blisko, a każdy następny znak należy do Strażnika.'}
+  ]);
+  function expeditionExtra(key,target,player){
+    if(!target) return null;
+    const p=player||root.player||null;
+    let row=state.expeditions[key];
+    if(!row) row=state.expeditions[key]={best:0,stage:0,anchor:null};
+    const span=Math.max(1,Math.abs(Number(target.x)||1));
+    const signed=p&&Number.isFinite(Number(p.x)) ? (key==='west'?-Number(p.x):Number(p.x)) : 0;
+    const progress=Math.max(0,Math.min(1,signed/span));
+    if(progress>row.best){
+      row.best=progress;
+      const nextStage=EXPEDITION_STAGES.reduce((n,stage,index)=>progress>=stage.at?index:n,0);
+      if(nextStage>row.stage){
+        row.stage=nextStage;
+        if(p) row.anchor={x:+Number(p.x).toFixed(3),y:+Number(p.y).toFixed(3)};
+        playBeat('expedition_'+key+'_'+nextStage,[EXPEDITION_STAGES[nextStage].line]);
+      }
+    }
+    const stage=EXPEDITION_STAGES[Math.max(0,Math.min(EXPEDITION_STAGES.length-1,row.stage))];
+    const direction=key==='west'?'zimnego zachodu':'gorącego wschodu';
+    return {
+      detail:stage.label+': podążaj ku '+direction+'. Wpływ i ostrzeżenia narastają przed areną.',
+      progress:{current:Math.round(row.best*100),target:100,label:'% wyprawy'},
+      difficulty:stage.difficulty,
+      reward:key==='west'?'Serce Lodu · nowa wiedza':'Serce Lawy · nowa wiedza',
+      reason:'Daleka podróż jest podzielona na czytelne progi wpływu',
+      action:row.anchor ? {id:'route:'+key,label:'Wróć do znaku'} : null
+    };
+  }
+
+  function handleTaskAction(actionId){
+    const id=String(actionId||'');
+    if(!id.startsWith('route:')) return false;
+    const key=id.slice(6);
+    const row=state.expeditions[key];
+    const p=root.player||null;
+    if(!row||!row.anchor||!p) return false;
+    if(Math.hypot(Number(p.x)-row.anchor.x,Number(p.y)-row.anchor.y)<45){
+      say('Znak powrotu jest już blisko. Szlak nie musi niczego przewijać.');
+      return false;
+    }
+    p.x=row.anchor.x; p.y=row.anchor.y; p.vx=0; p.vy=0;
+    try{ if(typeof root.centerCameraOnPlayer==='function') root.centerCameraOnPlayer(); }catch(e){}
+    say('Szlak odtwarza ostatni bezpieczny znak wyprawy. Arena nadal czeka przed tobą.');
+    return true;
+  }
+
+  function evaluate(getTile,setTile,player){
     const hearts = heartsNow();
     const summary = mentorSummary();
     const mentorTrainingDone = !summary || ['done','guardian_return','guardian_verdict','vanished'].includes(summary.phase) || summary.status==='completed';
@@ -272,8 +326,8 @@ const storyProgression = (function(){
       addFollowupMentorTasks(desired);
       if(!hearts.ice || !hearts.fire){
         playBeat('horizons', BEATS.horizons);
-        if(!hearts.ice) desired.push({def:ARC_TASKS.west, target:lairTarget('ice')});
-        if(!hearts.fire) desired.push({def:ARC_TASKS.east, target:lairTarget('fire')});
+        if(!hearts.ice){ const target=lairTarget('ice'); desired.push({def:ARC_TASKS.west,target,extra:expeditionExtra('west',target,player)}); }
+        if(!hearts.fire){ const target=lairTarget('fire'); desired.push({def:ARC_TASKS.east,target,extra:expeditionExtra('east',target,player)}); }
         if(hearts.ice) playBeat('ice', BEATS.ice);
         if(hearts.fire) playBeat('fire', BEATS.fire);
       } else if(!hearts.earth){
@@ -307,14 +361,15 @@ const storyProgression = (function(){
     state.tickAcc+=dt;
     if(state.tickAcc<CFG.TICK) return;
     state.tickAcc=0;
-    evaluate(getTile,setTile);
+    evaluate(getTile,setTile,player);
   }
 
   function snapshot(){
-    return {v:1, seen:Object.assign({},state.seen)};
+    return {v:2, seen:Object.assign({},state.seen), expeditions:JSON.parse(JSON.stringify(state.expeditions))};
   }
   function restore(data){
     state.seen={};
+    state.expeditions={};
     state.beatQueue.length=0;
     state.tickAcc=0;
     if(!data || typeof data!=='object') return false;
@@ -323,10 +378,21 @@ const storyProgression = (function(){
         if(data.seen[k]) state.seen[String(k).slice(0,32)]=1;
       }
     }
+    if(data.expeditions && typeof data.expeditions==='object'){
+      for(const key of ['west','east']){
+        const row=data.expeditions[key];
+        if(!row||typeof row!=='object') continue;
+        const best=Math.max(0,Math.min(1,Number(row.best)||0));
+        const stage=Math.max(0,Math.min(EXPEDITION_STAGES.length-1,Math.floor(Number(row.stage)||0)));
+        const anchor=row.anchor&&Number.isFinite(Number(row.anchor.x))&&Number.isFinite(Number(row.anchor.y)) ? {x:Number(row.anchor.x),y:Number(row.anchor.y)} : null;
+        state.expeditions[key]={best,stage,anchor};
+      }
+    }
     return true;
   }
   function reset(){
     state.seen={};
+    state.expeditions={};
     state.beatQueue.length=0;
     state.tickAcc=0;
     try{
@@ -337,9 +403,9 @@ const storyProgression = (function(){
   function metrics(){
     return {seen:Object.keys(state.seen).length, queued:state.beatQueue.length};
   }
-  function _debug(){ return {state, evaluate, playBeat, ARC_TASKS, MENTOR_TASKS,FOLLOWUP_MENTOR_TASKS}; }
+  function _debug(){ return {state, evaluate, playBeat, expeditionExtra, ARC_TASKS, MENTOR_TASKS,FOLLOWUP_MENTOR_TASKS}; }
 
-  const api={update, snapshot, restore, reset, metrics, config:CFG, _debug};
+  const api={update, snapshot, restore, reset, metrics, handleTaskAction, config:CFG, _debug};
   MM.storyProgression=api;
   return api;
 })();

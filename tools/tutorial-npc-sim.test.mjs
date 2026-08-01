@@ -12,7 +12,8 @@ const { tutorialNpc } = await import('../src/engine/tutorial_npc.js');
 
 const questSteps=tutorialNpc.questSteps();
 assert.deepEqual(questSteps.map(s=>s.id), ['watch_area','tree_watch_short','tree_watch_long','sand_hide','water','raw_meat','cooked_meat','duel','master_stone','reward_choice','guardian_return','guardian_verdict','vanished'], 'mentor tutorial includes the post-training return quest and final verdict');
-assert.deepEqual(questSteps.filter(s=>s.kind==='observe').map(s=>s.seconds), [12,10,30,30], 'mentor prologue carries a ten-second tree trial followed by a thirty-second trial');
+assert.deepEqual(questSteps.filter(s=>s.kind==='observe').map(s=>s.seconds), [4,6,8,8], 'mentor lab uses short active measurements and preserves the legacy tree phase for old saves');
+assert.equal(questSteps.find(s=>s.id==='tree_watch_short').next,'sand_hide','new players move from the tree experiment directly to the distinct sand experiment');
 assert.ok(questSteps.filter(s=>s.kind==='handoff').every(s=>s.item && s.amount>0 && s.next), 'handoff quest steps declare resource requirements and next phase');
 assert.equal(questSteps.find(s=>s.id==='reward_choice').choices.length, 3, 'mentor stream reward step declares three choices');
 assert.equal(questSteps.find(s=>s.id==='guardian_verdict').choices.length, 2, 'guardian verdict declares independent west/east choices');
@@ -118,7 +119,7 @@ let state=tutorialNpc._debug();
 assert.ok(Math.abs(state.x)<=40 && Math.abs(state.y-29)<0.01, 'mentor is near the start and standing on the surface');
 
 standAt(state.x+6,state.y);
-runNpc(12.2);
+runNpc(4.2);
 assert.equal(tutorialNpc.phase(), 'tree_watch_short', 'area observation advances into the first tree experiment');
 assert.equal(tutorialNpc.summary().status, 'observe', 'tree experiment is exposed as an observe job');
 
@@ -159,14 +160,11 @@ runNpc(0.2);
 assert.equal(tutorialNpc.summary().observe.active, false, 'hovering above a tree does not count as standing on it');
 assert.equal(tutorialNpc.drawObservationSignal(signalCtx,20,player,true,1450), false, 'overhead timer disappears as soon as time is no longer being counted');
 standAt(treeX+0.5,treeStandingY);
-runNpc(10.2);
-assert.equal(tutorialNpc.phase(), 'tree_watch_long', 'ten seconds on a tree advances to the longer tree observation');
+runNpc(6.2);
+assert.equal(tutorialNpc.phase(), 'sand_hide', 'the short active tree measurement advances directly to the distinct sand experiment');
 assert.equal(rewardChests.length, 1, 'the first tree task grants exactly one physical chest');
 assert.equal(rewardChests[0].tier, 'uncommon', 'the first tree task chest has the promised uncommon tier');
-standAt(treeX+0.5,treeStandingY);
-runNpc(30.2);
-assert.equal(tutorialNpc.phase(), 'sand_hide', 'thirty seconds on a tree advances to the sand hiding test');
-assert.equal(globalThis.inv.masterStone, 1, 'the second tree task grants one master stone');
+assert.equal(globalThis.inv.masterStone, 1, 'the active tree experiment grants the master stone without a duplicate waiting trial');
 
 const sandX=Math.floor(state.x)+3;
 const sandSupportY=30;
@@ -190,7 +188,7 @@ assert.equal(getTile(sandX,sandSupportY-1),T.AIR,'the safe sand U requires no bl
 signalCalls.length=0;
 assert.equal(tutorialNpc.drawObservationSignal(signalCtx,24,player,true,1750), true, 'active sand hiding draws its overhead timer and icon');
 assert.ok(signalCalls.some(call=>Array.isArray(call) && /s$/.test(call[1])), 'sand signal includes the remaining seconds');
-runNpc(30.2);
+runNpc(8.2);
 assert.equal(tutorialNpc.phase(), 'water', 'sand hiding finishes the simulation prologue and starts the water request');
 assert.ok(messages.some(m=>/proba ukrycia w piasku zaliczona/i.test(m)), 'sand completion is announced globally even when the mentor is off-screen');
 
@@ -204,7 +202,7 @@ assert.ok(sandCompletionHold>0, 'sand completion opens a short handoff reading w
 runNpc(sandCompletionHold+0.2);
 assert.equal(tutorialNpc.phase(), 'raw_meat', 'water handoff resumes after the sand completion has been readable');
 assert.equal(globalThis.inv.water, 0, 'water handoff consumes one water block');
-assert.match(tutorialNpc.summary().line, /3 skrawk/i, 'water handoff explains that animals drop three meat scraps, not a ready block');
+assert.match(tutorialNpc.summary().line, /(?:3.*skrawk|skrawk.*3)/i, 'water handoff explains that animals drop three meat scraps, not a ready block');
 assert.match(tutorialNpc.summary().line, /craft|Blok miesa/i, 'water handoff points to crafting the meat block');
 assert.ok(inventoryUpdates>=1 && saveMarks>=1, 'resource handoff refreshes inventory and marks the save dirty');
 

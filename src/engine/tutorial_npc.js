@@ -94,10 +94,11 @@ const TREE_SHORT_REWARD = {
   // throw it several tiles down a slope from a tall tree, making a successful
   // quest look unrewarded.
   chest:{tier:'uncommon',source:'mentor_tree_watch_short',offsetX:0.8,offsetY:-0.8,vx:0,vy:0},
+  resources:{masterStone:1},
   data:{pendingTreeShortChest:false},
   failureLine:'Skrzynia nie ma gdzie bezpiecznie wyladowac. Zrob odrobine miejsca i wejdz na drzewo jeszcze raz.',
-  message:'Proba 10 s zaliczona: niezwykla skrzynia spada tuz obok ciebie.',
-  line:'Dziesiec sekund i ani jednego oszustwa grawitacji. Skrzynia spada tuz obok; teraz dluzsza proba.'
+  message:'Próba korony zaliczona: skrzynia spada obok, a kamień mistrza trafia do plecaka.',
+  line:'Korona drzewa odpowiedziała. Weź skrzynię i kamień mistrza: duża woda albo skupisko liści może obudzić pomocnika. Teraz sprawdźmy zasłonę z piasku.'
 };
 const TREE_LONG_REWARD = {
   once:'tree_watch_long_master_stone',
@@ -113,11 +114,11 @@ const QUEST_STEPS = [
     kind:'observe',
     mode:'scan_area',
     label:'obserwacja okolicy',
-    seconds:12,
+    seconds:4,
     next:'tree_watch_short',
     prompt:LORE_TUTORIAL.watchArea.prompt,
     missing:LORE_TUTORIAL.watchArea.missing,
-    progress:'Patrz jeszcze chwile. Najgorsze prawdy pojawiaja sie jako brak dowodu.',
+    progress:'Skan trwa. Zmień pozycję i utrzymaj okolicę w polu obserwacji.',
     complete:LORE_TUTORIAL.watchArea.complete
   },
   {
@@ -125,11 +126,11 @@ const QUEST_STEPS = [
     kind:'observe',
     mode:'tree_top',
     label:'czubek drzewa',
-    seconds:10,
-    next:'tree_watch_long',
+    seconds:6,
+    next:'sand_hide',
     prompt:LORE_TUTORIAL.treeWatchShort.prompt,
     missing:LORE_TUTORIAL.treeWatchShort.missing,
-    progress:'Nie ruszaj sie. Drzewo liczy ciezar, a ja licze sekundy.',
+    progress:'Korona drzewa zbiera próbkę. Utrzymaj pozycję jeszcze moment.',
     complete:LORE_TUTORIAL.treeWatchShort.complete,
     reward:TREE_SHORT_REWARD
   },
@@ -138,11 +139,11 @@ const QUEST_STEPS = [
     kind:'observe',
     mode:'tree_top',
     label:'dluga obserwacja drzewa',
-    seconds:30,
+    seconds:8,
     next:'sand_hide',
     prompt:LORE_TUTORIAL.treeWatchLong.prompt,
     missing:LORE_TUTORIAL.treeWatchLong.missing,
-    progress:'Dluzej. Jesli swiat udaje cierpliwosc, musi sie w koncu zmeczyc.',
+    progress:'Kończymy zapis zgodności starego eksperymentu.',
     complete:LORE_TUTORIAL.treeWatchLong.complete,
     reward:TREE_LONG_REWARD
   },
@@ -151,11 +152,11 @@ const QUEST_STEPS = [
     kind:'observe',
     mode:'sand_hide',
     label:'ukrycie w piasku',
-    seconds:30,
+    seconds:8,
     next:'water',
     prompt:LORE_TUTORIAL.sandHide.prompt,
     missing:LORE_TUTORIAL.sandHide.missing,
-    progress:'Cicho. Piasek jest tani, ale ma dobre referencje jako zaslona.',
+    progress:'Złoty licznik potwierdza zasłonę. Utrzymaj układ jeszcze moment.',
     complete:LORE_TUTORIAL.sandHide.complete,
     completeMessage:'Stary Kwadrat: proba ukrycia w piasku zaliczona. Piasek milczal podejrzanie dobrze.'
   },
@@ -494,7 +495,10 @@ function migrateMentorSnapshot(data,helpers){
   const knowsShortReward=Object.prototype.hasOwnProperty.call(data,'treeShortRewarded');
   const knowsLongReward=Object.prototype.hasOwnProperty.call(data,'treeLongRewarded');
   const pendingTreeShortChest=!!data.pendingTreeShortChest || (!knowsShortReward && passedShort);
-  const pendingTreeLongStone=!!data.pendingTreeLongStone || (!knowsLongReward && passedLong);
+  // The current compact tree lab grants chest + stone together. A legacy save
+  // missing both rewards therefore needs only the combined short reward; saves
+  // that already know about the chest can still catch up the old stone alone.
+  const pendingTreeLongStone=(!!data.pendingTreeLongStone || (!knowsLongReward && passedLong)) && !pendingTreeShortChest;
   let phase=restoredPhase;
   const rawHp=Number(data.hp);
   let hp=helpers.clamp(helpers.finite(rawHp)?rawHp:helpers.maxHp,0,helpers.maxHp);

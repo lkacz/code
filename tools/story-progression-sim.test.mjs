@@ -31,7 +31,7 @@ globalThis.MM.npcs = { mentor: {
     const tree=mentorPhase==='tree_watch_short' || mentorPhase==='tree_watch_long';
     const sand=mentorPhase==='sand_hide';
     const observing=tree || sand;
-    const observeSeconds=mentorPhase==='tree_watch_short' ? 10 : 30;
+    const observeSeconds=mentorPhase==='tree_watch_short' ? 6 : 8;
     const handoff=mentorPhase==='water' ? {item:'water',amount:1,have:0}
       : mentorPhase==='raw_meat' ? {item:'meat',amount:1,have:0}
       : mentorPhase==='cooked_meat' ? {item:'bakedMeat',amount:1,have:0} : null;
@@ -115,22 +115,23 @@ assert.equal(messages.length, 0, 'no horizon beats while the mentor still teache
 mentorPhase = 'tree_watch_short';
 tick(1);
 mentorTask = taskById('story:mentor');
-assert.match(mentorTask.title, /Dowolne drzewo \(10 s\)/, 'the short observation explicitly allows any tree');
+assert.match(mentorTask.title, /Laboratorium: korona drzewa/, 'the short observation is framed as an active lab experiment');
+assert.match(mentorTask.detail,/6 sekund/,'the tree lab exposes its short measurement window');
 assert.equal(mentorTask.target, undefined, 'the short tree observation clears the mentor location inherited from the prior step');
 assert.equal(mentorTask.pointer, false, 'the short tree observation does not claim to have a map target');
 
 mentorPhase = 'tree_watch_long';
 tick(1);
 mentorTask = taskById('story:mentor');
-assert.match(mentorTask.title, /Dowolne drzewo \(30 s\)/, 'the long observation also allows any tree');
+assert.match(mentorTask.title, /Laboratorium: zapis zgodności/, 'legacy saves on the old long step receive a concise compatibility experiment');
 assert.equal(mentorTask.target, undefined, 'the long tree observation remains location-free');
 assert.equal(mentorTask.pointer, false, 'the long tree observation has no map pointer');
 
 mentorPhase = 'sand_hide';
 tick(1);
 mentorTask = taskById('story:mentor');
-assert.match(mentorTask.title, /Miedzy piaskiem \(30 s\)/, 'the sand task names the safe between-block arrangement');
-assert.match(mentorTask.detail, /zloty licznik/i, 'the sand task explains its overhead progress signal');
+assert.match(mentorTask.title, /Laboratorium: piaskowa zasłona/, 'the sand task names the distinct concealment experiment');
+assert.match(mentorTask.detail, /złoty odczyt/i, 'the sand task explains its overhead progress signal');
 assert.match(mentorTask.detail, /naliczanie trwa/i, 'the active sand timer is reflected in the task tracker');
 assert.equal(mentorTask.target, undefined, 'sand hiding can be completed away from the mentor');
 assert.equal(mentorTask.pointer, false, 'the sand observation does not misdirect the player back to the mentor');
@@ -179,6 +180,16 @@ const east = taskById('story:east');
 assert.ok(west && east, 'both horizons open as goals');
 assert.equal(west.target.x, -9999.5, 'the west goal points into the cold');
 assert.equal(east.target.x, 10000.5, 'the east goal points into the heat');
+assert.deepEqual(west.progress,{current:0,target:100,label:'% wyprawy'},'the long west journey starts as an explicit staged expedition');
+globalThis.player.x=-2300;
+tick(1);
+const westInfluence=taskById('story:west');
+assert.ok(westInfluence.progress.current>=22,'directional travel advances the expedition instead of merely shrinking a distance label');
+assert.equal(westInfluence.difficulty,'teren nacisku','crossing the first threshold changes the stated danger');
+assert.equal(westInfluence.action.id,'route:west','the first influence threshold unlocks a return-route action');
+globalThis.player.x=0;
+assert.equal(storyProgression.handleTaskAction('route:west'),true,'the unlocked route returns a retreating player to the expedition mark');
+assert.ok(globalThis.player.x<-2200,'the return route restores the earned outward checkpoint');
 const triangleBriefing=taskById('story:mentor_triangle');
 const tesseractBriefing=taskById('story:mentor_tesseract');
 const trapezoidBriefing=taskById('story:mentor_trapezoid');

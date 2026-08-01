@@ -166,6 +166,12 @@ assert.deepEqual(layerArchive.map(row => row.layer), [1, 2], 'archive records re
 assert.ok(layerArchive.every(row => row.verdict && row.verdict.key && Number.isFinite(row.seed)),
   'each archive record carries its verdict and measured world identity');
 assert.equal(JSON.parse(store.get('mm_layers_v1')).v, 2, 'the detailed archive upgrades the layer ledger to v2');
+const comparison=finale.archiveComparison(
+  {day:10,deaths:1,bossKills:7,discoveries:{count:30}},
+  {history:[{day:14,deaths:3,bossKills:5,discoveries:{count:24}},{day:10,deaths:1,bossKills:7,discoveries:{count:30}}]}
+);
+assert.deepEqual(comparison.map(row=>row.delta),[-4,-2,6,2],'the report computes exact deltas against the previous completed layer');
+assert.ok(comparison.every(row=>row.better===true),'faster, safer, more curious and more complete all read as improvements');
 assert.equal(finale.souvenir(), null, 'no canvas in Node: the souvenir declines gracefully');
 // Veterancy reaches the title: the splash pool grows once a layer is closed.
 const vetLine = titleScreen.pickSplash(() => 0.9999);
@@ -193,6 +199,7 @@ assert.ok(/#finaleScreen\{[^}]*position:fixed[^}]*z-index:10000/.test(htmlSrc), 
 assert.ok(/#finaleBanner\{[^}]*z-index:90/.test(htmlSrc), 'the finale banner sits under the overlays');
 assert.ok(/#finaleScreen\.staged \.fnAct\{/.test(htmlSrc), 'staged acts start hidden (instant mode shows all by default)');
 assert.ok(/\.fnVerdict\{/.test(htmlSrc) && /\.fnMeta\{/.test(htmlSrc), 'the verdict seal and the upper-layer transmission are styled');
+assert.ok(/\.fnCompare\{/.test(htmlSrc) && /\.fnBoonChoices\{/.test(htmlSrc), 'archive comparisons and descent protocol choices have dedicated report presentation');
 assert.ok(/@keyframes fnGlitch\{/.test(htmlSrc), 'the glitch beat has its keyframes');
 assert.ok(/prefers-reduced-motion/.test(htmlSrc), 'reduced motion silences the ceremony animations');
 
