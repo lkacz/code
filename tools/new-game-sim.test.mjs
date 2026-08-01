@@ -86,6 +86,7 @@ assert.match(mainSrc,/newGame\.textContent='Rozpocznij od nowa'/,'pause settings
 assert.match(mainSrc,/window\.confirm\('Rozpocząć nową grę\?/,'new game requires explicit confirmation');
 assert.match(mainSrc,/_startingNewGame=true;[\s\S]*clearActiveGameStorage\(localStorage\);[\s\S]*queueFreshWorldSeed[\s\S]*window\.location\.reload\(\)/,'new game suppresses saves, purges state, queues a new world, then reloads');
 assert.match(mainSrc,/function startNewGame\(requestedSeed\)/,'new game accepts an optional player-selected seed');
+assert.match(mainSrc,/if\(!loaded && !loadRejected && !MM\.ghostMode\) resetFreshWorldTime\(\)/,'a fresh local world resets its summer clock before play begins');
 assert.match(mainSrc,/queueWorldSeed\(seedStore,chosenSeed\)/,'a valid selected seed is queued instead of being rerolled');
 assert.match(mainSrc,/function prepareHostedWorldReplacement\(\)[\s\S]{0,900}hasPendingObserverTransactions\(\)[\s\S]{0,900}rotateRoomNamespace\(\)[\s\S]{0,900}GHOST_HOST\.stop\(\)/,
   'a world replacement waits for active observer commits, retires their room-scoped replay namespace, then stops the host');

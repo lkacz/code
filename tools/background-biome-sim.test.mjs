@@ -165,6 +165,9 @@ for(let day=1;day<=40;day++){
 
 const summerMetrics={dayFloat:16,season:'summer'};
 const winterMetrics={dayFloat:36,season:'winter'};
+const freshSummerMetrics={calendarDayFloat:12,season:'summer'};
+const freshCycleT=background.resetFreshWorld(freshSummerMetrics);
+assert.ok(Math.abs(background._debugClockTime(freshCycleT,freshSummerMetrics).hourFloat-8)<1e-9, 'a fresh summer world starts at exactly 08:00');
 const summerNoonT=summerSolstice.dayFrac/2;
 const winterNoonT=winterSolstice.dayFrac/2;
 const summerNoonOrbit=background._debugCelestialCyclePosition('sun',summerNoonT,900,500,summerMetrics);

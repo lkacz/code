@@ -7129,6 +7129,15 @@ function prepareHostedWorldReplacement(){
 	if(GHOST_HOST && GHOST_HOST.active && GHOST_HOST.active()) GHOST_HOST.stop();
 	return true;
 }
+function resetFreshWorldTime(){
+	try{
+		if(BACKGROUND && BACKGROUND.resetFreshWorld){
+			BACKGROUND.resetFreshWorld(SEASONS && SEASONS.metrics ? SEASONS.metrics() : null);
+			return true;
+		}
+	}catch(e){ console.warn('Fresh-world clock reset failed',e); }
+	return false;
+}
 function startNewGame(requestedSeed){
 	if(_startingNewGame) return false;
 	// Quiesce the network inlet synchronously before asynchronous store deletion.
@@ -22185,6 +22194,7 @@ function regenWorld(){
 
 	// Reset transient systems
 	mining=false; if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); if(FOREST && FOREST.reset) FOREST.reset(); if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); if(KILN && KILN.reset) KILN.reset(); if(WORLD_SIM && WORLD_SIM.reset) WORLD_SIM.reset(); if(FALLING && FALLING.reset) FALLING.reset(); if(BOATS && BOATS.reset) BOATS.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(COMPANIONS && COMPANIONS.reset) COMPANIONS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+	resetFreshWorldTime();
 
 	if(SMOKE && SMOKE.reset) SMOKE.reset();
 	// Reset inventory/tools/hotbar
@@ -23003,6 +23013,7 @@ window.teleportHeroToNearestNpc = function(){ return jumpDebugNearestNpc(); };
 const loadResult=MM.ghostMode ? null : await bootLoadGame(); // watchers boot blank and stream the host's world instead
 const loaded=loadResult===true;
 const loadRejected=loadResult===false;
+if(!loaded && !loadRejected && !MM.ghostMode) resetFreshWorldTime();
 if(!loaded){ placePlayer(); } else { centerOnPlayer(); }
 // Fresh-world starter kit (owner ruling): the hero wakes armed with the stick
 // and enough improvised ammo to actually USE the always-known techniques —
@@ -24651,6 +24662,7 @@ window.regenWorldSameSeed = function(settings){
 	try{
 	if(settings && typeof settings==='object' && WORLDGEN && WORLDGEN.setSettings) WORLDGEN.setSettings(settings);
 	resetWorldTransitionRuntime(); if(MOBS && MOBS.clearAll) try{ MOBS.clearAll(); }catch(e){} if(COMPANIONS && COMPANIONS.reset) try{ COMPANIONS.reset(); }catch(e){} if(WORLD && WORLD.clear) WORLD.clear(); if(typeof chunkCanvases!=='undefined') chunkCanvases.clear(); if(typeof chunkRenderDirty!=='undefined') chunkRenderDirty.clear(); if(WORLD && WORLD.clearHeights) WORLD.clearHeights(); if(CAVE_IN && CAVE_IN.reset) CAVE_IN.reset(); if(FOREST && FOREST.reset) FOREST.reset(); if(ATTENTION && ATTENTION.reset) ATTENTION.reset(); if(KILN && KILN.reset) KILN.reset(); if(WORLD_SIM && WORLD_SIM.reset) WORLD_SIM.reset(); if(FALLING && FALLING.reset) FALLING.reset(); if(MECHS && MECHS.reset) MECHS.reset(); if(TREES && TREES.reset) TREES.reset(); if(WATER && WATER.reset) WATER.reset(); if(GASES && GASES.reset) GASES.reset(); if(WIND && WIND.reset) WIND.reset(); if(SEASONS && SEASONS.reset) SEASONS.reset(); if(DYNAMO && DYNAMO.reset) DYNAMO.reset(); if(SOLAR && SOLAR.reset) SOLAR.reset(); if(TELEPORTERS && TELEPORTERS.reset) TELEPORTERS.reset(); if(PUMPS && PUMPS.reset) PUMPS.reset(); if(TURRETS && TURRETS.reset) TURRETS.reset(); if(SPRING_PLATFORMS && SPRING_PLATFORMS.reset) SPRING_PLATFORMS.reset(); if(VENDING && VENDING.reset) VENDING.reset(); if(CLOUDS && CLOUDS.reset) CLOUDS.reset(); if(BOSSES && BOSSES.reset) BOSSES.reset(); if(GUARDIANS && GUARDIANS.reset) GUARDIANS.reset(); if(UNDERGROUND && UNDERGROUND.reset) UNDERGROUND.reset(); if(SKY_GUARDIAN && SKY_GUARDIAN.reset) SKY_GUARDIAN.reset(); if(AFTERMATH && AFTERMATH.reset) AFTERMATH.reset(); if(NPCS && NPCS.reset) NPCS.reset(); if(GENERATED_NPCS && GENERATED_NPCS.reset) GENERATED_NPCS.reset(); if(GRASS && GRASS.reset) GRASS.reset(); if(PARTICLES && PARTICLES.reset) PARTICLES.reset(); if(FIRE && FIRE.reset) FIRE.reset(); if(WEAPONS && WEAPONS.reset) WEAPONS.reset(); if(MEAT && MEAT.reset) MEAT.reset(); if(DROPS && DROPS.reset) DROPS.reset(); if(VOLCANO && VOLCANO.reset) VOLCANO.reset(); if(ATOMIC_WINTER && ATOMIC_WINTER.reset) ATOMIC_WINTER.reset(); if(TERRAIN_TRAPS && TERRAIN_TRAPS.reset) TERRAIN_TRAPS.reset(); if(UFO && UFO.reset) UFO.reset(); if(TASKS && TASKS.reset) TASKS.reset(); if(INVASIONS && INVASIONS.reset) INVASIONS.reset(); if(METEORITES && METEORITES.reset) METEORITES.reset(); if(PLANTS && PLANTS.reset) PLANTS.reset();
+	resetFreshWorldTime();
 	if(SMOKE && SMOKE.reset) SMOKE.reset();
 	// Reset fog-of-war as well
 	try{ if(FOG && FOG.importSeen) FOG.importSeen([]); if(FOG && FOG.setRevealAll) FOG.setRevealAll(false); if(MM.ui && MM.ui.updateMapButton && FOG && FOG.getRevealAll) MM.ui.updateMapButton(FOG.getRevealAll()); }catch(e){}

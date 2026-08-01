@@ -597,6 +597,13 @@
       minute:Math.floor(dayMinutes%60)
     };
   }
+  function cycleForClockHour(hour,metrics){
+    const solar=daylightModel(metrics);
+    const target=normalizeCycle(finite(hour,0)/24)*24;
+    let sinceSunrise=target-solar.sunriseHour;
+    if(sinceSunrise<0) sinceSunrise+=24;
+    return normalizeCycle(sinceSunrise/24);
+  }
   function seasonTintSpec(id){ return SEASON_TINTS[id] || null; }
   function blendSeasonTint(a,b,t){
     if(!a) return b || null;
@@ -1863,6 +1870,16 @@
   };
   background.snapshot = background.exportState;
   background.restore = background.importState;
+  background.resetFreshWorld = function(metrics){
+    const now=simulationClockNow();
+    const seasonMetrics=metrics || currentSeasonMetrics();
+    const cycleT=cycleForClockHour(8,seasonMetrics);
+    cycleStart=now-cycleT*CYCLE_DURATION;
+    moonPhaseIndex=0;
+    lastPhaseCycle=-1;
+    setCachedCycleInfo(cycleT,seasonMetrics,window.MM && window.MM.worldGen,now);
+    return cycleT;
+  };
 
   // Day/night state for HUD readouts.  The ten-minute cycle starts at sunrise;
   // its daylight and night sections expand/contract with the season.  Clock
