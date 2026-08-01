@@ -1154,6 +1154,20 @@ function drawWorldNumberIcon(icon,color,alpha){
 		ctx.fillRect(-8,-2,16,4);
 		ctx.strokeRect(-2,-8,4,16);
 		ctx.strokeRect(-8,-2,16,4);
+	} else if(icon==='backstab'){
+		ctx.save();
+		ctx.rotate(-0.62);
+		ctx.fillRect(-1.5,-8,3,12);
+		ctx.strokeRect(-1.5,-8,3,12);
+		ctx.beginPath();
+		ctx.moveTo(-1.5,-8);
+		ctx.lineTo(0,-11);
+		ctx.lineTo(1.5,-8);
+		ctx.closePath();
+		ctx.fill();
+		ctx.stroke();
+		ctx.fillRect(-5,3,10,2.5);
+		ctx.restore();
 	} else {
 		ctx.beginPath();
 		ctx.arc(0,0,6.5,0,Math.PI*2);
@@ -1162,47 +1176,60 @@ function drawWorldNumberIcon(icon,color,alpha){
 	}
 	ctx.restore();
 }
+function worldNumberAmountText(kind,amount,target){
+	const raw=Number(amount);
+	if(!Number.isFinite(raw)) return '';
+	const abs=Math.abs(raw);
+	const shown=abs>=10 ? Math.round(abs) : Math.round(abs*10)/10;
+	const digits=Number.isInteger(shown) ? String(shown) : shown.toFixed(1);
+	if(kind==='xp') return '+'+digits;
+	if(raw<0) return (String(target||'').indexOf('mob:')===0?'−':'-')+digits;
+	return '+'+digits;
+}
 function pushWorldNumber(detail){
 	detail=detail||{};
 	const amount=Number(detail.amount);
 	const kind=String(detail.kind||'info');
 	if(kind!=='damage' && kind!=='heal' && kind!=='xp' && kind!=='energy' && kind!=='home') return null;
-	const hasAmount=kind!=='home' && Number.isFinite(amount) && Math.round(amount)!==0;
+	const hasAmount=kind!=='home' && Number.isFinite(amount) && Math.abs(amount)>=0.05;
 	const icon=String(detail.icon||worldNumberIconFor(kind,detail.cause,detail.element)||'');
 	const now=performance.now();
 	let text=kind==='home' ? '' : (detail.text!=null ? String(detail.text) : '');
 	if(!text && hasAmount){
-		const v=Math.round(amount);
-		if(kind==='xp') text='+'+Math.max(0,v);
-		else text=(v>0?'+':'')+v;
+		text=worldNumberAmountText(kind,amount,detail.target);
 	}
+	const multiplier=Number(detail.multiplier);
+	if(detail.backstab && text && Number.isFinite(multiplier) && multiplier>1) text+=' ×'+multiplier.toFixed(2);
 	if(!text && !icon) return null;
 	const x=Number.isFinite(Number(detail.x)) ? Number(detail.x) : player.x;
 	const y=Number.isFinite(Number(detail.y)) ? Number(detail.y) : player.y-player.h*0.85;
 	const target=String(detail.target||kind);
 	const last=worldNumbers[worldNumbers.length-1];
 	if(last && now-last.born<230 && last.kind===kind && last.target===target && Math.abs(last.x-x)<0.8 && Math.abs(last.y-y)<1.2 && Number.isFinite(last.amount) && hasAmount){
-		last.amount+=Math.round(amount);
-		const v=Math.round(last.amount);
-		last.text=kind==='xp' ? ('+'+Math.max(0,v)) : ((v>0?'+':'')+v);
+		last.amount+=amount;
+		last.text=worldNumberAmountText(kind,last.amount,target);
+		if(detail.backstab && Number.isFinite(multiplier) && multiplier>1) last.text+=' ×'+multiplier.toFixed(2);
 		last.born=now;
 		if(icon) last.icon=icon;
 		if(detail.special) last.special=true;
+		if(detail.backstab) last.backstab=true;
 		last.life=Math.max(last.life,kind==='xp'?1450:(kind==='home'?1550:(kind==='heal'?1180:1050)));
 		return last;
 	}
 	const n={
 		text,
-		amount:hasAmount?Math.round(amount):NaN,
+		amount:hasAmount?amount:NaN,
 		kind,
 		icon,
 		cause:detail.cause,
 		special:!!detail.special,
+		backstab:!!detail.backstab,
+		victim:String(detail.victim||''),
 		target,
 		x,
 		y,
 		born:now,
-		life:kind==='xp'?1450:(kind==='home'?1550:(kind==='heal'?1180:1050)),
+		life:kind==='xp'?1450:(kind==='home'?1550:(kind==='heal'?1180:(detail.backstab?1400:1050))),
 		jitter:(Math.random()-0.5)*0.26
 	};
 	worldNumbers.push(n);
@@ -1229,12 +1256,14 @@ function drawWorldNumbers(){
 		ctx.globalAlpha=Math.max(0,Math.min(1,alpha));
 		ctx.translate(x,y);
 		ctx.scale(scale,scale);
-		ctx.font=(n.kind==='xp'?'800 13px ':'800 12px ')+'system-ui, "Segoe UI", sans-serif';
+		const mobDamage=n.kind==='damage' && (n.victim==='mob' || n.target.indexOf('mob:')===0);
+		ctx.font=(n.kind==='xp'?'800 13px ':(n.backstab?'900 13px ':'800 12px '))+'system-ui, "Segoe UI", sans-serif';
 		let color='#ff7d72';
 		if(n.kind==='home') color=n.icon==='brokenHeart' ? '#ff6f91' : '#ff83aa';
 		else if(n.kind==='heal') color='#7dff9a';
 		else if(n.kind==='energy') color='#ffd66b';
 		else if(n.kind==='xp') color=n.special ? '#ffd54a' : '#7dff9a';
+		else if(mobDamage) color=n.backstab ? '#ffd85a' : '#ff675f';
 		const hasIcon=!!n.icon;
 		const hasText=!!n.text;
 		if(hasIcon){
@@ -1249,6 +1278,7 @@ function drawWorldNumbers(){
 		if(hasText){
 			ctx.lineWidth=n.kind==='xp'?2.4:2.15;
 			ctx.strokeStyle='rgba(4,6,10,0.46)';
+			if(mobDamage) ctx.strokeStyle='rgba(62,5,8,0.74)';
 			ctx.strokeText(n.text,0,0);
 			ctx.fillStyle=color;
 			ctx.fillText(n.text,0,0);
@@ -1776,7 +1806,9 @@ if(typeof window!=='undefined' && window.addEventListener){
 		const d=(ev && ev.detail) || {};
 		const target=String(d.target||'');
 		const kind=String(d.kind||'');
-		if((target==='hero' || target.indexOf('hero:')===0) && (kind==='damage' || kind==='heal')) pushWorldNumber(d);
+		const heroTarget=target==='hero' || target.indexOf('hero:')===0;
+		const mobTarget=target.indexOf('mob:')===0;
+		if((heroTarget && (kind==='damage' || kind==='heal')) || (mobTarget && kind==='damage')) pushWorldNumber(d);
 	});
 	window.addEventListener('mm-combat-event',ev=>{ triggerCombatFeedback((ev && ev.detail) || {}); });
 	window.addEventListener('mm-xp-awarded',ev=>{
@@ -18700,7 +18732,7 @@ canvas.addEventListener('pointerdown',e=>{
 		const dxRange = Math.abs(tx - Math.floor(player.x)); const dyRange=Math.abs(ty - Math.floor(player.y));
 		// Equipped weapon/charm bonus damage on top of base melee / tool damage
 		const atkBonus=(MM.activeModifiers && MM.activeModifiers.attackDamage)||0;
-		if(dxRange<=MELEE_REACH && dyRange<=MELEE_REACH && player.atkCd<=0 && ((CENTER_GUARDIAN && CENTER_GUARDIAN.attackAt && CENTER_GUARDIAN.attackAt(tx,ty,atkBonus)) || (GUARDIANS && GUARDIANS.attackAt && GUARDIANS.attackAt(tx,ty,atkBonus)) || (UNDERGROUND && UNDERGROUND.attackAt && UNDERGROUND.attackAt(tx,ty,atkBonus)) || (SKY_GUARDIAN && SKY_GUARDIAN.attackAt && SKY_GUARDIAN.attackAt(tx,ty,atkBonus)) || (INVASIONS && INVASIONS.attackAt && INVASIONS.attackAt(tx,ty,atkBonus)) || (MECHS && MECHS.attackAt && MECHS.attackAt(tx,ty,atkBonus,{source:'hero'})) || (NPCS && NPCS.attackAt && NPCS.attackAt(tx,ty,atkBonus,tutorialNpcCtx)) || (MOBS && MOBS.attackAt && MOBS.attackAt(tx,ty,atkBonus,{source:'hero'})))){ player.atkCd=0.35; if(WEAPONS && WEAPONS.notifyMeleeSwing) WEAPONS.notifyMeleeSwing(tx,ty,player); if(e.pointerType==='touch') touchHaptic(7,45); return; }
+		if(dxRange<=MELEE_REACH && dyRange<=MELEE_REACH && player.atkCd<=0 && ((CENTER_GUARDIAN && CENTER_GUARDIAN.attackAt && CENTER_GUARDIAN.attackAt(tx,ty,atkBonus)) || (GUARDIANS && GUARDIANS.attackAt && GUARDIANS.attackAt(tx,ty,atkBonus)) || (UNDERGROUND && UNDERGROUND.attackAt && UNDERGROUND.attackAt(tx,ty,atkBonus)) || (SKY_GUARDIAN && SKY_GUARDIAN.attackAt && SKY_GUARDIAN.attackAt(tx,ty,atkBonus)) || (INVASIONS && INVASIONS.attackAt && INVASIONS.attackAt(tx,ty,atkBonus)) || (MECHS && MECHS.attackAt && MECHS.attackAt(tx,ty,atkBonus,{source:'hero'})) || (NPCS && NPCS.attackAt && NPCS.attackAt(tx,ty,atkBonus,tutorialNpcCtx)) || (MOBS && MOBS.attackAt && MOBS.attackAt(tx,ty,atkBonus,{source:'hero',kind:'melee',x:player.x,y:player.y})))){ player.atkCd=0.35; if(WEAPONS && WEAPONS.notifyMeleeSwing) WEAPONS.notifyMeleeSwing(tx,ty,player); if(e.pointerType==='touch') touchHaptic(7,45); return; }
 		if(tappedDirectMob){
 			if((dxRange>MELEE_REACH || dyRange>MELEE_REACH) && player.atkCd<=0) msg('Za daleko — podejdź lub wybierz broń dystansową');
 			return;
@@ -23929,7 +23961,7 @@ MM.ghostBridge={
 	// hero-mode combat (coarse H1 channel): a damage application forwarded by the
 	// guest resolves through the REAL chains at the claimed point, attributed
 	// 'coop' — amount and radius were already clamped by the host handler.
-	ghostHeroDamage:(x,y,amt,kind)=>{
+	ghostHeroDamage:(x,y,amt,kind,body)=>{
 		if(!Number.isFinite(x) || !Number.isFinite(y)) return 0;
 		// elemental forwards use the HOST's own safe parameters — the guest names
 		// only the element, never the duration or strength
@@ -23937,7 +23969,8 @@ MM.ghostBridge={
 		if(kind==='chill'){ try{ if(MOBS && MOBS.chillAt) return MOBS.chillAt(Math.floor(x),Math.floor(y),{dur:3,source:'coop'}) ? 1 : 0; }catch(e){} return 0; }
 		const W=MM.weapons;
 		if(!W || !W.coopMeleeAt) return 0;
-		return W.coopMeleeAt({x, y, facing:1}, x, y, {bonus:Math.max(0,Math.min(43,amt-2)), reach:1.2}) ? 1 : 0;
+		const attacker=body && Number.isFinite(body.x) && Number.isFinite(body.y) ? body : {x,y,facing:1};
+		return W.coopMeleeAt(attacker, x, y, {bonus:Math.max(0,Math.min(43,amt-2)), reach:1.2}) ? 1 : 0;
 	},
 	// hero-mode soot graffiti: the host handler already checked reach, rate and
 	// the glyph whitelist — this seam re-validates the BACKING against world

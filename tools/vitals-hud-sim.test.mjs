@@ -178,7 +178,10 @@ function run(m, input, seconds){
 	assert.match(mainSource, /if\(kind!=='damage' && kind!=='heal' && kind!=='xp' && kind!=='energy' && kind!=='home'\) return null;/, 'floating world numbers are allowlisted to hero damage, hero heal, energy, XP, and icon-only home feedback');
 	assert.match(mainSource, /let text=kind==='home' \? '' : \(detail\.text!=null \? String\(detail\.text\) : ''\);/, 'home feedback cannot add another text bubble');
 	assert.match(mainSource, /function noteHeroEnergyDelta\(delta,opts\)[\s\S]*heroEnergyDeltaAcc\+=n[\s\S]*pushWorldNumber\(\{[\s\S]*kind:'energy'[\s\S]*target:opts\.target\|\|'hero:energy'/, 'hero energy gains and spends are aggregated into compact world-space numbers with an optional session target');
-	assert.match(mainSource, /window\.addEventListener\('mm-entity-number'[\s\S]*target==='hero'[\s\S]*target\.indexOf\('hero:'\)===0[\s\S]*kind==='damage' \|\| kind==='heal'/, 'entity-number events are filtered to hero damage/heal only');
+	assert.match(mainSource, /window\.addEventListener\('mm-entity-number'[\s\S]*heroTarget=target==='hero' \|\| target\.indexOf\('hero:'\)===0[\s\S]*mobTarget=target\.indexOf\('mob:'\)===0[\s\S]*mobTarget && kind==='damage'/, 'entity-number events separate hero damage/heal from mob damage');
+	assert.match(mainSource, /function worldNumberAmountText\(kind,amount,target\)[\s\S]*Math\.round\(abs\*10\)\/10[\s\S]*indexOf\('mob:'\)===0\?'−':'-'/, 'fractional mob damage remains visible and uses a distinct typographic minus');
+	assert.match(mainSource, /else if\(mobDamage\) color=n\.backstab \? '#ffd85a' : '#ff675f'/, 'mob damage has its own red palette and backstabs turn gold');
+	assert.match(mainSource, /icon==='backstab'/, 'backstab damage carries a dedicated dagger icon');
 	assert.match(mainSource, /window\.addEventListener\('mm-xp-awarded'/, 'mob XP awards are routed to the world-space renderer');
 	assert.match(mainSource, /window\.addEventListener\('mm-combat-event'/, 'important combat events are routed to the world-space impact renderer');
 	assert.match(mainSource, /function drawCombatImpactFx\(\)/, 'main draws important hit rings in the world scene');

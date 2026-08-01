@@ -1364,7 +1364,7 @@ assert.ok(/if\(!el \|\| el\.style\.display !== 'flex'\) return;/.test(hostSrc)
 	assert.ok(/bridge\.ghostHeroRefund\(pl\.tid,pl\.x,pl\.y\)/.test(clientSrc),
 		'the failed placement ack forwards its exact coordinate to pending-ownership settlement');
 	const heroPlaceBridge=mainSrc.slice(mainSrc.indexOf('ghostHeroPlaceAt:(tx,ty,tid,layer,body,dir,claim)=>'),
-		mainSrc.indexOf('ghostHeroDamage:(x,y,amt,kind)=>'));
+		mainSrc.indexOf('ghostHeroDamage:(x,y,amt,kind,body)=>'));
 	assert.ok(/setForegroundConfirmed\(tx,ty,id\)[\s\S]*noteSaveActivity\(\);\s*saveState\(\);\s*return \{\s*ok:true,\s*tid:id,\s*layer:'foreground'/.test(heroPlaceBridge),
 		'a confirmed guest world placement marks the host save dirty before success is returned');
 	const heroMineBridge=mainSrc.slice(mainSrc.indexOf('ghostHeroMineAt:(tx,ty,claim)=>'),
@@ -1983,8 +1983,8 @@ assert.ok(/bridge\.drawHeroAt\(\{ x: b\.x, y: b\.y/.test(clientSrc), 'fellow emb
 	// melee resolves only against ordinary mobs, credited 'coop'
 	const cm = w.slice(w.indexOf('function coopMeleeAt'), w.indexOf('function spawnCoopArrow'));
 	assert.ok(/meleeTargetTile\(body,aimX,aimY,reach,false\)/.test(cm), 'coop melee clamps its target into the weapon reach box');
-	assert.ok(/MM\.mobs\.attackAt\(tx,ty,bonus,\{source:'coop'\}\)/.test(cm),
-		'coop melee runs the ordinary-mob chain with coop attribution');
+	assert.ok(/MM\.mobs\.attackAt\(tx,ty,bonus,\{source:'coop',kind:'melee',x:body\.x,y:body\.y\}\)/.test(cm),
+		'coop melee runs the ordinary-mob chain with attribution and its host-tracked attacker position');
 	assert.ok(!/MM\.(?:invasions|guardianLairs|undergroundBoss|skyGuardian|bosses|ufo)\./.test(cm),
 		'coop melee cannot enter special defeat/story systems');
 	assert.ok(!/setTile\(|openChestFromWeaponHit\(|collectLooseTarget\(|addUltCharge\(|MM\.npcSystem\.|MM\.centerGuardian\./.test(cm),

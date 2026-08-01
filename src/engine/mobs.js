@@ -118,6 +118,8 @@ const mobs = (function(){
   const MOB_FACING_CONFIRM_MS = 90;
   const MOB_FACING_FAST_CONFIRM_MS = 45;
   const MOB_FACING_ATTACK_CONFIRM_MS = 30;
+  const STEALTH_FEEDBACK_RANGE = 6;
+  const AWARENESS_FLASH_MS = 1250;
   const SAND_WORM_CALM_MS = 9000;
   const SAND_WORM_BAIT_SCAN_MS = 220;
   const SAND_WORM_BAIT_RADIUS = 11;
@@ -5425,6 +5427,26 @@ const mobs = (function(){
     return m._stableFacing<0?-1:1;
   }
 
+  function setMobAwarenessUi(m,state,now){
+    if(!m) return '';
+    const next=state==='hidden' || state==='suspicious' || state==='spotted' ? state : '';
+    if(next!==m._awarenessUi){
+      m._awarenessUi=next;
+      if(next==='suspicious' || next==='spotted') m._awarenessUiFlashUntil=now+AWARENESS_FLASH_MS;
+    }
+    return next;
+  }
+  function mobAwarenessCode(m){
+    if(!m) return 0;
+    if(m._awarenessUi==='hidden') return 1;
+    if(m._awarenessUi==='suspicious') return 2;
+    if(m._awarenessUi==='spotted') return 3;
+    return 0;
+  }
+  function mobAwarenessFromCode(code){
+    return code===1?'hidden':(code===2?'suspicious':(code===3?'spotted':''));
+  }
+
   // --- Aquatic helpers (fish) ---
   function readMobTile(getTile,x,y){
     try{ return typeof getTile==='function' ? getTile(x,y) : (WORLD && WORLD.getTile ? WORLD.getTile(x,y) : T.AIR); }catch(e){ return T.AIR; }
@@ -7982,6 +8004,13 @@ const mobs = (function(){
   if(teleporterTarget) m._noticed=true;
   const aggroNow = !!teleporterTarget || (aggressive && m._noticed);
   m._aggro = aggroNow;
+  // One compact state drives the stealth read above the creature. "hidden" is
+  // deliberately stricter than merely being unseen: it appears only when the
+  // quiet local hero is actually behind an unaware target and close enough to
+  // cash in the backstab. Investigation and detection always override it.
+  const backstabReady=quietTarget && distToHero<=STEALTH_FEEDBACK_RANGE &&
+    typeof MM!=='undefined' && MM.noise && MM.noise.canBackstab && MM.noise.canBackstab(m,heroForMob);
+  setMobAwarenessUi(m,m._noticed?'spotted':(m._investigate?'suspicious':(backstabReady?'hidden':'')),now);
   const fleeTarget=!teleporterTarget && m._progressionOutmatched ? {x:m.x+(m.x>=player.x?10000:-10000),y:m.y} : null;
   m._combatTarget=fleeTarget || (aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : heroForMob);
   // Blinded (sand in the eyes): the AI perceives its target impossibly far away,
@@ -7995,8 +8024,17 @@ const mobs = (function(){
   // the NOISE and aggressive still false: the creature walks over to look, it does
   // not charge. That is what turns a thrown stone into a decoy.
   const investigateAt = (!aggroNow && !blindMob && m._investigate) ? m._investigate : null;
+  // Species-specific AI contains useful close-range shortcuts (wolf bite gap,
+  // vulture lunge, worm proximity), but those shortcuts predate perception and
+  // must not receive the real coordinates of a quiet, still-unnoticed body. Feed
+  // them a point far ahead in the creature's visible facing instead; investigation
+  // below still steers toward a heard sound, and a genuinely noticed body remains
+  // the ordinary target. This makes "unseen" simulation truth, not just a badge.
+  const concealedTarget=(!m._noticed && quietTarget)
+    ? {x:m.x+mobFacingForDraw(m,now)*10000,y:m.y}
+    : null;
   if(teleporterTarget) updateTeleporterRetaliation(m,spec,teleporterTarget,dt,now,getTile,setTile);
-  else updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : m._combatTarget), getTile, setTile, distToPlayer:(blindMob || m._progressionOutmatched ? 10000 : distToPlayer)});
+  else updateMob(m, spec, {dt, now, aggressive: aggroNow, player:(blindMob ? {x:m.x-10000, y:m.y} : (concealedTarget || m._combatTarget)), getTile, setTile, distToPlayer:(blindMob || concealedTarget || m._progressionOutmatched ? 10000 : distToPlayer)});
   _mobTargetBody=null;
   // Investigating a sound is a pure STEERING nudge applied AFTER the species AI —
   // it must NEVER become the AI's notion of "the player". Species attacks are
@@ -8666,6 +8704,44 @@ const mobs = (function(){
   function projectileGlowKey(pr){
     if(!pr._gk) pr._gk='pr'+(++glowKeySeq);
     return pr._gk;
+  }
+
+  function drawMobAwarenessBadge(ctx,px,py,m,now){
+    const state=m && m._awarenessUi;
+    if(state!=='hidden' && state!=='suspicious' && state!=='spotted') return;
+    const flashing=now<(m._awarenessUiFlashUntil||0);
+    const pulse=flashing ? 0.5+0.5*Math.sin(now*0.018) : 0;
+    const expanded=state==='spotted' && flashing;
+    const width=state==='hidden'?50:(expanded?70:22);
+    const height=18;
+    const left=px-width*0.5, top=py-height;
+    const fill=state==='hidden'?'rgba(7,31,40,0.88)':(state==='suspicious'?'rgba(56,40,5,0.91)':'rgba(62,7,10,0.93)');
+    const color=state==='hidden'?'#75e8ff':(state==='suspicious'?'#ffd85a':'#ff645f');
+    ctx.save();
+    if(flashing){
+      ctx.globalAlpha=0.22+0.22*pulse;
+      ctx.strokeStyle=color;
+      ctx.lineWidth=2.5;
+      ctx.strokeRect(left-3-pulse*2,top-3-pulse*2,width+6+pulse*4,height+6+pulse*4);
+      ctx.globalAlpha=1;
+    }
+    ctx.fillStyle=fill;
+    ctx.fillRect(left,top,width,height);
+    ctx.strokeStyle=color;
+    ctx.lineWidth=1.5;
+    ctx.strokeRect(left+0.5,top+0.5,width-1,height-1);
+    ctx.fillStyle=color;
+    ctx.strokeStyle='rgba(3,5,8,0.72)';
+    ctx.lineWidth=2.4;
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+    ctx.font='900 11px system-ui, "Segoe UI", sans-serif';
+    let label='?';
+    if(state==='hidden') label='×'+Number(MM.noise && MM.noise.CFG && MM.noise.CFG.BACKSTAB_MULT || 2.35).toFixed(2);
+    else if(state==='spotted') label=expanded?'! WYKRYTY':'!';
+    ctx.strokeText(label,px,top+height*0.52);
+    ctx.fillText(label,px,top+height*0.52);
+    ctx.restore();
   }
 
   function draw(ctx, TILE, camX,camY, zoom, canDrawTile, viewX,viewY){
@@ -10601,6 +10677,23 @@ const mobs = (function(){
           else if(cur && ctx.setTransform) ctx.setTransform(cur);
         }
       }
+      if(m._awarenessUi){
+        const cur=ctx.getTransform ? ctx.getTransform() : null;
+        let px=screenX, py=topY;
+        if(cur){
+          px=cur.a*screenX+cur.c*topY+cur.e;
+          py=cur.b*screenX+cur.d*topY+cur.f;
+        }
+        const screenSpace=!!ctx.setTransform;
+        if(screenSpace){ ctx.save(); ctx.setTransform(1,0,0,1,0,0); }
+        try{
+          const hpVisible=!m._hideBar && m.hp < (m.maxHp || SPECIES[m.id]?.hp || 1);
+          drawMobAwarenessBadge(ctx,px,py-(hpVisible?12:7),m,now);
+        } finally {
+          if(screenSpace) ctx.restore();
+          else if(cur && ctx.setTransform) ctx.setTransform(cur);
+        }
+      }
       ctx.restore(); }
     // Burning mobs use the same soft hot/mid/tail puffs as the hero's fire hose
     // and world fire. Four deterministic stamps keep the overlay cheap and stop
@@ -11496,6 +11589,26 @@ const mobs = (function(){
       dir:(opts && typeof opts==='object' && finiteNum(opts.x)) ? (m.x>=opts.x?1:-1) : undefined
     });
   }
+  function backstabAttacker(opts){
+    if(!opts || typeof opts!=='object') return null;
+    const x=finiteNum(opts.attackerX) ? opts.attackerX : opts.x;
+    const y=finiteNum(opts.attackerY) ? opts.attackerY : opts.y;
+    if(!finiteNum(x)) return null;
+    return {x,y:finiteNum(y)?y:0};
+  }
+  function damageSourceRevealsHero(opts){
+    if(!opts || typeof opts!=='object') return false;
+    const source=String(opts.source || opts.actor || opts.by || '').toLowerCase();
+    return source==='hero' || source==='player' || source==='hero_melee' || source==='coop';
+  }
+  function isBackstabStrike(m,opts){
+    if(!m || !opts || opts._chained || opts.dot) return false;
+    const kind=String(opts.kind || opts.weaponType || opts.type || '').toLowerCase();
+    if(kind!=='melee') return false;
+    if(!damageSourceRevealsHero(opts)) return false;
+    const attacker=backstabAttacker(opts);
+    return !!(attacker && MM.noise && MM.noise.canBackstab && MM.noise.canBackstab(m,attacker));
+  }
   function damageMob(m,amount,opts){
     if(m.hp<=0) return;
     const spec=SPECIES[m.id] || {};
@@ -11512,12 +11625,10 @@ const mobs = (function(){
     // Direct hits only: a status tick (burn/bleed/poison) or a chained arc must
     // never claim the ambush bonus, and _hurtOnce below closes the window after
     // the first strike lands.
-    const directHit = !!opts && !opts._chained && opts.cause!=='status' && !opts.dot;
-    if(directHit && MM.noise && MM.noise.isUnaware && MM.noise.isUnaware(m) && (opts.source==='hero' || opts.source==='hero_melee' || opts.source==='coop')){
+    const backstab=isBackstabStrike(m,opts);
+    if(backstab){
       dealt*=MM.noise.CFG.BACKSTAB_MULT;
       applyStatus(m,'stun',{dur:MM.noise.CFG.BACKSTAB_STUN, source:opts.source, cause:'backstab'});
-      noteCombatEvent({kind:'crit', target:'mob', source:opts.source, x:m.x, y:m.y-0.3,
-        amount:dealt, cause:'backstab', major:true, power:1.5});
     }
     const beforeHp=Number(m.hp)||0;
     const remoteWoundOnly=sourceIsRemoteWoundOnly(opts);
@@ -11527,18 +11638,37 @@ const mobs = (function(){
     if(remoteWoundOnly) dealt=Math.min(dealt,Math.max(0,beforeHp-0.5));
     if(!(dealt>0)) return;
     const willDie=beforeHp-dealt<=0;
+    const healthLost=Math.max(0,Math.min(beforeHp,dealt));
     noteDamageSource(m,opts);
     // the ambush window closes the instant anything actually lands (engine/noise.js
     // isUnaware) — a creature that has been hit knows you are there
     m._hurtOnce=true;
-    m.hp-=dealt;
+    if(damageSourceRevealsHero(opts)){
+      m._noticed=true;
+      m._aggro=true;
+      setMobAwarenessUi(m,'spotted',performance.now());
+    }
+    m.hp=Math.max(0,beforeHp-dealt);
     m.hitFlashUntil = performance.now()+120;
     m.shake = 0.6;
-    noteMobCombatHit(m,dealt,opts,willDie,beforeHp,thermalBonus);
-    if(!remoteWoundOnly && typeof spec.onDamaged==='function'){
-      try{ spec.onDamaged(m,spec,{amount:dealt,beforeHp,opts,now:performance.now(),willDie}); }catch(e){}
+    noteEntityNumber({
+      kind:'damage',amount:-healthLost,x:m.x,y:m.y-0.72,
+      target:'mob:'+mobGlowKey(m),victim:'mob',species:m.id,
+      source:opts && typeof opts==='object' ? opts.source : undefined,
+      cause:backstab?'backstab':(opts && typeof opts==='object' ? (opts.cause || opts.kind || opts.type) : undefined),
+      icon:backstab?'backstab':undefined,backstab,special:backstab,
+      multiplier:backstab?MM.noise.CFG.BACKSTAB_MULT:undefined
+    });
+    if(backstab){
+      m._lastBackstabAt=performance.now();
+      noteCombatEvent({kind:'crit', target:'mob', source:opts.source, x:m.x, y:m.y-0.3,
+        amount:healthLost, cause:'backstab', major:true, power:1.5});
     }
-    if(m.hp<=0){ m.hp=0; m.shake=1; spawnMobDeathFx(m,opts); onMobDeath(m); }
+    noteMobCombatHit(m,healthLost,opts,willDie,beforeHp,thermalBonus);
+    if(!remoteWoundOnly && typeof spec.onDamaged==='function'){
+      try{ spec.onDamaged(m,spec,{amount:healthLost,beforeHp,opts,now:performance.now(),willDie}); }catch(e){}
+    }
+    if(m.hp<=0){ m.shake=1; spawnMobDeathFx(m,opts); onMobDeath(m); }
   }
 
   function cleanXpFatigueEntry(entry){
@@ -12114,7 +12244,7 @@ const mobs = (function(){
       sig: live.map(m=>m.id).join('|'),
       poses: live.map(m=>[+m.x.toFixed(3), +m.y.toFixed(3), m.facing<0?-1:1, finiteNum(m.hp)?+m.hp.toFixed(2):0, typeof m.state==='string'?m.state:'idle',
         m.sentinelCharge?1:0,m.sentinelCharge?+(Number(m.sentinelCharge.t)||0).toFixed(2):0,m.sentinelCharge?+(Number(m.sentinelCharge.duration)||SENTINEL_CHARGE_SECONDS).toFixed(2):0,
-        m.sentinelCharge?+(Number(m.sentinelCharge.aimX)||0).toFixed(3):0,m.sentinelCharge?+(Number(m.sentinelCharge.aimY)||0).toFixed(3):0]),
+        m.sentinelCharge?+(Number(m.sentinelCharge.aimX)||0).toFixed(3):0,m.sentinelCharge?+(Number(m.sentinelCharge.aimY)||0).toFixed(3):0,mobAwarenessCode(m)]),
       lasers:mobLasers.slice(-MOB_LASER_CAP).map(l=>[+l.x1.toFixed(3),+l.y1.toFixed(3),+l.x2.toFixed(3),+l.y2.toFixed(3),+(l.life-l.t).toFixed(2),l.hit?1:0,l.blocked?1:0])
     };
   }
@@ -12128,10 +12258,18 @@ const mobs = (function(){
       const m=live[i];
       m._ghostTX=+p[0]; m._ghostTY=+p[1];
       m.facing=p[2]<0?-1:1;
-      if(finiteNum(p[3])) m.hp=Math.max(0,Math.min(m.maxHp||p[3],p[3]));
+      if(finiteNum(p[3])){
+        const beforeHp=Number(m.hp)||0;
+        const nextHp=Math.max(0,Math.min(m.maxHp||p[3],p[3]));
+        if(beforeHp-nextHp>=0.05){
+          noteEntityNumber({kind:'damage',amount:nextHp-beforeHp,x:+p[0],y:+p[1]-0.72,target:'mob:'+mobGlowKey(m),victim:'mob',species:m.id,source:'ghost_stream'});
+        }
+        m.hp=nextHp;
+      }
       if(typeof p[4]==='string') m.state=p[4];
       if(Number(p[5])) m.sentinelCharge={t:Math.max(0,Number(p[6])||0),duration:Math.max(0.1,Number(p[7])||SENTINEL_CHARGE_SECONDS),aimX:Number(p[8])||0,aimY:Number(p[9])||0,target:null,ghost:true};
       else m.sentinelCharge=null;
+      setMobAwarenessUi(m,mobAwarenessFromCode(Number(p[10])|0),performance.now());
     }
     if(Array.isArray(roster.lasers)){
       mobLasers.length=0;

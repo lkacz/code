@@ -30,8 +30,9 @@ export const CFG = {
   SPRINT_SPEED: 5.4,   // above this a body is loud all by itself
   STRIDE_WALK: 0.34,   // seconds between footfalls at a walk
   STRIDE_SPRINT: 0.22, // a sprint drums faster — but still not once per frame
-  BACKSTAB_MULT: 2.35, // damage multiplier when striking an unaware creature
+  BACKSTAB_MULT: 2.35, // damage multiplier when striking an unaware creature from behind
   BACKSTAB_STUN: 0.85, // seconds of stun a backstab lands
+  BACKSTAB_REAR_MARGIN: 0.12, // attacker must be clearly behind the facing axis
   // Per-cause loudness in tiles. Hardness-scaled mining is the big one: 150 tile
   // hardness values suddenly MEAN something because obsidian is loud and snow
   // is nearly silent.
@@ -188,6 +189,25 @@ export function isUnaware(mob){
   return !mob._aggro && !mob._noticed && !mob._investigate;
 }
 
+// Facing is horizontal in this 2D world. The stable draw-facing wins when it is
+// available, so the rule agrees with what the player can actually see: facing
+// right means the rear half-plane is left, and vice versa. A small dead zone
+// prevents an attacker inside a large creature from counting as "behind" while
+// positions jitter between frames.
+export function isBehind(mob, attacker){
+  if(!mob || !attacker) return false;
+  const mx=Number(mob.x), ax=Number(attacker.x);
+  if(!Number.isFinite(mx) || !Number.isFinite(ax)) return false;
+  const facing=(mob._stableFacing===-1 || mob._stableFacing===1)
+    ? mob._stableFacing
+    : (mob.facing<0?-1:1);
+  return (ax-mx)*facing < -CFG.BACKSTAB_REAR_MARGIN;
+}
+
+export function canBackstab(mob, attacker){
+  return isUnaware(mob) && isBehind(mob,attacker);
+}
+
 export function reset(){
   for(let i = 0; i < ring.length; i++) ring[i] = null;
   head = 0; clock = 0; lastNoise = null;
@@ -199,6 +219,6 @@ export function metrics(){
   return { live, clock: +clock.toFixed(2), last: lastNoise ? lastNoise.cause : null };
 }
 
-export const noise = { CFG, tick, emit, radiusFor, heardBy, sightMult, bodyQuiet, emitMovement, isUnaware, floorLevel, reset, metrics };
+export const noise = { CFG, tick, emit, radiusFor, heardBy, sightMult, bodyQuiet, emitMovement, isUnaware, isBehind, canBackstab, floorLevel, reset, metrics };
 root.MM.noise = noise;
 export default noise;

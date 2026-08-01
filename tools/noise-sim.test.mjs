@@ -144,8 +144,63 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   assert.equal(N.isUnaware({_noticed: true}), false, 'a creature that has NOTICED you is aware, even if peaceful');
   assert.equal(N.isUnaware({_hurtOnce: true}), false, 'a creature already struck knows you are there — one ambush only');
   assert.equal(N.isUnaware(null), false, 'no creature is not a backstab');
+  assert.equal(N.isBehind({x:5,facing:1},{x:4}), true, 'an attacker left of a right-facing creature is behind it');
+  assert.equal(N.isBehind({x:5,facing:1},{x:6}), false, 'an attacker in the facing half-plane is in front');
+  assert.equal(N.isBehind({x:5,facing:1,_stableFacing:-1},{x:6}), true, 'the visible stable facing decides the rear side');
+  assert.equal(N.canBackstab({x:5,facing:1},{x:4}), true, 'unaware plus rear position opens a backstab');
+  assert.equal(N.canBackstab({x:5,facing:1,_noticed:true},{x:4}), false, 'rear position alone cannot backstab an aware target');
   assert.ok(N.CFG.BACKSTAB_MULT > 1.5, 'the backstab payoff is worth the speed cost');
   assert.ok(N.CFG.BACKSTAB_STUN > 0, 'a backstab buys you a moment');
+  assert.ok(N.CFG.BACKSTAB_REAR_MARGIN > 0, 'the rear test has a small anti-jitter dead zone');
+}
+
+// ------------------------------------------------ actual creature damage seam
+// The pure predicates above are useful only if the shared creature inlet applies
+// them to melee and emits the exact HP loss for the world-number renderer.
+{
+  globalThis.localStorage = globalThis.localStorage || {getItem(){return null;},setItem(){},removeItem(){}};
+  const entityNumbers=[];
+  globalThis.CustomEvent = class { constructor(type,opts){ this.type=type; this.detail=opts&&opts.detail; } };
+  globalThis.dispatchEvent = ev=>{ if(ev&&ev.type==='mm-entity-number') entityNumbers.push(ev.detail); return true; };
+  let mobNow=1000;
+  globalThis.performance={now:()=>mobNow};
+  globalThis.player={x:4,y:9.1,w:0.7,h:0.95,vx:0,vy:0,hp:100,maxHp:100,xp:0};
+  const { T } = await import('../src/constants.js');
+  const { mobs } = await import('../src/engine/mobs.js');
+  const wolfHp=mobs._debugSpecies().WOLF.hp;
+  const spawnWolf=()=>{
+    mobs.deserialize({v:6,list:[{id:'WOLF',x:5.5,y:9.124,vx:0,vy:0,hp:wolfHp,maxHp:wolfHp,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
+    mobs.freezeSpawns(10000);
+    entityNumbers.length=0;
+  };
+  const hpAfter=()=>mobs.serialize().list[0].hp;
+
+  spawnWolf();
+  player.x=4.2;
+  for(let i=0;i<18;i++){
+    mobNow+=16;
+    mobs.update(1/60,player,(_x,y)=>y>=10?T.STONE:T.AIR,()=>{});
+  }
+  assert.equal(mobs.ghostRoster().poses[0][10],1,'a quiet hero in the rear gets the visible backstab-ready state');
+  assert.equal(mobs.ghostRoster().poses[0][2],1,'species shortcuts do not turn an unaware wolf toward the concealed hero');
+  assert.equal(mobs.attackAt(5,9,0,{source:'hero',kind:'melee',x:4.2,y:9.1}),true,'a rear melee strike reaches the mob inlet');
+  const rearLoss=wolfHp-hpAfter();
+  assert.ok(Math.abs(rearLoss-3*N.CFG.BACKSTAB_MULT)<0.01,'rear unaware melee receives the configured multiplier');
+  assert.equal(entityNumbers.length,1,'one mob hit emits one damage number');
+  assert.ok(Math.abs(entityNumbers[0].amount+rearLoss)<0.01,'the number reports the actual HP removed');
+  assert.ok(entityNumbers[0].backstab && entityNumbers[0].icon==='backstab','the amplified number is visibly marked as a backstab');
+  assert.match(entityNumbers[0].target,/^mob:/,'mob numbers have their own target namespace');
+  assert.equal(mobs.ghostRoster().poses[0][10],3,'landing the hit immediately flips the target to the detected state');
+
+  spawnWolf();
+  mobs.attackAt(5,9,0,{source:'hero',kind:'melee',x:6.8,y:9.1});
+  assert.equal(wolfHp-hpAfter(),3,'an unaware but frontal melee strike stays at base damage');
+  assert.equal(entityNumbers.length,1,'ordinary mob damage also emits a number');
+  assert.equal(entityNumbers[0].backstab,false,'ordinary damage cannot borrow the backstab presentation');
+
+  spawnWolf();
+  mobs.damageAt(5,9,3,{source:'hero',kind:'arrow',x:4.2,y:9.1});
+  assert.equal(wolfHp-hpAfter(),3,'a projectile from behind does not inherit the melee backstab bonus');
 }
 
 // ---------------------------------------------------------------- bounded ring
@@ -175,7 +230,9 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   const mainSrc = await fs.readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(mobsSrc, /MM\.noise\.sightMult\(heroForMob\)/, 'sneaking feeds the mob sight test');
   assert.match(mobsSrc, /MM\.noise\.heardBy\(m\.x, m\.y/, 'creatures consult the sound field');
-  assert.match(mobsSrc, /MM\.noise\.isUnaware\(m\)/, 'the melee entry checks for a backstab');
+  assert.match(mobsSrc, /MM\.noise\.canBackstab\(m,attacker\)/, 'the melee entry requires both unawareness and a rear attacker position');
+  assert.match(mobsSrc, /kind!==['"]melee['"]/, 'projectiles and status ticks cannot inherit the backstab multiplier');
+  assert.match(mobsSrc, /target:'mob:'\+mobGlowKey\(m\),victim:'mob'/, 'every creature damage pass emits into a mob-only number namespace');
   // Sight ACQUIRES, pursue only RETAINS: every species declares pursueRange >
   // sightRange, so (canSee || shouldPursue) was a pure distance test — the only
   // carrier of quietSight (canSee) could never decide anything and the ambush
@@ -184,6 +241,14 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
     'a sneaking body must also be in FRONT of the creature to be spotted');
   assert.match(mobsSrc, /m\._noticed = spotted \|\| \(shouldPursue && !!m\._noticed\)/,
     'sight acquires, pursue only retains');
+  assert.match(mobsSrc, /setMobAwarenessUi\(m,m\._noticed\?'spotted':\(m\._investigate\?'suspicious':\(backstabReady\?'hidden':''\)\),now\)/,
+    'perception resolves to one visible hidden/suspicious/spotted state');
+  assert.match(mobsSrc, /const concealedTarget=\(!m\._noticed && quietTarget\)[\s\S]*concealedTarget \|\| m\._combatTarget/,
+    'unaware species AI receives no real hero coordinates through legacy proximity shortcuts');
+  assert.match(mobsSrc, /function drawMobAwarenessBadge\([\s\S]*WYKRYTY[\s\S]*BACKSTAB_MULT/,
+    'the creature renderer gives detection and the available rear multiplier a persistent badge');
+  assert.match(mobsSrc, /mobAwarenessCode\(m\)[^\]]*\]\),[\s\S]*mobAwarenessFromCode\(Number\(p\[10\]\)\|0\)/,
+    'the existing mob pose plane mirrors awareness to multiplayer viewers');
   assert.match(mainSrc, /NOISE\.emitMovement\(player\)/, 'the hero announces its own movement');
   assert.match(mainSrc, /for\(const b of bodies\) NOISE\.emitMovement\(b\)/, 'and so does every coop body');
   assert.match(mainSrc, /NOISE\.emit\(\s*tx\+0\.5,\s*ty\+0\.5,\s*'mine'/, 'mining emits through the shared break hook');

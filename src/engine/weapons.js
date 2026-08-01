@@ -1469,7 +1469,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
            || (MM.invasions && MM.invasions.attackAt && MM.invasions.attackAt(tx,ty,bonus))
            || (MM.mechs && MM.mechs.attackAt && MM.mechs.attackAt(tx,ty,bonus,{source:'hero'}))
            || (MM.npcSystem && MM.npcSystem.attackAt && MM.npcSystem.attackAt(tx,ty,bonus))
-           || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'hero'}));
+           || (MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'hero',kind:'melee',x:player.x,y:player.y}));
     const cooldown=0.35*water.cooldownMult;
     meleeCd=cooldown; player.atkCd=Math.max(player.atkCd||0,cooldown);
     player.facing = tx>=px? 1 : -1;
@@ -2361,7 +2361,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
       || (MM.invasions && MM.invasions.damageAt && MM.invasions.damageAt(tx,ty,dmg))
       || (MM.mechs && MM.mechs.damageAt && MM.mechs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky}))
       || (MM.npcSystem && MM.npcSystem.damageAt && MM.npcSystem.damageAt(tx,ty,dmg))
-      || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky})));
+      || (MM.mobs && MM.mobs.damageAt && MM.mobs.damageAt(tx,ty,dmg,{source:'hero',kind:'melee',x:player.x,y:player.y,specialAttack:true,luckyStrike:roll.lucky})));
     if(hit && !chestHit && roll.lucky) noteLuckyStrike(tx+0.5,ty-0.15);
     if(hit && !chestHit) noteWeaponCombatHit(tx+0.5,ty+0.15,dmg,{source:'hero',kind:'melee',specialAttack:true,luckyStrike:roll.lucky},weaponCombatVisualMeta(w,'melee',{major:true,dir:player.facing,power:1.35+chargeFx*0.45}));
     if(hit && !collected && !chestHit){
@@ -5144,7 +5144,7 @@ import { authoritativeBodyBlocksCell } from './body_footprint.js';
     const {px,tx,ty}=meleeTargetTile(body,aimX,aimY,reach,false);
     // Guest combat is intentionally limited to ordinary mobs. Boss/guardian/UFO
     // defeat paths carry host story, terrain and economy side effects.
-    const hit=(MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'coop'}));
+    const hit=(MM.mobs && MM.mobs.attackAt && MM.mobs.attackAt(tx,ty,bonus,{source:'coop',kind:'melee',x:body.x,y:body.y}));
     noteCoopSwing(tx,ty,tx>=px?1:-1);
     try{ if(MM.audio && MM.audio.play) MM.audio.play('swing',{x:tx+0.5,y:ty+0.5}); }catch(e){}
     return !!hit;

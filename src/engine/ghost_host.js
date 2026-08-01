@@ -2131,7 +2131,7 @@ const ghostHost = (function(){
 				}
 			}
 			let hits = 0;
-			try{ hits = bridge.ghostHeroDamage ? (bridge.ghostHeroDamage(x, y, amt, kind) | 0) : 0; }catch(e){ hits = 0; }
+			try{ hits = bridge.ghostHeroDamage ? (bridge.ghostHeroDamage(x, y, amt, kind, {x:b.x,y:b.y,facing:b.f<0?-1:1,gid:entry.gid}) | 0) : 0; }catch(e){ hits = 0; }
 			if(hits) s.stats.heroDmg = (s.stats.heroDmg || 0) + 1;
 			return;
 		}
