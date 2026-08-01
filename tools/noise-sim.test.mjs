@@ -63,6 +63,21 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   assert.equal(heard.cause, 'blast', 'a distant detonation drowns out a nearby footfall');
 }
 
+// --------------------------------------------------------- distinct sound cursor
+{
+  N.reset();
+  N.emit(0,0,'blast',1,{actor:'local-hero'});
+  const first=N.heardBy(1,0,{after:0});
+  assert.ok(Number.isFinite(first.id),'every audible event has a stable identity');
+  assert.equal(N.heardBy(1,0,{after:first.id}),null,'one lingering sound cannot count twice');
+  N.tick(0.1);
+  N.emit(0,0,'step',1,{actor:'local-hero'});
+  const second=N.heardBy(1,0,{after:first.id});
+  assert.ok(second && second.id>first.id,'the cursor exposes a genuinely later sound');
+  assert.equal(second.cause,'step','a later quiet step is not hidden by the older loud blast');
+  assert.ok(N.CFG.SUSPICION_TIME>0 && N.CFG.SUSPICION_MEMORY>N.CFG.SUSPICION_TIME,'the hidden vigilance memory outlasts the visible question mark');
+}
+
 // ----------------------------------------------------------------- sneaking
 {
   N.reset();
@@ -168,11 +183,14 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   const { T } = await import('../src/constants.js');
   const { mobs } = await import('../src/engine/mobs.js');
   const wolfHp=mobs._debugSpecies().WOLF.hp;
-  const spawnWolf=()=>{
-    mobs.deserialize({v:6,list:[{id:'WOLF',x:5.5,y:9.124,vx:0,vy:0,hp:wolfHp,maxHp:wolfHp,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
+  const spawnMob=(id='WOLF')=>{
+    const spec=mobs._debugSpecies()[id];
+    N.reset();
+    mobs.deserialize({v:6,list:[{id,x:5.5,y:9.124,vx:0,vy:0,hp:spec.hp,maxHp:spec.hp,state:'idle',facing:1,scale:1,speedMul:1,jumpMul:1,attackCd:0}],aggro:{mode:'rel',m:{}}});
     mobs.freezeSpawns(10000);
     entityNumbers.length=0;
   };
+  const spawnWolf=()=>spawnMob('WOLF');
   const hpAfter=()=>mobs.serialize().list[0].hp;
 
   spawnWolf();
@@ -201,6 +219,52 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   spawnWolf();
   mobs.damageAt(5,9,3,{source:'hero',kind:'arrow',x:4.2,y:9.1});
   assert.equal(wolfHp-hpAfter(),3,'a projectile from behind does not inherit the melee backstab bonus');
+
+  // First noise only raises vigilance. If the player freezes before making a
+  // second distinct sound, the visible question mark expires without detection.
+  spawnWolf();
+  player.x=-6;
+  player.vx=0;
+  player.vy=0;
+  player.quiet=true;
+  N.emit(player.x,player.y,'decoy',1,{actor:'local-hero'});
+  mobNow+=16;
+  mobs.update(1/60,player,(_x,y)=>y>=10?T.STONE:T.AIR,()=>{});
+  assert.equal(mobs.ghostRoster().poses[0][10],2,'the first distinct noise shows vigilance, not detection');
+  let saved=mobs.serialize().list[0];
+  assert.equal(saved.state,'listen','the creature pauses to listen before it turns');
+  assert.equal(saved.facing,1,'the first sound does not reveal its source by flipping the mob');
+  assert.equal(saved.vx,0,'listening holds the creature still');
+  const quietFrames=Math.ceil((N.CFG.SUSPICION_TIME+0.2)*60);
+  for(let i=0;i<quietFrames;i++){
+    N.tick(1/60);
+    mobNow+=1000/60;
+    mobs.update(1/60,player,(_x,y)=>y>=10?T.STONE:T.AIR,()=>{});
+  }
+  assert.equal(mobs.ghostRoster().poses[0][10],0,'freezing lets the question mark disappear without spotting the hero');
+
+  // The warning memory deliberately outlives the badge: another footfall now
+  // confirms the hero. Predators attack; peaceful creatures flee from the sound.
+  N.emit(player.x,player.y,'decoy',1,{actor:'local-hero'});
+  mobNow+=16;
+  mobs.update(1/60,player,(_x,y)=>y>=10?T.STONE:T.AIR,()=>{});
+  saved=mobs.serialize().list[0];
+  assert.equal(mobs.ghostRoster().poses[0][10],3,'a later noise inside the memory window becomes full recognition');
+  assert.equal(saved.state,'alert_attack','a predator resolves recognition into attack readiness');
+  assert.ok(saved.vx<0,'the alerted predator starts toward the recognized sound source');
+
+  spawnMob('DEER');
+  N.emit(player.x,player.y,'decoy',1,{actor:'local-hero'});
+  mobNow+=16;
+  mobs.update(1/60,player,(_x,y)=>y>=10?T.STONE:T.AIR,()=>{});
+  N.tick(0.1);
+  N.emit(player.x,player.y,'decoy',1,{actor:'local-hero'});
+  mobNow+=16;
+  mobs.update(1/60,player,(_x,y)=>y>=10?T.STONE:T.AIR,()=>{});
+  saved=mobs.serialize().list[0];
+  assert.equal(mobs.ghostRoster().poses[0][10],3,'a peaceful creature also shows the recognition exclamation mark');
+  assert.equal(saved.state,'flee_noise','a peaceful creature resolves recognition into flight');
+  assert.ok(saved.vx>0,'the peaceful creature flees away from the recognized sound source');
 }
 
 // ---------------------------------------------------------------- bounded ring
@@ -239,13 +303,17 @@ const src = await (await import('node:fs/promises')).readFile(new URL('../src/en
   // window could not open on any creature within melee reach.
   assert.match(mobsSrc, /const spotted = canSee && \(!quietTarget \|\| facingTarget \|\| distToPlayer<=1\.0\)/,
     'a sneaking body must also be in FRONT of the creature to be spotted');
-  assert.match(mobsSrc, /m\._noticed = spotted \|\| \(shouldPursue && !!m\._noticed\)/,
-    'sight acquires, pursue only retains');
-  assert.match(mobsSrc, /setMobAwarenessUi\(m,m\._noticed\?'spotted':\(m\._investigate\?'suspicious':\(backstabReady\?'hidden':''\)\),now\)/,
+  assert.match(mobsSrc, /after:Number\(m\._lastHeardNoiseId\)\|\|0/,
+    'mob hearing consumes each distinct sound once through a monotonic cursor');
+  assert.match(mobsSrc, /beginNoiseSuspicion\(m,heard,now\)[\s\S]*recognizeRepeatedNoise\(m,heard,attackReady\)/,
+    'first noise listens while a repeated noise recognizes');
+  assert.match(mobsSrc, /m\._noticed = noiseRecognizedHero \|\| spotted \|\| \(shouldPursue && !!m\._noticed\)/,
+    'sight or confirmed hero noise acquires, pursue only retains');
+  assert.match(mobsSrc, /setMobAwarenessUi\(m,\(m\._noticed \|\| noiseRecognized\)\?'spotted':\(m\._investigate\?'suspicious':\(backstabReady\?'hidden':''\)\),now\)/,
     'perception resolves to one visible hidden/suspicious/spotted state');
-  assert.match(mobsSrc, /const concealedTarget=\(!m\._noticed && quietTarget\)[\s\S]*concealedTarget \|\| m\._combatTarget/,
+  assert.match(mobsSrc, /const concealedTarget=\(!m\._noticed && m\.id!==['"]ZLOTY['"] && \(quietTarget \|\| listeningForNoise\)\)[\s\S]*concealedTarget \|\| m\._combatTarget/,
     'unaware species AI receives no real hero coordinates through legacy proximity shortcuts');
-  assert.match(mobsSrc, /function drawMobAwarenessBadge\([\s\S]*WYKRYTY[\s\S]*BACKSTAB_MULT/,
+  assert.match(mobsSrc, /function drawMobAwarenessBadge\([\s\S]*BACKSTAB_MULT[\s\S]*CZUWA[\s\S]*WYKRYTY/,
     'the creature renderer gives detection and the available rear multiplier a persistent badge');
   assert.match(mobsSrc, /mobAwarenessCode\(m\)[^\]]*\]\),[\s\S]*mobAwarenessFromCode\(Number\(p\[10\]\)\|0\)/,
     'the existing mob pose plane mirrors awareness to multiplayer viewers');

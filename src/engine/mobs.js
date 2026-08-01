@@ -120,6 +120,7 @@ const mobs = (function(){
   const MOB_FACING_ATTACK_CONFIRM_MS = 30;
   const STEALTH_FEEDBACK_RANGE = 6;
   const AWARENESS_FLASH_MS = 1250;
+  const NOISE_ATTACK_PREDATORS = Object.freeze({WOLF:1,BEAR:1});
   const SAND_WORM_CALM_MS = 9000;
   const SAND_WORM_BAIT_SCAN_MS = 220;
   const SAND_WORM_BAIT_RADIUS = 11;
@@ -5275,6 +5276,19 @@ const mobs = (function(){
     m._progressionFlee=true;
     return true;
   }
+  function applyNoiseFlee(m,spec,threat,dt){
+    if(!m || !spec || !threat) return false;
+    const dx=m.x-threat.x, dy=m.y-threat.y;
+    const dist=Math.hypot(dx,dy)||0.001;
+    const ax=dx/dist, ay=dy/dist;
+    const speed=Math.max(1.8,(Number(spec.speed)||2)*(Number(m.speedMul)||1)*(spec.flying||spec.aquatic?1.12:0.96));
+    m.vx=ax*speed;
+    if(spec.flying || spec.aquatic) m.vy=ay*speed*0.72;
+    else if(m.onGround && Math.random()<Math.max(0,dt)*0.8) m.vy=Math.min(m.vy||0,(spec.move&&spec.move.jumpVel)||-4.2);
+    m.facing=ax>=0?1:-1;
+    m.state='flee_noise';
+    return true;
+  }
   function validMobState(m){
     return !!m && finiteCoord(m.x) && finiteCoord(m.y) && finiteNum(m.vx) && finiteNum(m.vy) && finiteNum(m.hp);
   }
@@ -5445,6 +5459,31 @@ const mobs = (function(){
   }
   function mobAwarenessFromCode(code){
     return code===1?'hidden':(code===2?'suspicious':(code===3?'spotted':''));
+  }
+
+  function noiseComesFromHero(heard){
+    const actor=String(heard && heard.actor || '');
+    return actor==='local-hero' || actor==='remote-hero';
+  }
+  function beginNoiseSuspicion(m,heard,now){
+    m._lastHeardNoiseId=heard.id;
+    m._noiseMemoryT=MM.noise.CFG.SUSPICION_MEMORY;
+    m._investigate={x:heard.x,y:heard.y};
+    m._investigateT=MM.noise.CFG.SUSPICION_TIME;
+    m._noiseListenFacing=mobFacingForDraw(m,now);
+    m.state='listen';
+  }
+  function recognizeRepeatedNoise(m,heard,attackReady){
+    m._lastHeardNoiseId=heard.id;
+    m._noiseMemoryT=0;
+    m._investigate=null;
+    m._investigateT=0;
+    m._noiseRecognizedT=MM.noise.CFG.RECOGNITION_TIME;
+    m._noiseRecognizedHero=noiseComesFromHero(heard);
+    m._noiseThreat={x:heard.x,y:heard.y};
+    m._noiseResponse=attackReady ? 'attack' : 'flee';
+    m.state=m._noiseResponse==='attack'?'alert_attack':'flee_noise';
+    return m._noiseResponse;
   }
 
   // --- Aquatic helpers (fish) ---
@@ -7923,7 +7962,15 @@ const mobs = (function(){
       const challenge=mobChallengeProfile(m,spec,player,heroThreat);
       m._progressionOutmatched=progressionFleeEligible(m,spec,challenge);
       m._progressionFlee=false;
-      const aggressive=isMobHostile(m,nowEpoch) && !isMobPacified(m,now) && !hasStatus(m,'blind') && !isGhostSpooked(m);
+      const noiseFightAllowed=!isMobPacified(m,now) && !hasStatus(m,'blind') && !isGhostSpooked(m);
+      let aggressive=isMobHostile(m,nowEpoch) && noiseFightAllowed;
+      if(m._noiseMemoryT>0){
+        m._noiseMemoryT=Math.max(0,m._noiseMemoryT-dt);
+      }
+      if(m._noiseRecognizedT>0){
+        m._noiseRecognizedT=Math.max(0,m._noiseRecognizedT-dt);
+        if(m._noiseResponse==='attack' && m._noiseRecognizedHero && noiseFightAllowed) aggressive=true;
+      }
       const smoke=MM.smoke;
       if(smoke&&typeof smoke.updateSoot==='function') smoke.updateSoot(m,dt,{height:spec.body&&spec.body.h||0.9});
       // Natural lifespan: apply health decay when past decayStartAt; ensure it runs before far-sleep skip
@@ -7956,37 +8003,56 @@ const mobs = (function(){
   const sight = (typeof spec.sightRange==='number'? spec.sightRange : 16) * fogSight * quietSight;
   const pursue = ((typeof spec.pursueRange==='number'? spec.pursueRange : ((typeof spec.sightRange==='number'? spec.sightRange : 16)+6))) * fogSight;
   const teleporterTarget=activeTeleporterRetaliation(m,getTile,now);
-  const combatTarget = teleporterTarget || combatTargetForMob(m,heroForMob,aggressive,Math.max(sight,pursue));
-  const aimTarget = combatTarget && combatTarget.kind==='companion' ? companionTargetPoint(combatTarget) : combatTarget;
-  const distToPlayer = (aimTarget && aimTarget!==heroForMob) ? Math.hypot(aimTarget.x-m.x, aimTarget.y-m.y) : distToHero;
-  const canSee = distToPlayer <= sight;
-  const shouldPursue = distToPlayer <= pursue;
-  // Hearing: a sound this creature can hear pulls it toward the NOISE, not the
-  // hero — that is what makes a thrown stone a decoy instead of a joke. Deaf
-  // specs opt out with keenEars:0; sharp-eared ones widen the ear.
-  if(!canSee && typeof MM!=='undefined' && MM.noise && MM.noise.heardBy){
-    const heard = MM.noise.heardBy(m.x, m.y, {keen: typeof spec.keenEars==='number' ? spec.keenEars : 1});
-    if(heard){
-      const beganInvestigation=!m._investigate;
-      m._investigate = {x:heard.x, y:heard.y, until:(m._investigate && m._investigate.until) || 0};
-      m._investigateT = 3.2;
-      if(beganInvestigation){
-        try{
-          if(MM.discovery && MM.discovery.observe){
-            MM.discovery.observe('noise_attracted_creature',{
-              heard:true,
-              cause:String(heard.cause||'sound'),
-              radius:Math.max(0,Number(heard.r)||0),
-              sourceTarget:{x:heard.x,y:heard.y},
-              target:{x:m.x,y:m.y},
-              actor:String(heard.actor||'world')
-            });
-          }
-        }catch(e){}
-      }
+  let combatTarget = teleporterTarget || combatTargetForMob(m,heroForMob,aggressive,Math.max(sight,pursue));
+  let aimTarget = combatTarget && combatTarget.kind==='companion' ? companionTargetPoint(combatTarget) : combatTarget;
+  let distToPlayer = (aimTarget && aimTarget!==heroForMob) ? Math.hypot(aimTarget.x-m.x, aimTarget.y-m.y) : distToHero;
+  let canSee = distToPlayer <= sight;
+  let shouldPursue = distToPlayer <= pursue;
+  // Hearing is deliberately staged. One sound makes the creature hold its
+  // visible facing and listen; a distinct follow-up sound confirms the alarm.
+  // Cursor delivery prevents one lingering ring-buffer entry from confirming
+  // itself. Deaf specs opt out; sharp-eared ones widen the listening radius.
+  if(!m._noticed && typeof MM!=='undefined' && MM.noise && MM.noise.heardBy){
+    const heard = MM.noise.heardBy(m.x, m.y, {
+      keen:typeof spec.keenEars==='number' ? spec.keenEars : 1,
+      after:Number(m._lastHeardNoiseId)||0
+    });
+    if(heard && Number.isFinite(heard.id)){
+      const repeat=m._noiseMemoryT>0 || m._noiseRecognizedT>0;
+      if(repeat){
+        const attackReady=noiseFightAllowed && (aggressive || spec.alwaysAggro || !!NOISE_ATTACK_PREDATORS[m.id]);
+        recognizeRepeatedNoise(m,heard,attackReady);
+        if(m._noiseResponse==='attack' && m._noiseRecognizedHero && noiseFightAllowed){
+          aggressive=true;
+          combatTarget=teleporterTarget || combatTargetForMob(m,heroForMob,true,Math.max(sight,pursue));
+          aimTarget=combatTarget && combatTarget.kind==='companion' ? companionTargetPoint(combatTarget) : combatTarget;
+          distToPlayer=(aimTarget && aimTarget!==heroForMob) ? Math.hypot(aimTarget.x-m.x,aimTarget.y-m.y) : distToHero;
+          canSee=distToPlayer<=sight;
+          shouldPursue=distToPlayer<=pursue;
+        }
+      } else beginNoiseSuspicion(m,heard,now);
+      try{
+        if(MM.discovery && MM.discovery.observe){
+          MM.discovery.observe('noise_attracted_creature',{
+            heard:true,
+            repeated:repeat,
+            cause:String(heard.cause||'sound'),
+            radius:Math.max(0,Number(heard.r)||0),
+            sourceTarget:{x:heard.x,y:heard.y},
+            target:{x:m.x,y:m.y},
+            actor:String(heard.actor||'world')
+          });
+        }
+      }catch(e){}
     }
   }
-  if(m._investigateT > 0){ m._investigateT -= dt; if(m._investigateT <= 0) m._investigate = null; }
+  if(m._investigateT > 0){
+    m._investigateT-=dt;
+    if(m._investigateT<=0){
+      m._investigate=null;
+      if(m.state==='listen') m.state='idle';
+    }
+  }
   // Sight ACQUIRES, pursue only RETAINS. The old form (canSee || shouldPursue)
   // made pursue an acquisition range too, and since every species declares
   // pursueRange > sightRange, canSee — the only carrier of fogSight/quietSight —
@@ -7998,9 +8064,16 @@ const mobs = (function(){
   const quietTarget = !!(typeof MM!=='undefined' && MM.noise && MM.noise.bodyQuiet && MM.noise.bodyQuiet(heroForMob));
   const facingTarget = ((aimTarget && aimTarget.x>=m.x) ? 1 : -1) === ((m.facing>=0) ? 1 : -1);
   const spotted = canSee && (!quietTarget || facingTarget || distToPlayer<=1.0);
+  if(spotted){
+    m._noiseMemoryT=0;
+    m._investigate=null;
+    m._investigateT=0;
+  }
+  const noiseRecognized=m._noiseRecognizedT>0;
+  const noiseRecognizedHero=noiseRecognized && m._noiseRecognizedHero;
   // PERCEPTION, tracked apart from hostility: a peaceful, pacified or spooked
   // creature still notices you — hostility only weaponizes the same awareness.
-  m._noticed = spotted || (shouldPursue && !!m._noticed);
+  m._noticed = noiseRecognizedHero || spotted || (shouldPursue && !!m._noticed);
   if(teleporterTarget) m._noticed=true;
   const aggroNow = !!teleporterTarget || (aggressive && m._noticed);
   m._aggro = aggroNow;
@@ -8010,7 +8083,7 @@ const mobs = (function(){
   // cash in the backstab. Investigation and detection always override it.
   const backstabReady=quietTarget && distToHero<=STEALTH_FEEDBACK_RANGE &&
     typeof MM!=='undefined' && MM.noise && MM.noise.canBackstab && MM.noise.canBackstab(m,heroForMob);
-  setMobAwarenessUi(m,m._noticed?'spotted':(m._investigate?'suspicious':(backstabReady?'hidden':'')),now);
+  setMobAwarenessUi(m,(m._noticed || noiseRecognized)?'spotted':(m._investigate?'suspicious':(backstabReady?'hidden':'')),now);
   const fleeTarget=!teleporterTarget && m._progressionOutmatched ? {x:m.x+(m.x>=player.x?10000:-10000),y:m.y} : null;
   m._combatTarget=fleeTarget || (aggroNow ? (combatTarget && combatTarget.kind==='companion' ? Object.assign({},combatTarget,{y:combatTarget.aimY==null ? combatTarget.y : combatTarget.aimY}) : combatTarget) : heroForMob);
   // Blinded (sand in the eyes): the AI perceives its target impossibly far away,
@@ -8020,17 +8093,21 @@ const mobs = (function(){
   // route this mob's damage to the guest body it is hunting (if any) for the duration
   // of its AI tick — every damagePlayer call inside updateMob honors it
   _mobTargetBody=(m._combatTarget && m._combatTarget.kind==='coop') ? m._combatTarget.body : null;
-  // Investigating a sound reuses the ordinary approach AI with a target parked on
-  // the NOISE and aggressive still false: the creature walks over to look, it does
-  // not charge. That is what turns a thrown stone into a decoy.
-  const investigateAt = (!aggroNow && !blindMob && m._investigate) ? m._investigate : null;
+  // A repeated world/decoy sound can raise a full alarm without revealing a hero.
+  // Predators approach that sound point through the safe steering nudge below;
+  // peaceful creatures use the same point as the origin of their flight.
+  const listeningForNoise=!m._noticed && !!m._investigate;
+  const investigateAt=(!aggroNow && !blindMob && noiseRecognized && m._noiseResponse==='attack' && !m._noiseRecognizedHero)
+    ? m._noiseThreat
+    : null;
+  const fleeFromNoise=(!teleporterTarget && noiseRecognized && m._noiseResponse==='flee') ? m._noiseThreat : null;
   // Species-specific AI contains useful close-range shortcuts (wolf bite gap,
   // vulture lunge, worm proximity), but those shortcuts predate perception and
   // must not receive the real coordinates of a quiet, still-unnoticed body. Feed
   // them a point far ahead in the creature's visible facing instead; investigation
   // below still steers toward a heard sound, and a genuinely noticed body remains
   // the ordinary target. This makes "unseen" simulation truth, not just a badge.
-  const concealedTarget=(!m._noticed && quietTarget)
+  const concealedTarget=(!m._noticed && m.id!=='ZLOTY' && (quietTarget || listeningForNoise))
     ? {x:m.x+mobFacingForDraw(m,now)*10000,y:m.y}
     : null;
   if(teleporterTarget) updateTeleporterRetaliation(m,spec,teleporterTarget,dt,now,getTile,setTile);
@@ -8053,6 +8130,13 @@ const mobs = (function(){
       // This runs after every species-specific AI, overriding proximity shortcuts
       // that used to make weak wolves, vultures, worms, etc. lunge anyway.
       if(!teleporterTarget) applyProgressionFlee(m,spec,player,challenge,dt);
+      if(fleeFromNoise) applyNoiseFlee(m,spec,fleeFromNoise,dt);
+      if(listeningForNoise){
+        m.vx=0;
+        if(spec.flying || spec.aquatic) m.vy*=0.25;
+        m.facing=m._noiseListenFacing<0?-1:1;
+        m.state='listen';
+      }
       if(isGroundMob){
         // Interpret AI changes: any upward impulse (vy<-1) becomes a jump intent
         if(m.vy < -1){ m._wantJump=true; }
@@ -8711,8 +8795,8 @@ const mobs = (function(){
     if(state!=='hidden' && state!=='suspicious' && state!=='spotted') return;
     const flashing=now<(m._awarenessUiFlashUntil||0);
     const pulse=flashing ? 0.5+0.5*Math.sin(now*0.018) : 0;
-    const expanded=state==='spotted' && flashing;
-    const width=state==='hidden'?50:(expanded?70:22);
+    const expanded=(state==='spotted' || state==='suspicious') && flashing;
+    const width=state==='hidden'?50:(expanded?(state==='suspicious'?62:70):22);
     const height=18;
     const left=px-width*0.5, top=py-height;
     const fill=state==='hidden'?'rgba(7,31,40,0.88)':(state==='suspicious'?'rgba(56,40,5,0.91)':'rgba(62,7,10,0.93)');
@@ -8738,6 +8822,7 @@ const mobs = (function(){
     ctx.font='900 11px system-ui, "Segoe UI", sans-serif';
     let label='?';
     if(state==='hidden') label='×'+Number(MM.noise && MM.noise.CFG && MM.noise.CFG.BACKSTAB_MULT || 2.35).toFixed(2);
+    else if(state==='suspicious') label=expanded?'? CZUWA':'?';
     else if(state==='spotted') label=expanded?'! WYKRYTY':'!';
     ctx.strokeText(label,px,top+height*0.52);
     ctx.fillText(label,px,top+height*0.52);

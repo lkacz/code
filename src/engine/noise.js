@@ -33,6 +33,9 @@ export const CFG = {
   BACKSTAB_MULT: 2.35, // damage multiplier when striking an unaware creature from behind
   BACKSTAB_STUN: 0.85, // seconds of stun a backstab lands
   BACKSTAB_REAR_MARGIN: 0.12, // attacker must be clearly behind the facing axis
+  SUSPICION_TIME: 1.35, // first distinct sound: stop and listen before turning
+  SUSPICION_MEMORY: 5.0, // silence hides the ?, but a quick second sound is remembered
+  RECOGNITION_TIME: 3.4, // second sound: visible ! plus attack/flee response
   // Per-cause loudness in tiles. Hardness-scaled mining is the big one: 150 tile
   // hardness values suddenly MEAN something because obsidian is loud and snow
   // is nearly silent.
@@ -47,6 +50,7 @@ export const CFG = {
 const ring = new Array(CFG.RING).fill(null);
 let head = 0;
 let clock = 0;          // seconds, advanced by tick(); the only time source
+let sequence = 0;       // monotonic sound identity; reset() may run while mobs still exist
 let lastNoise = null;   // cheap accessor for QA/debug
 
 function clamp(v, a, b){ return v < a ? a : (v > b ? b : v); }
@@ -76,8 +80,8 @@ export function emit(x, y, cause, strength, options){
   // phantom sound at the origin
   const px = Number(x), py = Number(y);
   if(!Number.isFinite(px) || !Number.isFinite(py)) return 0;
-  const n = ring[head] || (ring[head] = { x: 0, y: 0, r: 0, at: 0, cause: '', actor: 'world' });
-  n.x = px; n.y = py; n.r = r; n.at = clock; n.cause = String(cause || '');
+  const n = ring[head] || (ring[head] = { id: 0, x: 0, y: 0, r: 0, at: 0, cause: '', actor: 'world' });
+  n.id = ++sequence; n.x = px; n.y = py; n.r = r; n.at = clock; n.cause = String(cause || '');
   n.actor=String(options&&options.actor||'world').slice(0,32);
   head = (head + 1) % CFG.RING;
   lastNoise = n;
@@ -105,6 +109,7 @@ export function floorLevel(){
 export function heardBy(x, y, opts){
   const ex = num(x), ey = num(y);
   const keen = opts && Number.isFinite(Number(opts.keen)) ? Math.max(0, Number(opts.keen)) : 1;
+  const cursor = opts && Number.isFinite(Number(opts.after)) ? Math.max(0, Math.floor(Number(opts.after))) : null;
   if(!(keen > 0)) return null;
   // weather masks the quiet end of the spectrum: in a gale only loud things carry
   const mask = 1 - floorLevel() * 0.6;
@@ -112,6 +117,7 @@ export function heardBy(x, y, opts){
   for(let i = 0; i < ring.length; i++){
     const n = ring[i];
     if(!n || !n.r) continue;
+    if(cursor !== null && (!(n.id > 0) || n.id <= cursor)) continue;
     const age = clock - n.at;
     if(age < 0 || age > CFG.TTL) continue;
     const reach = n.r * keen * mask;
@@ -121,9 +127,15 @@ export function heardBy(x, y, opts){
     if(d2 > reach * reach) continue;
     // nearer + louder + fresher wins; a faint distant tap loses to a close blast
     const score = (1 - Math.sqrt(d2) / reach) * n.r * (1 - age / CFG.TTL);
-    if(score > bestScore){ bestScore = score; best = n; }
+    // Cursor consumers are state machines: deliver distinct sounds in emission
+    // order so an older loud blast cannot hide the later footstep that confirms
+    // a creature's suspicion. Ordinary callers still receive the loudest sound.
+    if(cursor !== null){
+      if(!best || n.id < best.id){ bestScore = score; best = n; }
+    } else if(score > bestScore){ bestScore = score; best = n; }
   }
   return best ? {
+    id: best.id,
     x: best.x,
     y: best.y,
     cause: best.cause,

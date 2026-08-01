@@ -11,6 +11,7 @@ const floor=MM.worldGen.surfaceHeight(cx)-1;
 
 MM.mobs.clearAll();
 MM.mobs.freezeSpawns(120000);
+MM.noise.reset();
 if(MM.companions && MM.companions.reset) MM.companions.reset();
 if(MM.fog && MM.fog.setRevealAll) MM.fog.setRevealAll(true);
 if(MM.background && MM.background.importState) MM.background.importState({cycleT:0.31});
